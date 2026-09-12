@@ -44,6 +44,20 @@ TourCRM должна работать:
 
 Issue не закрывается при невыполненном acceptance criteria или неуспешном автоматическом тестировании.
 
+## Структура репозитория (application skeleton)
+
+Monorepo с явными границами frontend/backend (Issue #4):
+
+```text
+apps/
+├── web/   # frontend skeleton — React + TypeScript + Vite, см. apps/web/README.md
+└── api/   # backend skeleton — FastAPI + Python, см. apps/api/README.md
+tests/     # repository-level smoke checks (структура репозитория)
+```
+
+Запуск backend и frontend в development-режиме, а также минимальные smoke
+checks описаны в `apps/api/README.md` и `apps/web/README.md`.
+
 ## Документация
 
 - `docs/01-product/` — продуктовая концепция;
