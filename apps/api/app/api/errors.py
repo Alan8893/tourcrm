@@ -19,6 +19,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from app.api.request_context import get_request_id
+from app.authorization.service import AuthorizationDenied
 
 logger = logging.getLogger("tourcrm.api")
 
@@ -123,6 +124,24 @@ async def http_exception_handler(
     )
 
 
+async def authorization_denied_handler(request: Request, exc: AuthorizationDenied) -> JSONResponse:
+    """Issue #29: raised by Authorizer.check() on deny. The response never
+    names the missing permission, the caller's roles, or any other
+    authorization-decision detail (Issue #29 §9) — only the generic 403
+    the canonical contract already defines.
+    """
+    request_id = get_request_id(request)
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content=_error_envelope(
+            code="forbidden",
+            message="You do not have permission to perform this action",
+            details={},
+            request_id=request_id,
+        ),
+    )
+
+
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     request_id = get_request_id(request)
     # Full exception detail is server-side only, correlated by request_id.
@@ -145,6 +164,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     # pattern FastAPI's own docs recommend) doesn't structurally match by
     # mypy's rules even though it's the correct, supported usage at runtime.
     app.add_exception_handler(APIError, api_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(AuthorizationDenied, authorization_denied_handler)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, validation_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, unhandled_exception_handler)
