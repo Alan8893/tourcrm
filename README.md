@@ -26,7 +26,7 @@ TourCRM объединяет управление участниками клу�
 - deployment: Docker Compose на Linux;
 - CI: GitHub Actions.
 
-Подробнее: `docs/02-architecture/`.
+Подробнее: `docs/03-architecture/`.
 
 ## Среда
 
@@ -47,11 +47,13 @@ Issue не закрывается при невыполненном acceptance c
 ## Документация
 
 - `docs/01-product/` — продуктовая концепция;
-- `docs/02-architecture/` — архитектура и технологии;
-- `docs/03-requirements/` — требования;
+- `docs/02-requirements/` — требования и бизнес-правила;
+- `docs/03-architecture/` — архитектура, технология и ADR;
 - `docs/04-modules/` — документация модулей;
 - `docs/05-api/` — API;
-- `docs/06-database/` — БД и ER-модель;
-- `docs/07-development/` — правила разработки;
-- `docs/08-roadmap/` — roadmap и backlog;
-- `docs/02-architecture/adr/` — Architecture Decision Records.
+- `docs/06-ui/` — UI/UX и дизайн-система;
+- `docs/07-security/` — безопасность и приватность;
+- `docs/08-infrastructure/` — инфраструктура и DevOps;
+- `docs/09-governance/` — governance, roadmap, аудит и трассировка требований;
+- `docs/DOCUMENTATION-MAP.md` — карта и иерархия источников документации;
+- `docs/03-architecture/adr/` — Architecture Decision Records.
