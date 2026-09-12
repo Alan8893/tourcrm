@@ -3,9 +3,12 @@
 FastAPI backend for TourCRM. Issue #4 provided the application skeleton,
 Issue #5 the PostgreSQL/SQLAlchemy/Alembic storage foundation, Issue #6 the
 `/api/v1` HTTP contract foundation (error/collection envelopes, request ID,
-OpenAPI), and Issue #7 the test harness. No domain models, business rules,
-or authentication are implemented here — see `docs/SYSTEM-SPECIFICATION.md`
-and `docs/03-architecture/application-architecture.md` for the canonical
+OpenAPI), Issue #7 the test harness, Issues #17/#19 the identity/RBAC
+persistence, Issue #29 the authorization enforcement engine, and Issue #33
+application-managed authentication (registration, login, sessions, email
+verification, password reset). No other domain models/business rules are
+implemented here — see `docs/SYSTEM-SPECIFICATION.md` and
+`docs/03-architecture/application-architecture.md` for the canonical
 backend contract.
 
 ## Structure
@@ -15,24 +18,35 @@ app/
 ├── main.py            # application entrypoint — FastAPI instance, middleware, handlers
 ├── api/
 │   ├── v1/
-│   │   └── router.py     # versioned API boundary (/api/v1), no endpoints yet
+│   │   ├── router.py       # versioned API boundary (/api/v1)
+│   │   ├── auth.py         # /api/v1/auth/* endpoints (Issue #33)
+│   │   └── auth_schemas.py # request/response models for auth.py
 │   ├── errors.py          # canonical error contract (ADR-0014) + exception handlers
 │   ├── health.py          # liveness/readiness (Issue #10) — outside /api/v1
 │   ├── schemas.py         # canonical collection envelope (items/pagination, ADR-0014)
 │   ├── request_context.py # request-id middleware (X-Request-ID)
-│   └── deps.py             # get_current_principal (still None-only) + require_permission (Issue #29)
+│   └── deps.py             # get_current_principal (real, session-derived — Issue #33),
+│                            # require_authenticated_principal, require_csrf_token,
+│                            # require_permission (Issue #29)
+├── authentication/
+│   ├── service.py      # register/login/sessions/verification/reset (Issue #33)
+│   ├── passwords.py    # Argon2id hashing + minimum-length policy
+│   ├── tokens.py       # opaque secret generation/hashing (sessions, challenges)
+│   ├── csrf.py         # double-submit-cookie CSRF check
+│   └── rate_limit.py   # RateLimiter boundary (no-op default; no infra invented)
 ├── authorization/
 │   ├── context.py     # ADR-0013 scope vocabulary, ResourceContext (Issue #29)
 │   └── service.py     # can()/Authorizer — RBAC + scope decision engine (Issue #29)
 ├── core/
-│   └── config.py      # environment-driven settings (DATABASE_URL, ...)
+│   └── config.py      # environment-driven settings (DATABASE_URL, COOKIE_SECURE, ...)
 └── db/
     ├── base.py        # shared declarative Base/metadata
     ├── session.py     # engine, session factory, get_db()/session_scope() boundaries
     ├── errors.py       # DatabaseConnectionError (never carries credentials)
     ├── foundation.py  # non-domain FoundationHealthCheck table (migration/ORM smoke checks only)
     ├── identity.py    # Club, Person, User, ClubMembership (Issue #17)
-    └── authorization.py  # Role, Permission, RolePermission, UserRoleAssignment (Issue #19)
+    ├── authorization.py  # Role, Permission, RolePermission, UserRoleAssignment (Issue #19)
+    └── authentication.py # AuthenticatedSession, EmailVerificationChallenge, PasswordResetChallenge (Issue #33)
 alembic/                 # migrations; URL comes from DATABASE_URL via env.py, never hardcoded
 tests/
 ├── conftest.py         # shared technical fixtures (Issue #7) — no business data
@@ -83,11 +97,13 @@ queries the real rows.
   else including `own_records`).
 - `app/api/deps.py`: `require_permission(code)` — a FastAPI dependency
   returning an `Authorizer` after a 401 check via `get_current_principal`
-  (still returns `None` always; no authentication mechanism exists in code
-  yet — that is a separate, not-yet-implemented Issue). The endpoint itself
-  resolves the real resource relationship into a `ResourceContext` and calls
-  `authorizer.check(context)`; this deliberately does not trust a
-  client-supplied resource id for that resolution.
+  (Issue #33 made this a real, session-derived dependency; the 401/403
+  split here is unchanged and is what proves authentication and
+  authorization stay independent — see that Issue's section below). The
+  endpoint itself resolves the real resource relationship into a
+  `ResourceContext` and calls `authorizer.check(context)`; this
+  deliberately does not trust a client-supplied resource id for that
+  resolution.
 - `app/api/errors.py` maps a denied `AuthorizationDenied` to the existing
   canonical 403 envelope — no permission/role/internal detail is included.
 
@@ -97,6 +113,60 @@ test-only probe app for a worked example of the intended usage pattern.
 
 Tests: `pytest tests/unit/test_authorization_service.py -v` (no database),
 `pytest tests/integration/test_authorization_service.py tests/integration/test_authorization_enforcement.py -v`
+(real PostgreSQL).
+
+## Authentication foundation (Issue #33)
+
+Application-managed authentication per ADR-0009, on the persistence
+`docs/03-architecture/authentication-persistence.md` defines
+(`app/db/authentication.py`). Deliberately independent of
+`app/authorization/`: this layer only ever establishes *who* the caller
+is; it grants no permission and touches no `Role`/`RolePermission`/
+`UserRoleAssignment` row.
+
+- `app/authentication/service.py` — `register` (always creates a
+  `pending` `User`, grants no role), `verify_email`/`resend_verification`,
+  `login` (verifies the password before checking account state, so
+  "identifier not found" and "wrong password" are indistinguishable;
+  rejects every non-`active` state), `resolve_session` (the *only* path
+  by which an authenticated identity is derived — from the session
+  cookie's server-side row, never a client-supplied id),
+  `revoke_session`/`logout_all`/`list_sessions`, and
+  `request_password_reset`/`confirm_password_reset` (non-enumerating,
+  invalidates existing sessions) /`change_password` (does not).
+- `app/api/v1/auth.py` — `/api/v1/auth/{register,verify-email,
+  resend-verification,login,logout,me,sessions,sessions/{id},logout-all,
+  password-reset/request,password-reset/confirm,password/change}`, per
+  `docs/05-api/auth-api.md`. A session cookie (`session_token`, HttpOnly)
+  plus a double-submit CSRF cookie/header (`csrf_token`/`X-CSRF-Token`,
+  `app/authentication/csrf.py`) are set on login and required on every
+  state-changing endpoint reachable via that cookie.
+- **Not implemented, intentionally**: invitation creation/acceptance
+  (blocked by ODR-014 — `docs/03-architecture/adr/ADR-0008-open-decisions.md`
+  — `auth-api.md` names a permission code, `membership.invitation.create`,
+  that does not exist in the canonical permission catalog; no substitute
+  or new permission was invented); MFA/SSO/OAuth/WebAuthn; role
+  grants/bootstrap administrator; an admin-approval-of-registration
+  endpoint (`auth-api.md` requires the *capability* but never defines
+  such an endpoint itself); real email/notification delivery (no such
+  channel exists in this codebase yet — verification/reset challenges are
+  created and hashed correctly, but nothing sends the raw token anywhere;
+  see the PR description); structured `AuditLog` persistence (no
+  `audit_logs` table/infrastructure exists yet — security-relevant events
+  are logged via the existing `logging.getLogger("tourcrm.api")` pattern
+  instead, which is operational logging, not the canonical audit domain);
+  and real rate-limiting infrastructure (`app/authentication/rate_limit.py`
+  is a `RateLimiter` boundary with a no-op default, wired into every
+  security-sensitive endpoint, so a real limiter is a dependency override
+  away — no concrete throttling infrastructure exists yet and no
+  undocumented numeric limit is invented).
+
+Set `COOKIE_SECURE=false` for local plain-HTTP development/testing (see
+`.env.example`) — a browser (and `TestClient`) will not resend a `Secure`
+cookie over plain HTTP.
+
+Tests: `pytest tests/unit/test_authentication.py -v` (no database),
+`pytest tests/integration/test_authentication_service.py tests/integration/test_authentication_api.py -v`
 (real PostgreSQL).
 
 ## Health endpoints (Issue #10)
