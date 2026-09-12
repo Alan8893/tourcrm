@@ -10,7 +10,10 @@ from alembic import context
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.core.config import get_settings  # noqa: E402
-from app.db import foundation  # noqa: E402,F401  (registers model on Base.metadata)
+from app.db import (
+    foundation,  # noqa: E402,F401  (registers model on Base.metadata)
+    identity,  # noqa: E402,F401  (registers models on Base.metadata)
+)
 from app.db.base import Base  # noqa: E402
 
 # this is the Alembic Config object, which provides
