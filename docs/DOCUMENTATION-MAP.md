@@ -39,6 +39,7 @@ When documents conflict, do not guess. Record the conflict and resolve it explic
 | Domain model | `03-architecture/domain-model.md` |
 | Logical data model | `03-architecture/data-model.md` |
 | Database schema | `03-architecture/database-schema.md` |
+| Authentication persistence | `03-architecture/authentication-persistence.md` |
 | Infrastructure | `03-architecture/infrastructure.md` |
 | Technology stack | `03-architecture/technology-stack.md` |
 | Data retention | `03-architecture/data-retention-and-deletion.md` |
