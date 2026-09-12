@@ -58,6 +58,84 @@ tests/     # repository-level smoke checks (структура репозито�
 Запуск backend и frontend в development-режиме, а также минимальные smoke
 checks описаны в `apps/api/README.md` и `apps/web/README.md`.
 
+## Development environment (Docker Compose, Issue #8)
+
+**Это development-only окружение** — без reverse proxy, TLS, production
+secrets/backup. Production deployment — отдельная, более поздняя задача
+(см. `docs/08-infrastructure/infrastructure-and-devops.md`).
+
+### Prerequisites
+
+- Docker Engine;
+- Docker Compose v2 (команда `docker compose`, встроена в современный Docker).
+
+### Первый запуск
+
+```bash
+git clone <repo-url> && cd tourcrm
+cp .env.example .env        # локальная конфигурация; .env никогда не коммитится
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up --build
+```
+
+Одна эта команда поднимает `frontend`, `backend` и `db` (PostgreSQL) и
+применяет миграции Alembic (Issue #5) — они идемпотентны, это не
+destructive-операция.
+
+**Зачем `HOST_UID`/`HOST_GID`**: `backend`/`frontend` работают от
+непривилегированного пользователя (не root), и его uid/gid внутри
+контейнера подставляется из этих переменных — по умолчанию `1000:1000`
+(частый вариант для однопользовательского Linux), если их не передать.
+`./apps/api` и `./apps/web` смонтированы в контейнер как bind mount, поэтому
+контейнер видит владельца файлов ровно как на host — если он отличается от
+uid/gid контейнера, non-root процесс не сможет писать в `/app` (именно так
+проявлялась ошибка Vite `EACCES: ... vite.config.ts.timestamp-*.mjs`).
+`HOST_UID=$(id -u) HOST_GID=$(id -g)` подставляет ваш реальный uid/gid —
+работает одинаково для любого обычного пользователя Linux, без ручной
+правки конфигурации.
+
+Если ваш checkout почему-то принадлежит `root` (например, репозиторий
+клонировали от root) — контейнеры **всё равно не должны запускаться от
+root**; вместо `HOST_UID=0` сначала исправьте владельца на host:
+`sudo chown -R $(id -u):$(id -g) apps/`, затем используйте обычный запуск
+выше.
+
+- **Frontend**: http://localhost:5173 (порт настраивается через `FRONTEND_PORT` в `.env`)
+- **Backend**: http://localhost:8000 (порт — `BACKEND_PORT`); `/docs`, `/openapi.json`
+- **PostgreSQL**: доступен только внутри Compose-сети по имени сервиса `db`, наружу не публикуется.
+
+### Проверить состояние
+
+```bash
+docker compose ps
+```
+
+### Логи
+
+```bash
+docker compose logs -f            # все сервисы
+docker compose logs -f backend    # один сервис
+```
+
+### Остановить (данные сохраняются)
+
+```bash
+docker compose down
+```
+
+Named volume `postgres_data` не удаляется — данные PostgreSQL переживают
+`down`/`up`.
+
+### Полный сброс development-окружения (⚠ уничтожает DB-данные)
+
+```bash
+docker compose down -v
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up --build
+```
+
+`-v` удаляет volumes, включая `postgres_data`. Используйте только когда
+осознанно нужна чистая БД — это отдельная, явно деструктивная операция, не
+часть обычного `down`/`up`.
+
 ## Документация
 
 - `docs/01-product/` — продуктовая концепция;
