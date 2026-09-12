@@ -80,7 +80,8 @@ Via Docker Compose (recommended — also starts PostgreSQL; see root
 `README.md`):
 
 ```bash
-cd /path/to/tourcrm && cp .env.example .env && docker compose up --build
+cd /path/to/tourcrm && cp .env.example .env
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up --build
 ```
 
 Or directly on the host:

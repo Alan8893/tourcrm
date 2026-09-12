@@ -26,7 +26,8 @@ Via Docker Compose (recommended — also starts backend + PostgreSQL; see
 root `README.md`):
 
 ```bash
-cd /path/to/tourcrm && cp .env.example .env && docker compose up --build
+cd /path/to/tourcrm && cp .env.example .env
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up --build
 ```
 
 Or directly on the host:
@@ -40,6 +41,13 @@ npm run dev
 The Vite dev server binds to all interfaces (`server.host: true` in
 `vite.config.ts`) so it is reachable both from the host directly and from
 inside its Docker container (Issue #8).
+
+`HOST_UID`/`HOST_GID` matter here specifically: `./apps/web` is bind-mounted
+into the container, so the non-root container user must match the host
+owner of this directory to have write access — otherwise Vite fails with
+`EACCES` trying to create `vite.config.ts.timestamp-*.mjs` in `/app`. See
+the root `README.md` for the full explanation and the root-owned-checkout
+edge case.
 
 ## Smoke check (build)
 

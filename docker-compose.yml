@@ -4,7 +4,17 @@
 # production secrets/backup. See docs/08-infrastructure/infrastructure-and-devops.md
 # for the production baseline, which is a separate, later concern.
 #
-# Usage: cp .env.example .env, then `docker compose up --build`.
+# Usage: cp .env.example .env, then:
+#   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up --build
+#
+# HOST_UID/HOST_GID make the backend/frontend containers run as the SAME
+# uid/gid that owns your checkout on the host, so the non-root container
+# user can write into the bind-mounted ./apps/api and ./apps/web (e.g.
+# Vite's `vite.config.ts.timestamp-*.mjs`). Omitting the prefix falls back
+# to 1000:1000, the common single-user-Linux default. If your checkout
+# happens to be owned by root (e.g. it was cloned as root), fix that on the
+# host first — `sudo chown -R $(id -u):$(id -g) apps/` — rather than
+# passing HOST_UID=0: these containers intentionally never run as root.
 
 services:
   db:
@@ -30,6 +40,10 @@ services:
   backend:
     build:
       context: ./apps/api
+      args:
+        UID: ${HOST_UID:-1000}
+        GID: ${HOST_GID:-1000}
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     environment:
       # Constructed here (not duplicated in .env) using the Compose service
       # name `db` as host — never `localhost`.
@@ -49,6 +63,10 @@ services:
   frontend:
     build:
       context: ./apps/web
+      args:
+        UID: ${HOST_UID:-1000}
+        GID: ${HOST_GID:-1000}
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     ports:
       - "${FRONTEND_PORT:-5173}:5173"
     volumes:

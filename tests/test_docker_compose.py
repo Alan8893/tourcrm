@@ -36,10 +36,12 @@ requires_docker_compose = pytest.mark.skipif(
 )
 
 
-@pytest.fixture(scope="module")
-def compose_config() -> dict:
+def _resolved_compose_config(extra_env: dict | None = None) -> dict:
     """The resolved Compose configuration, using .env.example so this test
     needs no real .env / no manual setup in a clean checkout."""
+    import os
+
+    env = {**os.environ, **(extra_env or {})}
     result = subprocess.run(
         [
             "docker",
@@ -54,9 +56,15 @@ def compose_config() -> dict:
         capture_output=True,
         text=True,
         timeout=30,
+        env=env,
     )
     assert result.returncode == 0, f"docker compose config failed:\n{result.stderr}"
     return json.loads(result.stdout)
+
+
+@pytest.fixture(scope="module")
+def compose_config() -> dict:
+    return _resolved_compose_config()
 
 
 def test_dockerfiles_exist() -> None:
@@ -154,3 +162,49 @@ def test_backend_reaches_postgres_by_service_name_not_localhost(compose_config: 
 def test_frontend_and_backend_are_reachable_from_the_host(compose_config: dict) -> None:
     for service in ("backend", "frontend"):
         assert "ports" in compose_config["services"][service]
+
+
+@requires_docker_compose
+def test_backend_and_frontend_run_as_non_root_by_default(compose_config: dict) -> None:
+    for service in ("backend", "frontend"):
+        user = compose_config["services"][service]["user"]
+        assert user == "1000:1000"  # sane default; never "0:0"
+
+
+@requires_docker_compose
+def test_backend_and_frontend_uid_gid_are_not_hardcoded() -> None:
+    # Regression test for the reported EACCES: the compose file itself must
+    # use variable substitution for the container UID/GID, not a literal
+    # value, so it can be made to match whatever host account owns the
+    # bind-mounted apps/api and apps/web directories.
+    raw = (ROOT / "docker-compose.yml").read_text()
+    assert raw.count("${HOST_UID:-1000}") >= 2  # backend + frontend `user:`
+    assert raw.count("${HOST_GID:-1000}") >= 2
+
+    overridden = _resolved_compose_config(extra_env={"HOST_UID": "1234", "HOST_GID": "5678"})
+    for service in ("backend", "frontend"):
+        assert overridden["services"][service]["user"] == "1234:5678"
+        assert overridden["services"][service]["build"]["args"]["UID"] == "1234"
+        assert overridden["services"][service]["build"]["args"]["GID"] == "5678"
+
+
+@requires_docker_compose
+def test_backend_and_frontend_build_args_match_runtime_user(compose_config: dict) -> None:
+    # The image must be built with the SAME uid/gid it will run as, so
+    # files it chowns at build time (e.g. frontend's node_modules, seeding
+    # the anonymous volume) are actually owned by the runtime user.
+    for service in ("backend", "frontend"):
+        svc = compose_config["services"][service]
+        user = svc["user"]
+        args = svc["build"]["args"]
+        assert user == f"{args['UID']}:{args['GID']}"
+
+
+def test_dockerfiles_parameterize_uid_gid_via_build_args() -> None:
+    for dockerfile in [ROOT / "apps" / "api" / "Dockerfile", ROOT / "apps" / "web" / "Dockerfile"]:
+        content = dockerfile.read_text()
+        assert "ARG UID=1000" in content
+        assert "ARG GID=1000" in content
+        # No leftover hardcoded --uid/--gid 1000 bypassing the build args.
+        assert "--uid 1000" not in content
+        assert "--gid 1000" not in content
