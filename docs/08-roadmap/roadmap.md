@@ -1,133 +1,203 @@
-# Roadmap
+# TourCRM — Roadmap
 
-Дорожная карта отражает порядок формирования платформы. Конкретная реализация выполняется через GitHub Issues.
+## Purpose
 
-## Phase 0 — Foundation
+Дорожная карта определяет порядок превращения утверждённой спецификации в реализованный продукт. Она не заменяет GitHub Issues: каждая реализация выполняется отдельной задачей с трассировкой требований и автоматической проверкой.
 
-Цель: создать технический фундамент проекта.
+## Delivery principles
 
-- структура репозитория;
-- правила разработки;
-- базовая архитектура;
-- выбор технологического стека;
-- Docker/dev environment;
-- PostgreSQL;
-- CI/CD;
-- тестовый контур;
-- базовое логирование;
-- конфигурация и secrets;
-- базовая схема миграций;
-- документация API-подхода.
+- Зависимости реализуются раньше зависимых функций.
+- Security и модель данных формируются раньше бизнес-модулей.
+- Работа ведётся последовательно через GitHub Issues в согласованном с владельцем проекта порядке.
+- Issue закрывается только после реализации, автоматической проверки, review против спецификации и обновления документации.
+- Большие домены дробятся на небольшие implementation contracts.
 
-## Phase 1 — Identity & Club Core
+## Phase 0 — Specification Foundation
 
-Цель: создать основу многопользовательской CRM.
+Цель: получить согласованный источник истины для реализации.
+
+Deliverables:
+
+- vision и scope;
+- glossary;
+- project/system blueprint;
+- functional requirements;
+- business rules;
+- non-functional requirements;
+- use cases;
+- roles and permissions;
+- domain model;
+- database specification;
+- application architecture;
+- infrastructure architecture;
+- API conventions и endpoint inventory;
+- core API specifications;
+- UX information architecture;
+- design system;
+- security/privacy specification;
+- ADR set;
+- documentation map;
+- implementation Issue template;
+- consolidated system specification.
+
+Exit criteria: критические архитектурные зависимости описаны, открытые решения зарегистрированы, термины согласованы, проект можно однозначно декомпозировать на Issues.
+
+## Phase 1 — Platform Foundation
+
+- application/repository skeleton;
+- development environment;
+- configuration and secrets;
+- database connection and migrations;
+- API framework and common error handling;
+- frontend shell/routing;
+- authentication/session foundation;
+- authorization engine;
+- audit foundation;
+- CI baseline;
+- health/readiness checks.
+
+## Phase 2 — Identity & Club Core
 
 - User;
 - Person;
 - Club;
-- Club Membership;
-- роли;
-- регистрация;
-- подтверждение регистрации;
-- приглашения;
-- импорт участников;
-- login/logout;
-- восстановление доступа;
-- профили;
-- родители и дети;
-- группы;
-- аудит.
+- ClubMembership;
+- RoleAssignment;
+- registration and approval;
+- invitations;
+- member import;
+- profiles;
+- guardian relationships;
+- groups;
+- sensitive-change audit.
 
-## Phase 2 — Events & Education
+## Phase 3 — Events & Education
 
 - Event;
-- типы мероприятий;
-- расписание;
-- календарь;
-- занятия;
-- группы;
-- запись на мероприятие;
-- посещаемость;
-- причины отсутствия;
-- уведомления;
-- базовая аналитика.
+- EventSeries/EventOccurrence;
+- event types;
+- calendar;
+- recurring schedule;
+- registrations;
+- instructors/leaders;
+- attendance;
+- absence reasons;
+- cancellation/rescheduling;
+- event notifications;
+- basic event analytics.
 
-## Phase 3 — Tourism
+## Phase 4 — Trips & Tourism
 
-- походы;
-- туристский профиль;
-- виды туризма;
-- маршруты;
-- GPX;
-- GPS/геоданные;
-- километраж;
-- категории сложности;
-- история участия;
-- автоматический расчёт туристского опыта;
-- портфолио участника.
+- trips;
+- trip participation;
+- tourism types;
+- routes;
+- route points;
+- GPX/geodata;
+- planned/actual distance;
+- tourism experience calculations;
+- tourist profile;
+- portfolio;
+- official categories/qualification rules after approval.
 
-## Phase 4 — Achievements & Knowledge
+## Phase 5 — Achievements & Knowledge
 
-- достижения;
-- автоматические условия выдачи;
-- уровни;
-- рейтинг;
-- настраиваемые feature settings;
-- база знаний;
-- методические материалы;
-- привязка материалов к занятиям и навыкам.
+- skills;
+- qualifications;
+- achievements;
+- manual and automatic awards;
+- levels/rating, subject to feature settings;
+- knowledge base;
+- article versions;
+- tagging and search;
+- educational links between materials, skills, and events.
 
-## Phase 5 — Documents & Finance
+## Phase 6 — Documents & Finance
 
-- документы участников;
-- документы мероприятий;
-- сроки действия;
-- автоматические напоминания;
-- шаблоны документов;
-- PDF/Excel/CSV/Word экспорт;
-- финансовый учёт;
-- платежи;
-- расходы;
-- задолженности;
-- отчётность.
+- document storage/metadata;
+- consents;
+- expiry tracking;
+- document templates;
+- PDF/Excel/CSV/Word exports where approved;
+- financial accounts;
+- payments;
+- participant obligations;
+- expenses;
+- budgets;
+- financial reports.
 
-## Phase 6 — Equipment & Communications
+## Phase 7 — Equipment & Communications
 
-- склад и снаряжение;
-- выдача/возврат;
-- состояние;
+- inventory;
+- equipment lifecycle;
+- issue/return;
+- maintenance/repair;
+- notification engine;
+- user notification preferences;
+- email;
 - Telegram;
 - MAX;
-- email;
-- внутренние уведомления;
-- расширенная коммуникация;
-- календарные интеграции.
+- internal announcements;
+- calendar integrations.
 
-## Phase 7 — TourSlet integration
+## Phase 8 — TourSlet Integration
 
-После получения архива существующего сайта турслётов:
+Starts only after the existing ZIP archive is technically analysed.
 
-- анализ архитектуры;
-- анализ модели данных;
-- определение точки интеграции;
-- API/SSO/event integration при необходимости;
-- синхронизация участников;
-- получение результатов;
-- связь результатов с профилем участника.
+Possible implementation outcomes:
 
-## Phase 8 — Advanced Analytics & Operations
+- API adapter;
+- shared identity/SSO;
+- event/result synchronization;
+- participant synchronization;
+- deep links;
+- import/export adapter;
+- other boundary chosen from evidence.
 
-- расширенный dashboard;
-- показатели клуба;
-- посещаемость;
-- активность;
-- статистика походов;
-- инструкторская нагрузка;
-- динамика участников;
-- отчётность руководителя клуба;
-- дополнительные роли и права.
+No concrete external contract is assumed before archive analysis.
 
-## Правило перехода между фазами
+## Phase 9 — Analytics & Operations
 
-Фаза не считается завершённой только по факту написания кода. Для неё должны быть выполнены критерии приёмки, автоматические тесты, CI и актуализирована документация.
+- dashboards;
+- attendance analytics;
+- participation analytics;
+- tourism statistics;
+- achievement statistics;
+- finance/inventory reports;
+- instructor load;
+- participant dynamics;
+- exports;
+- operational dashboards.
+
+## Phase 10 — Production Hardening
+
+- backup/restore drills;
+- monitoring and alerting;
+- performance profiling;
+- security hardening;
+- disaster recovery verification;
+- rollback procedures;
+- operational runbooks;
+- final documentation audit.
+
+## MVP baseline
+
+MVP должен обеспечить устойчивое ежедневное управление клубом:
+
+- authentication;
+- users/roles;
+- members and guardians;
+- groups;
+- events/calendar;
+- attendance;
+- basic profiles;
+- audit;
+- baseline notifications;
+- responsive mobile-capable UI;
+- secure deployment baseline.
+
+Advanced tourism, achievements, knowledge, documents, finance, equipment, external integrations and advanced analytics are staged after the core is stable unless project priorities explicitly change.
+
+## Roadmap governance
+
+Бизнес-приоритеты определяет владелец проекта. Техническую последовательность и зависимости определяет технический аналитик. Изменение порядка фаз должно быть отражено в соответствующей Issue/ADR.
