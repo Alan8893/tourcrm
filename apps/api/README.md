@@ -17,6 +17,7 @@ app/
 │   ├── v1/
 │   │   └── router.py     # versioned API boundary (/api/v1), no endpoints yet
 │   ├── errors.py          # canonical error contract (ADR-0014) + exception handlers
+│   ├── health.py          # liveness/readiness (Issue #10) — outside /api/v1
 │   ├── schemas.py         # canonical collection envelope (items/pagination, ADR-0014)
 │   ├── request_context.py # request-id middleware (X-Request-ID)
 │   └── deps.py             # DI boundary placeholder for the future authorization layer
@@ -60,6 +61,26 @@ Issues. This skeleton does not pre-create empty module directories.
   `/docs`) reflects exactly that.
 
 Tests: `pytest tests/api -v` (no database required).
+
+## Health endpoints (Issue #10)
+
+Operational, not versioned business API — outside `/api/v1`, per
+`docs/05-api/api-conventions.md` §2. URLs match the existing canonical
+naming in `docs/05-api/endpoint-inventory.md` §26.
+
+| Endpoint | Checks | Success | Failure |
+|---|---|---|---|
+| `GET /health/live` | Nothing but the process itself — never touches PostgreSQL | `200 {"status": "ok"}` | (not expected — process is up or it isn't answering at all) |
+| `GET /health/ready` | PostgreSQL connectivity, via the existing `app.db.session.check_connection()` (Issue #5) — no second DB-probe mechanism | `200 {"status": "ok"}` | `503 {"status": "unavailable"}` |
+
+Both return minimal operational JSON — never the business error envelope
+(ADR-0014), never a DSN/credential/traceback. `/health/live` is what the
+Docker `HEALTHCHECK` uses (never `/health/ready`: a container healthcheck
+answers "is this process alive", not "is its database also up").
+
+Tests: `pytest tests/api/test_health.py -v` (no database — the DB-unavailable
+path is exercised by monkeypatching `check_connection`) and
+`pytest tests/integration/test_health.py -v` (real PostgreSQL, success path).
 
 ## Database configuration
 

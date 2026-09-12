@@ -30,7 +30,9 @@ def test_openapi_schema_is_served(real_client) -> None:
 def test_openapi_has_no_domain_endpoints(real_client) -> None:
     schema = real_client.get("/openapi.json").json()
 
-    assert schema["paths"] == {}
+    # Only the operational health endpoints (Issue #10) exist so far — no
+    # domain endpoints have been added under /api/v1.
+    assert set(schema["paths"].keys()) == {"/health/live", "/health/ready"}
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()
 

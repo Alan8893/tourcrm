@@ -100,13 +100,15 @@ root**; вместо `HOST_UID=0` сначала исправьте владел
 выше.
 
 - **Frontend**: http://localhost:5173 (порт настраивается через `FRONTEND_PORT` в `.env`)
-- **Backend**: http://localhost:8000 (порт — `BACKEND_PORT`); `/docs`, `/openapi.json`
+- **Backend**: http://localhost:8000 (порт — `BACKEND_PORT`); `/docs`, `/openapi.json`, `/health/live`, `/health/ready` (Issue #10)
 - **PostgreSQL**: доступен только внутри Compose-сети по имени сервиса `db`, наружу не публикуется.
 
 ### Проверить состояние
 
 ```bash
 docker compose ps
+curl http://localhost:8000/health/live   # {"status": "ok"} — процесс жив, БД не проверяется
+curl http://localhost:8000/health/ready  # {"status": "ok"} / 503 {"status": "unavailable"} — зависит от PostgreSQL
 ```
 
 ### Логи

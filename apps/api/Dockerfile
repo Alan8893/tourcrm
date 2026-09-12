@@ -38,12 +38,12 @@ USER app
 
 EXPOSE 8000
 
-# No dedicated health endpoint exists yet (deferred to a later Issue); this
-# reuses the already-existing FastAPI-generated OpenAPI document
-# (docs/05-api foundation, Issue #6) purely as an availability probe — it
-# is not a readiness/liveness endpoint and exposes no domain data.
+# Liveness only (Issue #10) — deliberately not /health/ready: a Docker
+# container healthcheck answers "is this process alive", not "is its
+# PostgreSQL dependency also up", so it must not fail merely because the
+# database had a blip.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=5 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/openapi.json', timeout=2)" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live', timeout=2)" || exit 1
 
 # alembic upgrade head is additive/idempotent (Issue #5) — never destructive.
 CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
