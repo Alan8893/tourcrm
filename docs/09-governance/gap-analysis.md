@@ -2,13 +2,13 @@
 
 ## Назначение
 
-Документ фиксирует результат сквозной аналитической проверки документации TourCRM и определяет, какие области уже имеют достаточный контракт, а какие требуют дополнительной спецификации до начала реализации соответствующего функционала.
+Документ фиксирует результат сквозной аналитической проверки документации TourCRM и определяет, какие области уже имеют достаточный контракт, а какие требуют дополнительного бизнес-решения или входных данных.
 
 Это не список «ошибок проекта». Это управляемый реестр незавершённых аналитических решений.
 
 ## 1. Статус покрытия
 
-### Полностью покрыто на уровне архитектурного контракта
+### Полностью покрыто на уровне архитектурного/технического контракта
 
 - Product Vision и Scope.
 - Glossary.
@@ -32,32 +32,39 @@
 - Design System.
 - Security / Privacy baseline.
 - Infrastructure / DevOps baseline.
+- Backup / Disaster Recovery technical baseline.
+- Observability baseline.
+- Feature settings governance.
+- Analytics metric catalog baseline.
+- Search specification baseline.
+- File processing pipeline baseline.
+- Operational administration baseline.
 - ADR process.
 - Issue / implementation contract.
 - Roadmap.
 
-«Полностью покрыто» означает, что область описана для архитектурного планирования. Перед реализацией конкретной функции её detail-level contract всё равно должен быть указан в соответствующей Issue.
+«Полностью покрыто» означает, что область описана достаточно для архитектурного планирования и постановки детальной Issue. Перед реализацией конкретной функции её detail-level contract всё равно должен быть указан в соответствующей Issue.
 
-## 2. GAP категории
+## 2. Оставшиеся GAP
 
 ### GAP-01 — Legal / regulatory policy decisions
 
-Статус: OPEN / требует внешнего бизнес-решения.
+Статус: OPEN / BUSINESS + LEGAL INPUT REQUIRED.
 
 Нужно утвердить:
 
 - применимый набор требований к персональным данным;
 - правила и сроки хранения отдельных категорий данных;
-- текст/версии пользовательских и родительских согласий;
+- тексты/версии пользовательских и родительских согласий;
 - правила удаления/анонимизации;
 - порядок обработки запросов на доступ/исправление/удаление;
 - ответственных лиц клуба за обработку данных.
 
-Техническая система должна поддерживать эти правила, но не должна самостоятельно «выдумывать» юридические сроки.
+Техническая система должна поддерживать эти правила, но не должна самостоятельно выдумывать юридические сроки.
 
 ### GAP-02 — Medical data policy
 
-Статус: TECHNICAL BASELINE READY / BUSINESS POLICY OPEN.
+Статус: TECHNICAL READY / BUSINESS POLICY REQUIRED.
 
 Техническая модель зафиксирована в `docs/07-security/medical-data.md`.
 
@@ -74,7 +81,7 @@
 
 ### GAP-03 — Tourism classification and experience rules
 
-Статус: TECHNICAL BASELINE READY / NORMATIVE POLICY OPEN.
+Статус: TECHNICAL READY / NORMATIVE POLICY REQUIRED.
 
 Техническая модель зафиксирована в `docs/04-modules/tourism-classification-and-experience.md`.
 
@@ -93,141 +100,78 @@
 
 Статус: OPEN.
 
-Платформа должна поддерживать рейтинг как отключаемую функцию, но формула рейтинга пока не утверждена.
-
-Нужно определить:
-
-- метрики;
-- веса;
-- период расчёта;
-- источники баллов;
-- нормализацию;
-- возрастные/групповые ограничения;
-- видимость;
-- поведение при исправлении исторического факта.
+Платформа поддерживает рейтинг как отключаемую функцию, но формула рейтинга пока не утверждена.
 
 ### GAP-05 — Calendar integrations
 
 Статус: OPEN.
 
-Нужно определить приоритет и контракт интеграций с Google Calendar / Outlook / другими календарями.
+Внутренний календарь является canonical source. Внешние календари — производная синхронизация.
 
-Пока внутренний календарь является canonical source.
+Нужно отдельно утвердить приоритет внешних календарей и способ синхронизации.
 
 ### GAP-06 — TourSlet integration
 
 Статус: BLOCKED BY INPUT.
 
-Требуется архив существующего сайта турслётов.
-
-После получения архива необходимо определить стек, модель данных, auth model, точки интеграции, API feasibility, SSO feasibility, mapping участников/событий/результатов, синхронизацию и ownership данных.
-
-До анализа архива конкретные endpoint'ы и mapping не считаются утверждёнными.
+Требуется архив существующего сайта турслётов. После получения архива необходимо определить фактический стек, модель данных, auth model, точки интеграции, API/SSO feasibility, mapping, synchronization и ownership данных.
 
 ### GAP-07 — Export / import contracts
 
 Статус: PARTIAL.
 
-Нужно детально стандартизировать CSV/XLSX import/export, PDF/DOCX generation, схемы, encoding, duplicate handling, validation, preview, rollback и audit.
-
-### GAP-08 — Backup / Disaster Recovery
-
-Статус: PARTIAL.
-
-Нужен операционный runbook:
-
-- schedule;
-- retention;
-- off-server copy;
-- encryption;
-- restore procedure;
-- restore validation;
-- RPO;
-- RTO;
-- disaster scenarios;
-- ownership/escalation.
-
-### GAP-09 — Observability
-
-Статус: PARTIAL.
-
-Нужно детализировать structured logging, correlation IDs, metrics, health/readiness/liveness, alerts, dashboards, error tracking и PII redaction.
-
-### GAP-10 — Feature settings governance
-
-Статус: PARTIAL.
-
-Нужно определить scope, defaults, who may change, audit requirements, activation conditions и compatibility для каждого feature setting.
-
-### GAP-11 — Reporting / Analytics semantic model
-
-Статус: PARTIAL.
-
-Нужен metric catalog: название, формула, источник, временная база, фильтры, permissions и правила пересчёта.
-
-### GAP-12 — Search specification
-
-Статус: PARTIAL.
-
-Нужно детально определить global/member/event/document/knowledge search, доступные поля, ranking, permission filtering, pagination и empty states.
-
-### GAP-13 — File processing pipeline
-
-Статус: PARTIAL.
-
-Нужно определить MIME types, max sizes, antivirus scanning, checksum, preview generation, image resizing, GPX validation, failed state и quarantine.
+Техническая архитектура определена, но ещё требуется module-level contract для конкретных CSV/XLSX/PDF/DOCX сценариев и шаблонов.
 
 ### GAP-14 — Audit retention
 
-Статус: PARTIAL.
+Статус: TECHNICAL READY / POLICY REQUIRED.
 
-Нужно утвердить обязательные audit actions, срок хранения, доступ к audit, export policy и tamper-evidence requirements.
+AuditLog и правила privileged access определены. Остаются срок хранения, перечень обязательных audit events и tamper-evidence policy.
 
-### GAP-15 — Operational administration
+## 3. Снятые технические GAP
 
-Статус: PARTIAL.
+Следующие области получили спецификацию и больше не считаются архитектурным пробелом:
 
-Нужен admin/operations contract для initial setup, bootstrap administrator, reference data, feature settings, integrations, maintenance mode, backup status, jobs, health и audit access.
+- GAP-08 Backup / Disaster Recovery — `docs/08-infrastructure/backup-and-disaster-recovery.md`.
+- GAP-09 Observability — `docs/08-infrastructure/observability.md`.
+- GAP-10 Feature settings governance — `docs/09-governance/feature-settings.md`.
+- GAP-11 Reporting / Analytics semantic model — `docs/09-governance/analytics-metric-catalog.md`.
+- GAP-12 Search — `docs/05-api/search-specification.md`.
+- GAP-13 File processing — `docs/03-architecture/file-processing.md`.
+- GAP-15 Operational administration — `docs/09-governance/operational-administration.md`.
 
-## 3. Приоритеты
+Для каждого из них остаётся детальная конкретизация в реализации соответствующего модуля, но базовые правила больше не являются неформализованными.
 
-### P0 — требуется до начала соответствующей реализации
+## 4. Приоритеты
+
+### P0 — до соответствующей реализации / production
 
 - GAP-06 TourSlet integration — после получения архива.
-- GAP-08 Backup/DR — до production launch.
-- GAP-09 Observability — до production launch.
 - GAP-02 Medical policy — до медицинского функционала.
 - GAP-03 Tourism normative rules — до автоматического расчёта подтверждённого опыта.
+- GAP-08 Backup/DR operational parameters — до production launch.
+- GAP-09 Observability operational thresholds — до production launch.
 
-### P1 — требуется до реализации соответствующего модуля
+### P1 — до реализации соответствующего модуля
 
 - GAP-04 Rating algorithm.
 - GAP-05 Calendar integrations.
 - GAP-07 Export/import contracts.
-- GAP-10 Feature settings governance.
-- GAP-11 Reporting metric catalog.
-- GAP-12 Search.
-- GAP-13 File processing.
 - GAP-14 Audit retention.
-- GAP-15 Operational administration.
 
 ### P2 — governance / business decisions
 
 - GAP-01 Legal/regulatory policy decisions.
 
-## 4. Правило работы с GAP
-
-Наличие GAP не означает, что весь проект заблокирован.
-
-До закрытия GAP:
+## 5. Правило работы с GAP
 
 1. Нельзя выдавать Claude задачу, требующую решения, которого нет в документации.
 2. В Issue должна быть ссылка на GAP, если задача зависит от него.
 3. Если бизнес-решение меняет архитектуру, создаётся или обновляется ADR.
-4. После принятия решения исходный GAP закрывается и требования синхронизируются с основными документами.
+4. После принятия решения GAP закрывается и связанные документы синхронизируются.
 
-## 5. Результат анализа
+## 6. Результат анализа
 
-Архитектурный фундамент TourCRM сформирован. Медицинский и туристский домены получили технические контракты, но нормативные/бизнес-решения по ним ещё не утверждены.
+Архитектурный фундамент TourCRM сформирован. Большинство ранее выявленных технических пробелов получили отдельные спецификации. Остались в основном внешние нормативные решения, конкретизация отдельных функций и интеграция существующего TourSlet после получения входного архива.
 
-Следующий этап — закрытие оставшихся P0/P1 решений по мере приближения соответствующей разработки и формирование атомарных GitHub Issues по установленному Issue Contract.
+Следующий этап — финальная сверка требований и формирование атомарных GitHub Issues по установленному Issue Contract.
