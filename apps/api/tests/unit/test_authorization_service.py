@@ -38,35 +38,60 @@ def test_unknown_scope_is_rejected(scope_type: str) -> None:
 
 
 # --- scope_matches --------------------------------------------------------
+#
+# ResourceContext's relationship fields (is_self/is_child/is_own_group/
+# is_own_event) are tri-state, not bool: True (checked, holds), False
+# (checked, does not hold) and None/unresolved (never checked at all) are
+# three distinct states, and only True may match. Each scope below is
+# tested against all three explicitly so "checked and absent" and "never
+# checked" can never be confused with each other or with "confirmed".
+
+_RELATIONSHIP_SCOPES = {
+    "self": "is_self",
+    "children": "is_child",
+    "own_groups": "is_own_group",
+    "own_events": "is_own_event",
+}
 
 
 def test_scope_all_always_matches() -> None:
     assert scope_matches("all", ResourceContext()) is True
 
 
-def test_scope_none_never_matches() -> None:
-    assert scope_matches("none", ResourceContext(is_self=True, is_child=True)) is False
+def test_scope_none_never_matches_even_with_every_relationship_confirmed() -> None:
+    context = ResourceContext(is_self=True, is_child=True, is_own_group=True, is_own_event=True)
+    assert scope_matches("none", context) is False
 
 
-def test_scope_self_requires_is_self() -> None:
-    assert scope_matches("self", ResourceContext(is_self=True)) is True
-    assert scope_matches("self", ResourceContext(is_self=False)) is False
-    assert scope_matches("self", ResourceContext()) is False  # fails closed by default
+@pytest.mark.parametrize("scope_type,field", _RELATIONSHIP_SCOPES.items())
+def test_relationship_scope_allows_only_when_explicitly_confirmed_true(
+    scope_type: str, field: str
+) -> None:
+    assert scope_matches(scope_type, ResourceContext(**{field: True})) is True
 
 
-def test_scope_children_requires_is_child() -> None:
-    assert scope_matches("children", ResourceContext(is_child=True)) is True
-    assert scope_matches("children", ResourceContext()) is False
+@pytest.mark.parametrize("scope_type,field", _RELATIONSHIP_SCOPES.items())
+def test_relationship_scope_denies_when_explicitly_confirmed_false(
+    scope_type: str, field: str
+) -> None:
+    assert scope_matches(scope_type, ResourceContext(**{field: False})) is False
 
 
-def test_scope_own_groups_requires_is_own_group() -> None:
-    assert scope_matches("own_groups", ResourceContext(is_own_group=True)) is True
-    assert scope_matches("own_groups", ResourceContext()) is False
+@pytest.mark.parametrize("scope_type", _RELATIONSHIP_SCOPES.keys())
+def test_relationship_scope_denies_when_unresolved(scope_type: str) -> None:
+    # The field is left at its default (None/unresolved) — the endpoint
+    # never checked this relationship at all. This must deny exactly like
+    # an explicit False, never like an explicit True.
+    assert scope_matches(scope_type, ResourceContext()) is False
 
 
-def test_scope_own_events_requires_is_own_event() -> None:
-    assert scope_matches("own_events", ResourceContext(is_own_event=True)) is True
-    assert scope_matches("own_events", ResourceContext()) is False
+@pytest.mark.parametrize("scope_type", _RELATIONSHIP_SCOPES.keys())
+def test_relationship_scope_unresolved_and_false_deny_identically(scope_type: str) -> None:
+    field = _RELATIONSHIP_SCOPES[scope_type]
+    unresolved = scope_matches(scope_type, ResourceContext())
+    confirmed_false = scope_matches(scope_type, ResourceContext(**{field: False}))
+    assert unresolved is False
+    assert confirmed_false is False
 
 
 def test_unhandled_scope_type_raises() -> None:
@@ -74,6 +99,20 @@ def test_unhandled_scope_type_raises() -> None:
     # module must not silently allow/deny a scope it doesn't recognize.
     with pytest.raises(ValueError):
         scope_matches("own_records", ResourceContext())
+
+
+# --- Regression: unresolved context must never grant access ---------------
+
+
+def test_endpoint_that_forgets_to_resolve_context_cannot_gain_access() -> None:
+    """A future endpoint that builds a ResourceContext but forgets to set
+    one of the relationship fields (e.g. only sets club_id) must still be
+    denied for every relationship-scoped permission, not accidentally
+    allowed because the unset field defaulted to something falsy-but-true-like.
+    """
+    partially_resolved = ResourceContext(club_id=uuid.uuid4())
+    for scope_type in _RELATIONSHIP_SCOPES:
+        assert scope_matches(scope_type, partially_resolved) is False
 
 
 # --- club_boundary_matches -------------------------------------------------

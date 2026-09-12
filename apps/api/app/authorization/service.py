@@ -44,17 +44,25 @@ def club_boundary_matches(
 def scope_matches(scope_type: str, context: ResourceContext) -> bool:
     """ADR-0013's canonical scopes, evaluated only against explicit,
     backend-asserted context — never against a raw client-supplied ID.
+
+    Each relationship field on ResourceContext is a tri-state
+    (True/False/None), not a plain bool: only an explicit `True` — the
+    relationship was actually checked and holds — matches. `False` (checked,
+    does not hold) and `None` (never checked at all) must both deny; the
+    `is True` comparisons below are deliberate rather than truthiness
+    checks, so an unresolved relationship can never be mistaken for a
+    confirmed one.
     """
     if scope_type == "all":
         return True
     if scope_type == "self":
-        return context.is_self
+        return context.is_self is True
     if scope_type == "children":
-        return context.is_child
+        return context.is_child is True
     if scope_type == "own_groups":
-        return context.is_own_group
+        return context.is_own_group is True
     if scope_type == "own_events":
-        return context.is_own_event
+        return context.is_own_event is True
     if scope_type == "none":
         return False
     # Unreachable for a row that passed the DB's own scope_type CHECK

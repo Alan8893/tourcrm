@@ -43,9 +43,16 @@ class ResourceContext:
     (docs/05-api/auth-and-authorization.md §6 / Issue #29 §6: IDOR and
     privilege escalation via a spoofed ID must not be possible).
 
-    Fields default "false"/unset so an endpoint that only partially
-    resolves context fails closed rather than accidentally granting a
-    scope it never actually checked.
+    Each relationship field is a tri-state, not a bool: `True` — the
+    relationship was checked and holds; `False` — it was checked and does
+    NOT hold; `None` — it was never resolved at all (the endpoint didn't
+    check). `None` and `False` must both deny (see
+    app.authorization.service.scope_matches) — collapsing "checked,
+    absent" and "never checked" into a single `False` would let an
+    endpoint that forgot to resolve a relationship accidentally grant a
+    scope it never actually verified. `None` is the default for exactly
+    that reason: an endpoint that resolves nothing fails closed on every
+    relationship-based scope.
     """
 
     # The club the resource belongs to, if any. Required for a club-scoped
@@ -53,13 +60,13 @@ class ResourceContext:
     # (None) never matches a club-scoped assignment.
     club_id: uuid.UUID | None = None
     # `self`: the resource is the acting person's own data.
-    is_self: bool = False
+    is_self: bool | None = None
     # `children`: the resource belongs to a person connected to the actor
     # through an active, verified GuardianRelationship (future domain).
-    is_child: bool = False
+    is_child: bool | None = None
     # `own_groups`: the resource belongs to a group the actor is
     # responsible for (future Group domain).
-    is_own_group: bool = False
+    is_own_group: bool | None = None
     # `own_events`: the actor is explicitly assigned as
     # instructor/leader/authorized staff for the event (future Event domain).
-    is_own_event: bool = False
+    is_own_event: bool | None = None

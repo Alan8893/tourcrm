@@ -220,6 +220,39 @@ def test_scope_self_allows_own_resource_and_denies_others() -> None:
 
 
 @requires_postgres
+def test_unresolved_relationship_context_never_grants_access_despite_valid_grant() -> None:
+    """Regression: even with a real, granted RolePermission for a
+    relationship-scoped permission, an endpoint that never resolves the
+    relationship (passes no context, or a context with the field left at
+    its default/unresolved state) must be denied — exactly as if the
+    relationship had been checked and found false, never as if it were
+    true. This is the "endpoint forgot to resolve ownership" case the
+    mechanism must fail closed against.
+    """
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        role = _make_role(code="role-unresolved-self-scope")
+        permission = _make_permission(code="widget.read")
+        session.add_all([person, user, role, permission])
+        session.commit()
+        _grant(session, role, permission)
+        _assign(session, user, role, scope_type="self")
+        session.commit()
+
+        # No context at all (defaults to fully unresolved).
+        assert can(session, user.id, "widget.read") is False
+        # An explicit context that resolved club_id but never touched
+        # is_self — a realistic "partially wired up endpoint" mistake.
+        partially_resolved = ResourceContext(club_id=None)
+        assert can(session, user.id, "widget.read", partially_resolved) is False
+
+        authorizer = Authorizer(session=session, user_id=user.id, permission_code="widget.read")
+        with pytest.raises(AuthorizationDenied):
+            authorizer.check(partially_resolved)
+
+
+@requires_postgres
 def test_scope_children_allows_explicit_child_and_denies_unrelated() -> None:
     with session_scope() as session:
         person = _make_person()
