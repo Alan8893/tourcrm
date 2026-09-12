@@ -96,11 +96,25 @@ alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
+## Lint & type checking (Issue #9)
+
+`ruff` (lint) and `mypy` (type checking) — the CI minimums from
+`docs/03-architecture/technology-stack.md`. Config lives in `pyproject.toml`
+(`[tool.ruff]`, `[tool.mypy]`).
+
+```bash
+cd apps/api
+pip install -r requirements-dev.txt
+ruff check .
+mypy app
+```
+
 ## Testing (Issue #7)
 
 Test configuration lives in `pyproject.toml` (`[tool.pytest.ini_options]`,
 `[tool.coverage.*]`). Selective runs use directory/path targeting rather
-than custom markers.
+than custom markers. These are exactly the commands CI (`.github/workflows/ci.yml`,
+Issue #9) runs — see its `backend`/`integration` jobs.
 
 ```bash
 cd apps/api
