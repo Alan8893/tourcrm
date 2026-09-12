@@ -1,9 +1,10 @@
 # TourCRM API (backend skeleton)
 
-FastAPI backend for TourCRM. Issue #4 provided the application skeleton;
-Issue #5 added the PostgreSQL/SQLAlchemy/Alembic storage foundation. No
-domain models, business rules, or authentication are implemented here — see
-`docs/SYSTEM-SPECIFICATION.md` and
+FastAPI backend for TourCRM. Issue #4 provided the application skeleton,
+Issue #5 the PostgreSQL/SQLAlchemy/Alembic storage foundation, and Issue #6
+the `/api/v1` HTTP contract foundation (error/collection envelopes, request
+ID, OpenAPI). No domain models, business rules, or authentication are
+implemented here — see `docs/SYSTEM-SPECIFICATION.md` and
 `docs/03-architecture/application-architecture.md` for the canonical backend
 contract.
 
@@ -11,10 +12,14 @@ contract.
 
 ```text
 app/
-├── main.py            # application entrypoint — creates the FastAPI instance
+├── main.py            # application entrypoint — FastAPI instance, middleware, handlers
 ├── api/
-│   └── v1/
-│       └── router.py  # versioned API boundary (/api/v1), no endpoints yet
+│   ├── v1/
+│   │   └── router.py     # versioned API boundary (/api/v1), no endpoints yet
+│   ├── errors.py          # canonical error contract (ADR-0014) + exception handlers
+│   ├── schemas.py         # canonical collection envelope (items/pagination, ADR-0014)
+│   ├── request_context.py # request-id middleware (X-Request-ID)
+│   └── deps.py             # DI boundary placeholder for the future authorization layer
 ├── core/
 │   └── config.py      # environment-driven settings (DATABASE_URL, ...)
 └── db/
@@ -25,12 +30,33 @@ app/
 alembic/                 # migrations; URL comes from DATABASE_URL via env.py, never hardcoded
 tests/
 ├── test_smoke.py                 # import/startup smoke checks (no database needed)
+├── api/                           # HTTP contract tests (Issue #6) — see below
 └── integration/test_database.py  # real PostgreSQL integration tests (Issue #5)
 ```
 
 Domain modules (`auth`, `members`, `events`, `trips`, ... per
 `application-architecture.md` §5.3) are added under `app/` by their own
 Issues. This skeleton does not pre-create empty module directories.
+
+## API foundation (Issue #6)
+
+- Single-resource responses are returned directly (no `data` wrapper).
+- Collections use `{"items": [...], "pagination": {...}}` — see
+  `app/api/schemas.py`.
+- Errors use `{"error": {"code", "message", "details", "request_id"}}` — see
+  `app/api/errors.py`. No stack trace, DSN, credentials or filesystem paths
+  are ever included; unexpected exceptions are logged server-side only.
+- Every request gets a `request_id`, exposed via the `X-Request-ID`
+  response header and in every error body; a valid client-supplied
+  `X-Request-ID` is honored, otherwise one is generated (`app/api/request_context.py`).
+- `app/api/deps.py` is an unused-for-now DI boundary for the future
+  authorization layer (authentication mechanism is ODR-001, still open —
+  not decided here).
+- These apply globally regardless of which routes exist; the v1 router
+  itself still has zero domain endpoints, and OpenAPI (`/openapi.json`,
+  `/docs`) reflects exactly that.
+
+Tests: `pytest tests/api -v` (no database required).
 
 ## Database configuration
 
