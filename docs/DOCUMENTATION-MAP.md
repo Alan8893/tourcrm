@@ -32,7 +32,7 @@ When documents conflict, do not guess. Record the conflict and resolve it explic
 ## 4. Architecture
 
 | Area | Primary document |
-|---|---| 
+|---|---|
 | System specification | `SYSTEM-SPECIFICATION.md` |
 | Architecture overview | `03-architecture/overview.md` |
 | Application architecture | `03-architecture/application-architecture.md` |
