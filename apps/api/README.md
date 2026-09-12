@@ -20,14 +20,19 @@ app/
 │   ├── health.py          # liveness/readiness (Issue #10) — outside /api/v1
 │   ├── schemas.py         # canonical collection envelope (items/pagination, ADR-0014)
 │   ├── request_context.py # request-id middleware (X-Request-ID)
-│   └── deps.py             # DI boundary placeholder for the future authorization layer
+│   └── deps.py             # get_current_principal (still None-only) + require_permission (Issue #29)
+├── authorization/
+│   ├── context.py     # ADR-0013 scope vocabulary, ResourceContext (Issue #29)
+│   └── service.py     # can()/Authorizer — RBAC + scope decision engine (Issue #29)
 ├── core/
 │   └── config.py      # environment-driven settings (DATABASE_URL, ...)
 └── db/
     ├── base.py        # shared declarative Base/metadata
     ├── session.py     # engine, session factory, get_db()/session_scope() boundaries
     ├── errors.py       # DatabaseConnectionError (never carries credentials)
-    └── foundation.py  # non-domain FoundationHealthCheck table (migration/ORM smoke checks only)
+    ├── foundation.py  # non-domain FoundationHealthCheck table (migration/ORM smoke checks only)
+    ├── identity.py    # Club, Person, User, ClubMembership (Issue #17)
+    └── authorization.py  # Role, Permission, RolePermission, UserRoleAssignment (Issue #19)
 alembic/                 # migrations; URL comes from DATABASE_URL via env.py, never hardcoded
 tests/
 ├── conftest.py         # shared technical fixtures (Issue #7) — no business data
@@ -53,14 +58,46 @@ Issues. This skeleton does not pre-create empty module directories.
 - Every request gets a `request_id`, exposed via the `X-Request-ID`
   response header and in every error body; a valid client-supplied
   `X-Request-ID` is honored, otherwise one is generated (`app/api/request_context.py`).
-- `app/api/deps.py` is an unused-for-now DI boundary for the future
-  authorization layer (authentication mechanism is ODR-001, still open —
-  not decided here).
 - These apply globally regardless of which routes exist; the v1 router
   itself still has zero domain endpoints, and OpenAPI (`/openapi.json`,
   `/docs`) reflects exactly that.
 
 Tests: `pytest tests/api -v` (no database required).
+
+## Authorization foundation (Issue #29)
+
+RBAC + permission scope enforcement, built on Issue #19's `Role`/
+`Permission`/`RolePermission`/`UserRoleAssignment` tables — no
+role→permission grant is hardcoded or seeded here; `can()` always
+queries the real rows.
+
+- `app/authorization/service.py`: `can(session, user_id, permission_code, context)`
+  and the `Authorizer` wrapper. Pure Python, no FastAPI/HTTP import — testable
+  without a server. Permissions from multiple roles are additive (no explicit
+  deny). A club-scoped `UserRoleAssignment` only matches its own club; a
+  global one (`club_id IS NULL`) matches any club.
+- `app/authorization/context.py`: `ResourceContext` (the explicit,
+  backend-resolved facts — `is_self`/`is_child`/`is_own_group`/`is_own_event`/
+  `club_id` — scope evaluation checks) and `normalize_scope_type()` (ADR-0013's
+  vocabulary; resolves `assigned_events` to `own_events`, rejects everything
+  else including `own_records`).
+- `app/api/deps.py`: `require_permission(code)` — a FastAPI dependency
+  returning an `Authorizer` after a 401 check via `get_current_principal`
+  (still returns `None` always; no authentication mechanism exists in code
+  yet — that is a separate, not-yet-implemented Issue). The endpoint itself
+  resolves the real resource relationship into a `ResourceContext` and calls
+  `authorizer.check(context)`; this deliberately does not trust a
+  client-supplied resource id for that resolution.
+- `app/api/errors.py` maps a denied `AuthorizationDenied` to the existing
+  canonical 403 envelope — no permission/role/internal detail is included.
+
+No domain endpoint uses this yet (Issue #29 is infrastructure-only, per its
+own scope) — see `tests/integration/test_authorization_enforcement.py`'s
+test-only probe app for a worked example of the intended usage pattern.
+
+Tests: `pytest tests/unit/test_authorization_service.py -v` (no database),
+`pytest tests/integration/test_authorization_service.py tests/integration/test_authorization_enforcement.py -v`
+(real PostgreSQL).
 
 ## Health endpoints (Issue #10)
 
