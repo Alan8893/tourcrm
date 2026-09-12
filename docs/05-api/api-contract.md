@@ -74,37 +74,43 @@ Client не должен предполагать последовательно
 
 ## 7. Common response shape
 
-Успешный ответ одного ресурса должен содержать объект `data`.
+TourCRM API v1 использует единый канонический response contract, установленный ADR-0014.
+
+### Single resource
+
+Успешный ответ одного ресурса содержит представление ресурса напрямую, без обёртки `data`.
 
 Пример:
 
 ```json
 {
-  "data": {
-    "id": "...",
-    "name": "..."
-  }
+  "id": "...",
+  "name": "..."
 }
 ```
 
-Списки:
+### Collection
+
+Коллекции используют `items` и `pagination`.
+
+Пример:
 
 ```json
 {
-  "data": [
+  "items": [
     {"id": "..."},
     {"id": "..."}
   ],
-  "meta": {
+  "pagination": {
     "page": 1,
     "page_size": 50,
     "total": 120,
-    "has_next": true
+    "pages": 3
   }
 }
 ```
 
-Формат может быть уточнён на уровне конкретного API style guide, но внутри проекта должен быть единообразным.
+`data/meta` не является допустимым альтернативным envelope для API v1.
 
 ## 8. Pagination
 
@@ -174,261 +180,166 @@ Backend валидирует:
 
 ## 14. Error format
 
-Единый формат:
+Единый канонический формат установлен ADR-0014:
 
 ```json
 {
   "error": {
-    "code": "VALIDATION_ERROR",
-    "message": "Request validation failed",
-    "details": [
-      {
-        "field": "email",
-        "code": "INVALID_FORMAT",
-        "message": "Invalid email format"
-      }
-    ],
+    "code": "resource_not_found",
+    "message": "Resource was not found",
+    "details": {},
     "request_id": "..."
   }
 }
 ```
 
-`message` предназначен для безопасного диагностического отображения и не должен содержать secrets.
+Правила:
 
-### Минимальный каталог HTTP-кодов
+- `code` — стабильный машиночитаемый код;
+- `message` — безопасное сообщение, не раскрывающее secrets или внутренние детали;
+- `details` — структурированный контекст, особенно для ошибок валидации;
+- `request_id` — идентификатор запроса для корреляции с серверными логами.
 
-- `200 OK` — успешное чтение/изменение;
-- `201 Created` — создание;
+API не должен возвращать внутренние exception details, traceback, SQL, secrets или инфраструктурные детали.
+
+## 15. Recommended HTTP status semantics
+
+- `200 OK` — успешное чтение/обновление/command с response body;
+- `201 Created` — ресурс успешно создан;
 - `202 Accepted` — асинхронная операция принята;
-- `204 No Content` — успешная операция без body;
-- `400 Bad Request` — некорректный запрос;
-- `401 Unauthorized` — нет валидной аутентификации;
-- `403 Forbidden` — аутентификация есть, полномочий нет;
-- `404 Not Found` — ресурс недоступен/не найден;
-- `409 Conflict` — конфликт состояния или уникальности;
-- `422 Unprocessable Entity` — semantic/domain validation error, если выбранный framework style использует этот код;
-- `429 Too Many Requests` — rate limit;
-- `500 Internal Server Error` — неожиданная серверная ошибка;
-- `503 Service Unavailable` — сервис временно недоступен.
+- `204 No Content` — успешная операция без response body;
+- `400 Bad Request` — некорректный запрос, не относящийся к field validation semantics;
+- `401 Unauthorized` — отсутствует/некорректна аутентификация;
+- `403 Forbidden` — аутентифицированный пользователь не имеет требуемых полномочий;
+- `404 Not Found` — запрошенный ресурс недоступен вызывающей стороне в соответствии с семантикой endpoint;
+- `409 Conflict` — конфликт состояния/уникальности;
+- `422 Unprocessable Content` — синтаксически корректный запрос с ошибками валидации/входных бизнес-условий, когда такое различие используется;
+- `429 Too Many Requests` — превышен rate limit;
+- `500 Internal Server Error` — непредвиденная ошибка сервера;
+- `503 Service Unavailable` — недоступна зависимость/служба, где это применимо.
 
-Конкретное использование `400` vs `422` должно быть единообразным на всём API.
-
-## 15. Authentication
-
-Аутентификация является отдельным security boundary.
-
-Основные операции:
-
-- registration;
-- verification;
-- login;
-- logout/session invalidation;
-- password reset;
-- invitation acceptance;
-- account activation/deactivation.
-
-Публичные endpoint'ы должны быть явно перечислены в security documentation.
-
-После аутентификации каждый защищённый endpoint дополнительно проходит authorization.
+Одинаковые категории ошибок не должны получать разные значения HTTP status в разных модулях.
 
 ## 16. Authorization
 
-Нельзя считать факт успешного login достаточным.
+Authentication и authorization — разные concerns.
 
-Для каждого защищённого endpoint определяется:
+Каждый защищённый endpoint должен проверять authorization на стороне сервера. Эффективное решение может зависеть от:
 
-`authentication → permission → scope → resource ownership/relationship → operation`
+- role;
+- permission;
+- scope;
+- resource ownership;
+- group membership;
+- guardian relationship;
+- event assignment;
+- club membership;
+- feature settings.
 
-Пример:
+Проверка permission на frontend является только UX-оптимизацией.
 
-`GET /members/{id}`
+## 17. Authentication context
 
-проверяет не только `member.read`, но и scope, например `self`, `children`, `own_groups` или `all`.
+Аутентифицированный запрос должен иметь canonical server-side identity context, содержащий как минимум:
 
-Backend является единственным доверенным местом enforcement.
+- user identifier;
+- person identifier при наличии связи;
+- effective roles/permissions при необходимости;
+- club context;
+- session/token metadata, необходимую для security.
 
-## 17. Idempotency
+Конкретный authentication/session mechanism определяется authentication ADR.
 
-Для endpoint'ов, которые могут быть повторно отправлены из-за retry сети, поддерживать Idempotency-Key, когда дубль имеет бизнес-стоимость.
+## 18. Idempotency
 
-Особенно рассмотреть:
+Операции, которые могут безопасно повторяться клиентами или gateway, должны проектироваться с учётом idempotency.
 
-- payments;
-- registration commands;
-- invitation acceptance;
-- notifications send commands;
-- external integration events.
+Create-операции, повтор которых из-за сетевого сбоя может привести к дублям, должны поддерживать механизм idempotency, когда это необходимо; особенно для финансовых операций, внешних уведомлений и интеграций.
 
-Повторная обработка одного ключа должна вернуть согласованный результат, а не создать новую операцию.
+Конкретная политика `Idempotency-Key` определяется до реализации соответствующих модулей.
 
-## 18. Concurrency
+## 19. Concurrency and optimistic safety
 
-Для критичных ресурсов использовать optimistic concurrency или иное явно выбранное решение.
+Mutating endpoints должны учитывать concurrent edits там, где возможна потеря данных.
 
-Конфликты изменения должны возвращать понятный `409 Conflict`.
+Для сущностей вроде профиля участника, события и финансовых записей при необходимости должен использоваться явный механизм optimistic concurrency.
 
-Особенно важны:
+Конкретный механизм (version column, ETag/If-Match и т.п.) выбирается для затронутого домена и должен быть согласован внутри модуля.
 
-- attendance;
-- financial records;
-- equipment issue/return;
-- event schedule changes;
-- member status changes.
+## 20. File uploads
 
-## 19. Soft delete / archive API
+File uploads используют multipart/form-data или документированный upload protocol.
 
-Если ресурс исторически значим, вместо `DELETE` использовать переход в состояние `archived`, `inactive`, `cancelled` и т. п.
+API должен валидировать:
 
-Физическое удаление — отдельное privileged operation с документированной политикой.
+- authenticated user;
+- authorization на прикрепление файла;
+- MIME/content type, где возможно;
+- размер файла;
+- разрешённый extension/type policy;
+- storage destination;
+- malware scanning strategy, если введена.
 
-## 20. Bulk operations
+Присланное клиентом имя файла не должно использоваться как storage identifier.
 
-Массовые операции разрешены только для доменов, где они действительно нужны.
+## 21. Async operations
 
-Например:
+Длительные операции, такие как большие exports, обработка GPX или массовые notifications, должны возвращать `202 Accepted` с operation/job identifier, когда требуется асинхронная обработка.
 
-`POST /attendance/bulk-mark`
+Клиент должен иметь документированный способ получить статус/результат или получить notification.
 
-Bulk endpoint обязан:
+## 22. Audit behavior
 
-- валидировать каждый элемент;
-- возвращать агрегированный результат;
-- быть идемпотентным или иметь безопасную retry semantics;
-- создавать audit trail.
+Защищённые mutation-операции, требующие аудита, должны создавать audit records в рамках той же логической business operation. Поведение при ошибке аудита документируется для каждой категории; security-critical mutations не должны молча выполняться без требуемой auditability.
 
-## 21. File API
+## 23. Transactions
 
-Файлы не следует передавать через обычные JSON resources без необходимости.
+API layer должен делегировать transaction boundaries application/domain service layer, а не открывать произвольные независимые transactions в route handlers.
 
-Рекомендуемый процесс:
+Cross-entity operations, являющиеся одной business action, должны коммититься атомарно, если это поддерживается database.
 
-1. запросить upload session;
-2. загрузить файл в storage;
-3. зарегистрировать metadata;
-4. провести validation/security checks;
-5. вернуть resource reference.
+## 24. Database leakage prevention
 
-Для скачивания защищённых файлов backend должен проверять authorization перед выдачей доступа.
+API models должны быть явными response schemas. ORM entities нельзя возвращать напрямую как public API contracts.
 
-## 22. Asynchronous operations
+API не должен раскрывать:
 
-Долгие операции могут возвращать `202 Accepted` и operation/job identifier.
+- password hashes;
+- authentication secrets;
+- internal storage credentials;
+- private infrastructure details;
+- internal database exception text.
 
-Кандидаты:
+## 25. OpenAPI
 
-- импорт CSV;
-- массовая рассылка;
-- обработка GPX;
-- генерация больших отчётов;
-- экспорт документов.
+Backend должен генерировать и публиковать OpenAPI schema для реализованной versioned API.
 
-Состояние job должно быть наблюдаемым через отдельный endpoint или notification mechanism.
+Generated schema является implementation artifact документированного contract и не заменяет документацию domain requirements.
 
-## 23. Audit
+Изменения public API contracts требуют соответствующих изменений документации.
 
-Mutating endpoints для значимых доменов должны порождать AuditLog.
+## 26. Deprecation
 
-Аудит должен фиксировать actor, действие, объект и время. Секреты не логируются.
+Deprecated endpoints должны быть явно документированы и иметь:
 
-## 24. Rate limiting
-
-Обязательно для публичных и security-sensitive endpoint'ов:
-
-- login;
-- registration;
-- password reset;
-- verification;
-- invitation acceptance.
-
-Лимиты должны зависеть от deployment и документироваться как конфигурация.
-
-## 25. API evolution
-
-Breaking changes требуют новой API version.
-
-Незначительные backward-compatible изменения допускаются в пределах текущей версии при соблюдении compatibility policy.
-
-Удаление поля/endpoint должно иметь deprecation period, если используются внешние клиенты.
-
-## 26. OpenAPI
-
-Backend должен публиковать машинный API contract через OpenAPI.
-
-OpenAPI должен отражать:
-
-- schemas;
-- auth requirements;
-- parameters;
-- request bodies;
-- responses;
-- errors;
-- pagination;
-- examples где это полезно.
-
-Документация API должна генерироваться из фактического backend contract, а не поддерживаться как полностью независимый список.
-
-## 27. Health endpoints
-
-Необходимы как минимум:
-
-- liveness;
-- readiness.
-
-Readiness должен проверять необходимые зависимости, если это согласуется с deployment model.
-
-Health endpoints не должны раскрывать внутренние credentials или конфиденциальную информацию.
-
-## 28. Correlation / request ID
-
-Каждый запрос получает `request_id`/correlation id.
-
-Он должен:
-
-- присутствовать в логах;
-- возвращаться в error response;
-- использоваться для трассировки фоновой операции, если применимо.
-
-## 29. Security headers and transport
-
-Production API работает через HTTPS.
-
-Reverse proxy отвечает за transport-level concerns, а application за authorization и бизнес-логику.
-
-Security headers должны быть определены инфраструктурной спецификацией.
-
-## 30. Testing contract
-
-Каждый доменный API должен иметь минимум:
-
-- happy-path tests;
-- validation tests;
-- authorization tests;
-- not-found/conflict tests;
-- state transition tests;
-- audit tests для значимых mutation operations.
-
-Критичные финансовые и персональные операции также должны иметь regression coverage.
-
-## 31. Domain API inventory
-
-Полный endpoint inventory создаётся по модулям после утверждения доменной модели:
-
-- Auth;
-- People & Membership;
-- Groups;
-- Events & Schedule;
-- Attendance;
-- Trips;
-- Routes / GPX;
-- Tourist Profile;
-- Achievements / Skills / Qualifications;
-- Knowledge Base;
-- Documents / Consents;
-- Equipment;
-- Finance;
-- Notifications / Communications;
-- Analytics / Reports;
-- TourSlet integration;
-- Administration / Settings;
-
-Этот список является границей API inventory, но не заменяет модульные endpoint specifications.
+- deprecation date/version;
+- replacement endpoint;
+- migration guidance;
+- planned removal version, если применимо.
+
+Silent breaking changes запрещены.
+
+## 27. API acceptance checklist
+
+Перед принятием API endpoint должны быть документированы/проверены:
+
+- authentication requirement;
+- authorization requirement;
+- request schema;
+- response schema;
+- validation и business errors;
+- relevant status codes;
+- audit requirement;
+- idempotency/concurrency requirements;
+- OpenAPI implementation;
+- automated tests для endpoint и соответствующих permissions.
