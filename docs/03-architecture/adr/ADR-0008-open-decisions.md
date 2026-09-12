@@ -5,9 +5,13 @@ Living document
 
 Этот документ содержит решения, которые пока нельзя считать окончательно утверждёнными. До их фиксации Claude не должен самостоятельно выбирать вариант, если выбор влияет на внешний контракт, данные, безопасность или совместимость.
 
-## ODR-001: точный механизм web authentication
+## ODR-001: точный механизм web authentication — закрыт
 
-Нужно выбрать конкретный протокол/библиотеку для production authentication и CSRF/session strategy.
+Базовая архитектура аутентификации принята в `ADR-0009 — Authentication mechanism`.
+
+`ADR-0009` фиксирует application-managed authentication через TourCRM backend, server-side session/revocation model, password hashing, email verification, password reset и invitation tokens. Конкретные библиотеки и версии остаются implementation detail и выбираются при реализации с учётом актуального поддерживаемого стека.
+
+Дальнейшая реализация authentication должна следовать `ADR-0009` и `docs/05-api/auth-and-authorization.md` и не должна трактовать ODR-001 как открытое архитектурное решение.
 
 ## ODR-003: reverse proxy
 
@@ -55,6 +59,7 @@ Living document
 
 ## Закрытые ранее ODR
 
+- ODR-001 web authentication — закрыт `ADR-0009`.
 - ODR-002 primary key strategy — закрыт `ADR-0010`.
 - ODR-004 object storage implementation — закрыт `ADR-0011`.
 - Scope vocabulary — закрыт `ADR-0013`.
