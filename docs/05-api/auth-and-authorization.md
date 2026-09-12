@@ -1,0 +1,347 @@
+# TourCRM — Authentication & Authorization Contract
+
+## 1. Цель
+
+Документ задаёт обязательное поведение аутентификации и авторизации TourCRM. Он является частью security contract для frontend, backend и будущих внешних клиентов.
+
+## 2. Identity model
+
+Система разделяет:
+
+- `Person` — физическое лицо;
+- `User` — учётную запись;
+- `ClubMembership` — членство в клубе;
+- `RoleAssignment` — назначение роли;
+- `GuardianRelationship` — связь законного представителя и ребёнка.
+
+У пользователя может быть несколько ролей и несколько permission scopes.
+
+## 3. Authentication methods
+
+На первом этапе основной способ:
+
+- email/логин + password.
+
+Система должна быть спроектирована так, чтобы позже можно было добавить внешний identity provider без пересмотра доменной модели.
+
+Пароли хранятся только в виде безопасного password hash. Plaintext password не сохраняется, не возвращается API и не попадает в logs/audit.
+
+## 4. Account states
+
+Рекомендуемые состояния User:
+
+`pending` → аккаунт создан, но ещё не активирован;
+
+`active` → обычный доступ;
+
+`blocked` → вход запрещён;
+
+`disabled` → доступ отключён административно;
+
+`archived` → историческая запись, обычный вход невозможен.
+
+Переходы между состояниями должны контролироваться backend.
+
+## 5. Registration flows
+
+Поддерживаются три основных пути.
+
+### 5.1 Self-registration
+
+```text
+Registration request
+→ validation
+→ pending user
+→ email/verification step if enabled
+→ admin approval
+→ active user
+```
+
+Самостоятельная регистрация не должна автоматически выдавать privileged role.
+
+### 5.2 Invitation
+
+```text
+Admin creates invitation
+→ secure one-time token
+→ user opens invitation
+→ token validation
+→ registration/account linking
+→ membership/role activation
+```
+
+Invitation token:
+
+- одноразовый;
+- имеет срок действия;
+- не хранится в plaintext, если архитектура token persistence позволяет hash storage;
+- после использования инвалидируется;
+- должен быть защищён от enumeration.
+
+### 5.3 Import
+
+Импорт может предварительно создать Person/ClubMembership без активного User. Далее пользователь приглашается отдельно.
+
+## 6. Login
+
+Login flow:
+
+```text
+credentials
+→ rate limit
+→ credential validation
+→ account state check
+→ session/token issue
+→ audit/security event
+```
+
+При неуспешной попытке система не должна раскрывать, существует ли конкретный аккаунт.
+
+## 7. Session strategy
+
+Конкретный механизм session/token фиксируется отдельным ADR, но требования следующие:
+
+- credentials должны иметь ограниченный срок действия;
+- logout должен инвалидировать текущую session;
+- сервер должен иметь возможность принудительно инвалидировать sessions пользователя;
+- privileged changes должны учитывать revocation;
+- хранение токенов в browser должно соответствовать выбранной security model;
+- sensitive tokens не помещаются в URL.
+
+Для browser-first приложения предпочтительна сервер-контролируемая session model с безопасной cookie policy; окончательное решение — ADR.
+
+## 8. Password policy
+
+Минимальная политика должна включать:
+
+- минимальную длину;
+- блокировку известных скомпрометированных/слабых паролей, если это поддерживает выбранный механизм;
+- отсутствие plaintext storage;
+- rate limit на login.
+
+Не требовать регулярной принудительной смены пароля без security justification.
+
+## 9. Password reset
+
+```text
+request reset
+→ rate limited response
+→ one-time expiring token
+→ new password
+→ invalidate relevant existing sessions
+→ audit security event
+```
+
+Response на запрос восстановления не должен раскрывать существование аккаунта.
+
+## 10. Email verification
+
+Если email используется как идентификатор или канал критичных уведомлений, система должна поддерживать verification state.
+
+Пока email не подтверждён, привязанные к подтверждённому адресу функции могут оставаться ограниченными.
+
+## 11. Authorization model
+
+TourCRM использует RBAC + permission scopes.
+
+Условие доступа:
+
+```text
+Authenticated User
+AND required Permission
+AND allowed Scope
+AND resource relationship/ownership
+AND resource state allows operation
+```
+
+Frontend visibility не является security boundary.
+
+## 12. Base roles
+
+### admin
+
+Полное административное управление в пределах инсталляции/клуба, за исключением действий, которые отдельной policy явно ограничены.
+
+### instructor
+
+Рабочие операции с группами, занятиями, посещаемостью, походами и участниками в разрешённом scope.
+
+### member
+
+Доступ к собственному профилю, мероприятиям, своим результатам и другим данным в соответствии с privacy policy.
+
+### guardian
+
+Доступ к данным связанных детей в рамках действующей GuardianRelationship и разрешённых permissions.
+
+## 13. Scopes
+
+Минимально поддерживаемые:
+
+- `self`;
+- `children`;
+- `own_groups`;
+- `all`.
+
+Дополнительные scope не должны вводиться только ради обхода плохо спроектированного permission model.
+
+## 14. Guardian access
+
+Наличие связи GuardianRelationship является необходимым, но не всегда достаточным условием доступа.
+
+Проверяются:
+
+1. активность связи;
+2. permission guardian;
+3. scope `children`;
+4. принадлежность ребёнка к тому же Club;
+5. privacy restrictions.
+
+При отзыве связи доступ должен прекращаться для новых запросов.
+
+## 15. Multiple roles
+
+Один User может иметь одновременно несколько ролей.
+
+Например:
+
+`admin + instructor + guardian`.
+
+Effective permissions вычисляются как объединение разрешённых role assignments с учётом scope и resource policies.
+
+Explicit deny policy допускается, если она будет введена отдельным ADR; по умолчанию role permissions additive.
+
+## 16. Role assignment
+
+Назначение роли должно быть отдельным административным действием и попадать в audit.
+
+Изменение ролей не должно менять исторические записи о действиях пользователя.
+
+При снятии privileged role активные sessions могут потребовать принудительной инвалидации в зависимости от security policy.
+
+## 17. Permission naming
+
+Формат:
+
+`<resource>.<action>`
+
+Примеры:
+
+- `member.read`;
+- `member.update`;
+- `event.create`;
+- `attendance.update`;
+- `finance.read`;
+- `finance.manage`;
+- `equipment.issue`;
+- `document.download`.
+
+## 18. Authorization failure
+
+Если пользователь не аутентифицирован: `401`.
+
+Если пользователь аутентифицирован, но не имеет права: `403`.
+
+Если ресурс по privacy policy должен выглядеть несуществующим для данного пользователя, допускается безопасное использование `404`, но правило должно быть единообразным по классу ресурсов.
+
+## 19. Login abuse protection
+
+Security-sensitive endpoints должны иметь rate limiting и защиту от brute force.
+
+Минимум:
+
+- login;
+- password reset request;
+- registration;
+- invitation acceptance;
+- verification.
+
+Точные лимиты — deployment configuration, а не hardcoded business rule.
+
+## 20. Security events
+
+Минимально аудитируются:
+
+- successful login;
+- failed login policy event;
+- logout, если необходимо для расследований;
+- password change;
+- password reset;
+- account state changes;
+- role changes;
+- permission policy changes;
+- invitation create/revoke/use;
+- consent/security-sensitive changes.
+
+Не хранить в security events пароли, access tokens или другие секреты.
+
+## 21. Administrative impersonation
+
+Имперсонация администратора не является частью MVP.
+
+Если потребуется, она должна быть отдельным security feature с:
+
+- явным включением;
+- ограниченным сроком;
+- полным audit trail;
+- невозможностью скрыть исходного администратора.
+
+## 22. CSRF / browser security
+
+Если используется cookie-based browser session, backend должен реализовать CSRF protection по выбранному framework pattern.
+
+CORS не используется как механизм authorization.
+
+Security headers и cookie flags (`Secure`, `HttpOnly`, `SameSite`) определяются production deployment profile.
+
+## 23. Privacy boundaries
+
+Родители не получают автоматически все данные клуба о ребёнке. Каждая категория данных должна иметь documented access policy.
+
+Особенно отдельно должны контролироваться:
+
+- документы;
+- согласия;
+- медицинские/чувствительные данные;
+- финансовая информация;
+- instructor notes;
+- audit data.
+
+## 24. API requirements
+
+Каждый защищённый endpoint должен декларировать required permission/scope в backend contract.
+
+Authorization checks должны выполняться до mutation и до выдачи защищённых данных.
+
+Frontend не должен получать privileged fields только потому, что пользователь скрывает соответствующий UI элемент.
+
+## 25. Testing requirements
+
+Обязательные группы тестов:
+
+- login success/failure;
+- blocked/disabled account;
+- password reset;
+- invitation expiry/reuse;
+- self-registration approval;
+- role combination;
+- permission allow/deny;
+- scope isolation;
+- guardian child access;
+- revoked guardian access;
+- instructor group isolation;
+- admin-only operations;
+- direct API access without UI;
+- session invalidation after security changes.
+
+## 26. Non-goals for MVP
+
+Не входят в обязательный MVP:
+
+- WebAuthn/passkeys;
+- MFA;
+- social login;
+- enterprise SSO;
+- admin impersonation.
+
+Архитектура не должна препятствовать их добавлению позднее.
