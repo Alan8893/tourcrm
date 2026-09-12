@@ -9,17 +9,9 @@ Living document
 
 Нужно выбрать конкретный протокол/библиотеку для production authentication и CSRF/session strategy.
 
-## ODR-002: primary key strategy
-
-Нужно окончательно выбрать UUID/ULID/иной непрозрачный идентификатор для публичных ресурсов и внутренней БД.
-
 ## ODR-003: reverse proxy
 
 Нужно выбрать production reverse proxy (например, Nginx/Caddy/Traefik) и определить TLS/certificate automation.
-
-## ODR-004: object storage implementation
-
-Нужно выбрать конкретный storage для production MVP: локальное хранилище или S3-compatible storage.
 
 ## ODR-005: background worker
 
@@ -60,3 +52,12 @@ Living document
 ## Правило
 
 Наличие записи в этом документе не означает, что решение отложено навсегда. Каждое ODR должно быть закрыто отдельным ADR или обновлением соответствующей спецификации до момента, когда оно становится необходимым для реализации.
+
+## Закрытые ранее ODR
+
+- ODR-002 primary key strategy — закрыт `ADR-0010`.
+- ODR-004 object storage implementation — закрыт `ADR-0011`.
+- Scope vocabulary — закрыт `ADR-0013`.
+- API response envelope — закрыт `ADR-0014`.
+- Event occurrence materialization — закрыт `ADR-0015`.
+- Document ownership — закрыт `ADR-0016`.
