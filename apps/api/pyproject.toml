@@ -1,0 +1,21 @@
+[tool.pytest.ini_options]
+# Test configuration foundation (Issue #7). Deps stay in requirements*.txt;
+# this file only configures tooling already in the approved stack (pytest,
+# pytest-cov) — it does not introduce a new package manager.
+#
+# Selective runs use directory/path targeting (pytest tests/unit,
+# tests/integration, tests/api, or a single file) rather than custom
+# markers, so no marker plumbing had to be retrofitted onto the existing
+# Issue #5/#6 test files.
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/db/foundation.py"]
+
+[tool.coverage.report]
+# No enforced minimum: docs/03-architecture/technology-stack.md and the other
+# Issue #7 reference documents do not define a coverage threshold. This
+# section only shapes the optional report; `pytest --cov` never fails the
+# build on a percentage. See apps/api/README.md "Coverage" section.
+skip_empty = true
