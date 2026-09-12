@@ -76,6 +76,15 @@ code, migrations, or `alembic.ini` — `DATABASE_URL` is required.
 
 ## Running (development)
 
+Via Docker Compose (recommended — also starts PostgreSQL; see root
+`README.md`):
+
+```bash
+cd /path/to/tourcrm && cp .env.example .env && docker compose up --build
+```
+
+Or directly on the host:
+
 ```bash
 cd apps/api
 python -m venv .venv

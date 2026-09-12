@@ -22,11 +22,24 @@ intentionally does not pre-create empty feature directories.
 
 ## Running (development)
 
+Via Docker Compose (recommended — also starts backend + PostgreSQL; see
+root `README.md`):
+
+```bash
+cd /path/to/tourcrm && cp .env.example .env && docker compose up --build
+```
+
+Or directly on the host:
+
 ```bash
 cd apps/web
 npm install
 npm run dev
 ```
+
+The Vite dev server binds to all interfaces (`server.host: true` in
+`vite.config.ts`) so it is reachable both from the host directly and from
+inside its Docker container (Issue #8).
 
 ## Smoke check (build)
 

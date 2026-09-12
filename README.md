@@ -58,6 +58,66 @@ tests/     # repository-level smoke checks (структура репозито�
 Запуск backend и frontend в development-режиме, а также минимальные smoke
 checks описаны в `apps/api/README.md` и `apps/web/README.md`.
 
+## Development environment (Docker Compose, Issue #8)
+
+**Это development-only окружение** — без reverse proxy, TLS, production
+secrets/backup. Production deployment — отдельная, более поздняя задача
+(см. `docs/08-infrastructure/infrastructure-and-devops.md`).
+
+### Prerequisites
+
+- Docker Engine;
+- Docker Compose v2 (команда `docker compose`, встроена в современный Docker).
+
+### Первый запуск
+
+```bash
+git clone <repo-url> && cd tourcrm
+cp .env.example .env        # локальная конфигурация; .env никогда не коммитится
+docker compose up --build
+```
+
+Одна эта команда поднимает `frontend`, `backend` и `db` (PostgreSQL) и
+применяет миграции Alembic (Issue #5) — они идемпотентны, это не
+destructive-операция.
+
+- **Frontend**: http://localhost:5173 (порт настраивается через `FRONTEND_PORT` в `.env`)
+- **Backend**: http://localhost:8000 (порт — `BACKEND_PORT`); `/docs`, `/openapi.json`
+- **PostgreSQL**: доступен только внутри Compose-сети по имени сервиса `db`, наружу не публикуется.
+
+### Проверить состояние
+
+```bash
+docker compose ps
+```
+
+### Логи
+
+```bash
+docker compose logs -f            # все сервисы
+docker compose logs -f backend    # один сервис
+```
+
+### Остановить (данные сохраняются)
+
+```bash
+docker compose down
+```
+
+Named volume `postgres_data` не удаляется — данные PostgreSQL переживают
+`down`/`up`.
+
+### Полный сброс development-окружения (⚠ уничтожает DB-данные)
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+`-v` удаляет volumes, включая `postgres_data`. Используйте только когда
+осознанно нужна чистая БД — это отдельная, явно деструктивная операция, не
+часть обычного `down`/`up`.
+
 ## Документация
 
 - `docs/01-product/` — продуктовая концепция;
