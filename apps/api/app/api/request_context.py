@@ -28,7 +28,9 @@ logger = logging.getLogger("tourcrm.api")
 
 
 def _is_valid_client_request_id(value: str | None) -> bool:
-    return bool(value) and bool(_VALID_REQUEST_ID.match(value))
+    if not value:
+        return False
+    return bool(_VALID_REQUEST_ID.match(value))
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):

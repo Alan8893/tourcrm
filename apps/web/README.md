@@ -57,6 +57,19 @@ npm install
 npm run build
 ```
 
+## Lint & type checking (Issue #9)
+
+`eslint` (flat config, `eslint.config.js` — the same rule sets Vite's own
+`react-ts` template scaffolds) and `tsc` — the CI minimums from
+`docs/03-architecture/technology-stack.md`.
+
+```bash
+cd apps/web
+npm install
+npm run lint       # eslint .
+npm run typecheck  # tsc -b --noEmit
+```
+
 ## Testing (Issue #7)
 
 Test runner: Vitest (Vite-native; no separate framework/config added),

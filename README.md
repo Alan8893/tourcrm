@@ -136,6 +136,34 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up --build
 осознанно нужна чистая БД — это отдельная, явно деструктивная операция, не
 часть обычного `down`/`up`.
 
+## CI (GitHub Actions, Issue #9)
+
+`.github/workflows/ci.yml` запускается на каждый pull request и на push в
+`main`. Jobs: `backend` (ruff, mypy, unit+API tests — без БД), `integration`
+(тесты с реальным ephemeral PostgreSQL service container, credentials
+`test`/`test`/`tourcrm_test`, не production), `frontend` (eslint, tsc, vitest,
+vite build), `repository` (root-level structural/Docker Compose config
+checks). Падение любого обязательного шага — `failure`, без `|| true`.
+
+Локально команды CI воспроизводятся напрямую (см. `apps/api/README.md` и
+`apps/web/README.md` за деталями):
+
+```bash
+# backend
+cd apps/api && pip install -r requirements-dev.txt
+ruff check . && mypy app && pytest tests/unit tests/api tests/test_smoke.py -v
+
+# integration (нужен свой disposable PostgreSQL — см. apps/api/README.md)
+DATABASE_URL=postgresql+psycopg://test:test@localhost:5432/tourcrm_test pytest tests/integration -v
+
+# frontend
+cd apps/web && npm ci
+npm run lint && npm run typecheck && npm test && npm run build
+
+# repository
+pytest tests/ -v
+```
+
 ## Документация
 
 - `docs/01-product/` — продуктовая концепция;
