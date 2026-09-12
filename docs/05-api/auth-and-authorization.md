@@ -28,13 +28,15 @@
 
 ## 4. Account states
 
-Рекомендуемые состояния User:
+Состояния User, согласованные с identity foundation:
 
 `pending` → аккаунт создан, но ещё не активирован;
 
 `active` → обычный доступ;
 
-`blocked` → вход запрещён;
+`locked` → вход временно/политически запрещён;
+
+`suspended` → доступ приостановлен административно или по policy;
 
 `disabled` → доступ отключён административно;
 
@@ -99,7 +101,9 @@ credentials
 
 ## 7. Session strategy
 
-Конкретный механизм session/token фиксируется отдельным ADR, но требования следующие:
+Конкретный механизм session/token фиксируется `ADR-0009` на уровне базовой архитектуры; конкретные библиотеки и версии остаются implementation detail.
+
+Требования:
 
 - credentials должны иметь ограниченный срок действия;
 - logout должен инвалидировать текущую session;
@@ -108,7 +112,7 @@ credentials
 - хранение токенов в browser должно соответствовать выбранной security model;
 - sensitive tokens не помещаются в URL.
 
-Для browser-first приложения предпочтительна сервер-контролируемая session model с безопасной cookie policy; окончательное решение — ADR.
+Для browser-first приложения используется сервер-контролируемая session model с безопасной cookie policy; конкретная реализация определяется при реализации authentication в соответствии с `ADR-0009`.
 
 ## 8. Password policy
 
@@ -176,14 +180,18 @@ Frontend visibility не является security boundary.
 
 ## 13. Scopes
 
-Минимально поддерживаемые:
+Канонический набор scopes определяется `ADR-0013` и используется без альтернативных значений:
 
-- `self`;
-- `children`;
-- `own_groups`;
-- `all`.
+- `all` — все объекты клуба;
+- `self` — только собственные данные;
+- `children` — данные связанных детей;
+- `own_groups` — участники/мероприятия групп, за которые пользователь отвечает;
+- `own_events` — мероприятия, где пользователь является ответственным/назначенным;
+- `none` — право отсутствует.
 
-Дополнительные scope не должны вводиться только ради обхода плохо спроектированного permission model.
+`assigned_events` не является отдельным scope и рассматривается как alias `own_events`. `own_records` не является каноническим scope.
+
+Дополнительные scopes не должны вводиться без отдельного архитектурного/продуктового решения.
 
 ## 14. Guardian access
 
@@ -221,20 +229,46 @@ Explicit deny policy допускается, если она будет введ
 
 ## 17. Permission naming
 
-Формат:
+Канонический каталог permissions определяется `docs/02-requirements/roles-and-permissions.md` §4. Формат:
 
 `<resource>.<action>`
 
-Примеры:
+Канонические permissions:
 
-- `member.read`;
-- `member.update`;
+- `person.read`;
+- `person.update`;
+- `membership.read`;
+- `membership.manage`;
+- `group.read`;
+- `group.manage`;
+- `event.read`;
 - `event.create`;
+- `event.update`;
+- `event.cancel`;
+- `event.manage`;
+- `attendance.read`;
 - `attendance.update`;
+- `trip.read`;
+- `trip.manage`;
+- `achievement.read`;
+- `achievement.award`;
+- `knowledge.read`;
+- `knowledge.manage`;
+- `document.read`;
+- `document.manage`;
+- `consent.read`;
+- `consent.manage`;
+- `equipment.read`;
+- `equipment.manage`;
 - `finance.read`;
 - `finance.manage`;
-- `equipment.issue`;
-- `document.download`.
+- `notification.read`;
+- `notification.manage`;
+- `audit.read`;
+- `settings.manage`;
+- `role.manage`.
+
+Этот список является каноническим каталогом. Примеры из старых версий этого документа (`member.read`, `member.update`, `equipment.issue`, `document.download`) не являются permissions TourCRM и не должны использоваться в реализации.
 
 ## 18. Authorization failure
 
