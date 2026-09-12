@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed and approved as the foundation for Issue #1.
+Approved foundation for the TourCRM implementation.
 
 ## Architecture style
 
@@ -116,7 +116,7 @@ docs/
 .github/
 ```
 
-The exact directory tree is part of the implementation of Issue #1 and may evolve as the first modules are added.
+The exact directory tree is part of the implementation and may evolve as the first modules are added.
 
 ## Configuration and secrets
 

@@ -34,6 +34,7 @@ When documents conflict, do not guess. Record the conflict and resolve it explic
 | Area | Primary document |
 |---|---|
 | System specification | `SYSTEM-SPECIFICATION.md` |
+| Architecture overview | `03-architecture/overview.md` |
 | Application architecture | `03-architecture/application-architecture.md` |
 | Domain model | `03-architecture/domain-model.md` |
 | Logical data model | `03-architecture/data-model.md` |
@@ -111,3 +112,7 @@ Every implementation issue should carry a trace section with:
 Claude must read the relevant documents from this map before implementation. A GitHub Issue is allowed to narrow scope, but it must not silently contradict a higher-level normative document.
 
 If a specification gap blocks implementation, create or update an open decision instead of inventing a local rule.
+
+## 12. Legacy documentation
+
+The former `docs/02-architecture/technology-stack.md` and `docs/02-architecture/overview.md` paths were legacy locations and have been canonicalized under `docs/03-architecture/`. Current documentation must use the `docs/03-architecture/` paths.
