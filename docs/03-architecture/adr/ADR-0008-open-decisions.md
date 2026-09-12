@@ -53,6 +53,14 @@ Living document
 
 Нужно определить сроки хранения различных категорий персональных данных, файлов, аудита, финансовых операций и security events с учётом применимого законодательства и политики клуба.
 
+## ODR-014: invitation creation permission code
+
+`docs/05-api/auth-api.md` currently references permission code `membership.invitation.create` for invitation creation. The canonical permission catalog in `docs/02-requirements/roles-and-permissions.md` does not contain this code.
+
+This discrepancy is intentionally unresolved. No implementation may silently substitute another permission, invent a new permission, or infer a role grant. The product/specification owner must decide whether to reuse an existing canonical permission or introduce a new permission through the normal documentation/ADR change process.
+
+The persistence contract for authentication is defined in `docs/03-architecture/authentication-persistence.md`, but invitation authorization remains blocked by this ODR.
+
 ## Правило
 
 Наличие записи в этом документе не означает, что решение отложено навсегда. Каждое ODR должно быть закрыто отдельным ADR или обновлением соответствующей спецификации до момента, когда оно становится необходимым для реализации.
