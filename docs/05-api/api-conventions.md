@@ -77,11 +77,11 @@ The persistence layer should use UTC as the canonical instant representation. Us
 
 ## 8. Create/update response conventions
 
-Successful responses must use predictable JSON structures.
+Successful responses use the canonical API v1 response contract defined by ADR-0014.
 
-For single resources, return the resource representation directly or under a documented `data` envelope. The project must choose one convention globally and never mix styles arbitrarily.
+For single resources, return the resource representation directly, without a `data` envelope.
 
-For collections, use a consistent collection envelope such as:
+For collections, use the canonical envelope:
 
 ```json
 {
@@ -95,7 +95,7 @@ For collections, use a consistent collection envelope such as:
 }
 ```
 
-The exact pagination implementation may evolve, but every pageable collection must expose a consistent contract.
+Do not introduce `data/meta` as an alternative response envelope in API v1.
 
 ## 9. Pagination
 
@@ -132,7 +132,7 @@ Validation errors are represented using a stable machine-readable error code plu
 
 ## 12. Error contract
 
-All expected API errors must use a consistent shape. Recommended contract:
+All expected API errors use the canonical shape established by ADR-0014:
 
 ```json
 {
@@ -150,7 +150,7 @@ Rules:
 - `code` is stable and machine-readable;
 - `message` is safe for display/logging and must not expose secrets;
 - `details` contains structured context, especially validation errors;
-- `request_id` identifies the request where appropriate.
+- `request_id` identifies the request for correlation with server-side logs.
 
 Internal exception details and stack traces must never be returned in production responses.
 
