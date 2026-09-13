@@ -146,29 +146,80 @@ M:N Person ↔ Person через семантику guardian/child.
 
 `Club 1:N Group`
 
+Канонические поля:
+
+- id;
+- club_id;
+- name;
+- description;
+- status;
+- valid_from;
+- valid_to;
+- created_at;
+- updated_at.
+
+`Group.status` остаётся строковым значением. Канонический набор lifecycle-значений этим документом не задаётся.
+
 ### GroupMembership
 
-История принадлежности Person к Group.
+Историческая ассоциация `ClubMembership` с `Group`.
 
-`Person 1:N GroupMembership`
+`ClubMembership 1:N GroupMembership`
 `Group 1:N GroupMembership`
 
-Минимальные поля:
+Канонические поля:
 
-- person_id;
+- id;
 - group_id;
+- club_membership_id;
 - valid_from;
 - valid_to;
 - membership_status;
-- is_primary.
+- created_at;
+- updated_at.
 
-Ограничения непрерывности/единственности primary должны быть отражены на уровне business policy.
+`person_id` в `GroupMembership` не хранится: Person определяется через `club_membership_id -> ClubMembership.person_id`.
+
+`membership_status` — каноническое имя поля; отдельного `status` для этой association-модели нет.
+
+`is_primary` не является частью первой persistence-модели. Возможность одновременной принадлежности к нескольким группам и концепция основной группы требуют отдельного business-policy решения.
+
+`assigned_by` не является доменным полем GroupMembership; информация об инициаторе изменения относится к применимой audit/created-by инфраструктуре.
+
+Исторические записи сохраняются. Закрытие периода не удаляет запись.
 
 ### GroupInstructorAssignment
 
-Явная связь instructor User/Person с Group.
+Явная историческая связь пользователя с группой для определения ответственности.
 
-Нельзя вычислять instructor группы только по глобальной роли.
+`User 1:N GroupInstructorAssignment`
+`Group 1:N GroupInstructorAssignment`
+
+Канонические поля:
+
+- id;
+- group_id;
+- user_id;
+- role_in_group;
+- is_primary;
+- valid_from;
+- valid_to;
+- created_at;
+- updated_at.
+
+`user_id` используется потому, что ответственность для authorization относится к аутентифицированному User principal.
+
+`role_in_group` пока не закрывается enum-справочником; его допустимый словарь должен быть согласован с моделью ответственности Event.
+
+`is_primary` различает основного ответственного инструктора и другие явные назначения.
+
+Scope `own_groups` основывается на активном явном `GroupInstructorAssignment`, а не только на глобальной роли instructor.
+
+Group и все связанные с ним объекты должны принадлежать одному Club. GroupMembership допустим только при совпадении `Group.club_id` и `ClubMembership.club_id`. Для GroupInstructorAssignment назначаемый User должен иметь active ClubMembership в Club группы. Enforcement этого cross-Club invariant выполняется application/service layer согласно ADR-0022.
+
+### EventGroupTarget
+
+Связь Event с Group намеренно не входит в Group persistence foundation. Она будет определена отдельным контрактом до реализации полной `own_groups` авторизации Event.
 
 ## 7. Event domain
 
@@ -559,7 +610,10 @@ Club 1:N Person через ClubMembership
 Person 1:0..1 User
 Person M:N Person через GuardianRelationship
 Club 1:N Group
-Person M:N Group через GroupMembership
+ClubMembership 1:N GroupMembership
+Group 1:N GroupMembership
+User 1:N GroupInstructorAssignment
+Group 1:N GroupInstructorAssignment
 Club 1:N Event
 Event M:N Person через EventParticipation
 Event 1:0..1 Trip
@@ -592,6 +646,8 @@ User 1:N AuditLog
 - AchievementAward;
 - ConsentRecord;
 - AuditLog.
+
+Cross-Club ownership is mandatory for Group relationships: a GroupMembership is valid only when Group and ClubMembership belong to the same Club; a GroupInstructorAssignment is valid only when the assigned User has an active ClubMembership in the Group's Club. Application/service-layer enforcement follows ADR-0022.
 
 ## 23. Indexing principles
 
