@@ -13,6 +13,7 @@ tests/integration/test_authentication.py's `requires_postgres` pattern:
 import os
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -120,6 +121,73 @@ def test_register_creates_exactly_one_outstanding_verification_challenge() -> No
         assert challenges[0].token_hash == hash_token(raw_token)
         assert challenges[0].consumed_at is None
         assert challenges[0].revoked_at is None
+
+
+@requires_postgres
+def test_concurrent_duplicate_registration_is_rejected_not_crashed() -> None:
+    """Real race: two threads each get their own DB session/connection and
+    both call register() with the SAME identifier, released at the same
+    moment via a Barrier. Whichever request's pre-check SELECT runs first
+    is not guaranteed — that is the actual race register() must survive.
+    Exactly one must succeed; the other must fail with
+    EmailAlreadyRegisteredError (translated from the database's own
+    unique-constraint violation), never an unhandled IntegrityError/crash,
+    and never both succeeding.
+    """
+    email = f"racer-{uuid.uuid4().hex[:8]}@example.com"
+    barrier = threading.Barrier(2)
+    results: list[tuple[str, object]] = []
+    results_lock = threading.Lock()
+
+    def _attempt(label: str) -> None:
+        barrier.wait()
+        try:
+            with session_scope() as session:
+                user, _ = _register(session, email)
+            with results_lock:
+                results.append((label, user))
+        except auth_service.EmailAlreadyRegisteredError as exc:
+            with results_lock:
+                results.append((label, exc))
+        except Exception as exc:  # noqa: BLE001 - deliberately catch-all: a
+            # crash here (e.g. a raw IntegrityError escaping) is exactly
+            # the bug this test exists to catch.
+            with results_lock:
+                results.append((label, exc))
+
+    threads = [
+        threading.Thread(target=_attempt, args=("a",)),
+        threading.Thread(target=_attempt, args=("b",)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert len(results) == 2
+    successes = [r for _, r in results if isinstance(r, User)]
+    conflicts = [r for _, r in results if isinstance(r, auth_service.EmailAlreadyRegisteredError)]
+    crashes = [
+        (label, r)
+        for label, r in results
+        if not isinstance(r, (User, auth_service.EmailAlreadyRegisteredError))
+    ]
+    assert crashes == []
+    assert len(successes) == 1
+    assert len(conflicts) == 1
+
+    # Exactly one row exists — no duplicate slipped through, and the
+    # "loser" session was left usable (proven by a fresh, unrelated
+    # registration succeeding against it below).
+    with session_scope() as session:
+        normalized = email.strip().lower()
+        rows = session.execute(
+            select(User).where(User.normalized_login_identifier == normalized)
+        ).scalars().all()
+        assert len(rows) == 1
+
+        other_user, _ = _register(session, f"after-race-{uuid.uuid4().hex[:8]}@example.com")
+        assert other_user.status == "pending"
 
 
 # --- Email verification ----------------------------------------------------
@@ -302,6 +370,85 @@ def test_resolve_session_rejects_an_expired_session() -> None:
         session.commit()
         time.sleep(0.01)
         assert auth_service.resolve_session(session, raw_session_token) is None
+
+
+@requires_postgres
+def test_resolve_session_still_works_while_the_account_stays_active() -> None:
+    with session_scope() as session:
+        _register_and_activate(session)
+        _, raw_session_token, _ = auth_service.login(
+            session, identifier="alice@example.com", password=_PASSWORD
+        )
+        assert auth_service.resolve_session(session, raw_session_token) is not None
+
+
+@pytest.mark.parametrize(
+    "new_status", ["pending", "locked", "suspended", "disabled", "archived"]
+)
+@requires_postgres
+def test_resolve_session_rejects_a_session_once_the_account_leaves_active(
+    new_status: str,
+) -> None:
+    """Review finding: a session created while the account was `active`
+    must stop authenticating the moment the account moves to any other
+    state — resolve_session must re-check the CURRENT User.status on
+    every call, not just at login time."""
+    with session_scope() as session:
+        user = _register_and_activate(session)
+        _, raw_session_token, _ = auth_service.login(
+            session, identifier="alice@example.com", password=_PASSWORD
+        )
+        assert auth_service.resolve_session(session, raw_session_token) is not None
+
+        user.status = new_status
+        session.commit()
+
+        assert auth_service.resolve_session(session, raw_session_token) is None
+
+
+@requires_postgres
+def test_resolve_session_revokes_the_session_once_the_account_leaves_active() -> None:
+    with session_scope() as session:
+        user = _register_and_activate(session)
+        _, raw_session_token, _ = auth_service.login(
+            session, identifier="alice@example.com", password=_PASSWORD
+        )
+        user.status = "disabled"
+        session.commit()
+        assert auth_service.resolve_session(session, raw_session_token) is None
+
+        row = session.execute(
+            select(AuthenticatedSession).where(
+                AuthenticatedSession.session_token_hash == hash_token(raw_session_token)
+            )
+        ).scalar_one()
+        assert row.status == "revoked"
+        assert row.revoked_at is not None
+
+
+@requires_postgres
+def test_restoring_the_account_to_active_does_not_resurrect_an_old_revoked_session() -> None:
+    with session_scope() as session:
+        user = _register_and_activate(session)
+        _, raw_session_token, _ = auth_service.login(
+            session, identifier="alice@example.com", password=_PASSWORD
+        )
+        user.status = "suspended"
+        session.commit()
+        assert auth_service.resolve_session(session, raw_session_token) is None
+
+        # The account is restored...
+        user.status = "active"
+        session.commit()
+
+        # ...but the OLD session must stay dead; only a fresh login (a new
+        # AuthenticatedSession row) authenticates again.
+        assert auth_service.resolve_session(session, raw_session_token) is None
+
+        _, new_raw_session_token, _ = auth_service.login(
+            session, identifier="alice@example.com", password=_PASSWORD
+        )
+        assert auth_service.resolve_session(session, new_raw_session_token) is not None
 
 
 @requires_postgres

@@ -20,7 +20,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.authentication.passwords import (
@@ -149,13 +150,32 @@ def register(
         status="pending",
     )
     session.add_all([person, user])
-    # No ORM relationship links User to EmailVerificationChallenge, so the
-    # unit of work does not know to order that insert after this one —
-    # flush explicitly so the FK is satisfied.
-    session.flush()
+    try:
+        # No ORM relationship links User to EmailVerificationChallenge, so
+        # the unit of work does not know to order that insert after this
+        # one — flush explicitly so the FK is satisfied. This is also the
+        # point where a concurrent duplicate registration (both requests
+        # pass the SELECT above before either commits) surfaces: the
+        # database's own unique constraint on normalized_login_identifier
+        # is the actual source of truth here, not the pre-check.
+        session.flush()
+    except IntegrityError as exc:
+        session.rollback()
+        if _is_duplicate_login_identifier_violation(exc):
+            raise EmailAlreadyRegisteredError() from exc
+        raise
     raw_token = _issue_email_verification_challenge(session, user.id)
     session.commit()
     return user, raw_token
+
+
+def _is_duplicate_login_identifier_violation(exc: IntegrityError) -> bool:
+    """True only for a violation of `users.uq_users_normalized_login_identifier`
+    — never for an unrelated IntegrityError, which must keep propagating as
+    a real 500 rather than being papered over as a false 409.
+    """
+    constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+    return constraint_name == "uq_users_normalized_login_identifier"
 
 
 def _issue_email_verification_challenge(session: Session, user_id: uuid.UUID) -> str:
@@ -277,6 +297,15 @@ def resolve_session(session: Session, raw_session_token: str) -> ResolvedSession
     returned is looked up server-side from that secret's matching
     AuthenticatedSession row — never taken from any client-supplied user
     id (Issue #33's core security requirement).
+
+    Also re-checks the owning User's CURRENT status on every resolution
+    (not just at login): a session created while the account was `active`
+    must stop authenticating the moment an administrator moves that
+    account to any other state (auth-and-authorization.md §4/§7). The
+    session found to belong to a no-longer-active account is revoked here
+    (not merely denied for this one request), so it stays denied even
+    after the account is later restored to `active` — restoring the
+    account never resurrects an old session; a fresh login is required.
     """
     row = session.execute(
         select(AuthenticatedSession).where(
@@ -296,6 +325,14 @@ def resolve_session(session: Session, raw_session_token: str) -> ResolvedSession
         session.commit()
         return None
     if row.status != "active":
+        return None
+
+    user = session.get(User, row.user_id)
+    if user is None or user.status != ACTIVE_USER_STATUS:
+        row.status = "revoked"
+        row.revoked_at = now
+        row.revoked_reason = "account_not_active"
+        session.commit()
         return None
 
     row.last_seen_at = now
@@ -352,6 +389,33 @@ def list_sessions(session: Session, *, user_id: uuid.UUID) -> list[Authenticated
         .scalars()
         .all()
     )
+
+
+def list_sessions_page(
+    session: Session, *, user_id: uuid.UUID, page: int, page_size: int
+) -> tuple[list[AuthenticatedSession], int]:
+    """Page/page_size variant of list_sessions for the API layer's
+    canonical collection envelope (ADR-0014 / api-contract.md §7). Returns
+    (rows for this page, total row count across all pages) — the API
+    layer computes `pages` from `total`/`page_size` itself.
+    """
+    total = session.execute(
+        select(func.count())
+        .select_from(AuthenticatedSession)
+        .where(AuthenticatedSession.user_id == user_id)
+    ).scalar_one()
+    rows = list(
+        session.execute(
+            select(AuthenticatedSession)
+            .where(AuthenticatedSession.user_id == user_id)
+            .order_by(AuthenticatedSession.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .scalars()
+        .all()
+    )
+    return rows, total
 
 
 # --- Password reset / change --------------------------------------------

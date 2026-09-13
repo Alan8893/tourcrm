@@ -228,9 +228,89 @@ def test_sessions_listing_never_contains_a_token_or_hash_field(client: TestClien
     body_text = response.text
     for forbidden in ("session_token_hash", "token_hash", client.cookies["session_token"]):
         assert forbidden not in body_text
-    sessions = response.json()
-    assert len(sessions) == 1
-    assert sessions[0]["is_current"] is True
+    body = response.json()
+    assert len(body["items"]) == 1
+    assert body["items"][0]["is_current"] is True
+
+
+def test_sessions_listing_uses_the_canonical_collection_envelope(client: TestClient) -> None:
+    """ADR-0014 / api-contract.md §7: every collection response is
+    `{"items": [...], "pagination": {"page","page_size","total","pages"}}`
+    — never a bare JSON array."""
+    _register_activate_and_login(client, "envelope@example.com")
+    response = client.get("/api/v1/auth/sessions")
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {"items", "pagination"}
+    assert isinstance(body["items"], list)
+    assert body["pagination"] == {"page": 1, "page_size": 50, "total": 1, "pages": 1}
+    assert "data" not in body
+    assert "meta" not in body
+
+
+def test_sessions_listing_pagination_reflects_page_size(client: TestClient) -> None:
+    _register_activate_and_login(client, "paginated@example.com")
+    # A second session for the same user (a second "browser").
+    TestClient(app).post(
+        "/api/v1/auth/login",
+        json={"identifier": "paginated@example.com", "password": _PASSWORD},
+    )
+
+    first_page = client.get("/api/v1/auth/sessions", params={"page": 1, "page_size": 1})
+    assert first_page.status_code == 200
+    first_body = first_page.json()
+    assert len(first_body["items"]) == 1
+    assert first_body["pagination"] == {"page": 1, "page_size": 1, "total": 2, "pages": 2}
+
+    second_page = client.get("/api/v1/auth/sessions", params={"page": 2, "page_size": 1})
+    second_body = second_page.json()
+    assert len(second_body["items"]) == 1
+    assert second_body["pagination"]["page"] == 2
+    assert second_body["items"][0]["id"] != first_body["items"][0]["id"]
+
+
+@pytest.mark.parametrize("new_status", ["pending", "locked", "suspended", "disabled", "archived"])
+@requires_postgres
+def test_a_session_stops_authenticating_once_the_account_leaves_active(
+    client: TestClient, new_status: str
+) -> None:
+    """End-to-end HTTP proof of the review finding: an administrator
+    changing the account's state (directly in the DB here — there is no
+    admin endpoint in this Issue's scope) must immediately invalidate the
+    existing session for every subsequent request."""
+    login_body = _register_activate_and_login(client, f"stateflip-{new_status}@example.com")
+    assert client.get("/api/v1/auth/me").status_code == 200
+
+    with session_scope() as session:
+        user = session.get(User, login_body["user"]["id"])
+        user.status = new_status
+        session.commit()
+
+    response = client.get("/api/v1/auth/me")
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
+@requires_postgres
+def test_restoring_the_account_does_not_resurrect_the_old_session_over_http(
+    client: TestClient,
+) -> None:
+    login_body = _register_activate_and_login(client, "restored@example.com")
+
+    with session_scope() as session:
+        user = session.get(User, login_body["user"]["id"])
+        user.status = "suspended"
+        session.commit()
+    assert client.get("/api/v1/auth/me").status_code == 401
+
+    with session_scope() as session:
+        user = session.get(User, login_body["user"]["id"])
+        user.status = "active"
+        session.commit()
+
+    # The browser still carries the OLD (now-revoked) session cookie —
+    # restoring the account must not make it valid again.
+    assert client.get("/api/v1/auth/me").status_code == 401
 
 
 # --- Logout / revoke / logout-all + CSRF ------------------------------------
@@ -272,7 +352,7 @@ def test_logout_without_any_session_is_a_noop_success(client: TestClient) -> Non
 @requires_postgres
 def test_revoking_a_session_requires_csrf(client: TestClient) -> None:
     _register_activate_and_login(client, "revokecsrf@example.com")
-    session_id = client.get("/api/v1/auth/sessions").json()[0]["id"]
+    session_id = client.get("/api/v1/auth/sessions").json()["items"][0]["id"]
     response = client.delete(f"/api/v1/auth/sessions/{session_id}")
     assert response.status_code == 403
 
@@ -280,7 +360,7 @@ def test_revoking_a_session_requires_csrf(client: TestClient) -> None:
 @requires_postgres
 def test_revoking_ones_own_session_by_id_invalidates_it(client: TestClient) -> None:
     _register_activate_and_login(client, "revokeself@example.com")
-    session_id = client.get("/api/v1/auth/sessions").json()[0]["id"]
+    session_id = client.get("/api/v1/auth/sessions").json()["items"][0]["id"]
     response = client.delete(
         f"/api/v1/auth/sessions/{session_id}", headers=_csrf_headers(client)
     )
@@ -304,7 +384,7 @@ def test_cannot_revoke_another_users_session_by_guessing_its_id(client: TestClie
     # trust a client-supplied id blindly, but the test needs the real one
     # to prove it is STILL rejected for a different caller).
     _register_activate_and_login(client, "bobtarget@example.com")
-    bob_session_id = client.get("/api/v1/auth/sessions").json()[0]["id"]
+    bob_session_id = client.get("/api/v1/auth/sessions").json()["items"][0]["id"]
     client.post("/api/v1/auth/logout", headers=_csrf_headers(client))
 
     _register_activate_and_login(client, "eveattacker@example.com")

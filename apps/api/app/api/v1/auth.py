@@ -10,7 +10,7 @@ defines one; that belongs to a future People/Membership admin API).
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -22,6 +22,7 @@ from app.api.deps import (
     require_csrf_token,
 )
 from app.api.errors import APIError
+from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.auth_schemas import (
     ChangePasswordRequest,
     GenericResultResponse,
@@ -277,13 +278,21 @@ def get_current_session_info(
     )
 
 
-@router.get("/sessions", response_model=list[SessionOut])
+@router.get("/sessions", response_model=CollectionResponse[SessionOut])
 def list_sessions(
+    page: int = Query(default=1, ge=1),
+    # Server-limited page size (api-conventions.md §9: "Default server-side
+    # page size and maximum page size are global configuration values" —
+    # 50/100 mirror the same defaults already used for every other
+    # collection endpoint's Pagination example in this codebase).
+    page_size: int = Query(default=50, ge=1, le=100),
     principal: CurrentPrincipal = Depends(require_authenticated_principal),
     db: Session = Depends(get_db),
-) -> list[SessionOut]:
-    rows = auth_service.list_sessions(db, user_id=principal.user_id)
-    return [
+) -> CollectionResponse[SessionOut]:
+    rows, total = auth_service.list_sessions_page(
+        db, user_id=principal.user_id, page=page, page_size=page_size
+    )
+    items = [
         SessionOut(
             id=row.id,
             created_at=row.created_at,
@@ -296,6 +305,11 @@ def list_sessions(
         )
         for row in rows
     ]
+    pages = (total + page_size - 1) // page_size if total else 0
+    return CollectionResponse(
+        items=items,
+        pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
+    )
 
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
