@@ -9,7 +9,9 @@ apart.
 
 ADR-0024 §4 is explicit that this action list is closed at this stage:
 extending it requires a follow-up ADR update, not an application-level
-addition.
+addition. ADR-0025 §1 is that one follow-up amendment so far: it adds
+the three `person.*` actions below (Issue #62 — the original ADR-0024
+vocabulary had no action at all for `Person` mutations, only `User`).
 """
 
 CANONICAL_ACTOR_TYPES: frozenset[str] = frozenset({"user", "system"})
@@ -18,6 +20,10 @@ CANONICAL_AUDIT_OUTCOMES: frozenset[str] = frozenset({"success", "failure"})
 
 CANONICAL_AUDIT_ACTIONS: frozenset[str] = frozenset(
     {
+        # Person (ADR-0025 §1 amendment)
+        "person.created",
+        "person.updated",
+        "person.archived",
         # Identity
         "user.created",
         "user.status_changed",
