@@ -136,13 +136,34 @@ TourCRM разделяет четыре понятия:
 
 Связывает законного представителя с участником.
 
-### Требования
+### Каноническая persistence-модель
 
-- один guardian может быть связан с несколькими детьми;
-- один ребёнок может иметь нескольких guardians;
-- связь имеет тип и статус;
-- при необходимости хранится признак основного контакта;
-- доступ родителя определяется одновременно фактом связи и permissions.
+`GuardianRelationship` является Club-neutral Person-to-Person relationship. Она не содержит `club_id`; принадлежность и authorization в конкретном Club определяются через актуальные ClubMembership связанных лиц.
+
+Канонические поля:
+
+- id;
+- guardian_person_id;
+- child_person_id;
+- relationship_type;
+- status;
+- is_primary_contact;
+- valid_from;
+- valid_to;
+- created_at;
+- updated_at.
+
+Канонические значения `status`:
+
+- `active`;
+- `inactive`;
+- `revoked`.
+
+`guardian_person_id` и `child_person_id` не могут совпадать. Исторические `inactive`/`revoked` записи сохраняются. Для одной пары guardian/child/type не допускаются дублирующиеся active relationships; одновременно допустима не более чем одна действующая primary-contact relationship для ребёнка.
+
+Для Event authorization активной считается relationship, которая имеет `status = active` и действующий временной интервал. Доступ guardian к Event в Club требует также соответствующей ClubMembership policy для guardian и ребёнка.
+
+Детальный persistence/authorization contract определён ADR-0023.
 
 ## 9. Group
 
@@ -213,8 +234,6 @@ Group принадлежит одному Club. GroupMembership допустим
 
 Эти invariants являются частью cross-Club ownership contract и должны обеспечиваться на authoritative application/service boundary согласно ADR-0022.
 
-Event-to-Group targeting является отдельной связью и не определяется этим Group foundation.
-
 ## 10. Event
 
 ### Назначение
@@ -256,30 +275,59 @@ Event-to-Group targeting является отдельной связью и н�
 
 Специализированные данные похода/турслёта не должны превращать Event в универсальную таблицу со всеми возможными полями. Для них используются специализированные сущности.
 
-## 11. EventParticipation
+### EventParticipation
 
-Связь Person/ClubMembership с Event.
+Связь Person с Event. Каноническая persistence-модель и deferred registration policy определяются отдельным контрактом.
 
-Предусматривает:
+### EventStaffAssignment
 
-- registration_status;
-- attendance_status;
-- participant_role;
-- registered_at;
-- attendance_marked_at;
-- absence_reason;
-- result;
-- notes.
+Явная историческая связь User с Event, используемая для Event responsibility и scope `own_events`.
 
-Инструкторы и руководители также должны связываться с мероприятием явно, а не определяться косвенно по роли пользователя.
+Канонические поля:
 
-## 12. Attendance
+- id;
+- event_id;
+- user_id;
+- role_in_event;
+- is_primary;
+- valid_from;
+- valid_to;
+- created_at;
+- updated_at.
+
+Multiple active staff assignments допустимы; не более одной active assignment для Event может иметь `is_primary = true`. Исторические назначения сохраняются после закрытия `valid_to`.
+
+Назначение допустимо только если Person назначаемого User имеет active ClubMembership в Club мероприятия. `Event.created_by` не является заменой EventStaffAssignment.
+
+### EventGroupTarget
+
+Явная историческая связь Event с Group, определяющая целевую аудиторию мероприятия.
+
+Канонические поля:
+
+- id;
+- event_id;
+- group_id;
+- valid_from;
+- valid_to;
+- created_at;
+- updated_at.
+
+Event может быть адресован нескольким Groups; Group может быть целью нескольких Events. `EventGroupTarget` не создаёт EventParticipation и не означает регистрацию или посещаемость.
+
+Связь допустима только при `Event.club_id == Group.club_id` и проверяется на authoritative application/service boundary согласно ADR-0022.
+
+`own_groups` определяется через active EventGroupTarget и active GroupInstructorAssignment requester.
+
+Детальный контракт этих отношений определён ADR-0023.
+
+## 11. Attendance
 
 Возможно отдельное представление поверх EventParticipation либо отдельная таблица, если требований объёма и аудита будет недостаточно для общей сущности.
 
 Канонические статусы должны быть определены отдельно и использоваться единообразно.
 
-## 13. Trip
+## 12. Trip
 
 ### Назначение
 
@@ -300,7 +348,7 @@ Event-to-Group targeting является отдельной связью и н�
 - notes;
 - result/status.
 
-## 14. TripParticipant
+## 13. TripParticipant
 
 Специализированные данные участия в походе:
 
@@ -314,7 +362,7 @@ Event-to-Group targeting является отдельной связью и н�
 
 Это позволяет не смешивать обычную регистрацию на событие с туристским стажем.
 
-## 15. Route
+## 14. Route
 
 Логическая сущность маршрута.
 
@@ -330,7 +378,7 @@ Event-to-Group targeting является отдельной связью и н�
 - GPX-файлы;
 - внешние ссылки.
 
-## 16. RoutePoint
+## 15. RoutePoint
 
 Географическая точка маршрута:
 
@@ -342,7 +390,7 @@ Event-to-Group targeting является отдельной связью и н�
 - point_type;
 - description.
 
-## 17. GPX Track / File
+## 16. GPX Track / File
 
 GPX хранится как файл/объект хранилища с метаданными.
 
@@ -350,7 +398,7 @@ GPX хранится как файл/объект хранилища с мета
 
 Производные данные могут индексироваться в БД для поиска и аналитики.
 
-## 18. TouristProfile
+## 17. TouristProfile
 
 Расширение участника туристскими характеристиками.
 
@@ -367,7 +415,7 @@ GPX хранится как файл/объект хранилища с мета
 
 Каноническим источником фактов о походах остаются Trip/TripParticipant; агрегаты профиля могут пересчитываться.
 
-## 19. Achievement
+## 18. Achievement
 
 Достижение должно поддерживать:
 
@@ -383,19 +431,19 @@ GPX хранится как файл/объект хранилища с мета
 
 AchievementAward связывает достижение с человеком и хранит историю выдачи.
 
-## 20. Skill
+## 19. Skill
 
 Навык участника.
 
 Хранится отдельно от Achievement, поскольку навык отражает уровень/состояние подготовки, а достижение — событие или награду.
 
-## 21. Qualification
+## 20. Qualification
 
 Формализованная квалификация, разряд или иной подтверждённый уровень.
 
 Поддерживает срок действия и документальное подтверждение, если применимо.
 
-## 22. KnowledgeArticle
+## 21. KnowledgeArticle
 
 Материал базы знаний.
 
@@ -412,7 +460,7 @@ AchievementAward связывает достижение с человеком �
 - tags;
 - attachments.
 
-## 23. Document
+## 22. Document
 
 Унифицированный объект документа.
 
@@ -428,7 +476,7 @@ AchievementAward связывает достижение с человеком �
 
 Нужны тип документа, владелец, статус, дата выдачи, срок действия и версия.
 
-## 24. Consent
+## 23. Consent
 
 Отдельная сущность для фиксирования согласий.
 
@@ -442,7 +490,7 @@ AchievementAward связывает достижение с человеком �
 - статус;
 - подтверждающий документ, если применимо.
 
-## 25. Equipment
+## 24. Equipment
 
 Единица имущества клуба.
 
@@ -458,7 +506,7 @@ AchievementAward связывает достижение с человеком �
 - стоимость, если нужно;
 - серийный номер, если есть.
 
-## 26. EquipmentIssue
+## 25. EquipmentIssue
 
 История выдачи оборудования:
 
@@ -472,7 +520,7 @@ AchievementAward связывает достижение с человеком �
 - condition_after;
 - notes.
 
-## 27. Finance
+## 26. Finance
 
 Финансовый домен должен быть отделён от UI мероприятий.
 
@@ -486,7 +534,7 @@ AchievementAward связывает достижение с человеком �
 
 Конкретная бухгалтерская модель будет уточнена отдельным документом.
 
-## 28. Notification
+## 27. Notification
 
 Унифицированное системное уведомление.
 
@@ -506,7 +554,7 @@ AchievementAward связывает достижение с человеком �
 - Telegram;
 - MAX.
 
-## 29. AuditLog
+## 28. AuditLog
 
 Аудит должен хранить как минимум:
 
@@ -516,45 +564,35 @@ AchievementAward связывает достижение с человеком �
 - target id;
 - timestamp;
 - request/correlation id;
-- result/status;
-- change summary или diff без утечки секретов.
+- before/after или diff, если применимо.
 
-Секреты, токены, пароли и иные чувствительные credentials в аудит не записываются.
+Аудит не должен содержать секреты и чувствительные значения сверх необходимого для расследования.
 
-## 30. SystemSetting / FeatureSetting
+## 29. System Settings
 
-Настройки клуба и системы должны позволять включать/отключать необязательные функции.
+Настройки клуба и feature flags управляют доступностью функциональности.
 
-Примеры:
+Feature flag не заменяет authorization: отключённая функция должна быть недоступна даже пользователю с permission.
 
-- rating.enabled;
-- achievements.enabled;
-- telegram.enabled;
-- max.enabled;
-- email.enabled;
-- finance.enabled.
+## 30. Общие доменные принципы
 
-Feature settings не должны использоваться для обхода security permissions.
+- Исторические факты не перезаписываются без необходимости.
+- Производные данные должны быть пересчитываемыми из первичных фактов.
+- Межклубные связи проверяются на authoritative boundary.
+- Authorization не определяется только названием роли.
+- Чувствительные домены имеют отдельные policy/permission boundaries.
+- Новая самостоятельная доменная сущность требует документированного основания и, при архитектурном влиянии, ADR.
 
-## 31. Общие правила удаления
+## 31. Traceability
 
-По умолчанию исторически значимые сущности не удаляются физически, если это разрушает аудит или историческую достоверность.
+Канонические Event relationship и GuardianRelationship решения: ADR-0023.
 
-Предпочтительный подход:
+Cross-Club ownership: ADR-0022.
 
-- active/inactive/archived статус;
-- soft delete только там, где он действительно нужен;
-- физическое удаление только по явно документированным правилам.
+Event lifecycle: ADR-0018.
 
-## 32. Общие системные поля
+Event field model: ADR-0019.
 
-Для большинства изменяемых сущностей рекомендуется наличие:
+Event authorization/participation contract: ADR-0020.
 
-- id;
-- created_at;
-- updated_at;
-- created_by, если применимо;
-- updated_by, если применимо;
-- status, если сущность имеет жизненный цикл.
-
-Точная схема БД является отдельным документом и не должна автоматически выводиться из этого документа без проверки бизнес-правил.
+Group persistence: ADR-0021.
