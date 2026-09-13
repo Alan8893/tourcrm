@@ -9,9 +9,13 @@ apart.
 
 ADR-0024 §4 is explicit that this action list is closed at this stage:
 extending it requires a follow-up ADR update, not an application-level
-addition. ADR-0025 §1 is that one follow-up amendment so far: it adds
-the three `person.*` actions below (Issue #62 — the original ADR-0024
-vocabulary had no action at all for `Person` mutations, only `User`).
+addition. ADR-0025 §1 is one such amendment (the three `person.*`
+actions below — the original ADR-0024 vocabulary had no action at all
+for `Person` mutations, only `User`). Issue #62's accepted decisions add
+a second: `membership.updated`, for non-lifecycle ClubMembership
+attribute changes (currently only `membership_type`) — distinct from
+`membership.status_changed` (a lifecycle status transition) and
+`membership.ended` (a lifecycle transition that also sets `left_at`).
 """
 
 CANONICAL_ACTOR_TYPES: frozenset[str] = frozenset({"user", "system"})
@@ -31,6 +35,7 @@ CANONICAL_AUDIT_ACTIONS: frozenset[str] = frozenset(
         "user.unlocked",
         # Membership
         "membership.created",
+        "membership.updated",
         "membership.status_changed",
         "membership.ended",
         # Roles

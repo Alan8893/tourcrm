@@ -45,7 +45,7 @@ from app.authorization.service import Authorizer
 from app.db.identity import Person
 from app.db.session import get_db
 from app.people import service as people_service
-from app.people.authorization import build_person_resource_context
+from app.people.authorization import is_person_visible
 from app.people.queries import (
     MEMBERSHIP_DEFAULT_SORT,
     PERSON_DEFAULT_SORT,
@@ -92,9 +92,11 @@ def _get_authorized_person_or_404(
     if person is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
 
-    context = build_person_resource_context(db, person_id=person.id, requester_user_id=user_id)
-    authorizer = Authorizer(session=db, user_id=user_id, permission_code=permission_code)
-    if not authorizer.is_allowed(context):
+    # Person authorization cannot use the generic Authorizer/ResourceContext
+    # engine — see app.people.authorization module docstring for why.
+    if not is_person_visible(
+        db, person_id=person.id, user_id=user_id, permission_code=permission_code
+    ):
         # Deliberately the same detail/status as "does not exist" above —
         # see module docstring.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)

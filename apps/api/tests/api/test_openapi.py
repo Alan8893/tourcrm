@@ -62,7 +62,6 @@ _PERSON_PATHS = {
 _MEMBERSHIP_PATHS = {
     "/api/v1/memberships",
     "/api/v1/memberships/{membership_id}",
-    "/api/v1/memberships/{membership_id}/history",
     "/api/v1/memberships/{membership_id}/status",
 }
 

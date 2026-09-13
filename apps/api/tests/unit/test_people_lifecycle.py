@@ -38,7 +38,6 @@ def test_non_canonical_status_is_rejected(status: str) -> None:
         ("suspended", "active"),
         ("suspended", "inactive"),
         ("suspended", "archived"),
-        ("inactive", "active"),
         ("inactive", "archived"),
     ],
 )
@@ -53,6 +52,11 @@ def test_allowed_transitions_pass(from_status: str, to_status: str) -> None:
         ("pending", "inactive"),
         ("active", "pending"),
         ("suspended", "pending"),
+        # inactive -> active is explicitly prohibited (Issue #62 accepted
+        # decisions): one ClubMembership row is one continuous membership
+        # period; rejoining after `inactive` creates a new row instead
+        # (see tests/integration/test_people_api.py's rejoin tests).
+        ("inactive", "active"),
         ("inactive", "suspended"),
         ("inactive", "inactive"),
         ("active", "active"),

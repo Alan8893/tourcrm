@@ -10,15 +10,15 @@ exist and one that exists but the caller is not authorized to act on
 receive an identical 404. `POST /memberships` (no object yet exists) uses
 the generic 403 AuthorizationDenied contract instead.
 
-`GET /memberships/{membership_id}/history` (Issue #62 §7) is
-under-specified: no dedicated history/versioning persistence exists for
-ClubMembership (a status transition mutates the same row — see
-app.people.service.transition_membership_status), and this Issue's own
-non-goals explicitly exclude "any audit-read API". Returning the
-AuditLog trail through this endpoint would be exactly that. This
-endpoint therefore returns the current membership representation only
-(identical to `GET /memberships/{membership_id}`) — see the Issue #62
-implementation report for this documented limitation.
+`GET /memberships/{membership_id}/history` is deliberately NOT
+implemented (Issue #62's accepted decisions explicitly remove it from
+this API slice): no dedicated history/versioning persistence exists for
+ClubMembership, and this Issue's non-goals exclude any audit-read API.
+The canonical membership-period history is
+`GET /api/v1/persons/{person_id}/memberships` (a list of distinct
+ClubMembership rows/periods for that Person, across Clubs) — see
+app.api.v1.persons.list_person_memberships. No alias for the removed
+`/history` path is added.
 """
 
 import uuid
@@ -162,24 +162,6 @@ def get_membership(
     return _membership_out(membership)
 
 
-@router.get("/{membership_id}/history", response_model=MembershipOut)
-def get_membership_history(
-    membership_id: uuid.UUID,
-    principal: CurrentPrincipal = Depends(require_authenticated_principal),
-    db: Session = Depends(get_db),
-) -> MembershipOut:
-    """See module docstring: returns the current membership state only —
-    no separate history/versioning persistence or audit-read API exists.
-    """
-    membership = _get_authorized_membership_or_404(
-        db,
-        membership_id=membership_id,
-        user_id=principal.user_id,
-        permission_code="membership.read",
-    )
-    return _membership_out(membership)
-
-
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=MembershipOut)
 def create_membership(
     payload: MembershipCreateRequest,
@@ -231,6 +213,7 @@ def create_membership(
 def update_membership(
     membership_id: uuid.UUID,
     payload: MembershipUpdateRequest,
+    request: Request,
     principal: CurrentPrincipal = Depends(require_authenticated_principal),
     db: Session = Depends(get_db),
     _csrf: None = Depends(require_csrf_token),
@@ -247,6 +230,7 @@ def update_membership(
         membership=membership,
         membership_type=payload.membership_type,
         actor_user_id=principal.user_id,
+        request_id=get_request_id(request),
     )
     return _membership_out(membership)
 

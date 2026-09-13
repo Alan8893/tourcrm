@@ -31,10 +31,10 @@ fields (`first_name`, `last_name`, `middle_name`, `birth_date`) get a full
 
 Validation (field values, status-transition graph) is delegated entirely
 to app.people.lifecycle — never reimplemented here. This module performs
-no authorization: the caller (the API router) must resolve a
-ResourceContext and call Authorizer.check() before invoking any function
-here, exactly as app.events.crud/app.groups.service already keep
-authorization as the router's job.
+no authorization: the caller (the API router) must have already resolved
+and checked authorization (via app.people.authorization) before invoking
+any function here, exactly as app.events.crud/app.groups.service already
+keep authorization as the router's job.
 
 `GuardianRelationship` is out of scope (Issue #64).
 """
@@ -241,16 +241,38 @@ def update_membership_type(
     request_id: Optional[str] = None,
 ) -> ClubMembership:
     """Update only `membership_type` (never `status`/`joined_at`/`left_at`
-    — those are lifecycle changes, see `transition_membership_status`).
-
-    No audit action exists for this field-level change (ADR-0024's
-    vocabulary only defines `membership.created`/`status_changed`/`ended`
-    — see the Issue #62 implementation report); this function therefore
-    commits the mutation without an audit record rather than reusing an
-    ill-fitting action code or inventing a new one.
+    — those are lifecycle changes, see `transition_membership_status`) and
+    record a `membership.updated` audit event in the same transaction
+    (fail-closed — see module docstring). No-ops (no mutation, no audit
+    record) when the value is unchanged.
     """
+    old_membership_type = membership.membership_type
+    if old_membership_type == membership_type:
+        return membership
+
     membership.membership_type = membership_type
-    session.commit()
+    try:
+        session.flush()
+        record_audit_event(
+            session,
+            action="membership.updated",
+            actor_type="user",
+            actor_user_id=actor_user_id,
+            club_id=membership.club_id,
+            resource_type="club_membership",
+            resource_id=membership.id,
+            outcome="success",
+            request_id=request_id,
+            details={
+                "changes": {
+                    "membership_type": {"from": old_membership_type, "to": membership_type}
+                }
+            },
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     return membership
 
 
@@ -263,28 +285,30 @@ def transition_membership_status(
     actor_user_id: uuid.UUID,
     request_id: Optional[str] = None,
 ) -> ClubMembership:
-    """Transition `membership.status` per the inferred graph in
-    app.people.lifecycle, and record `membership.status_changed` (or
-    `membership.ended` when this transition sets `left_at` for the first
-    time — Issue #62 §18) in the same transaction as the mutation.
+    """Transition `membership.status` per the accepted graph in
+    app.people.lifecycle, and record the required audit action(s) in the
+    same transaction as the mutation (Issue #62 accepted decisions):
+    `membership.status_changed` is recorded for every lifecycle status
+    change; `membership.ended` is *additionally* recorded when this
+    transition sets `left_at` for the first time. A single transition
+    (e.g. `active -> inactive`) therefore produces two audit rows.
+    `membership.ended` is never emitted again once `left_at` is already
+    set (e.g. a later `inactive -> archived`).
 
     `left_at` is set to now() the first time a transition reaches an
     ENDING_STATUSES value (`inactive`/`archived`) and is never
-    automatically cleared on a later reactivation (`inactive -> active`):
-    clearing it would rewrite a historical fact, which business-rules.md
-    §4 explicitly forbids ("переход между статусами не должен уничтожать
-    историю"). The full status-change history remains reconstructable
-    from the audit trail even when `left_at` itself does not reflect the
-    membership's very first end date after a re-join — see the Issue #62
-    implementation report for this documented, non-obvious consequence.
+    automatically cleared: one ClubMembership row is one continuous
+    membership period (Issue #62), and rejoining after `inactive` creates
+    a new row (app.people.service.create_membership) rather than
+    transitioning this one back to `active` — `inactive -> active` is not
+    in the allowed transition graph.
     """
     validate_membership_status_transition(membership.status, new_status)
 
     old_status = membership.status
-    audit_action = "membership.status_changed"
-    if new_status in ENDING_STATUSES and membership.left_at is None:
+    ends_period = new_status in ENDING_STATUSES and membership.left_at is None
+    if ends_period:
         membership.left_at = datetime.now(timezone.utc)
-        audit_action = "membership.ended"
     membership.status = new_status
 
     details: dict[str, Any] = {"changes": {"status": {"from": old_status, "to": new_status}}}
@@ -295,7 +319,7 @@ def transition_membership_status(
         session.flush()
         record_audit_event(
             session,
-            action=audit_action,
+            action="membership.status_changed",
             actor_type="user",
             actor_user_id=actor_user_id,
             club_id=membership.club_id,
@@ -305,6 +329,19 @@ def transition_membership_status(
             request_id=request_id,
             details=details,
         )
+        if ends_period:
+            record_audit_event(
+                session,
+                action="membership.ended",
+                actor_type="user",
+                actor_user_id=actor_user_id,
+                club_id=membership.club_id,
+                resource_type="club_membership",
+                resource_id=membership.id,
+                outcome="success",
+                request_id=request_id,
+                details=details,
+            )
         session.commit()
     except IntegrityError as exc:
         session.rollback()
