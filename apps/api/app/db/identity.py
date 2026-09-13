@@ -1,9 +1,12 @@
-"""Identity foundation: Club, Person, User, ClubMembership (Issue #17).
+"""Identity foundation: Club, Person, User, ClubMembership (Issue #17),
+plus the Club-neutral GuardianRelationship (Issue #50).
 
 Canonical sources: docs/03-architecture/domain-model.md §3-6,
 docs/03-architecture/database-schema.md §5, docs/02-requirements/business-rules.md §3-4,
 docs/07-security/security-and-privacy.md §4.1 (User account lifecycle),
-ADR-0005 (identity split), ADR-0010 (UUID primary keys).
+docs/03-architecture/adr/ADR-0023-event-relationships-and-guardian-
+persistence.md §3 (GuardianRelationship field list/invariants), ADR-0005
+(identity split), ADR-0010 (UUID primary keys).
 
 These four entities are kept deliberately separate per ADR-0005 and the
 Issue's own instruction: Person is a physical person and may exist without
@@ -12,8 +15,11 @@ historical Person<->Club link that is never mutated destructively (new
 rows record re-joins, not edits to old ones).
 
 Non-goals here (see Issue #17): authentication flows, password hashing
-implementation, RBAC/Role/Permission, GuardianRelationship, groups, domain
-API endpoints.
+implementation, RBAC/Role/Permission, groups, domain API endpoints.
+GuardianRelationship (Issue #50) is persistence foundation only: no
+Guardian API, no Event authorization/eligibility logic (ADR-0023 §3's
+membership-requirement rules for Event access belong to later Event/
+authorization work), no invitation/verification workflow.
 """
 
 import uuid
@@ -228,3 +234,147 @@ class ClubMembership(Base):
 
     club: Mapped["Club"] = relationship(back_populates="memberships")
     person: Mapped["Person"] = relationship(back_populates="memberships")
+
+
+class GuardianRelationship(Base):
+    """Historical Person<->Person guardian/legal-representative
+    relationship (Issue #50).
+
+    docs/03-architecture/adr/ADR-0023-event-relationships-and-guardian-
+    persistence.md §3, which this model follows field-for-field. See
+    also docs/03-architecture/domain-model.md, docs/03-architecture/
+    data-model.md and docs/03-architecture/database-schema.md §7
+    `guardian_relationships`.
+
+    Deliberately Club-neutral: no `club_id`. ADR-0023 §3 is explicit
+    that this relationship is reusable across Clubs while any Event/
+    Club *authorization* built on top of it (checking the child's and
+    guardian's own ClubMembership in a specific Club) is a separate,
+    later concern — not implemented here.
+
+    docs/04-modules/people-and-membership.md §7.2/§7.4 additionally
+    describe `verified_at`/`verified_by` fields and a verification
+    workflow for minors. ADR-0023's own Context explicitly names
+    GuardianRelationship as one of the entities for which "the existing
+    logical/module documentation ... contains non-canonical
+    descriptions" that this ADR canonicalizes — its §3 field list has
+    no verification fields, and Issue #50 explicitly excludes any
+    invitation/verification workflow. Not silently resolved beyond that:
+    people-and-membership.md itself has not been updated to match — see
+    the implementation report for this documentation-reconciliation
+    item, matching this module's existing "Documentation follow-up"
+    convention (see Person/Club above).
+
+    `status` is a plain string restricted to ADR-0023's exact
+    vocabulary (`active`, `inactive`, `revoked`) by a CHECK constraint —
+    no additional status is invented. `relationship_type` remains an
+    unconstrained string: ADR-0023 does not define a closed vocabulary
+    for it, and none is invented here.
+
+    Two GiST exclusion constraints (the same mechanism already used for
+    `ClubMembership.ck_club_memberships_no_overlapping_active` and
+    `EventStaffAssignment.ck_event_staff_assignments_one_active_primary`)
+    enforce ADR-0023 §3's two concurrency-sensitive invariants declaratively
+    rather than through application-level locking, so they hold under
+    concurrent writes regardless of caller:
+
+    - at most one *active* relationship may exist at a time for the same
+      (guardian_person_id, child_person_id, relationship_type);
+    - at most one *active, primary-contact* relationship may exist at a
+      time for the same child_person_id, regardless of relationship_type
+      or guardian.
+
+    Both are scoped to `status = 'active'` rows only — a NULL `valid_to`
+    is unbounded/ongoing (tstzrange semantics), and closing a period
+    (setting `valid_to`, or changing `status`) is how a historical
+    `inactive`/`revoked` row stops counting toward either invariant.
+    Neither constraint is stricter than ADR-0023 §3 requires: multiple
+    historical (non-overlapping, or non-active) rows for the same
+    guardian/child/type or the same child are explicitly allowed, and
+    non-primary-contact relationships never participate in the second
+    constraint at all.
+    """
+
+    __tablename__ = "guardian_relationships"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    guardian_person_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("persons.id", ondelete="RESTRICT"), nullable=False
+    )
+    child_person_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("persons.id", ondelete="RESTRICT"), nullable=False
+    )
+    # ADR-0023 §3: no closed vocabulary defined for this field.
+    relationship_type: Mapped[str] = mapped_column(sa.String(64), nullable=False)
+    # ADR-0023 §3: exactly active/inactive/revoked.
+    status: Mapped[str] = mapped_column(sa.String(32), nullable=False)
+    is_primary_contact: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, server_default=sa.text("false")
+    )
+    valid_from: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
+    valid_to: Mapped[Optional[datetime]] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        server_default=sa.func.now(),
+        onupdate=sa.func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        sa.CheckConstraint(
+            "guardian_person_id <> child_person_id",
+            name="ck_guardian_relationships_guardian_child_distinct",
+        ),
+        sa.CheckConstraint(
+            "status IN ('active','inactive','revoked')",
+            name="ck_guardian_relationships_status_valid",
+        ),
+        sa.CheckConstraint(
+            "valid_to IS NULL OR valid_to >= valid_from",
+            name="ck_guardian_relationships_valid_to_after_valid_from",
+        ),
+        # ADR-0023 §3: "Duplicate active relationships for the same
+        # guardian, child and relationship type are forbidden; historical
+        # rows are preserved." Same GiST-exclusion shape as
+        # ClubMembership.ck_club_memberships_no_overlapping_active.
+        ExcludeConstraint(
+            (sa.column("guardian_person_id"), "="),
+            (sa.column("child_person_id"), "="),
+            (sa.column("relationship_type"), "="),
+            (sa.func.tstzrange(sa.column("valid_from"), sa.column("valid_to")), "&&"),
+            where=sa.text("status = 'active'"),
+            using="gist",
+            name="ck_guardian_relationships_no_overlapping_active",
+        ),
+        # ADR-0023 §3: "At most one valid primary-contact relationship
+        # exists for a child at a time." Scoped to status='active' rows
+        # (see class docstring) so a revoked/inactive row never blocks a
+        # new primary-contact assignment, and non-primary rows
+        # (is_primary_contact=false) never participate at all.
+        ExcludeConstraint(
+            (sa.column("child_person_id"), "="),
+            (sa.func.tstzrange(sa.column("valid_from"), sa.column("valid_to")), "&&"),
+            where=sa.text("is_primary_contact = true AND status = 'active'"),
+            using="gist",
+            name="ck_guardian_relationships_no_overlapping_primary_contact",
+        ),
+        # Names shortened from the "..._<col>_valid_from_valid_to" pattern
+        # used elsewhere (e.g. GroupMembership) to stay within
+        # PostgreSQL's 63-byte identifier limit given this table's
+        # longer name.
+        sa.Index(
+            "ix_guardian_relationships_guardian_valid",
+            "guardian_person_id",
+            "valid_from",
+            "valid_to",
+        ),
+        sa.Index(
+            "ix_guardian_relationships_child_valid",
+            "child_person_id",
+            "valid_from",
+            "valid_to",
+        ),
+    )
