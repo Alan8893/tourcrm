@@ -2,10 +2,12 @@
 foundation (Group, GroupMembership, GroupInstructorAssignment + migration).
 
 These tests exercise the constraints that only PostgreSQL itself can
-enforce (CHECK constraints, the exclusion constraint, foreign keys,
-indexes) — there is no pure-Python domain module for this foundation
-(unlike Event's app.events.lifecycle), since ADR-0021 defines no
-lifecycle/status vocabulary to validate yet.
+enforce (CHECK constraints, foreign keys, indexes) at the raw ORM/DB
+layer — Club-ownership validation is a separate, application/service-
+layer concern (ADR-0022) covered in
+tests/integration/test_groups_service.py, not here; the cross-Club tests
+in this file document that the raw persistence layer deliberately does
+not enforce it (ADR-0022 §3/§8).
 
 Run with a reachable PostgreSQL instance, matching
 tests/integration/test_identity.py:
@@ -408,7 +410,17 @@ def test_group_membership_club_membership_id_foreign_key_integrity() -> None:
 
 
 @requires_postgres
-def test_overlapping_periods_for_same_club_membership_are_prohibited() -> None:
+def test_simultaneous_membership_in_multiple_groups_is_allowed() -> None:
+    """ADR-0021 §2 deliberately leaves "whether a person may belong to
+    multiple groups simultaneously" as a separate, not-yet-made
+    business-policy question — this persistence foundation must not
+    invent a restriction the canonical documents do not require. An
+    earlier revision of this model added a GiST exclusion constraint
+    that *did* invent such a restriction; it has been removed (see
+    app.db.groups module docstring), and this test is its replacement:
+    the same club_membership_id may have two simultaneously open,
+    overlapping periods in two different groups.
+    """
     with session_scope() as session:
         club = _make_club()
         person = _make_person()
@@ -421,17 +433,17 @@ def test_overlapping_periods_for_same_club_membership_are_prohibited() -> None:
         session.commit()
 
         first = _make_group_membership(group_a, club_membership, valid_from=_utc(2024, 1, 1))
-        session.add(first)
-        session.commit()
+        second = _make_group_membership(group_b, club_membership, valid_from=_utc(2024, 1, 1))
+        session.add_all([first, second])
+        session.commit()  # must not raise
 
-        # Same club_membership_id, overlapping (open-ended) period, even
-        # though it names a *different* group — database-schema.md §8:
-        # "one membership can move between groups over time" implies
-        # sequential, not concurrent, group membership.
-        second = _make_group_membership(group_b, club_membership, valid_from=_utc(2024, 6, 1))
-        session.add(second)
-        with pytest.raises(IntegrityError):
-            session.commit()
+        rows = session.execute(
+            select(GroupMembership).where(
+                GroupMembership.club_membership_id == club_membership.id
+            )
+        ).scalars().all()
+        assert len(rows) == 2
+        assert {row.valid_to for row in rows} == {None}
 
 
 @requires_postgres
@@ -532,15 +544,15 @@ def test_deleting_a_club_membership_with_a_group_membership_is_restricted() -> N
 
 @requires_postgres
 def test_cross_club_group_membership_is_persistable_but_detectable_via_join() -> None:
-    """Documents the current, deliberate scope boundary (see
-    app.db.groups module docstring): this foundation has no DB-level
-    trigger/composite-FK rejecting a Group from one Club being linked, via
-    GroupMembership, to a ClubMembership from a *different* Club — no
-    such mechanism exists anywhere else in this codebase either. The join
-    path to detect the mismatch is fully available, which is what a
-    future service/API layer needs to enforce it (exactly like
-    app.authorization.service.club_boundary_matches already does for
-    UserRoleAssignment).
+    """ADR-0022 §3/§8: Club ownership for GroupMembership is deliberately
+    an application/service-layer invariant, not a database constraint —
+    constructing the ORM row directly (bypassing
+    app.groups.service.create_group_membership) does not validate Club
+    ownership, by design. See tests/integration/test_groups_service.py
+    for the actual enforcement. This test documents that the raw
+    persistence layer remains structurally independent (as ADR-0022 §3
+    explicitly allows) and that the mismatch is still fully detectable
+    via a join, which is exactly what app.groups.service relies on.
     """
     with session_scope() as session:
         club_a = _make_club()
@@ -558,7 +570,7 @@ def test_cross_club_group_membership_is_persistable_but_detectable_via_join() ->
             group_in_club_a, club_membership_in_club_b
         )
         session.add(cross_club_membership)
-        session.commit()  # not rejected today — see docstring above
+        session.commit()  # not rejected at this layer, by design — see docstring above
 
         # But the mismatch is fully detectable via a join:
         joined = session.execute(
@@ -843,11 +855,12 @@ def test_two_instructor_assignments_receive_distinct_uuids() -> None:
 
 @requires_postgres
 def test_cross_club_group_instructor_assignment_is_persistable_but_detectable_via_join() -> None:
-    """Same documented boundary as the GroupMembership cross-Club test
-    above: a User whose only ClubMembership is in Club B can currently be
-    assigned as instructor of a Group owned by Club A. No DB-level
-    mechanism rejects this anywhere in this codebase; the join path to
-    detect it is available for a future service/API layer.
+    """Same documented ADR-0022 §3/§8 boundary as the GroupMembership
+    cross-Club test above: constructing the ORM row directly (bypassing
+    app.groups.service.create_group_instructor_assignment) does not
+    validate that the assigned User has an active ClubMembership in the
+    Group's Club — by design, at this layer. See
+    tests/integration/test_groups_service.py for the actual enforcement.
     """
     with session_scope() as session:
         club_a = _make_club()
@@ -865,7 +878,7 @@ def test_cross_club_group_instructor_assignment_is_persistable_but_detectable_vi
             group_in_club_a, user_in_club_b
         )
         session.add(cross_club_assignment)
-        session.commit()  # not rejected today — see docstring above
+        session.commit()  # not rejected at this layer, by design — see docstring above
 
         joined = session.execute(
             select(Group.club_id, ClubMembership.club_id)

@@ -9,7 +9,6 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = 'b8792b2e655f'
@@ -61,7 +60,6 @@ def upgrade() -> None:
     sa.Column('membership_status', sa.String(length=32), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    postgresql.ExcludeConstraint((sa.column('club_membership_id'), '='), (sa.text('tstzrange(valid_from, valid_to)'), '&&'), using='gist', name='ck_group_memberships_no_overlapping_periods'),
     sa.CheckConstraint('valid_to IS NULL OR valid_to >= valid_from', name='ck_group_memberships_valid_to_after_valid_from'),
     sa.ForeignKeyConstraint(['club_membership_id'], ['club_memberships.id'], ondelete='RESTRICT'),
     sa.ForeignKeyConstraint(['group_id'], ['groups.id'], ondelete='RESTRICT'),

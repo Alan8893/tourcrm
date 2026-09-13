@@ -18,23 +18,22 @@ a `club_id`.
 unconstrained strings: no canonical enum/CHECK vocabulary exists for
 either yet (ADR-0021 §1/§3), and none is invented here.
 
-Cross-Club integrity: this codebase has no existing DB-level mechanism
-(trigger or composite FK) anywhere that enforces "two independently
-foreign-keyed columns must resolve to the same Club" — `UserRoleAssignment`
-(app.db.authorization) is the closest precedent, and its `club_id` is an
-independent column with no such DB-level cross-check either; the only
-existing cross-Club check in this codebase
-(`app.authorization.service.club_boundary_matches`) is a plain Python
-function at the application/service layer, not a database constraint.
-Consistent with that precedent, this persistence foundation does not
-introduce a new trigger-based mechanism (Issue #41 does not authorize
-inventing one), and Group has no API/service layer yet to place an
-application-level check in (also an explicit non-goal). The FK structure
-here still makes a cross-Club combination fully detectable by joining
-`Group.club_id` against `ClubMembership.club_id` — see
-tests/integration/test_groups.py for a regression test proving this join
-path, and the "Documentation follow-up" note in the final report for the
-enforcement-mechanism decision this leaves open for a future issue.
+Cross-Club integrity (ADR-0022): the database models here remain
+structurally independent on purpose — no trigger and no redundant/
+denormalized `club_id` column is introduced. ADR-0022 §3 makes Club
+ownership an application/service-layer invariant instead, enforced by
+one shared mechanism (see app.groups.service) rather than by a database
+constraint or by ad-hoc per-caller checks. Constructing a `GroupMembership`
+or `GroupInstructorAssignment` directly through this module's ORM classes
+(bypassing app.groups.service) does not validate Club ownership — that is
+expected per ADR-0022 §3/§8, not an oversight; production write paths must
+go through app.groups.service instead.
+
+ADR-0021 §2 leaves "whether a person may belong to multiple groups
+simultaneously" as a separate, not-yet-made business-policy question —
+so, unlike `ClubMembership`'s own overlap-prevention exclusion constraint,
+`GroupMembership` here does not restrict simultaneous membership in more
+than one group at a time.
 """
 
 import uuid
@@ -42,7 +41,7 @@ from datetime import datetime
 from typing import Optional
 
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID, ExcludeConstraint
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -124,22 +123,6 @@ class GroupMembership(Base):
         sa.CheckConstraint(
             "valid_to IS NULL OR valid_to >= valid_from",
             name="ck_group_memberships_valid_to_after_valid_from",
-        ),
-        # database-schema.md §8 `group_memberships` Rules: "one membership
-        # can move between groups over time" / "overlapping current
-        # assignments should be rejected unless explicitly allowed". No
-        # `membership_status` vocabulary is canonical yet, so — unlike
-        # ClubMembership's analogous exclusion constraint, which can filter
-        # `WHERE status = 'active'` — this cannot be scoped to a specific
-        # status value without inventing one; it is scoped purely
-        # structurally: no two rows for the same club_membership_id may
-        # have overlapping [valid_from, valid_to) ranges, regardless of
-        # which group_id they name.
-        ExcludeConstraint(
-            (sa.column("club_membership_id"), "="),
-            (sa.func.tstzrange(sa.column("valid_from"), sa.column("valid_to")), "&&"),
-            using="gist",
-            name="ck_group_memberships_no_overlapping_periods",
         ),
         # database-schema.md §23: "group memberships by (group_id,
         # valid_from, valid_to) as operationally required".
