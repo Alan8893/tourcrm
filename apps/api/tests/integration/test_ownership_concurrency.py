@@ -56,6 +56,28 @@ immediately (before any write) on a failed check — never checking once
 and writing later. These tests exist so that guarantee is verified
 against a real database on every CI run, not just argued from reading
 the code.
+
+Issue #49 (EventGroupTarget) adds two further tests applying the same
+real-concurrency proof to `create_event_group_target`'s
+`Event.club_id == Group.club_id` check:
+
+- a "reverse"-shaped test: Event and Group start in the same Club: a
+  writer transaction locks both club_id columns via the check and
+  pauses before writing, while a concurrent transaction attempts to
+  change the Group's `club_id` to a different, real Club — proven
+  genuinely blocked via the same `pg_stat_activity` polling as the
+  EventStaffAssignment/GroupInstructorAssignment tests above, with the
+  same conclusion: `FOR SHARE` already prevents this from being a real
+  race. (`Event.club_id`/`Group.club_id` are NOT NULL from row
+  creation, unlike `ClubMembership`, which can be entirely absent for a
+  Person — so unlike the "forward" race above, there is no equivalent
+  "row doesn't exist yet" scenario to test for this relationship: both
+  sides always already exist and already have a Club by the time
+  `create_event_group_target` is called.)
+- a non-interference test: Event and Group start in different Clubs;
+  an unrelated concurrent ClubMembership change (touching neither
+  Event nor Group) is in flight at the same time; the mismatch must
+  still be rejected regardless.
 """
 
 import datetime
@@ -71,16 +93,19 @@ import pytest
 from sqlalchemy import text
 
 from app.authorization.club_ownership import user_has_active_club_membership
-from app.db.events import Event, EventStaffAssignment
+from app.db.events import Event, EventGroupTarget, EventStaffAssignment
 from app.db.groups import Group, GroupInstructorAssignment
 from app.db.identity import Club, ClubMembership, Person, User
 from app.db.session import session_scope
 from app.events.service import (
+    EventGroupTargetClubMismatchError,
     EventStaffAssignmentPrimaryConflictError,
     EventStaffClubMembershipMissingError,
     _lock_event_club_id,
+    create_event_group_target,
     create_event_staff_assignment,
 )
+from app.events.service import _lock_group_club_id as _lock_group_club_id_for_event_targeting
 from app.groups.service import (
     InstructorClubMembershipMissingError,
     _lock_group_club_id,
@@ -624,6 +649,194 @@ def test_group_instructor_assignment_ownership_check_still_rejects_cross_club_un
             session.commit()
 
     thread_a = threading.Thread(target=attempt_cross_club_assignment)
+    thread_b = threading.Thread(target=unrelated_membership_touch)
+    thread_a.start()
+    thread_b.start()
+    thread_a.join(timeout=10)
+    thread_b.join(timeout=10)
+
+    assert result["outcome"] == "rejected"
+
+
+# --- EventGroupTarget (Issue #49): scenario A ------------------------------
+# Event and Group start in the same Club; a concurrent attempt to change
+# the Group's club_id while the check-then-write transaction holds its
+# locks must genuinely block, not silently race past the check.
+
+
+@requires_postgres
+def test_concurrent_group_club_id_change_blocks_until_event_group_target_commits() -> None:
+    """Real two-connection proof that `SELECT ... FOR SHARE` (ADR-0022
+    §6) prevents the same class of "reverse" race for EventGroupTarget:
+    a concurrent change to the exact Group row the ownership check
+    locked cannot complete until the checking transaction ends.
+    """
+    with session_scope() as setup:
+        club_same = Club(name=f"c-{uuid.uuid4().hex[:8]}", status="active")
+        club_other = Club(name=f"c-{uuid.uuid4().hex[:8]}", status="active")
+        setup.add_all([club_same, club_other])
+        setup.commit()
+        event = Event(
+            club_id=club_same.id,
+            event_type="lesson",
+            title="Orienteering basics",
+            start_at=_utc(2026, 9, 20, 17, 0),
+            end_at=_utc(2026, 9, 20, 19, 0),
+            timezone="Europe/Moscow",
+            status="draft",
+        )
+        group = Group(
+            club_id=club_same.id,
+            name=f"Test Group {uuid.uuid4().hex[:8]}",
+            status="active",
+            valid_from=_utc(2024, 1, 1),
+        )
+        setup.add_all([event, group])
+        setup.commit()
+        event_id, group_id, other_club_id = event.id, group.id, club_other.id
+
+    checked_and_locked = threading.Event()
+    mover_pid_ready = threading.Event()
+    permission_to_commit = threading.Event()
+    result: dict[str, object] = {}
+
+    def writer_transaction() -> None:
+        with session_scope() as session:
+            event_club_id = _lock_event_club_id(session, event_id)
+            group_club_id = _lock_group_club_id_for_event_targeting(session, group_id)
+            result["check_ok"] = event_club_id == group_club_id
+            checked_and_locked.set()
+            # Hold the transaction (and its FOR SHARE locks) open until
+            # the main thread has confirmed the concurrent club_id
+            # change is genuinely blocked on it.
+            permission_to_commit.wait(timeout=10)
+
+            session.add(
+                EventGroupTarget(
+                    event_id=event_id, group_id=group_id, valid_from=_utc(2024, 1, 1)
+                )
+            )
+            session.commit()
+            result["writer_committed_at"] = time.monotonic()
+
+    def mover_transaction() -> None:
+        checked_and_locked.wait(timeout=10)
+        with session_scope() as session:
+            pid = session.execute(text("SELECT pg_backend_pid()")).scalar_one()
+            result["mover_pid"] = pid
+            mover_pid_ready.set()
+            # This blocks inside PostgreSQL until the writer's FOR SHARE
+            # lock on this exact Group row is released.
+            session.execute(
+                text("UPDATE groups SET club_id = :new_club_id WHERE id = :id"),
+                {"new_club_id": str(other_club_id), "id": str(group_id)},
+            )
+            session.commit()
+            result["move_done_at"] = time.monotonic()
+
+    writer_thread = threading.Thread(target=writer_transaction)
+    mover_thread = threading.Thread(target=mover_transaction)
+    writer_thread.start()
+    mover_thread.start()
+
+    assert mover_pid_ready.wait(timeout=10)
+    result["mover_blocked_confirmed"] = _wait_until_blocked_on_a_lock(result["mover_pid"])
+    permission_to_commit.set()
+
+    writer_thread.join(timeout=15)
+    mover_thread.join(timeout=15)
+
+    assert result["check_ok"] is True
+    assert result["mover_blocked_confirmed"] is True, (
+        "the concurrent club_id change never showed up as blocked on a lock — "
+        "the FOR SHARE guarantee this test exists to verify was not observed"
+    )
+    assert result["writer_committed_at"] <= result["move_done_at"]
+
+    with session_scope() as check:
+        final_group_club_id = check.execute(
+            text("SELECT club_id FROM groups WHERE id = :id"), {"id": str(group_id)}
+        ).scalar_one()
+        target_count = check.execute(
+            text("SELECT count(*) FROM event_group_targets WHERE event_id = :id"),
+            {"id": str(event_id)},
+        ).scalar_one()
+    assert str(final_group_club_id) == str(other_club_id)
+    assert target_count == 1
+
+
+# --- EventGroupTarget (Issue #49): scenario B ------------------------------
+# Event and Group start in different Clubs; an unrelated concurrent
+# ClubMembership change (touching neither Event nor Group) must have no
+# bearing on the rejection.
+
+
+@requires_postgres
+def test_event_group_target_creation_remains_rejected_despite_unrelated_concurrent_change() -> (
+    None
+):
+    with session_scope() as setup:
+        club_a = Club(name=f"c-{uuid.uuid4().hex[:8]}", status="active")
+        club_b = Club(name=f"c-{uuid.uuid4().hex[:8]}", status="active")
+        person = Person(last_name="Ivanova", first_name="Anna")
+        setup.add_all([club_a, club_b, person])
+        setup.commit()
+        event_in_a = Event(
+            club_id=club_a.id,
+            event_type="lesson",
+            title="Orienteering basics",
+            start_at=_utc(2026, 9, 20, 17, 0),
+            end_at=_utc(2026, 9, 20, 19, 0),
+            timezone="Europe/Moscow",
+            status="draft",
+        )
+        group_in_b = Group(
+            club_id=club_b.id,
+            name=f"Test Group {uuid.uuid4().hex[:8]}",
+            status="active",
+            valid_from=_utc(2024, 1, 1),
+        )
+        unrelated_membership = ClubMembership(
+            club_id=club_b.id,
+            person_id=person.id,
+            membership_type="regular",
+            status="active",
+            joined_at=_utc(2024, 1, 1),
+        )
+        setup.add_all([event_in_a, group_in_b, unrelated_membership])
+        setup.commit()
+        event_a_id, group_b_id = event_in_a.id, group_in_b.id
+        unrelated_membership_id = unrelated_membership.id
+
+    start_gate = threading.Barrier(2, timeout=10)
+    result: dict[str, object] = {}
+
+    def attempt_cross_club_target() -> None:
+        with session_scope() as session:
+            start_gate.wait()
+            try:
+                create_event_group_target(
+                    session,
+                    event_id=event_a_id,
+                    group_id=group_b_id,
+                    valid_from=_utc(2024, 1, 1),
+                )
+                result["outcome"] = "succeeded"
+            except EventGroupTargetClubMismatchError:
+                result["outcome"] = "rejected"
+
+    def unrelated_membership_touch() -> None:
+        with session_scope() as session:
+            start_gate.wait()
+            # Touches an unrelated membership in Club B — must have no
+            # effect on the cross-Club rejection above.
+            session.execute(
+                text("UPDATE club_memberships SET updated_at = now() WHERE id = :id"),
+                {"id": str(unrelated_membership_id)},
+            )
+            session.commit()
+
+    thread_a = threading.Thread(target=attempt_cross_club_target)
     thread_b = threading.Thread(target=unrelated_membership_touch)
     thread_a.start()
     thread_b.start()
