@@ -88,9 +88,28 @@ Backend должен отклонять неоднозначные запрос�
 
 ### POST `/api/v1/events/{event_id}/status`
 
-Статусы определены в business rules.
+Канонические статусы и переходы определены ADR-0018 и совпадают с `business-rules.md` и `events-and-schedule.md`:
 
-Недопустимые переходы отклоняются.
+- `draft`
+- `published`
+- `in_progress`
+- `completed`
+- `cancelled`
+- `archived`
+
+Допустимые переходы:
+
+```text
+draft -> published
+published -> in_progress
+published -> cancelled
+in_progress -> completed
+in_progress -> cancelled
+completed -> archived
+cancelled -> archived
+```
+
+Недопустимые переходы отклоняются. `planned` не является отдельным статусом Event.
 
 Cancellation reason обязателен при отмене.
 

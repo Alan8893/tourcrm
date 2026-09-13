@@ -137,16 +137,30 @@
 
 ### 10.1 Жизненный цикл Event
 
-Рекомендуемые статусы:
+Канонические статусы Event определены ADR-0018:
 
-- draft;
-- planned;
-- published;
-- cancelled;
-- completed;
-- archived.
+- `draft`;
+- `published`;
+- `in_progress`;
+- `completed`;
+- `cancelled`;
+- `archived`.
 
-Переходы между статусами должны быть ограничены правилами жизненного цикла.
+Допустимые переходы:
+
+```text
+draft -> published
+published -> in_progress
+published -> cancelled
+in_progress -> completed
+in_progress -> cancelled
+completed -> archived
+cancelled -> archived
+```
+
+Другие переходы не допускаются базовым контрактом API. Статус `planned` не является отдельным состоянием: запланированное, но ещё не опубликованное мероприятие остаётся в `draft`.
+
+Канонические значения статусов в домене и API записываются в lowercase.
 
 ### 10.2 Отмена
 
