@@ -33,7 +33,7 @@ Canonical fields:
 
 `role_in_event` remains a string. The initial persistence contract does not close the vocabulary; the value must describe the person's responsibility/staff role in the Event. Vocabulary reconciliation with `GroupInstructorAssignment.role_in_group` remains a follow-up if the product requires a shared dictionary.
 
-Multiple active staff assignments are allowed. At most one active assignment for an Event may have `is_primary = true`. The primary assignment is the canonical Event responsibility used for `own_events` when responsibility is required. Non-primary assignments still represent explicit Event responsibility/staff membership and may be used by operations whose policy permits assigned staff access.
+Multiple active staff assignments are allowed. At most one active assignment for an Event may have `is_primary = true`. The primary assignment is the canonical Event responsibility used for `own_events` when responsibility is required. Non-primary assignments still represent explicit Event staff membership.
 
 Assignments are historical. Closing `valid_to` preserves the relationship history and does not delete it.
 
@@ -86,51 +86,35 @@ Canonical fields:
 
 The relationship is invalid when guardian and child are the same Person.
 
-Canonical relationship status values are:
+Canonical relationship status values are `active`, `inactive`, `revoked`.
 
-- `active`
-- `inactive`
-- `revoked`
+`valid_from`/`valid_to` determine temporal validity. Duplicate active relationships for the same guardian, child and relationship type are not allowed. Historical rows are preserved. At most one valid primary-contact relationship may exist for a child at a time.
 
-`valid_from`/`valid_to` determine temporal validity. An `active` relationship is authorization-eligible only when its validity interval contains the authorization time.
+Because the relationship itself is Club-neutral, Event access in Club X requires an active valid GuardianRelationship, the child to have an active ClubMembership in Club X, and the guardian User's Person to have an active ClubMembership in Club X.
 
-Duplicate active relationships for the same guardian, child and relationship type are not allowed. Historical inactive/revoked rows are preserved.
-
-At most one valid primary-contact relationship may exist for a child at a time. Primary-contact status is independent of the relationship type.
-
-Because the relationship itself is Club-neutral, Club authorization is resolved from the persons' current Club memberships. Guardian access to an Event in Club X requires:
-
-1. an active GuardianRelationship from the requester to the child;
-2. the child to have an active ClubMembership in Club X;
-3. the guardian User's Person to have an active ClubMembership in Club X when the product's club membership policy requires authenticated club participation.
-
-A GuardianRelationship in one Club must not be treated as proof of membership or authorization in another Club.
+A GuardianRelationship must not be treated as proof of authorization in another Club.
 
 ### 4. EventParticipation dependency boundary
 
 `EventParticipation` is a separate persistence entity and remains outside the relationship foundation implementation defined by this ADR.
 
-The authorization dependency is deterministic:
-
-- `self` Event visibility requires an active/eligible `EventParticipation` relationship for the requesting Person, unless a later explicit self-visible Event policy adds another relationship;
-- `children` Event visibility is allowed when the Event is related to an authorized child through either EventParticipation or active Group membership represented by an active `EventGroupTarget` to that child's Group;
+- `self` Event visibility requires an eligible `EventParticipation` relationship for the requesting Person;
+- `children` Event visibility may derive from child EventParticipation or active child GroupMembership reached through active EventGroupTarget;
 - group targeting alone does not create participation;
 - participation does not imply attendance;
-- registration status transition rules and self-registration policy remain deferred as stated by ADR-0020.
+- self-registration and registration transition policy remain deferred under ADR-0020.
 
-The persistence implementation of `EventParticipation` must therefore preserve at least the documented `event_id`, `person_id`, registration state and timestamps, with a uniqueness constraint preventing duplicate participation for the same Event and Person.
+The EventParticipation persistence implementation must prevent duplicate participation for the same Event and Person.
 
 ### 5. Authorization consequences
 
-The canonical relationship sources are:
-
-| Scope | Relationship source |
+| Scope | Canonical relationship source |
 |---|---|
-| `own_events` | active `EventStaffAssignment` for requester, with applicable responsibility policy |
-| `own_groups` | active `EventGroupTarget` + active `GroupInstructorAssignment` for requester |
-| `self` | requester Person's eligible `EventParticipation` |
-| `children` | active `GuardianRelationship` + child-related EventParticipation or active Group membership through EventGroupTarget |
-| `all` | club-level permission and object policy; no relationship required |
+| `own_events` | active EventStaffAssignment for requester |
+| `own_groups` | active EventGroupTarget + active GroupInstructorAssignment |
+| `self` | requester Person's eligible EventParticipation |
+| `children` | active GuardianRelationship + child-related participation or group targeting |
+| `all` | club-level permission/object policy |
 | `none` | no access |
 
 Role names alone never establish these relationships.
@@ -145,18 +129,7 @@ Role names alone never establish these relationships.
 
 ## Non-goals
 
-This ADR does not implement:
-
-- Event API;
-- EventStaffAssignment persistence;
-- EventGroupTarget persistence;
-- GuardianRelationship persistence;
-- EventParticipation persistence;
-- self-registration workflow;
-- registration transition policy;
-- attendance;
-- new permissions or scopes;
-- role grants.
+This ADR does not implement Event API, the four persistence foundations, self-registration, attendance, new permissions/scopes or role grants.
 
 ## Traceability
 
