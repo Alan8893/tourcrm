@@ -117,8 +117,11 @@ def probe_client(probe_app: FastAPI) -> TestClient:
 
 
 def _authenticate_as(probe_app: FastAPI, user_id: uuid.UUID) -> None:
+    # session_id is irrelevant to these authorization-only tests (Issue
+    # #33 added it to CurrentPrincipal for real session-derived identity;
+    # a synthetic value is fine here since nothing in this file inspects it).
     probe_app.dependency_overrides[get_current_principal] = lambda: CurrentPrincipal(
-        user_id=user_id
+        user_id=user_id, session_id=uuid.uuid4()
     )
 
 

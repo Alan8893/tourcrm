@@ -16,6 +16,13 @@ class ConfigurationError(RuntimeError):
 @dataclass(frozen=True)
 class Settings:
     database_url: str
+    # auth-api.md §19 / ADR-0009: session/CSRF cookies need `Secure` in an
+    # Internet deployment, but a plain-HTTP LAN/local-dev deployment (also
+    # explicitly anticipated by §19) cannot set it. No specific deployment
+    # profile is canonical, so this is deployment configuration (default
+    # "secure", matching the documented default expectation), not a
+    # hardcoded assumption baked into the cookie-issuing code itself.
+    cookie_secure: bool = True
 
 
 def get_settings() -> Settings:
@@ -25,4 +32,5 @@ def get_settings() -> Settings:
             "DATABASE_URL environment variable is not set. "
             "See apps/api/.env.example for the expected format."
         )
-    return Settings(database_url=database_url)
+    cookie_secure = os.getenv("COOKIE_SECURE", "true").strip().lower() not in ("false", "0", "no")
+    return Settings(database_url=database_url, cookie_secure=cookie_secure)

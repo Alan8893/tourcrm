@@ -20,6 +20,12 @@ TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_URL")
 if TEST_DATABASE_URL and not os.getenv("DATABASE_URL"):
     os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
+# Issue #33: TestClient talks to the app over plain HTTP (http://testserver);
+# a `Secure` session/CSRF cookie would never be resent by the client on the
+# next request, which is correct client behavior, not a bug — set the same
+# way a real plain-HTTP/LAN deployment would (see apps/api/.env.example).
+os.environ.setdefault("COOKIE_SECURE", "false")
+
 requires_postgres = pytest.mark.skipif(
     not TEST_DATABASE_URL,
     reason="TEST_DATABASE_URL/DATABASE_URL is not set; no PostgreSQL instance configured",
