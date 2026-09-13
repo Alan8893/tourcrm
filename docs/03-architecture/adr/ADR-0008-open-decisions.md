@@ -53,6 +53,8 @@ Living document
 
 Нужно определить сроки хранения различных категорий персональных данных, файлов, аудита, финансовых операций и security events с учётом применимого законодательства и политики клуба.
 
+До закрытия ODR-013 запрещено самостоятельно выбирать сроки хранения, правила hard-delete/архивирования и TTL для audit/security records. Канонический документ `docs/03-architecture/data-retention-and-deletion.md` восстановлен и фиксирует текущую границу решения.
+
 ## ODR-014: invitation creation permission code
 
 `docs/05-api/auth-api.md` currently references permission code `membership.invitation.create` for invitation creation. The canonical permission catalog in `docs/02-requirements/roles-and-permissions.md` does not contain this code.
@@ -60,6 +62,26 @@ Living document
 This discrepancy is intentionally unresolved. No implementation may silently substitute another permission, invent a new permission, or infer a role grant. The product/specification owner must decide whether to reuse an existing canonical permission or introduce a new permission through the normal documentation/ADR change process.
 
 The persistence contract for authentication is defined in `docs/03-architecture/authentication-persistence.md`, but invitation authorization remains blocked by this ODR.
+
+## ODR-015: audit infrastructure contract
+
+Нужно определить и утвердить минимальный канонический контракт AuditLog/audit infrastructure до реализации Issue #59.
+
+Требуется явно принять:
+
+- структуру audit record и обязательные поля;
+- категорию/тип действия и формат идентификации target;
+- правила хранения actor/request/correlation context;
+- допустимый формат `details` и запрет на секреты/аутентификационные материалы;
+- transaction semantics: входит ли запись аудита в ту же атомарную бизнес-транзакцию для соответствующих операций;
+- fail-closed/fail-open поведение по категориям операций;
+- перечень обязательных audit-relevant операций на текущем этапе;
+- способ доступа к audit records и границы отсутствия публичного Audit API, если это сохраняется;
+- retention/deletion rules для audit records — совместно с ODR-013.
+
+До закрытия ODR-015 Claude не должен проектировать или реализовывать собственную схему AuditLog, выбирать failure semantics или самостоятельно определять обязательные поля/категории аудита.
+
+Issue #59 является implementation gate: сначала закрываются ODR-015 и необходимые связанные пункты ODR-013, затем выполняется реализация.
 
 ## Правило
 
