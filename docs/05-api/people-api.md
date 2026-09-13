@@ -23,21 +23,13 @@ API не смешивает:
 
 `/api/v1`
 
-People namespace:
+People namespace: `/api/v1/people`
 
-`/api/v1/people`
+Membership namespace: `/api/v1/memberships`
 
-Membership namespace:
+Groups namespace: `/api/v1/groups`
 
-`/api/v1/memberships`
-
-Groups namespace:
-
-`/api/v1/groups`
-
-Guardians namespace:
-
-`/api/v1/guardians`
+Guardians namespace: `/api/v1/guardians`
 
 ## 4. Получение списка людей
 
@@ -45,15 +37,7 @@ Guardians namespace:
 
 Permission: `person.read` с подходящим scope.
 
-Поддерживает:
-
-- pagination;
-- search по разрешённым полям;
-- filter по статусу;
-- filter по возрастной группе;
-- filter по текущему membership;
-- filter по группе;
-- sorting по разрешённым полям.
+Поддерживает pagination, search, filter и sorting по разрешённым полям.
 
 Для участников список не должен превращаться в глобальный каталог персональных данных. Scope определяется ролью и назначением пользователя.
 
@@ -73,28 +57,19 @@ API возвращает только поля, разрешённые конк�
 
 Создание Person доступно уполномоченным администраторам/инструкторам согласно permission policy.
 
-Person не создаётся автоматически только из-за существования User без проверки возможного duplicate.
-
-Перед созданием должен выполняться controlled duplicate check по доступным идентификаторам.
+Перед созданием выполняется controlled duplicate check.
 
 ## 7. Обновление Person
 
 ### PATCH `/api/v1/people/{person_id}`
 
-Частичное обновление.
-
-Rules:
-
-- immutable identity fields изменяются только по определённой политике;
-- чувствительные поля могут иметь отдельные permissions;
-- каждое изменение значимого персонального поля должно быть audit'ed;
-- optimistic concurrency должна использоваться там, где потеря параллельного изменения недопустима.
+Частичное обновление с audit для значимых изменений и optimistic concurrency там, где потеря параллельного изменения недопустима.
 
 ## 8. Архивирование Person
 
 ### POST `/api/v1/people/{person_id}/archive`
 
-Архивирование не должно уничтожать историю мероприятий, походов, документов, финансов и аудита.
+Архивирование не уничтожает историю мероприятий, походов, документов, финансов и аудита.
 
 Физическое удаление Person по умолчанию запрещено.
 
@@ -102,15 +77,7 @@ Rules:
 
 ### GET `/api/v1/memberships`
 
-Фильтры:
-
-- status;
-- membership_type;
-- group;
-- joined period;
-- left period;
-- person;
-- active/current.
+Фильтры: status, membership_type, group, joined period, left period, person, active/current.
 
 ## 10. Создание membership
 
@@ -129,15 +96,11 @@ Request concept:
 }
 ```
 
-Один человек не должен получить несколько одновременно активных конфликтующих membership в одном клубе без явного правила.
-
 ## 11. Изменение membership
 
 ### PATCH `/api/v1/memberships/{membership_id}`
 
 Изменяются только допустимые атрибуты текущего жизненного цикла.
-
-Переходы статусов должны соответствовать бизнес-правилам.
 
 ## 12. Membership status transition
 
@@ -152,7 +115,7 @@ Request:
 }
 ```
 
-API валидирует допустимость перехода, permission requester и наличие обязательных данных.
+API валидирует допустимость перехода, permission requester и обязательные данные.
 
 ## 13. История membership
 
@@ -192,6 +155,8 @@ API валидирует допустимость перехода, permission r
 
 Добавляет человека в группу.
 
+API может принимать `person_id` как идентификатор человека, но persistence-модель `GroupMembership` хранит `club_membership_id`; backend обязан разрешить Person в membership целевого Club и выполнить cross-Club validation согласно ADR-0022.
+
 Request:
 
 ```json
@@ -205,7 +170,7 @@ Request:
 
 Переводит человека в другую группу.
 
-Перевод должен завершать предыдущую active membership в группе и создавать новый исторический интервал.
+Перевод должен завершать предыдущий актуальный исторический интервал и создавать новый согласно канонической persistence-модели.
 
 ## 16. Group membership history
 
@@ -215,15 +180,30 @@ Request:
 
 ## 17. Guardians
 
+`GuardianRelationship` — Club-neutral связь Person ↔ Person. Канонические persistence-поля:
+
+- `id`;
+- `guardian_person_id`;
+- `child_person_id`;
+- `relationship_type`;
+- `status`;
+- `is_primary_contact`;
+- `valid_from`;
+- `valid_to`;
+- `created_at`;
+- `updated_at`.
+
+Канонические значения `status`: `active`, `inactive`, `revoked`.
+
+Self-link guardian → same person запрещён. Дублирующие активные relationships одного типа для одной пары не допускаются; исторические `inactive`/`revoked` сохраняются. Для ребёнка допускается не более одной одновременно действующей primary-contact relationship.
+
 ### GET `/api/v1/people/{person_id}/guardians`
 
-Доступ только при наличии `guardian.read` и scope.
-
-Для участника без соответствующего права наличие guardian relationship не должно автоматически раскрывать все данные законного представителя.
+Доступ только при наличии `guardian.read` и подходящего scope.
 
 ### POST `/api/v1/people/{person_id}/guardians`
 
-Создаёт связь с существующим Person или запускает controlled linking flow.
+Создаёт relationship с существующим Person или запускает controlled linking flow.
 
 Request concept:
 
@@ -231,34 +211,32 @@ Request concept:
 {
   "guardian_person_id": "...",
   "relationship_type": "parent",
-  "is_primary": true,
-  "status": "pending"
+  "is_primary_contact": true,
+  "status": "active"
 }
 ```
 
+Backend не должен принимать `pending` как статус `GuardianRelationship`: если требуется отдельное подтверждение, это является workflow-состоянием процесса linking и не меняет канонический status relationship.
+
 ### PATCH `/api/v1/guardians/{relationship_id}`
 
-Изменяет relationship type/status/primary contact согласно permission.
-
-### POST `/api/v1/guardians/{relationship_id}/approve`
-
-Подтверждает связь, когда для неё требуется подтверждение.
+Изменяет relationship type/status/primary contact согласно permission и lifecycle rules.
 
 ### POST `/api/v1/guardians/{relationship_id}/terminate`
 
-Прекращает актуальность связи без уничтожения истории.
+Прекращает актуальность связи без уничтожения истории; каноническое действие переводит relationship в `revoked` либо `inactive` согласно семантике операции.
 
 ## 18. My children
 
 ### GET `/api/v1/me/children`
 
-Возвращает детей текущего authenticated guardian, только по подтверждённым актуальным relationship.
+Возвращает детей текущего authenticated guardian только по active, interval-valid `GuardianRelationship` и при выполнении authorization policy.
 
 Для каждого ребёнка возвращается только разрешённый parent-visible projection.
 
 ## 19. Child context
 
-Для родителя frontend может выбирать активный child context, но backend на каждом запросе самостоятельно проверяет relationship и permission.
+Для родителя frontend может выбирать active child context, но backend на каждом запросе самостоятельно проверяет relationship и permission.
 
 Наличие `child_id` в URL или query не является доказательством права доступа.
 
@@ -267,8 +245,6 @@ Request concept:
 ### GET `/api/v1/memberships/pending`
 
 Доступ администратора.
-
-Возвращает заявки, ожидающие approval.
 
 ### POST `/api/v1/memberships/{membership_id}/approve`
 
@@ -316,29 +292,19 @@ People API предоставляет административное пред�
 
 Удаляет назначение роли.
 
-Правила:
-
-- нельзя назначить роль выше собственных полномочий;
-- системно критические административные роли требуют отдельной permission policy;
-- смена ролей audit'ed;
-- role assignment не меняет Person.
+Role assignment не меняет Person.
 
 ## 24. Instructor assignment
 
-Инструктор — Person/User с соответствующим role assignment.
+Инструктор — Person/User с соответствующим role assignment. Само наличие роли не означает ответственность за конкретную группу или Event.
 
-Связь инструктора с группой или мероприятием создаётся отдельной доменной сущностью, а не определяется только ролью.
+Для группы используется `GroupInstructorAssignment`.
+
+Для мероприятия используется `EventStaffAssignment`, определённая ADR-0023. Она является явным источником `own_events`; `Event.created_by` не является заменой этой связи.
 
 ## 25. Sensitive profile sections
 
-API должен поддерживать отдельные policy areas для:
-
-- contact data;
-- address;
-- medical/safety data;
-- documents;
-- emergency contacts;
-- guardian data.
+API должен поддерживать отдельные policy areas для contact data, address, medical/safety data, documents, emergency contacts и guardian data.
 
 Не следует выдавать полный Person object любому requester с общим `person.read`.
 
@@ -347,25 +313,16 @@ API должен поддерживать отдельные policy areas для
 Минимальные проверки:
 
 - корректность форматов дат;
-- логика возрастных данных;
-- email/phone normalization;
 - отсутствие невозможных интервалов membership;
-- отсутствие двух active primary guardian relationships, если доменная политика запрещает это;
+- корректность guardian relationship lifecycle;
+- отсутствие более одной действующей primary-contact relationship для ребёнка;
 - невозможность привязать Person к архивной группе;
-- невозможность создать relationship со статусом active без требуемого подтверждения;
-- проверка существования и принадлежности объектов одному Club.
+- проверка существования и принадлежности объектов одному Club там, где это применимо;
+- Guardian authorization учитывает active relationship и interval validity.
 
 ## 27. Audit
 
-Audit обязателен для:
-
-- создания/изменения/архивирования Person;
-- изменения membership status;
-- переводов между группами;
-- создания/изменения/терминации guardian relationship;
-- approval/rejection membership;
-- role assignments;
-- import execution.
+Audit обязателен для создания/изменения/архивирования Person, membership status, переводов между группами, создания/изменения/терминации GuardianRelationship, role assignments и import execution.
 
 ## 28. Ошибки
 
@@ -390,14 +347,14 @@ Audit обязателен для:
 1. Person и User не смешиваются.
 2. Один Person может иметь несколько доменных ролей.
 3. Membership сохраняет историю.
-4. Group membership сохраняет историю переходов.
+4. Group membership сохраняет историю.
 5. Один guardian может иметь несколько детей.
 6. Один ребёнок может иметь несколько guardians.
-7. Parent API показывает только подтверждённых детей.
+7. Parent API показывает только разрешённых детей по GuardianRelationship.
 8. Child id никогда не заменяет authorization check.
 9. Sensitive fields защищены отдельными permissions/scopes.
 10. Pending membership не становится active без требуемого approval.
-11. Import поддерживает dry-run и не разрушает существующие данные при частичной ошибке.
+11. Import поддерживает dry-run.
 12. Role changes не изменяют Person или Membership.
 13. Исторически значимые записи не удаляются физически по обычным CRUD endpoint'ам.
 14. Значимые операции попадают в audit.
