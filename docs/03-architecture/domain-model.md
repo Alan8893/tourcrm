@@ -189,10 +189,15 @@ TourCRM разделяет четыре понятия:
 - start_at;
 - end_at;
 - timezone;
-- location;
+- location_type;
+- location_name;
+- location_address;
+- location_latitude;
+- location_longitude;
 - status;
 - cancellation_reason;
 - created_by;
+- updated_by;
 - created_at;
 - updated_at.
 

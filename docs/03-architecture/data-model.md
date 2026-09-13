@@ -188,7 +188,11 @@ M:N Person ↔ Person через семантику guardian/child.
 - start_at;
 - end_at;
 - timezone;
-- location;
+- location_type;
+- location_name;
+- location_address nullable;
+- location_latitude nullable;
+- location_longitude nullable;
 - status;
 - cancellation_reason nullable;
 - created_by;
