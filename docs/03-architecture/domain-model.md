@@ -128,7 +128,7 @@ TourCRM разделяет четыре понятия:
 `attendance.update`
 `finance.read`
 
-Система должна поддерживать scope, например `all`, `own_groups`, `self`, `children`.
+Система должна поддерживать scope, например `all`, `own_groups`, `own_events`, `self`, `children`.
 
 ## 8. GuardianRelationship
 
@@ -158,9 +158,62 @@ TourCRM разделяет четыре понятия:
 - description;
 - status;
 - valid_from;
-- valid_to.
+- valid_to;
+- created_at;
+- updated_at.
 
-Участник может исторически состоять в разных группах. Текущая и историческая принадлежность должны различаться.
+`Group.status` остаётся строковым значением; канонический набор lifecycle-значений требует отдельного business-policy решения.
+
+Группа принадлежит ровно одному Club.
+
+### GroupMembership
+
+Историческая ассоциация `ClubMembership` с `Group`.
+
+Основные атрибуты:
+
+- id;
+- group_id;
+- club_membership_id;
+- valid_from;
+- valid_to;
+- membership_status;
+- created_at;
+- updated_at.
+
+`person_id` непосредственно в GroupMembership не хранится: Person определяется через `club_membership_id -> ClubMembership.person_id`.
+
+`is_primary` и `assigned_by` не входят в каноническую persistence-модель первой версии. Вопрос одновременной принадлежности к нескольким группам, основной группы и отдельной domain-сущности инициатора требует отдельного решения.
+
+### GroupInstructorAssignment
+
+Явная историческая связь User с Group, определяющая ответственность за группу.
+
+Основные атрибуты:
+
+- id;
+- group_id;
+- user_id;
+- role_in_group;
+- is_primary;
+- valid_from;
+- valid_to;
+- created_at;
+- updated_at.
+
+`role_in_group` пока не имеет закрытого канонического enum; словарь должен быть согласован с моделью ответственности Event.
+
+`is_primary` позволяет отличать основного ответственного от других явных назначений.
+
+`own_groups` authorization опирается на активный GroupInstructorAssignment, а не только на роль instructor.
+
+### Cross-Club ownership
+
+Group принадлежит одному Club. GroupMembership допустим только если `Group.club_id == ClubMembership.club_id`. GroupInstructorAssignment допустим только если назначаемый User имеет active ClubMembership в Club группы.
+
+Эти invariants являются частью cross-Club ownership contract и должны обеспечиваться на authoritative application/service boundary согласно ADR-0022.
+
+Event-to-Group targeting является отдельной связью и не определяется этим Group foundation.
 
 ## 10. Event
 
