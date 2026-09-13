@@ -40,13 +40,15 @@ Attendance:
 - pagination;
 - sorting.
 
-Backend обязан ограничивать результаты по permission/scope requester.
+Backend обязан ограничивать результаты по canonical permission/scope и object relationship requester.
+
+Канонические scopes: `all`, `own_groups`, `own_events`, `self`, `children`, `none`. `assigned_events` является алиасом `own_events`.
 
 ## 5. Event details
 
 ### GET `/api/v1/events/{event_id}`
 
-Возвращает Event и связанные данные в пределах permission.
+Возвращает Event и связанные данные в пределах permission/scope/object policy.
 
 При необходимости подробности специализированного Trip/TourSlet/Competition запрашиваются отдельными endpoint'ами.
 
@@ -69,6 +71,8 @@ Request concept:
   "instructor_ids": ["..."]
 }
 ```
+
+Каноническая Event persistence model использует `location_type`, `location_name`, `location_address`, `location_latitude`, `location_longitude`; отдельного поля `location` в физической модели нет (ADR-0019). API implementation must map request representation to the canonical field model.
 
 ## 7. Update event
 
@@ -117,6 +121,8 @@ Cancellation reason обязателен при отмене.
 
 ### POST `/api/v1/events/{event_id}/archive`
 
+Требуемое permission: `event.manage` с применимым scope/object policy.
+
 Архивирование не должно уничтожать attendance, participants, audit или финансовые связи.
 
 Hard delete доступен только для ещё не использовавшихся черновиков, если отдельная политика это разрешает.
@@ -141,7 +147,7 @@ RRULE должен валидироваться backend.
 
 ### GET `/api/v1/events/series/{series_id}`
 
-Возвращает recurring configuration и список применённых overrides/exceptions согласно pagination/period limits.
+Возвращает recurring configuration и список применённых overrides/exceptions согласно pagination/period limits и requester authorization.
 
 ## 12. Series update
 
@@ -150,6 +156,8 @@ RRULE должен валидироваться backend.
 Изменение серии требует explicit update scope.
 
 Исторические occurrences, которые уже прошли, не должны непреднамеренно переписывать историю.
+
+Для schedule/recurrence management используются только канонические Event permissions (`event.update` / `event.manage` согласно конкретной операции); отдельного `event.schedule.manage` нет.
 
 ## 13. Series exceptions
 
@@ -185,7 +193,7 @@ RRULE должен валидироваться backend.
 
 ### GET `/api/v1/events/calendar`
 
-Возвращает calendar projection для requester.
+Возвращает calendar projection для requester после применения `event.read` и scope/object policy.
 
 Поддерживает filtering by:
 
@@ -193,6 +201,8 @@ RRULE должен валидироваться backend.
 - groups;
 - event types;
 - date range.
+
+Фильтры не могут расширять доступ.
 
 ## 17. iCalendar
 
@@ -208,54 +218,72 @@ Feed token должен быть отдельным секретом и не д�
 
 ### GET `/api/v1/events/{event_id}/participants`
 
-Возвращает список participants с pagination.
+Возвращает список participants с pagination после проверки `event.read` и применимого scope/object policy.
 
 ### POST `/api/v1/events/{event_id}/participants`
 
-Записывает человека на мероприятие, если политика допускает самостоятельную/инструкторскую регистрацию.
+Записывает человека на мероприятие уполномоченным пользователем с `event.manage` и применимым scope/object policy.
+
+`event.participant.read` и `event.participant.manage` не являются отдельными permissions.
 
 ## 19. Self registration
 
 ### POST `/api/v1/me/events/{event_id}/registration`
 
-Участник может зарегистрироваться, только если:
+Endpoint зарезервирован контрактом, но **не входит в реализационно готовый первый срез**.
 
-- event открыт для self-registration;
-- membership active;
-- возраст/группа/другие ограничения соблюдены.
+Реализация заблокирована до принятия детерминированной registration policy, включающей как минимум:
+
+- event self-registration flag;
+- registration window;
+- membership state;
+- age/group restrictions;
+- capacity/waitlist rules;
+- допустимые registration status transitions;
+- cancellation deadline.
+
+Нельзя выводить эти правила из роли пользователя или из названия статуса без отдельного принятого правила.
 
 ## 20. Cancel self registration
 
 ### DELETE `/api/v1/me/events/{event_id}/registration`
 
-Отменяет собственную регистрацию в допустимый период.
-
-После deadline cancellation может быть запрещена.
+Endpoint зарезервирован, но реализация также блокируется до принятия детерминированной registration policy и cancellation deadline.
 
 ## 21. Participant status
 
 ### POST `/api/v1/events/{event_id}/participants/{person_id}/status`
 
-Изменяет registration status уполномоченным пользователем.
+Изменяет registration status уполномоченным пользователем с `event.manage` и применимым scope/object policy.
 
-Поддерживаемые состояния должны быть задокументированы enum/reference data.
+Поддерживаемые reference states:
+
+- `invited`;
+- `registered`;
+- `waitlisted`;
+- `declined`;
+- `removed`.
+
+Полный transition graph, capacity/waitlist semantics и deadline rules пока не определены и не должны изобретаться реализацией.
 
 ## 22. Attendance list
 
 ### GET `/api/v1/events/{event_id}/attendance`
 
-Возвращает attendance для occurrence.
+Возвращает attendance для occurrence после проверки `attendance.read` и scope/object policy.
 
 Доступ:
 
-- instructor/leader с соответствующим scope;
-- admin;
-- участник — только собственный статус;
-- guardian — только по разрешённой parent scope policy.
+- instructor/leader — только в рамках applicable `own_events`/`own_groups` scope;
+- admin — согласно назначенному `attendance.read` scope;
+- участник — только собственный статус (`self`);
+- guardian — только статус/данные связанных детей (`children`) по active GuardianRelationship.
 
 ## 23. Mark attendance
 
 ### PUT `/api/v1/events/{event_id}/attendance/{person_id}`
+
+Требуется `attendance.update` и применимый scope/object policy.
 
 Idempotent upsert текущего attendance record.
 
@@ -269,11 +297,13 @@ Request concept:
 }
 ```
 
-Изменение attendance после закрытия мероприятия требует permission и audit reason.
+Изменение attendance после закрытия мероприятия требует `attendance.update`, обязательную причину correction и audit.
 
 ## 24. Bulk attendance
 
 ### PUT `/api/v1/events/{event_id}/attendance`
+
+Требуется `attendance.update` и применимый scope/object policy.
 
 Пакетная запись attendance для группы/списка.
 
@@ -285,11 +315,13 @@ Request concept:
 
 Используется после закрытия attendance window.
 
+Требуется `attendance.update`; отдельного `attendance.correct` permission нет.
+
 Correction содержит:
 
 - previous status;
 - new status;
-- reason;
+- reason — обязательно;
 - actor;
 - timestamp.
 
@@ -297,15 +329,15 @@ Correction содержит:
 
 ### GET `/api/v1/groups/{group_id}/schedule`
 
-Возвращает будущие и недавние мероприятия группы согласно access policy.
+Возвращает будущие и недавние мероприятия группы согласно access policy. Фильтрация не может расширять исходный scope requester.
 
 ## 27. Instructor schedule
 
 ### GET `/api/v1/me/instructor-schedule`
 
-Доступно пользователю с instructor permissions.
+Доступно пользователю с применимым Event permission.
 
-Возвращает assigned events, а не все события клуба.
+Возвращает assigned events / events in applicable own groups, а не все события клуба. Конкретный scope определяется `own_events`/`own_groups`.
 
 ## 28. Conflict detection
 
@@ -337,27 +369,44 @@ Conflict warning может быть non-blocking, если бизнес-пра�
 
 ## 30. Authorization
 
-Примеры permissions:
+Канонический Event/attendance permission mapping определён ADR-0020:
 
-- `event.read`;
-- `event.create`;
-- `event.update`;
-- `event.cancel`;
-- `event.archive`;
-- `event.participant.read`;
-- `event.participant.manage`;
-- `attendance.read`;
-- `attendance.update`;
-- `attendance.correct`;
-- `event.schedule.manage`.
+| Operation | Permission |
+|---|---|
+| Event read, participant read, calendar projection | `event.read` |
+| Event create | `event.create` |
+| Event update | `event.update` |
+| Recurrence/occurrence scheduling management | `event.update` / `event.manage` согласно операции |
+| Event cancel | `event.cancel` |
+| Event archive | `event.manage` |
+| Participant management | `event.manage` |
+| Attendance read | `attendance.read` |
+| Attendance update | `attendance.update` |
+| Attendance correction | `attendance.update` + mandatory reason + audit |
 
-Scope:
+Canonical scopes:
 
-- all club;
-- own groups;
-- assigned events;
-- self;
-- children.
+- `all`;
+- `own_groups`;
+- `own_events`;
+- `self`;
+- `children`;
+- `none`.
+
+`assigned_events` is an alias of `own_events`; `own_records` is not a scope.
+
+Object-level policy is mandatory. A role name alone does not grant unrestricted Event visibility.
+
+### Scope semantics for first implementation slice
+
+- `all` — all eligible club Events after permission, feature and object-policy checks;
+- `own_groups` — Events targeted to groups for which requester has an applicable responsible relationship;
+- `own_events` — Events explicitly assigned/responsible to requester;
+- `self` — requester's own participation/registration or explicitly self-visible Event data;
+- `children` — Event data related to persons connected through an active GuardianRelationship;
+- `none` — no access.
+
+Guardian `children` scope never becomes unrestricted `all`. Instructor role alone never becomes unrestricted Event access.
 
 ## 31. Validation
 
@@ -369,11 +418,13 @@ Backend проверяет:
 - существование и принадлежность объектов Club;
 - instructor availability policy;
 - group status;
-- registration window;
+- registration policy where such policy has been accepted;
 - recurrence validity;
 - no invalid historical rewrite;
 - cancellation reason;
 - attendance status consistency.
+
+Until registration policy is accepted, self-registration operations are not implemented.
 
 ## 32. Audit
 
@@ -392,12 +443,13 @@ Audit обязателен для:
 1. Нельзя изменить recurring schedule неоднозначно.
 2. Прошедшая посещаемость сохраняется при переносе мероприятия.
 3. Attendance относится к конкретному occurrence.
-4. Самостоятельная регистрация соблюдает registration policy.
-5. Participant list и calendar соблюдают scope.
-6. Parent видит только разрешённые данные детей.
+4. Самостоятельная регистрация реализуется только после принятия и соблюдения registration policy.
+5. Participant list и calendar соблюдают canonical permission/scope/object policy.
+6. Parent видит только разрешённые данные детей через active GuardianRelationship.
 7. Cancellation/critical schedule changes могут инициировать notification events.
 8. iCalendar feed не раскрывает данные, недоступные requester.
 9. Недопустимые status transitions отклоняются.
-10. Attendance correction после закрытия требует permission и reason.
+10. Attendance correction после закрытия требует `attendance.update`, reason и audit.
 11. Все изменения значимых сущностей audit'ed.
 12. API соблюдает общий error/pagination/idempotency contract.
+13. API не использует неканонические permissions `event.archive`, `event.participant.read`, `event.participant.manage`, `attendance.correct`, `event.schedule.manage`.
