@@ -1,6 +1,7 @@
 """Event persistence foundation (Issue #36), the EventStaffAssignment
-responsibility relationship (Issue #48), and EventGroupTarget targeting
-(Issue #49).
+responsibility relationship (Issue #48), EventGroupTarget targeting
+(Issue #49), and the EventParticipation Event<->Person link
+(Issue #51).
 
 Canonical sources: docs/04-modules/events-and-schedule.md §5/§10/§11
 (field lists), docs/02-requirements/business-rules.md §10, docs/03-
@@ -8,18 +9,40 @@ architecture/adr/ADR-0018-event-lifecycle.md (canonical statuses/
 transitions), docs/03-architecture/adr/ADR-0019-event-field-model.md
 (canonical Event field list, location model, `updated_by`), docs/03-
 architecture/adr/ADR-0023-event-relationships-and-guardian-persistence.md
-§1/§2 (EventStaffAssignment/EventGroupTarget field lists/invariants),
-ADR-0022 (cross-Club ownership integrity), ADR-0010 (UUID primary keys),
-ADR-0003 (database strategy).
+§1/§2/§4 (EventStaffAssignment/EventGroupTarget field lists/invariants;
+EventParticipation's role in `self`/`children` scope resolution and its
+duplicate-prevention invariant), docs/03-architecture/adr/ADR-0020-
+event-authorization-and-participation-contract.md §4 (participation
+remains separate from group targeting; registration/attendance policy
+explicitly deferred), ADR-0022 (cross-Club ownership integrity),
+ADR-0010 (UUID primary keys), ADR-0003 (database strategy).
+
+EventParticipation's exact field list is Issue #51's own minimal
+persistence contract (id, event_id, person_id, registration_status,
+timestamps) — neither ADR-0020 nor ADR-0023 defines a fuller field
+list, and docs/03-architecture/data-model.md's own longer
+EventParticipation field list (registered_at, attendance_status,
+participant_role, attendance_marked_at, absence_reason, result, notes)
+is stale relative to that boundary; see the Issue #51 implementation
+report for this documentation-reconciliation item, not resolved here.
+`registration_status` is a plain, unconstrained string: ADR-0020 §4
+calls its five listed values ("invited", "registered", "waitlisted",
+"declined", "removed") "documented reference values" while explicitly
+deferring "their complete transition graph ... until a separate
+business-policy decision is accepted" — so no CHECK/enum vocabulary is
+enforced here, matching how `relationship_type`/`role_in_event`/
+`role_in_group` were each left unconstrained elsewhere in this codebase
+whenever no closed vocabulary was canonically ratified.
 
 This module is persistence/domain foundation only. It deliberately does
 not implement: Event API endpoints, EventSeries/recurrence,
-EventOccurrence, EventParticipation, Attendance, GuardianRelationship,
-notifications, calendar/iCalendar, or the Trip/Competition/TourSlet
-extensions (explicit Issue #36/#48/#49 non-goals). It also does not
-implement or depend on authorization: no permission/scope check is
-performed here, and no client-supplied value is ever treated as an
-authorization decision by this module.
+EventOccurrence, Attendance, GuardianRelationship, notifications,
+calendar/iCalendar, self-registration, registration workflow/transition
+policy, or the Trip/Competition/TourSlet extensions (explicit Issue
+#36/#48/#49/#51 non-goals). It also does not implement or depend on
+authorization: no permission/scope check is performed here, and no
+client-supplied value is ever treated as an authorization decision by
+this module.
 
 Dependency direction: this module (persistence) imports from
 app.events.vocabulary and app.events.lifecycle (domain) — never the
@@ -326,4 +349,83 @@ class EventGroupTarget(Base):
     )
 
 
-__all__ = ["Event", "EventStaffAssignment", "EventGroupTarget"]
+class EventParticipation(Base):
+    """The Event<->Person participation link (Issue #51).
+
+    docs/03-architecture/adr/ADR-0023-event-relationships-and-guardian-
+    persistence.md §4 (persistence dependency for `self`/`children`
+    scope resolution; the duplicate-prevention invariant) and docs/03-
+    architecture/adr/ADR-0020-event-authorization-and-participation-
+    contract.md §4 (participation is separate from group targeting;
+    registration/attendance policy is explicitly deferred). See this
+    module's own docstring for why the field list here is intentionally
+    narrower than docs/03-architecture/data-model.md's own
+    EventParticipation section (stale relative to Issue #51's boundary)
+    and why `registration_status` carries no CHECK constraint.
+
+    A single, current-state row per (event, person) — not a historical
+    timeline like `EventStaffAssignment`/`EventGroupTarget`/
+    `GuardianRelationship`: there is no `valid_from`/`valid_to` here,
+    because ADR-0023 §4's invariant is "at most one row, ever" for a
+    given Event/Person pair (enforced by the `UNIQUE(event_id,
+    person_id)` constraint below), not "at most one *currently active*
+    row while history is preserved". Issue #51 does not define how (or
+    whether) a row's `registration_status` changes over time — that is
+    exactly the "registration transition policy" ADR-0020 §4 defers.
+
+    Deliberately independent of every other Event relationship: no
+    reference to `EventGroupTarget`, `GroupMembership`, or
+    `GuardianRelationship`, and none of those tables reference or
+    create this one. Group targeting, group membership, and guardian
+    relationships are explicitly documented as NOT creating
+    EventParticipation (ADR-0023 §2 "Group targeting is audience
+    selection only ... It does not create EventParticipation"; §4
+    "group targeting does not create participation") — this module
+    contains no code path that could do so, since none of those other
+    models or services import from, or are imported by, this class.
+
+    No `club_id`: `Event` already belongs to a Club, and `Person` is
+    connected to a Club only through `ClubMembership` — this table adds
+    no redundant or new Club-ownership mechanism (see also ADR-0022).
+    """
+
+    __tablename__ = "event_participations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("events.id", ondelete="RESTRICT"), nullable=False
+    )
+    person_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("persons.id", ondelete="RESTRICT"), nullable=False
+    )
+    # ADR-0020 §4: no ratified CHECK vocabulary — see module docstring.
+    registration_status: Mapped[str] = mapped_column(sa.String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        server_default=sa.func.now(),
+        onupdate=sa.func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        # ADR-0023 §4: "The persistence implementation must prevent
+        # duplicate participation for the same Event and Person." A
+        # single UNIQUE constraint over both columns is sufficient and
+        # is itself the index needed to look up one Event/Person
+        # participation directly or to list participations by Event
+        # (event_id is the leading column).
+        sa.UniqueConstraint(
+            "event_id", "person_id", name="uq_event_participations_event_id_person_id"
+        ),
+        # The UNIQUE index above cannot efficiently serve "find
+        # participations by Person" (person_id is not its leading
+        # column) — a canonical access pattern per ADR-0023 §4's `self`
+        # scope resolution (the requester's own participations).
+        sa.Index("ix_event_participations_person_id", "person_id"),
+    )
+
+
+__all__ = ["Event", "EventStaffAssignment", "EventGroupTarget", "EventParticipation"]
