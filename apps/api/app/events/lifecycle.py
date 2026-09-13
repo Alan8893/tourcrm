@@ -6,26 +6,39 @@ business-rules.md §10.2 (cancellation requires a reason), docs/04-modules/
 events-and-schedule.md §5/§6/§26 (time range, timezone, coordinate
 consistency).
 
-Pure Python — no FastAPI import, no database session, no ORM dependency —
-so this is testable and reusable without HTTP (mirroring
-app.authorization.service and app.authentication.service's separation).
+Pure Python — no FastAPI import, no database session, no SQLAlchemy/ORM
+import of any kind (not even `app.db.events`, only the equally-pure
+`app.events.vocabulary`) — so this is testable and reusable in complete
+isolation from persistence, not just from HTTP. The dependency direction
+is deliberate: `app.db.events` (persistence) is allowed to import from
+this module (it does, for `validate_timezone` — see below), but this
+module and `app.events.vocabulary` must never import anything from
+`app.db.*`, to keep domain code independent of the persistence
+implementation it happens to be enforced through today. This mirrors
+app.authorization.service/app.authentication.service's separation from
+FastAPI, taken one step further to also exclude the ORM.
+
 This module does not implement or perform authorization: it only decides
 whether a *value* or *transition* is valid per the canonical documents
 above, never who is allowed to apply it.
 
-A `Event.status` CHECK constraint (app.db.events) already rejects an
-invalid status value at the database boundary. A *transition* (old status
--> new status) cannot be expressed as a single-row CHECK constraint,
-which is why it is validated here instead (ADR-0003: business invariants
-that cannot be expressed as constraints are checked at the application/
-domain layer). The same applies to an IANA timezone name, which Postgres
-CHECK constraints cannot validate.
+A `Event.status`/`Event.event_type` CHECK constraint (app.db.events)
+already rejects an invalid value at the database boundary. A *transition*
+(old status -> new status) cannot be expressed as a single-row CHECK
+constraint, which is why it is validated here instead (ADR-0003: business
+invariants that cannot be expressed as constraints are checked at the
+application/domain layer). The same applies to an IANA timezone name,
+which Postgres CHECK constraints cannot validate at all — `app.db.events`
+instead calls this module's `validate_timezone` from a SQLAlchemy
+`@validates` hook, so an invalid timezone is rejected on the actual
+persistence path, not only when a caller remembers to invoke this
+function directly.
 """
 
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from app.db.events import CANONICAL_EVENT_STATUSES, CANONICAL_EVENT_TYPES
+from app.events.vocabulary import CANONICAL_EVENT_STATUSES, CANONICAL_EVENT_TYPES
 
 # ADR-0018's allowed transition graph. Any pair not listed here is
 # rejected, including a status transitioning to itself and `planned`,

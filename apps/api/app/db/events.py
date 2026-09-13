@@ -16,13 +16,23 @@ implement or depend on authorization: no permission/scope check is
 performed here, and no client-supplied value is ever treated as an
 authorization decision by this module.
 
-See app.events.lifecycle for the reusable, FastAPI-independent lifecycle
-(status transition) validation that complements the CHECK constraints
-below — a *transition* (old status -> new status) cannot be expressed as
-a single-row CHECK constraint, so that part of Data integrity is
-necessarily domain/application-layer (ADR-0003 principle: "бизнес-
-инварианты, которые невозможно выразить constraint'ами, проверяются
-application/domain layer").
+Dependency direction: this module (persistence) imports from
+app.events.vocabulary and app.events.lifecycle (domain) — never the
+reverse. Neither of those two modules imports anything from `app.db.*`;
+domain code must stay independent of any particular persistence
+implementation. See app.events.lifecycle for the reusable, FastAPI- and
+ORM-independent lifecycle (status transition) validation that
+complements the CHECK constraints below — a *transition* (old status ->
+new status) cannot be expressed as a single-row CHECK constraint, so
+that part of Data integrity is necessarily domain/application-layer
+(ADR-0003 principle: "бизнес-инварианты, которые невозможно выразить
+constraint'ами, проверяются application/domain layer"). The same is true
+of IANA timezone validity, which Postgres CHECK constraints cannot
+express at all — see the `_validate_timezone` hook below, which calls
+into app.events.lifecycle.validate_timezone so an invalid timezone is
+rejected on the actual persistence path (ORM attribute assignment),
+not only when some future caller remembers to invoke that function
+directly.
 """
 
 import uuid
@@ -31,33 +41,14 @@ from typing import Optional
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.db.base import Base
+from app.events.lifecycle import validate_timezone
+from app.events.vocabulary import CANONICAL_EVENT_STATUSES, CANONICAL_EVENT_TYPES
 
-# events-and-schedule.md §3: the documented event type catalog. `planned`
-# is not a type (it is also not a status — see ADR-0018).
-CANONICAL_EVENT_TYPES = (
-    "lesson",
-    "training",
-    "trip",
-    "competition",
-    "tour_slet",
-    "excursion",
-    "meeting",
-    "other",
-)
-
-# ADR-0018: the canonical Event lifecycle. `planned` is explicitly not a
-# separate status.
-CANONICAL_EVENT_STATUSES = (
-    "draft",
-    "published",
-    "in_progress",
-    "completed",
-    "cancelled",
-    "archived",
-)
+_EVENT_TYPE_VALUES = ",".join(f"'{value}'" for value in CANONICAL_EVENT_TYPES)
+_EVENT_STATUS_VALUES = ",".join(f"'{value}'" for value in CANONICAL_EVENT_STATUSES)
 
 
 class Event(Base):
@@ -79,10 +70,9 @@ class Event(Base):
     start_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
     end_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
     # events-and-schedule.md §6: an explicit IANA timezone (e.g.
-    # "Europe/Moscow"), never the server's implicit local time. No
-    # canonical document defines a DB-level IANA validity check (Postgres
-    # CHECK constraints cannot query pg_timezone_names), so this is
-    # validated at the domain layer — see app.events.lifecycle.validate_timezone.
+    # "Europe/Moscow"), never the server's implicit local time. Enforced by
+    # the `_validate_timezone` @validates hook below, not by a DB CHECK
+    # constraint (Postgres CHECK constraints cannot query pg_timezone_names).
     timezone: Mapped[str] = mapped_column(sa.String(64), nullable=False)
     # ADR-0019 location model: five discrete fields, never a single
     # `location` field. events-and-schedule.md §5: "координаты и адрес
@@ -119,13 +109,11 @@ class Event(Base):
 
     __table_args__ = (
         sa.CheckConstraint(
-            "event_type IN ("
-            "'lesson','training','trip','competition','tour_slet','excursion','meeting','other'"
-            ")",
+            f"event_type IN ({_EVENT_TYPE_VALUES})",
             name="ck_events_event_type_valid",
         ),
         sa.CheckConstraint(
-            "status IN ('draft','published','in_progress','completed','cancelled','archived')",
+            f"status IN ({_EVENT_STATUS_VALUES})",
             name="ck_events_status_valid",
         ),
         sa.CheckConstraint("end_at > start_at", name="ck_events_end_at_after_start_at"),
@@ -145,5 +133,14 @@ class Event(Base):
         sa.Index("ix_events_club_id_start_at", "club_id", "start_at"),
     )
 
+    @validates("timezone")
+    def _validate_timezone(self, key: str, value: str) -> str:
+        # Fires on every attribute assignment (constructor kwarg included),
+        # so an invalid IANA timezone is rejected before the row is even
+        # flushed — strictly earlier, and therefore at least as strong a
+        # guarantee, as rejecting it only at commit/flush time.
+        validate_timezone(value)
+        return value
 
-__all__ = ["CANONICAL_EVENT_TYPES", "CANONICAL_EVENT_STATUSES", "Event"]
+
+__all__ = ["Event"]

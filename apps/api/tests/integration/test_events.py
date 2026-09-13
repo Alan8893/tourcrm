@@ -24,9 +24,11 @@ import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.exc import IntegrityError
 
-from app.db.events import CANONICAL_EVENT_STATUSES, CANONICAL_EVENT_TYPES, Event
+from app.db.events import Event
 from app.db.identity import Club, Person, User
 from app.db.session import session_scope
+from app.events.lifecycle import InvalidTimezoneError
+from app.events.vocabulary import CANONICAL_EVENT_STATUSES, CANONICAL_EVENT_TYPES
 
 from .conftest import requires_postgres
 
@@ -173,6 +175,44 @@ def test_location_fields_are_optional() -> None:
         assert fetched.location_address is None
         assert fetched.location_latitude is None
         assert fetched.location_longitude is None
+
+
+# --- timezone validation on the actual ORM/persistence path ----------------
+#
+# There is no PostgreSQL CHECK constraint for IANA timezone validity (it
+# would require querying pg_timezone_names, which CHECK constraints
+# cannot do) — app.db.events.Event enforces this instead via a
+# SQLAlchemy @validates hook that calls app.events.lifecycle.validate_timezone.
+# These tests exercise that real persistence path end-to-end, not just the
+# pure-function unit tests in tests/unit/test_event_lifecycle.py.
+
+
+@requires_postgres
+def test_invalid_iana_timezone_is_rejected_via_the_orm() -> None:
+    with session_scope() as session:
+        club = _make_club()
+        session.add(club)
+        session.commit()
+
+        with pytest.raises(InvalidTimezoneError):
+            event = _make_event(club, timezone="Not/AZone")
+            session.add(event)
+            session.commit()
+
+
+@requires_postgres
+def test_valid_iana_timezone_is_accepted_via_the_orm() -> None:
+    with session_scope() as session:
+        club = _make_club()
+        session.add(club)
+        session.commit()
+
+        event = _make_event(club, timezone="Europe/Moscow")
+        session.add(event)
+        session.commit()  # must not raise
+
+        fetched = session.execute(select(Event).where(Event.id == event.id)).scalar_one()
+        assert fetched.timezone == "Europe/Moscow"
 
 
 # --- canonical event types --------------------------------------------------

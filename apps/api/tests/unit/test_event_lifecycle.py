@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.db.events import CANONICAL_EVENT_STATUSES, CANONICAL_EVENT_TYPES
 from app.events.lifecycle import (
     CancellationReasonRequiredError,
     InconsistentCoordinatesError,
@@ -25,6 +24,7 @@ from app.events.lifecycle import (
     validate_time_range,
     validate_timezone,
 )
+from app.events.vocabulary import CANONICAL_EVENT_STATUSES, CANONICAL_EVENT_TYPES
 
 # --- canonical event type / status vocabulary -----------------------------
 
