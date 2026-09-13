@@ -271,27 +271,27 @@ Event может быть адресован нескольким Groups, Group 
 
 ### EventParticipation
 
-Связь Person/ClubMembership с Event.
+Связь Person с Event.
 
 `Event 1:N EventParticipation`
 `Person 1:N EventParticipation`
 
-Ключевые поля:
+Текущая принятая persistence-модель (Issue #51, в соответствии с ADR-0023 §4):
 
+- id;
 - event_id;
 - person_id;
 - registration_status;
-- attendance_status;
-- participant_role nullable;
-- registered_at;
-- attendance_marked_at nullable;
-- absence_reason nullable;
-- result nullable;
-- notes nullable.
+- created_at;
+- updated_at.
 
-Должно существовать ограничение на дублирование участия одного человека в одном событии.
+Для одного Event и одного Person допускается не более одной записи EventParticipation — ограничение обеспечивается на уровне БД (`UNIQUE(event_id, person_id)`), а не только application-кодом.
 
-Политика self-registration и детальные registration transitions остаются отдельным deferred business decision.
+`registration_status` — обычная строка без закрытого словаря/CHECK-ограничения на уровне БД. ADR-0020 §4 упоминает `invited`, `registered`, `waitlisted`, `declined`, `removed` как documented reference values, а не как принятый и enforced словарь; полный transition graph и связанная registration policy остаются отдельным deferred business decision.
+
+#### Отложенные (не реализованные) концепции
+
+Следующие атрибуты являются возможными будущими расширениями и **не входят** в текущую реализованную persistence-модель: `attendance_status`, `participant_role`, `registered_at`, `attendance_marked_at`, `absence_reason`, `result`, `notes`. Их введение требует отдельного принятого архитектурного/бизнес-решения; посещаемость (attendance) в частности рассматривается как отдельная от EventParticipation зависимость (ADR-0023 §4; см. также `domain-model.md` §11 "Attendance").
 
 ### EventStaffAssignment
 
