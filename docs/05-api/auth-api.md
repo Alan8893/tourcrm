@@ -117,7 +117,7 @@ Authentication namespace:
 ### Rules
 
 - при неверных credentials используется безопасная унифицированная ошибка;
-- статус `pending`, `blocked`, `inactive`, `archived` обрабатываются отдельно на уровне доменной политики, но не должны раскрывать лишние сведения атакующему;
+- статусы `User` (`pending`, `locked`, `suspended`, `disabled`, `archived` — ADR-0017 решение 5) обрабатываются отдельно на уровне доменной политики, но не должны раскрывать лишние сведения атакующему;
 - после успешного входа обновляется `last_login_at`;
 - фиксируется security audit event;
 - применяется rate limiting/brute-force protection.

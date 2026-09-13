@@ -198,8 +198,8 @@ Example domains:
 ```text
 /api/v1/auth/*
 /api/v1/users/*
-/api/v1/members/*
-/api/v1/guardians/*
+/api/v1/persons/*
+/api/v1/guardian-relationships/*
 /api/v1/groups/*
 /api/v1/events/*
 /api/v1/attendance/*

@@ -183,6 +183,8 @@ Constraints:
 - one guardian may have multiple children;
 - primary-contact semantics must be enforced at business/DB layer according to chosen rule.
 
+API-level semantics (ADR-0025 §3): the `terminate` action always sets `status = revoked`; `inactive` is a distinct, non-revoked historical status reached through other lifecycle events (e.g. `valid_to` naturally elapsing), never through `terminate`. Canonical API resource/permission naming for this entity (`guardian-relationships`, `guardian_relationship.read`/`guardian_relationship.manage`) is defined by ADR-0025 §2/§4.
+
 ## 8. Groups
 
 ### `groups`

@@ -200,7 +200,7 @@ Frontend visibility не является security boundary.
 Проверяются:
 
 1. активность связи;
-2. permission guardian;
+2. permission `guardian_relationship.read` (или `guardian_relationship.manage` для изменяющих операций) — ADR-0025 §2;
 3. scope `children`;
 4. принадлежность ребёнка к тому же Club;
 5. privacy restrictions.
@@ -354,7 +354,7 @@ Frontend не должен получать privileged fields только по�
 Обязательные группы тестов:
 
 - login success/failure;
-- blocked/disabled account;
+- locked/disabled account;
 - password reset;
 - invitation expiry/reuse;
 - self-registration approval;
