@@ -1,23 +1,25 @@
-"""Event persistence foundation (Issue #36), plus the EventStaffAssignment
-responsibility relationship (Issue #48).
+"""Event persistence foundation (Issue #36), the EventStaffAssignment
+responsibility relationship (Issue #48), and EventGroupTarget targeting
+(Issue #49).
 
-Canonical sources: docs/04-modules/events-and-schedule.md §5/§10 (field
-lists), docs/02-requirements/business-rules.md §10, docs/03-architecture/
-adr/ADR-0018-event-lifecycle.md (canonical statuses/transitions), docs/
-03-architecture/adr/ADR-0019-event-field-model.md (canonical Event field
-list, location model, `updated_by`), docs/03-architecture/adr/ADR-0023-
-event-relationships-and-guardian-persistence.md §1 (EventStaffAssignment
-field list/invariants), ADR-0022 (cross-Club ownership integrity),
-ADR-0010 (UUID primary keys), ADR-0003 (database strategy).
+Canonical sources: docs/04-modules/events-and-schedule.md §5/§10/§11
+(field lists), docs/02-requirements/business-rules.md §10, docs/03-
+architecture/adr/ADR-0018-event-lifecycle.md (canonical statuses/
+transitions), docs/03-architecture/adr/ADR-0019-event-field-model.md
+(canonical Event field list, location model, `updated_by`), docs/03-
+architecture/adr/ADR-0023-event-relationships-and-guardian-persistence.md
+§1/§2 (EventStaffAssignment/EventGroupTarget field lists/invariants),
+ADR-0022 (cross-Club ownership integrity), ADR-0010 (UUID primary keys),
+ADR-0003 (database strategy).
 
 This module is persistence/domain foundation only. It deliberately does
 not implement: Event API endpoints, EventSeries/recurrence,
-EventOccurrence, EventParticipation, Attendance, EventGroupTarget,
-GuardianRelationship, notifications, calendar/iCalendar, or the Trip/
-Competition/TourSlet extensions (explicit Issue #36/#48 non-goals). It
-also does not implement or depend on authorization: no permission/scope
-check is performed here, and no client-supplied value is ever treated as
-an authorization decision by this module.
+EventOccurrence, EventParticipation, Attendance, GuardianRelationship,
+notifications, calendar/iCalendar, or the Trip/Competition/TourSlet
+extensions (explicit Issue #36/#48/#49 non-goals). It also does not
+implement or depend on authorization: no permission/scope check is
+performed here, and no client-supplied value is ever treated as an
+authorization decision by this module.
 
 Dependency direction: this module (persistence) imports from
 app.events.vocabulary and app.events.lifecycle (domain) — never the
@@ -240,4 +242,88 @@ class EventStaffAssignment(Base):
     )
 
 
-__all__ = ["Event", "EventStaffAssignment"]
+class EventGroupTarget(Base):
+    """Explicit historical Event-to-Group targeting: which Groups an
+    Event addresses (Issue #49).
+
+    docs/03-architecture/adr/ADR-0023-event-relationships-and-guardian-
+    persistence.md §2, which this model follows field-for-field. See
+    also docs/03-architecture/domain-model.md §"EventGroupTarget",
+    docs/03-architecture/data-model.md §"EventGroupTarget",
+    docs/04-modules/events-and-schedule.md §11.
+
+    An Event may target multiple Groups and a Group may be targeted by
+    multiple Events (M:N). Targeting is audience selection only: it
+    never creates `EventParticipation`, registration or attendance, and
+    this module makes no reference to any such entity.
+
+    No `club_id` column: the Club for each side is resolved via
+    `event_id -> Event.club_id` and `group_id -> Group.club_id`
+    respectively, exactly like `EventStaffAssignment` and
+    `GroupInstructorAssignment` resolve their Club through their own FK
+    rather than a denormalized column.
+
+    Cross-Club integrity (ADR-0022): this table remains structurally
+    independent from `Event`/`Group` on purpose — no trigger and no
+    redundant `club_id` column. ADR-0022 §3 makes
+    `Event.club_id == Group.club_id` an application/service-layer
+    invariant, enforced by app.events.service.create_event_group_target.
+    Constructing a row directly through this ORM class (bypassing that
+    service) does not validate Club ownership — expected per ADR-0022
+    §3/§8, not an oversight; production write paths must go through
+    app.events.service instead.
+
+    ADR-0023 §2 defines no overlap-prevention rule for simultaneous
+    targeting of the same Event/Group pair (unlike
+    `EventStaffAssignment`'s primary-assignment invariant) — so, unlike
+    that table, no exclusion constraint is introduced here.
+    """
+
+    __tablename__ = "event_group_targets"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("events.id", ondelete="RESTRICT"), nullable=False
+    )
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("groups.id", ondelete="RESTRICT"), nullable=False
+    )
+    valid_from: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
+    valid_to: Mapped[Optional[datetime]] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        server_default=sa.func.now(),
+        onupdate=sa.func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        sa.CheckConstraint(
+            "valid_to IS NULL OR valid_to >= valid_from",
+            name="ck_event_group_targets_valid_to_after_valid_from",
+        ),
+        # database-schema.md §23's "all foreign keys used in joins/
+        # filtering" plus the group_memberships precedent for a
+        # validity-aware compound index — this relationship is queried
+        # from both directions (own_groups resolution starts from a set
+        # of Groups; a future Event page would list an Event's target
+        # Groups), so both sides get the same compound shape.
+        sa.Index(
+            "ix_event_group_targets_event_id_valid_from_valid_to",
+            "event_id",
+            "valid_from",
+            "valid_to",
+        ),
+        sa.Index(
+            "ix_event_group_targets_group_id_valid_from_valid_to",
+            "group_id",
+            "valid_from",
+            "valid_to",
+        ),
+    )
+
+
+__all__ = ["Event", "EventStaffAssignment", "EventGroupTarget"]
