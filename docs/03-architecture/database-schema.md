@@ -187,30 +187,84 @@ Constraints:
 
 ### `groups`
 
+A Group is a standalone domain entity owned by exactly one Club.
+
+Fields:
+
 - `id` PK
-- `club_id` FK
+- `club_id` FK -> clubs
 - `name`
-- `description`
+- `description` nullable
 - `status`
 - `valid_from`
-- `valid_to`
-- timestamps
-
-### `group_memberships`
-
-- `id` PK
-- `group_id` FK
-- `club_membership_id` FK
-- `valid_from`
-- `valid_to`
-- `membership_status`
-- timestamps
+- `valid_to` nullable
+- `created_at`
+- `updated_at`
 
 Rules:
 
+- `valid_to >= valid_from` when `valid_to` is set;
+- Group lifecycle/status vocabulary is intentionally not closed by ADR-0021;
+- Group-related objects must not cross Club boundaries.
+
+### `group_memberships`
+
+Historical association between a `ClubMembership` and a `Group`.
+
+Fields:
+
+- `id` PK
+- `group_id` FK -> groups
+- `club_membership_id` FK -> club_memberships
+- `valid_from`
+- `valid_to` nullable
+- `membership_status`
+- `created_at`
+- `updated_at`
+
+Rules:
+
+- `person_id` is not stored; resolve the Person through `club_membership_id -> ClubMembership.person_id`;
+- `membership_status` is the canonical field name, not generic `status`;
+- `is_primary` is not part of this persistence model;
+- `assigned_by` is not a GroupMembership domain field;
 - historical assignments are preserved;
-- one membership can move between groups over time;
-- overlapping current assignments should be rejected unless explicitly allowed.
+- `Group.club_id` must equal `ClubMembership.club_id` on authoritative writes;
+- whether simultaneous membership in multiple groups is allowed is a separate business-policy decision and is not constrained here merely by this schema contract.
+
+### `group_instructor_assignments`
+
+Explicit historical responsibility of an authenticated User for a Group.
+
+Fields:
+
+- `id` PK
+- `group_id` FK -> groups
+- `user_id` FK -> users
+- `role_in_group`
+- `is_primary`
+- `valid_from`
+- `valid_to` nullable
+- `created_at`
+- `updated_at`
+
+Rules:
+
+- `user_id` is used because authorization responsibility belongs to the authenticated User principal;
+- `role_in_group` remains a plain string; its canonical vocabulary is not closed until reconciliation with the Event responsibility model;
+- `is_primary` distinguishes the primary responsible instructor from other explicit assignments;
+- historical assignments are preserved;
+- an assignment is valid only when the User's Person has an active `ClubMembership` in the Group's Club;
+- a global `instructor` role is not sufficient to establish group responsibility;
+- these Club-ownership rules are application/service-layer invariants under ADR-0022, not database triggers or redundant `club_id` columns.
+
+### Group ownership integrity
+
+The authoritative write boundary must validate Group relationship ownership before writing and within the same transaction as the write. The shared application/service mechanism defined by ADR-0022 is the required enforcement point.
+
+Database-level referential integrity remains responsible for ordinary foreign keys, deletion protection and physical constraints. It must not be replaced by caller-specific ownership checks.
+
+Future Event-to-Group targeting must likewise enforce `Event.club_id == Group.club_id`; `Event.created_by` is never a substitute for this relationship.
 
 ## 9. Events and schedule
 
@@ -806,86 +860,24 @@ Required index categories:
 - events by `(club_id, start_at)`;
 - event participations by `(event_id, person_id)` unique;
 - group memberships by `(group_id, valid_from, valid_to)` as operationally required;
+- group instructor assignments by Group and User as operationally required;
 - audit logs by `(target_type, target_id, occurred_at)` and `(actor_user_id, occurred_at)`;
-- notifications by `(status, scheduled_at)` for workers;
-- documents by `(subject_type, subject_id)` and `expires_at` where expiry reminders are enabled;
-- inventory by `(club_id, availability_status)`;
-- finance by `(club_id, payment_date)` / `(club_id, expense_date)`;
-- full-text/search indexes only where explicitly required by module specification.
+- document expiration;
+- notification delivery state.
 
-Indexes must be justified by actual query patterns; avoid indiscriminate indexing.
+## 24. Ownership integrity and transaction boundary
 
-## 24. Referential actions
+The Club ownership invariant is part of the data contract, even where it cannot be represented by a simple foreign key.
 
-Default policy:
+For Group relationships:
 
-- historical records use `RESTRICT` or soft archival rather than destructive cascade;
-- association tables may use `CASCADE` only when the child has no standalone historical meaning;
-- deletion of a Person/User with historical activity must be prevented or converted to archival/anonymization flow;
-- configuration/reference records may use restricted deletion or deactivation.
+- `GroupMembership` is valid only when `Group.club_id == ClubMembership.club_id`;
+- `GroupInstructorAssignment` is valid only when the assigned User's Person has an active `ClubMembership` in `Group.club_id`;
+- ownership validation and write must occur in the same transaction;
+- concurrent changes to the rows on which the decision depends must be protected according to ADR-0022;
+- the shared application/service ownership validator is authoritative;
+- no DB trigger, redundant `club_id`, or `Event.created_by` inference is used as a substitute.
 
-## 25. Soft delete and archival
+For future Event-to-Group targeting, `Event.club_id == Group.club_id` is mandatory.
 
-Soft deletion is not a universal column added everywhere.
-
-Use explicit lifecycle/status fields for business entities. Physical deletion is permitted only for records that have no historical/legal/audit significance and whose deletion is explicitly documented.
-
-Where legal erasure/anonymization is required, implement a documented anonymization policy that preserves non-personal aggregate/history integrity.
-
-## 26. Derived data
-
-Derived values must have a declared source of truth.
-
-Examples:
-
-- `tourist_profiles.confirmed_distance_km` is derived from qualifying trip participation;
-- dashboard counters are derived from domain data;
-- debt is derived from financial obligations and payments where the finance model defines it.
-
-Derived values may be cached/materialized, but recalculation must be possible and documented.
-
-## 27. Migration policy
-
-- Every schema change is an Alembic migration.
-- Migrations are immutable after merge.
-- No manual production-only SQL changes unless captured in a migration immediately.
-- Destructive migrations require explicit review and a rollback/data-migration strategy.
-- Seed/reference data must be versioned and reproducible.
-- Production migrations must be safe for the deployment strategy and expected data volume.
-
-## 28. Seed/reference data
-
-System/reference catalogs should be distinguishable from user-generated records.
-
-Initial reference domains include:
-
-- roles;
-- permissions;
-- event types;
-- membership statuses;
-- attendance statuses;
-- tourism types;
-- difficulty categories;
-- equipment statuses;
-- finance statuses;
-- notification channels;
-- document types;
-- consent types.
-
-Reference values must have stable codes and human-readable localized names.
-
-## 29. Open points before physical schema freeze
-
-The following require separate ADR or module decision before Claude generates final models:
-
-1. UUID vs another PK strategy.
-2. Exact enum implementation (PostgreSQL ENUM vs lookup/reference tables vs application enums).
-3. Exact naming convention singular/plural.
-4. Whether `event_occurrences.event_id` is retained or Event itself represents each occurrence.
-5. Medical data model and storage requirements.
-6. File-storage backend implementation.
-7. Exact anonymization/deletion policy.
-8. Final finance accounting model.
-9. Exact multi-provider identity/SSO model after TourSlet analysis.
-
-These are intentionally not guessed by this document.
+See ADR-0021 and ADR-0022 for the normative Group persistence and cross-Club ownership decisions.
