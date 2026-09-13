@@ -15,6 +15,7 @@ from app.db import (
     authorization,  # noqa: E402,F401  (registers models on Base.metadata)
     events,  # noqa: E402,F401  (registers model on Base.metadata)
     foundation,  # noqa: E402,F401  (registers model on Base.metadata)
+    groups,  # noqa: E402,F401  (registers models on Base.metadata)
     identity,  # noqa: E402,F401  (registers models on Base.metadata)
 )
 from app.db.base import Base  # noqa: E402
