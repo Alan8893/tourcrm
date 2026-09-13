@@ -55,6 +55,8 @@
 - `person.update`
 - `membership.read`
 - `membership.manage`
+- `guardian_relationship.read`
+- `guardian_relationship.manage`
 - `group.read`
 - `group.manage`
 - `trip.read`
@@ -80,6 +82,8 @@
 `event.archive`, `event.participant.read`, `event.participant.manage`,
 `event.schedule.manage` и `attendance.correct` не являются каноническими
 permissions и не должны использоваться как отдельные права.
+
+`guardian_relationship.read`/`guardian_relationship.manage` приняты ADR-0025 §2 для доступа к `GuardianRelationship`; ранее использовавшийся в `docs/05-api/people-api.md` код `guardian.read` не являлся каноническим и заменён этими permissions.
 
 ## 5. Scope model
 
@@ -118,6 +122,8 @@ Feature setting не может расширить permissions.
 | Свой Person | ✅ | ✅ | ✅ | ✅ |
 | Любой Person | ✅ | по scope | ❌ | ❌ |
 | Управление membership | ✅ | ограниченно | ❌ | ❌ |
+| GuardianRelationship: чтение | ✅ | по scope | ❌ | self (собственные связи) |
+| GuardianRelationship: управление | ✅ | ограниченно | ❌ | ограниченно (собственный linking flow) |
 | Группы: чтение | ✅ | assigned | ограниченно | ограниченно |
 | Группы: управление | ✅ | ❌ | ❌ | ❌ |
 | Event: чтение | ✅ | по scope | по scope | children/relationship |

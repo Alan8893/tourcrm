@@ -31,7 +31,7 @@ Membership namespace: `/api/v1/memberships`
 
 Groups namespace: `/api/v1/groups`
 
-Guardians namespace: `/api/v1/guardians`
+GuardianRelationship namespace: `/api/v1/guardian-relationships` (ADR-0025 §4 — `/guardians` is not used as an alias)
 
 ## 4. Получение списка людей
 
@@ -59,13 +59,15 @@ API возвращает только поля, разрешённые конк�
 
 Создание Person доступно уполномоченным администраторам/инструкторам согласно permission policy.
 
-Перед созданием выполняется controlled duplicate check.
+ADR-0025 §9: heuristic duplicate detection (similarity/fuzzy matching, email/phone scoring, автоматическое объединение) не реализуется в текущем MVP slice. `DUPLICATE_PERSON` остаётся зарезервированным error-кодом для потенциального будущего использования, а не требованием текущего slice.
 
 ## 7. Обновление Person
 
 ### PATCH `/api/v1/persons/{person_id}`
 
-Частичное обновление с audit для значимых изменений и optimistic concurrency там, где потеря параллельного изменения недопустима.
+Частичное обновление с audit для значимых изменений.
+
+ADR-0025 §10: в кодовой базе нет уже принятого project-wide optimistic-concurrency механизма (ни у одного реализованного домена — Events, Groups — его нет; `api-contract.md` §19/`api-conventions.md` §17 оставляют выбор конкретного механизма за доменом). Текущий slice не изобретает новый механизм: `PATCH` использует last-write-wins семантику, что явно фиксируется как принятая граница текущего slice, а не как недосмотр.
 
 ## 8. Архивирование Person
 
@@ -199,13 +201,17 @@ Request:
 
 Self-link guardian → same person запрещён. Дублирующие активные relationships одного типа для одной пары не допускаются; исторические `inactive`/`revoked` сохраняются. Для ребёнка допускается не более одной одновременно действующей primary-contact relationship.
 
-### GET `/api/v1/persons/{person_id}/guardians`
+Permissions: `guardian_relationship.read` (чтение), `guardian_relationship.manage` (создание/изменение/terminate) — приняты ADR-0025 §2. Ранее использовавшийся здесь `guardian.read` не был каноническим permission и заменён.
 
-Доступ только при наличии `guardian.read` и подходящего scope.
+URI: канонический ресурс — `guardian-relationships`, не `guardians` (ADR-0025 §4). `/guardians` не сохраняется как alias нигде в этом контракте, включая вложенную коллекцию под Person.
 
-### POST `/api/v1/persons/{person_id}/guardians`
+### GET `/api/v1/persons/{person_id}/guardian-relationships`
 
-Создаёт relationship с существующим Person или запускает controlled linking flow.
+Доступ только при наличии `guardian_relationship.read` и подходящего scope.
+
+### POST `/api/v1/persons/{person_id}/guardian-relationships`
+
+Создаёт relationship с существующим Person или запускает controlled linking flow. Permission: `guardian_relationship.manage`.
 
 Request concept:
 
@@ -220,13 +226,15 @@ Request concept:
 
 Backend не должен принимать `pending` как статус `GuardianRelationship`: если требуется отдельное подтверждение, это является workflow-состоянием процесса linking и не меняет канонический status relationship.
 
-### PATCH `/api/v1/guardians/{relationship_id}`
+### PATCH `/api/v1/guardian-relationships/{relationship_id}`
 
-Изменяет relationship type/status/primary contact согласно permission и lifecycle rules.
+Изменяет relationship type/primary contact согласно permission (`guardian_relationship.manage`) и lifecycle rules. Не изменяет `status` напрямую — переходы `status` выполняются только через `terminate` (ниже) либо natural lifecycle (истечение `valid_to`).
 
-### POST `/api/v1/guardians/{relationship_id}/terminate`
+### POST `/api/v1/guardian-relationships/{relationship_id}/terminate`
 
-Прекращает актуальность связи без уничтожения истории; каноническое действие переводит relationship в `revoked` либо `inactive` согласно семантике операции.
+Прекращает актуальность связи без уничтожения истории. Permission: `guardian_relationship.manage`.
+
+Каноническая семантика (ADR-0025 §3): `terminate` всегда переводит relationship в `status = revoked`. `inactive` — отдельное, не-revoked историческое состояние, достигаемое иными lifecycle-событиями (например, естественным истечением `valid_to`), а не явным действием `terminate`.
 
 ## 18. My children
 
@@ -242,19 +250,11 @@ Backend не должен принимать `pending` как статус `Guar
 
 Наличие `child_id` в URL или query не является доказательством права доступа.
 
-## 20. Pending registrations
+## 20. Pending registrations — вынесено из текущего контракта
 
-### GET `/api/v1/memberships/pending`
+ADR-0025 §5: самостоятельная регистрация — отдельная сущность/workflow `RegistrationRequest` (`docs/04-modules/people-and-membership.md` §10), а не переход `ClubMembership.status`. Ранее описанные здесь `GET /api/v1/memberships/pending`, `POST /api/v1/memberships/{membership_id}/approve`, `POST /api/v1/memberships/{membership_id}/reject` описывали конфликтующую модель и удалены из контракта.
 
-Доступ администратора.
-
-### POST `/api/v1/memberships/{membership_id}/approve`
-
-Одобряет membership.
-
-### POST `/api/v1/memberships/{membership_id}/reject`
-
-Отклоняет заявку с обязательным reason.
+`RegistrationRequest` persistence-модель, API и approval workflow остаются вне scope текущего implementation slice People & Membership и требуют отдельного Issue после отдельной спецификации.
 
 ## 21. Import
 
@@ -280,19 +280,9 @@ Auth contract определён в `docs/05-api/auth-api.md`.
 
 People API предоставляет административное представление приглашённого membership после успешной активации.
 
-## 23. Role assignment
+## 23. Role assignment — вынесено из текущего контракта
 
-### GET `/api/v1/users/{user_id}/roles`
-
-Доступ администратора или requester с соответствующим permission.
-
-### POST `/api/v1/users/{user_id}/roles`
-
-Назначает роль в допустимом scope.
-
-### DELETE `/api/v1/users/{user_id}/roles/{role_id}`
-
-Удаляет назначение роли.
+ADR-0025 §6: канонический API-ресурс — top-level `/api/v1/role-assignments` (совпадает с `docs/05-api/endpoint-inventory.md` §24), а не вложенный `/api/v1/users/{user_id}/roles`, ранее описанный здесь. Role assignment API реализуется отдельным Issue вне текущего implementation slice People & Membership.
 
 Role assignment не меняет Person.
 
@@ -309,6 +299,8 @@ Role assignment не меняет Person.
 API должен поддерживать отдельные policy areas для contact data, address, medical/safety data, documents, emergency contacts и guardian data.
 
 Не следует выдавать полный Person object любому requester с общим `person.read`.
+
+ADR-0025 §8: до определения отдельной permission/scope policy для этих полей `phone`, `email` и `address` не выдаются через baseline Person API ни одному requester (включая обладателя `person.read`). Это принятое ограничение scope текущего implementation slice, а не временный недосмотр.
 
 ## 26. Validation
 

@@ -4,6 +4,8 @@
 
 Accepted. Closes ODR-015. Closes the audit-record-shape portion of ODR-013; **retention/deletion periods for audit records remain open** and are not decided by this ADR (see "Non-decisions" below).
 
+**Amended by ADR-0025 §1**: the action vocabulary in §4 below is extended with `person.created`, `person.updated`, `person.archived` (PO/architect decision resolving Issue #62 GAP-9 — the closed vocabulary originally accepted here had no `Person`-mutation action at all). The list in §4 reflects the amended, current vocabulary; it was not always exactly this list — see ADR-0025 for the amendment record.
+
 ## Context
 
 `docs/SYSTEM-SPECIFICATION.md` §3/§17, `docs/02-requirements/non-functional-requirements.md` §8/§10 and `docs/02-requirements/business-rules.md` §23 all require significant business mutations to be auditable, but no canonical `AuditLog` persistence contract, write boundary or failure-mode decision existed. ADR-0008's ODR-015 explicitly gated Issue #59 on resolving this before implementation. The pre-existing sketches in `docs/03-architecture/data-model.md` §19 and `docs/03-architecture/database-schema.md` §19 (`target_type`/`target_id`, `ip_address`, `user_agent`, a bare `status` column) were not implemented anywhere in the codebase and are superseded by this ADR.
@@ -59,11 +61,15 @@ Indexes (database-schema.md §23's "audit logs by target/actor/timestamp" requir
 
 Every domain module that needs to record an audit-required action must call `app.audit.service.record_audit_event(...)` rather than constructing/inserting an `AuditLog` row directly or inventing a parallel audit mechanism. This is the same "one shared service boundary, not ad-hoc per-caller logic" shape already used for Club-ownership validation (`app.authorization.club_ownership`, ADR-0022).
 
-### 4. Audit-required action vocabulary (initial, closed)
+### 4. Audit-required action vocabulary (closed, as amended by ADR-0025 §1)
 
-The following 25 action codes are accepted at this stage. The list is intentionally closed (enforced by `ck_audit_logs_action_valid`) and is **not** extended by this ADR beyond what is listed; adding an action requires updating this ADR and its migration, not an ad-hoc application-level string.
+The following 28 action codes are accepted at this stage. The list is intentionally closed (enforced by `ck_audit_logs_action_valid`) and is **not** extended beyond what is listed without a corresponding ADR amendment and migration — see ADR-0025 §1 for the one amendment made so far (adding the three `person.*` actions to this ADR's original 25-action list).
 
 ```text
+person.created
+person.updated
+person.archived
+
 user.created
 user.status_changed
 user.locked

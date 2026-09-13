@@ -26,8 +26,8 @@ Use plural resource nouns in lowercase kebab-free paths:
 
 ```text
 /users
-/members
-/guardians
+/persons
+/guardian-relationships
 /groups
 /events
 /attendance

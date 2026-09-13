@@ -60,15 +60,13 @@
 
 ## 5. Guardians
 
-- `GET /guardians`
-- `GET /guardians/{id}`
-- `POST /guardians`
-- `PATCH /guardians/{id}`
+Canonical resource is `guardian-relationships`, not `guardians` (ADR-0025 §4). The previously listed duplicate `/guardians` CRUD (list/detail/create/update) is removed; the nested per-person collection is renamed to match.
+
 - `GET /persons/{id}/children`
-- `GET /persons/{id}/guardians`
-- `POST /guardian-relationships`
+- `GET /persons/{id}/guardian-relationships`
+- `POST /persons/{id}/guardian-relationships`
 - `PATCH /guardian-relationships/{id}`
-- `POST /guardian-relationships/{id}/revoke`
+- `POST /guardian-relationships/{id}/terminate`
 
 ## 6. Invitations
 

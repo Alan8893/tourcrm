@@ -163,7 +163,9 @@ TourCRM разделяет четыре понятия:
 
 Для Event authorization активной считается relationship, которая имеет `status = active` и действующий временной интервал. Доступ guardian к Event в Club требует также соответствующей ClubMembership policy для guardian и ребёнка.
 
-Детальный persistence/authorization contract определён ADR-0023.
+ADR-0025 §3: явное API-действие `terminate` всегда переводит relationship в `status = revoked`. `inactive` — отдельное, не-revoked историческое состояние, достигаемое иными lifecycle-событиями (например, естественным истечением `valid_to`), а не действием `terminate`.
+
+Детальный persistence/authorization contract определён ADR-0023; API permissions (`guardian_relationship.read`/`guardian_relationship.manage`) и URI (`guardian-relationships`) определены ADR-0025.
 
 ## 9. Group
 

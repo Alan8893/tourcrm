@@ -48,7 +48,7 @@
 - `first_name`;
 - `last_name`;
 - `middle_name` — nullable;
-- `date_of_birth` — nullable на этапе предварительной регистрации, обязательно для активного несовершеннолетнего участника;
+- `birth_date` — nullable на этапе предварительной регистрации, обязательно для активного несовершеннолетнего участника (канонические имя поля — `birth_date`, а не `date_of_birth`, per `data-model.md` §3/`database-schema.md` §5.2 и фактической реализации `app/db/identity.py`);
 - `phone` — nullable;
 - `email` — nullable;
 - `created_at`;

@@ -35,7 +35,7 @@ LAN deployment:
 - `/users`
 - `/persons`
 - `/memberships`
-- `/guardians`
+- `/guardian-relationships` (ADR-0025 §4 — `/guardians` не используется как alias)
 - `/groups`
 - `/events`
 - `/trips`
