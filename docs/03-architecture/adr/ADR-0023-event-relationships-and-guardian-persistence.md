@@ -29,23 +29,11 @@ Canonical fields:
 - `created_at`
 - `updated_at`
 
-`user_id` is used because Event authorization is evaluated against the authenticated User principal. The Person behind the User is available through the identity model.
-
-`role_in_event` remains a string. The initial persistence contract does not close the vocabulary; the value must describe the person's responsibility/staff role in the Event. Vocabulary reconciliation with `GroupInstructorAssignment.role_in_group` remains a follow-up if the product requires a shared dictionary.
-
-Multiple active staff assignments are allowed. At most one active assignment for an Event may have `is_primary = true`. The primary assignment is the canonical Event responsibility used for `own_events` when responsibility is required. Non-primary assignments still represent explicit Event staff membership.
-
-Assignments are historical. Closing `valid_to` preserves the relationship history and does not delete it.
-
-An Event staff assignment is valid only when the assigned User's Person has an active `ClubMembership` in the Event's Club. Cross-Club enforcement uses the shared application/service ownership mechanism from ADR-0022.
-
-`Event.created_by` is not an Event responsibility substitute and must never be used to implement `own_events`.
+`user_id` is used because Event authorization is evaluated against the authenticated User principal. `role_in_event` remains a string until a shared responsibility vocabulary is explicitly reconciled. Multiple active staff assignments are allowed; at most one active assignment per Event may be primary. Assignments are historical. An assigned User must have an active ClubMembership in the Event's Club. `Event.created_by` is never a substitute for Event responsibility or `own_events`.
 
 ### 2. Event-to-Group targeting: `EventGroupTarget`
 
 The canonical entity name is `EventGroupTarget`.
-
-It represents target audience only. It does not create participation, registration or attendance.
 
 Canonical fields:
 
@@ -57,19 +45,11 @@ Canonical fields:
 - `created_at`
 - `updated_at`
 
-An Event may target multiple Groups and a Group may be targeted by multiple Events.
-
-Targeting is historical: removing a target closes the relationship period instead of deleting the historical row.
-
-The relationship is valid only when `Event.club_id == Group.club_id`. Enforcement follows ADR-0022 at the authoritative application/service boundary, in the same transaction as the write.
-
-`own_groups` Event visibility is determined from active `EventGroupTarget` rows joined to Groups for which the requester has an active `GroupInstructorAssignment`.
-
-Targeting a Group does not automatically create an `EventParticipation` row.
+An Event may target multiple Groups and a Group may be targeted by multiple Events. Targeting is historical. `Event.club_id` must equal `Group.club_id`; enforcement uses the authoritative service-layer mechanism from ADR-0022. Active `own_groups` visibility is resolved through active EventGroupTarget plus active GroupInstructorAssignment. Targeting never creates EventParticipation or attendance.
 
 ### 3. GuardianRelationship
 
-`GuardianRelationship` remains a Person-to-Person relationship and does not receive a `club_id` column.
+`GuardianRelationship` remains a Person-to-Person relationship and has no `club_id`.
 
 Canonical fields:
 
@@ -84,31 +64,17 @@ Canonical fields:
 - `created_at`
 - `updated_at`
 
-The relationship is invalid when guardian and child are the same Person.
+Guardian and child must differ. Canonical status values are `active`, `inactive`, `revoked`. Duplicate active relationships for the same guardian, child and relationship type are forbidden; historical rows are retained. At most one valid primary-contact relationship exists for a child at a time.
 
-Canonical relationship status values are `active`, `inactive`, `revoked`.
+For Event access in Club X, guardian authorization requires an active valid GuardianRelationship, the child to have an active ClubMembership in Club X, and the guardian User's Person to have an active ClubMembership in Club X. A GuardianRelationship is not proof of authorization in another Club.
 
-`valid_from`/`valid_to` determine temporal validity. Duplicate active relationships for the same guardian, child and relationship type are not allowed. Historical rows are preserved. At most one valid primary-contact relationship may exist for a child at a time.
+### 4. EventParticipation dependency
 
-Because the relationship itself is Club-neutral, Event access in Club X requires an active valid GuardianRelationship, the child to have an active ClubMembership in Club X, and the guardian User's Person to have an active ClubMembership in Club X.
+EventParticipation remains a separate persistence entity. `self` visibility requires an eligible participation relationship for the requester. `children` visibility may derive from child EventParticipation or active child GroupMembership reached through active EventGroupTarget. Group targeting does not create participation, and participation does not imply attendance. Self-registration and registration transition policy remain deferred under ADR-0020.
 
-A GuardianRelationship must not be treated as proof of authorization in another Club.
+### 5. Scope relationship sources
 
-### 4. EventParticipation dependency boundary
-
-`EventParticipation` is a separate persistence entity and remains outside the relationship foundation implementation defined by this ADR.
-
-- `self` Event visibility requires an eligible `EventParticipation` relationship for the requesting Person;
-- `children` Event visibility may derive from child EventParticipation or active child GroupMembership reached through active EventGroupTarget;
-- group targeting alone does not create participation;
-- participation does not imply attendance;
-- self-registration and registration transition policy remain deferred under ADR-0020.
-
-The EventParticipation persistence implementation must prevent duplicate participation for the same Event and Person.
-
-### 5. Authorization consequences
-
-| Scope | Canonical relationship source |
+| Scope | Canonical source |
 |---|---|
 | `own_events` | active EventStaffAssignment for requester |
 | `own_groups` | active EventGroupTarget + active GroupInstructorAssignment |
@@ -121,15 +87,11 @@ Role names alone never establish these relationships.
 
 ## Consequences
 
-- Event API authorization has explicit persistence sources for `own_events`, `own_groups` and `children`.
-- Event responsibility no longer depends on `created_by`.
-- Group targeting remains separate from participation and attendance.
-- Guardian relationships remain reusable across Clubs while authorization remains Club-bound through active memberships and Event relationships.
-- Event API implementation can proceed after the persistence foundations covered by this ADR are implemented.
+Event authorization now has explicit persistence sources for `own_events`, `own_groups` and `children`. Event responsibility is separate from creation metadata. Group targeting remains separate from participation and attendance. Guardian relationships remain reusable across Clubs while Event authorization remains Club-bound.
 
 ## Non-goals
 
-This ADR does not implement Event API, the four persistence foundations, self-registration, attendance, new permissions/scopes or role grants.
+No Event API, persistence implementation, self-registration, attendance, new permissions/scopes or role grants are implemented by this ADR.
 
 ## Traceability
 
