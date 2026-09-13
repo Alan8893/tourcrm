@@ -1,20 +1,23 @@
-"""Event persistence foundation (Issue #36).
+"""Event persistence foundation (Issue #36), plus the EventStaffAssignment
+responsibility relationship (Issue #48).
 
-Canonical sources: docs/04-modules/events-and-schedule.md §5 (field list),
-docs/02-requirements/business-rules.md §10, docs/03-architecture/adr/
-ADR-0018-event-lifecycle.md (canonical statuses/transitions), docs/03-
-architecture/adr/ADR-0019-event-field-model.md (canonical field list,
-location model, `updated_by`), ADR-0010 (UUID primary keys), ADR-0003
-(database strategy).
+Canonical sources: docs/04-modules/events-and-schedule.md §5/§10 (field
+lists), docs/02-requirements/business-rules.md §10, docs/03-architecture/
+adr/ADR-0018-event-lifecycle.md (canonical statuses/transitions), docs/
+03-architecture/adr/ADR-0019-event-field-model.md (canonical Event field
+list, location model, `updated_by`), docs/03-architecture/adr/ADR-0023-
+event-relationships-and-guardian-persistence.md §1 (EventStaffAssignment
+field list/invariants), ADR-0022 (cross-Club ownership integrity),
+ADR-0010 (UUID primary keys), ADR-0003 (database strategy).
 
 This module is persistence/domain foundation only. It deliberately does
 not implement: Event API endpoints, EventSeries/recurrence,
-EventOccurrence, EventParticipation, Attendance, groups/instructors
-relations, notifications, calendar/iCalendar, or the Trip/Competition/
-TourSlet extensions (all explicit Issue #36 non-goals). It also does not
-implement or depend on authorization: no permission/scope check is
-performed here, and no client-supplied value is ever treated as an
-authorization decision by this module.
+EventOccurrence, EventParticipation, Attendance, EventGroupTarget,
+GuardianRelationship, notifications, calendar/iCalendar, or the Trip/
+Competition/TourSlet extensions (explicit Issue #36/#48 non-goals). It
+also does not implement or depend on authorization: no permission/scope
+check is performed here, and no client-supplied value is ever treated as
+an authorization decision by this module.
 
 Dependency direction: this module (persistence) imports from
 app.events.vocabulary and app.events.lifecycle (domain) — never the
@@ -40,7 +43,7 @@ from datetime import datetime
 from typing import Optional
 
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, ExcludeConstraint
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.db.base import Base
@@ -143,4 +146,98 @@ class Event(Base):
         return value
 
 
-__all__ = ["Event"]
+class EventStaffAssignment(Base):
+    """Explicit responsibility/staff assignment of a User to an Event
+    (Issue #48).
+
+    docs/03-architecture/adr/ADR-0023-event-relationships-and-guardian-
+    persistence.md §1, which this model follows field-for-field. See also
+    docs/03-architecture/domain-model.md §"EventStaffAssignment",
+    docs/03-architecture/data-model.md §"EventStaffAssignment",
+    docs/04-modules/events-and-schedule.md §10.
+
+    `user_id`, not `person_id`: the authorization actor reference is a
+    User, matching `GroupInstructorAssignment.user_id` (ADR-0021 §3).
+    `role_in_event` is intentionally a plain, unconstrained string (ADR-
+    0023 §1: "remains a string until a shared responsibility vocabulary
+    is explicitly reconciled with GroupInstructorAssignment.role_in_group")
+    — no enum/CHECK vocabulary is invented here.
+
+    `Event.created_by` is creation metadata only and is never a
+    substitute for this relationship or for `own_events` (ADR-0023 §1).
+
+    No `club_id` column: the Event's Club is resolved via
+    `EventStaffAssignment.event_id -> Event.club_id`, exactly like
+    `GroupInstructorAssignment` resolves its Club via `group_id ->
+    Group.club_id`. No `created_by`/`updated_by`: not part of this
+    entity's canonical contract (ADR-0023 §1).
+
+    Cross-Club integrity (ADR-0022): this table remains structurally
+    independent from ClubMembership on purpose — no trigger and no
+    redundant/denormalized `club_id` column. ADR-0022 §3 makes Club
+    ownership an application/service-layer invariant instead, enforced
+    by the shared mechanism in app.events.service. Constructing a row
+    directly through this ORM class (bypassing app.events.service) does
+    not validate Club ownership — expected per ADR-0022 §3/§8, not an
+    oversight; production write paths must go through app.events.service.
+
+    At most one *active* (validity-interval sense, not merely "current")
+    `is_primary=true` assignment may exist per Event at any point in
+    time — enforced by the `ck_event_staff_assignments_one_active_primary`
+    GiST exclusion constraint below, the same mechanism already used for
+    `ClubMembership`'s "no overlapping active memberships" invariant
+    (app.db.identity.ClubMembership). This is a DB-level guarantee that
+    holds under concurrent writes without any additional application-
+    level locking for this specific invariant.
+    """
+
+    __tablename__ = "event_staff_assignments"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("events.id", ondelete="RESTRICT"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    # ADR-0023 §1: intentionally not a closed enum.
+    role_in_event: Mapped[str] = mapped_column(sa.String(64), nullable=False)
+    is_primary: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, server_default=sa.text("false")
+    )
+    valid_from: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
+    valid_to: Mapped[Optional[datetime]] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        server_default=sa.func.now(),
+        onupdate=sa.func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        sa.CheckConstraint(
+            "valid_to IS NULL OR valid_to >= valid_from",
+            name="ck_event_staff_assignments_valid_to_after_valid_from",
+        ),
+        # ADR-0023 §1 / data-model.md: "не более одной active primary
+        # assignment для Event". A NULL valid_to is unbounded/ongoing
+        # (tstzrange semantics), matching ClubMembership's own
+        # no-overlapping-active-rows constraint exactly. Requires
+        # btree_gist, already created by the identity foundation
+        # migration (80dd15675404).
+        ExcludeConstraint(
+            (sa.column("event_id"), "="),
+            (sa.func.tstzrange(sa.column("valid_from"), sa.column("valid_to")), "&&"),
+            where=sa.text("is_primary = true"),
+            using="gist",
+            name="ck_event_staff_assignments_one_active_primary",
+        ),
+        sa.Index("ix_event_staff_assignments_event_id", "event_id"),
+        sa.Index("ix_event_staff_assignments_user_id", "user_id"),
+    )
+
+
+__all__ = ["Event", "EventStaffAssignment"]

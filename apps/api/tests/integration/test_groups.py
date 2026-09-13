@@ -921,7 +921,11 @@ def test_group_migration_creates_the_expected_tables(database_url: str) -> None:
 
 @requires_postgres
 def test_group_downgrade_then_upgrade_preserves_a_working_schema(database_url: str) -> None:
-    downgrade = _run_alembic("downgrade", "-1", database_url=database_url)
+    # Pinned to the absolute pre-Group revision rather than a relative
+    # "-1": a relative downgrade silently targets the wrong migration
+    # once a later migration (e.g. Issue #48's EventStaffAssignment)
+    # becomes the new head.
+    downgrade = _run_alembic("downgrade", "a86214bd3bc4", database_url=database_url)
     assert downgrade.returncode == 0, downgrade.stderr
 
     engine = create_engine(database_url)

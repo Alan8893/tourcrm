@@ -25,6 +25,12 @@ default READ COMMITTED isolation, `FOR SHARE` blocks a concurrent
 writer until this transaction ends, and (if it must wait) re-reads the
 now-committed row before this check proceeds, so a stale read is not
 possible either.
+
+The "does this User's Person have an active ClubMembership in this
+Club?" half of the check is shared with every other relationship that
+needs it (Issue #48's EventStaffAssignment included) via
+app.authorization.club_ownership.user_has_active_club_membership —
+defined once there rather than re-implemented per relationship.
 """
 
 import uuid
@@ -34,13 +40,9 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.authorization.club_ownership import user_has_active_club_membership
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
-from app.db.identity import ClubMembership, User
-
-# identity.py's documented ClubMembership.status vocabulary (Issue #17):
-# pending, active, suspended, inactive, archived. "active" is used here
-# exactly as it is everywhere else in this codebase — no new value.
-ACTIVE_CLUB_MEMBERSHIP_STATUS = "active"
+from app.db.identity import ClubMembership
 
 
 class GroupOwnershipError(Exception):
@@ -84,23 +86,6 @@ def _lock_club_membership_club_id(session: Session, club_membership_id: uuid.UUI
         .where(ClubMembership.id == club_membership_id)
         .with_for_update(read=True)
     ).scalar_one()
-
-
-def _user_has_active_club_membership(
-    session: Session, *, user_id: uuid.UUID, club_id: uuid.UUID
-) -> bool:
-    person_id = session.execute(select(User.person_id).where(User.id == user_id)).scalar_one()
-    row = session.execute(
-        select(ClubMembership.id)
-        .where(
-            ClubMembership.person_id == person_id,
-            ClubMembership.club_id == club_id,
-            ClubMembership.status == ACTIVE_CLUB_MEMBERSHIP_STATUS,
-        )
-        .with_for_update(read=True)
-        .limit(1)
-    ).first()
-    return row is not None
 
 
 def create_group_membership(
@@ -160,7 +145,7 @@ def create_group_instructor_assignment(
     concurrency rationale.
     """
     group_club_id = _lock_group_club_id(session, group_id)
-    if not _user_has_active_club_membership(session, user_id=user_id, club_id=group_club_id):
+    if not user_has_active_club_membership(session, user_id=user_id, club_id=group_club_id):
         session.rollback()
         raise InstructorClubMembershipMissingError(user_id=user_id, club_id=group_club_id)
 
