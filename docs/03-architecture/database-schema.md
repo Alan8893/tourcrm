@@ -745,25 +745,44 @@ Money operations must be auditable and not silently overwritten after posting.
 
 ## 19. Audit
 
+Canonical contract: ADR-0024 (closes ODR-015).
+
 ### `audit_logs`
 
-- `id` PK
-- `occurred_at`
-- `actor_user_id` FK nullable
-- `action`
-- `target_type`
-- `target_id` nullable
-- `correlation_id` nullable
-- `status`
-- `change_summary` / structured diff
-- `ip_address` nullable
-- `user_agent` nullable
+- `id` PK (UUID, immutable, ADR-0010)
+- `occurred_at` `timestamptz`, required, server-generated at insert
+- `actor_type` required, CHECK `IN ('user','system')`
+- `actor_user_id` FK -> `users.id` (`RESTRICT`), nullable — required when `actor_type='user'`, forbidden (NULL) when `actor_type='system'`; no synthetic "System" `User` row is created
+- `club_id` FK -> `clubs.id` (`RESTRICT`), nullable — event context only, never an authorization mechanism
+- `action` required, CHECK restricted to the closed vocabulary in ADR-0024 §4 — a stable business action code, never an HTTP method/URL/UI text
+- `resource_type` nullable
+- `resource_id` nullable, opaque UUID (ADR-0010) — not necessarily an FK, since targets span many tables
+- `outcome` required, CHECK `IN ('success','failure')`
+- `request_id` nullable — the existing per-request correlation value (`app.api.request_context`)
+- `correlation_id` nullable — application-supplied identifier linking multiple audit records to one broader business operation; no new distributed-tracing infrastructure populates it
+- `details` `jsonb`, nullable — only explicit, hand-built safe data
+
+No `created_at`/`updated_at`/`created_by`/`updated_by`: `occurred_at` is the only timestamp this immutable record needs.
+
+Constraints:
+
+- `ck_audit_logs_actor_type_valid` — `actor_type IN ('user','system')`;
+- `ck_audit_logs_actor_user_id_consistent` — `(actor_type='user' AND actor_user_id IS NOT NULL) OR (actor_type='system' AND actor_user_id IS NULL)`;
+- `ck_audit_logs_outcome_valid` — `outcome IN ('success','failure')`;
+- `ck_audit_logs_action_valid` — `action` restricted to ADR-0024 §4's closed vocabulary;
+- `ck_audit_logs_resource_consistent` — `(resource_type IS NULL) = (resource_id IS NULL)`.
+
+Indexes: `occurred_at`; `actor_user_id`; `club_id`; `(resource_type, resource_id)`; `request_id`.
 
 Rules:
 
-- append-only by application policy;
-- secrets, passwords, access tokens and private credentials are never logged;
-- high-value mutations must generate audit records.
+- append-only by application policy — the reusable write boundary (`app.audit.service.record_audit_event`) only inserts; no update/delete operation is provided;
+- passwords, password hashes, access/refresh/session/reset/verification/invitation tokens, API keys, cookies, `Authorization` header values and other credentials/secrets are never stored in `details`, at any nesting depth — rejected outright, never masked;
+- `details` must be an explicit, hand-built JSON-safe payload; an ORM entity, HTTP request/response object or `Session` is never automatically serialized into it;
+- the audit insert happens in the same database transaction as the business mutation it documents for audit-required operations; if the audit insert fails, the whole transaction (including the business mutation) is rolled back (fail-closed) — see ADR-0024 §5;
+- no asynchronous audit delivery is implemented;
+- high-value mutations must generate audit records, restricted at this stage to ADR-0024 §4's action vocabulary;
+- retention/deletion is intentionally undefined — see ODR-013 and `docs/03-architecture/data-retention-and-deletion.md`; no TTL/retention job/automatic cleanup exists.
 
 ## 20. System and feature settings
 
@@ -859,7 +878,7 @@ Required index categories:
 - event participations by `(event_id, person_id)` unique;
 - group memberships by `(group_id, valid_from, valid_to)` as operationally required;
 - group instructor assignments by Group and User as operationally required;
-- audit logs by `(target_type, target_id, occurred_at)` and `(actor_user_id, occurred_at)`;
+- audit logs by `occurred_at`, `actor_user_id`, `club_id`, `(resource_type, resource_id)` and `request_id` (ADR-0024);
 - document expiration;
 - notification delivery state.
 
