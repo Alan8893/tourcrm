@@ -27,6 +27,7 @@
 - `GuardianRelationship` — связь законного представителя и ребёнка;
 - `Group` — учебная/организационная группа;
 - `GroupMembership` — историческая принадлежность к группе;
+- `GroupInstructorAssignment` — явное назначение пользователя ответственным за группу;
 - `Invitation` — приглашение в систему/клуб;
 - `RegistrationRequest` — заявка на самостоятельную регистрацию;
 - `ImportBatch` / `ImportRow` — импорт участников.
@@ -152,12 +153,16 @@ archived
 
 ### 6.2. Scope
 
-Поддерживаются минимум:
+Канонический словарь scope определяется ADR-0013:
 
 - `all`;
-- `own_groups`;
 - `self`;
-- `children`.
+- `children`;
+- `own_groups`;
+- `own_events`;
+- `none`.
+
+`assigned_events` является alias для `own_events`; `own_records` не является scope.
 
 Примеры:
 
@@ -246,22 +251,88 @@ revoked
 
 В ней могут находиться участники и назначенные инструкторы.
 
-### 8.3. Историчность
+### 8.3. Каноническая persistence-модель
 
-Нельзя хранить только `current_group_id` в профиле участника как единственный источник истины.
+`Group` имеет следующие поля:
 
-Используется `GroupMembership` с периодом действия:
+- `id`;
+- `club_id`;
+- `name`;
+- `description`;
+- `status`;
+- `valid_from`;
+- `valid_to`;
+- `created_at`;
+- `updated_at`.
+
+`Group.status` остаётся строковым значением. Канонический набор lifecycle-значений не определён этим модулем.
+
+`Group` принадлежит ровно одному `Club`.
+
+### 8.4. GroupMembership
+
+`GroupMembership` — историческая ассоциация `ClubMembership` с `Group`.
+
+Канонические поля:
 
 ```text
-person_id
+id
 group_id
+club_membership_id
 valid_from
 valid_to
-status
-assigned_by
+membership_status
+created_at
+updated_at
 ```
 
-Это позволяет строить историю переводов между группами.
+`person_id` в `GroupMembership` не хранится. Человек определяется через `club_membership_id -> ClubMembership.person_id`.
+
+`membership_status` — каноническое имя поля.
+
+`is_primary` не входит в первую persistence-модель. Возможность одновременной принадлежности к нескольким группам и наличие основной группы требуют отдельного business-policy решения.
+
+`assigned_by` не является доменным полем `GroupMembership`; информация об инициаторе изменения относится к audit/created-by инфраструктуре.
+
+Исторические записи сохраняются; закрытие периода не удаляет запись.
+
+### 8.5. Cross-Club integrity
+
+`GroupMembership` допустим только при совпадении:
+
+```text
+Group.club_id == ClubMembership.club_id
+```
+
+Проверка выполняется на authoritative application/service boundary согласно ADR-0022. Пользовательский интерфейс не является границей безопасности.
+
+### 8.6. GroupInstructorAssignment
+
+Явное назначение `User` ответственным за группу хранится отдельно от членства в группе.
+
+Канонические поля:
+
+```text
+id
+group_id
+user_id
+role_in_group
+is_primary
+valid_from
+valid_to
+created_at
+updated_at
+```
+
+`user_id` используется потому, что ответственность для authorization относится к аутентифицированному `User` principal.
+
+`role_in_group` пока не закрывается enum-справочником. Допустимый словарь должен быть согласован с моделью ответственности Event.
+
+`is_primary` различает основного ответственного и другие явные назначения.
+
+Для `GroupInstructorAssignment` назначаемый `User` должен иметь active `ClubMembership` в Club группы. Глобальная роль `instructor` сама по себе недостаточна.
+
+История назначений сохраняется через `valid_from` / `valid_to`.
 
 ## 9. Invitation
 
@@ -499,23 +570,11 @@ Claude не должен:
 - [ ] хранится история групп;
 - [ ] один guardian может иметь несколько детей;
 - [ ] один ребёнок может иметь нескольких guardians;
-- [ ] подтверждённая и неподтверждённая связи различаются;
-- [ ] поддерживаются самостоятельная регистрация, приглашение и импорт;
-- [ ] импорт имеет preview/validation этап;
-- [ ] дубликаты обнаруживаются без автоматического неконтролируемого merge;
-- [ ] деактивация не разрушает историю;
-- [ ] значимые действия попадают в AuditLog;
-- [ ] backend запрещает неразрешённый доступ независимо от UI;
-- [ ] операции с несколькими сущностями атомарны;
-- [ ] есть unit/integration/e2e тесты критических сценариев.
-
-## 20. Связанные документы
-
-- `docs/01-product/glossary.md`
-- `docs/02-requirements/business-rules.md`
-- `docs/02-requirements/functional-requirements.md`
-- `docs/02-requirements/roles-and-permissions.md`
-- `docs/03-architecture/domain-model.md`
-- `docs/03-architecture/data-model.md`
-- `docs/03-architecture/application-architecture.md`
-- `docs/03-architecture/authentication-and-authorization.md`
+- [ ] guardian access требует подтверждённой связи;
+- [ ] GroupMembership использует `club_membership_id` как связь с участником;
+- [ ] GroupMembership не хранит дублирующий `person_id`;
+- [ ] GroupInstructorAssignment хранит явную ответственность пользователя за группу;
+- [ ] cross-Club Group relationships проверяются на authoritative application/service boundary;
+- [ ] исторические назначения не уничтожаются;
+- [ ] invitation tokens не хранятся в открытом виде;
+- [ ] критические изменения аудитируются.
