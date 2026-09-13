@@ -63,25 +63,15 @@ This discrepancy is intentionally unresolved. No implementation may silently sub
 
 The persistence contract for authentication is defined in `docs/03-architecture/authentication-persistence.md`, but invitation authorization remains blocked by this ODR.
 
-## ODR-015: audit infrastructure contract
+## ODR-015: audit infrastructure contract — закрыт
 
-Нужно определить и утвердить минимальный канонический контракт AuditLog/audit infrastructure до реализации Issue #59.
+Канонический контракт AuditLog/audit infrastructure принят в `ADR-0024 — Canonical audit infrastructure`.
 
-Требуется явно принять:
+`ADR-0024` фиксирует структуру audit record и обязательные поля, закрытый словарь `action` на текущем этапе, actor/resource/Club attribution, запрет на секреты/credentials в `details`, transaction/fail-closed semantics, отсутствие asynchronous audit delivery и явное отсутствие публичного Audit API/новых permissions на этом этапе.
 
-- структуру audit record и обязательные поля;
-- категорию/тип действия и формат идентификации target;
-- правила хранения actor/request/correlation context;
-- допустимый формат `details` и запрет на секреты/аутентификационные материалы;
-- transaction semantics: входит ли запись аудита в ту же атомарную бизнес-транзакцию для соответствующих операций;
-- fail-closed/fail-open поведение по категориям операций;
-- перечень обязательных audit-relevant операций на текущем этапе;
-- способ доступа к audit records и границы отсутствия публичного Audit API, если это сохраняется;
-- retention/deletion rules для audit records — совместно с ODR-013.
+`ADR-0024` намеренно НЕ закрывает retention/deletion для audit records — эта часть ODR-013 остаётся открытой (см. ODR-013 ниже и `docs/03-architecture/data-retention-and-deletion.md`).
 
-До закрытия ODR-015 Claude не должен проектировать или реализовывать собственную схему AuditLog, выбирать failure semantics или самостоятельно определять обязательные поля/категории аудита.
-
-Issue #59 является implementation gate: сначала закрываются ODR-015 и необходимые связанные пункты ODR-013, затем выполняется реализация.
+Дальнейшая реализация audit infrastructure должна следовать `ADR-0024` и не должна трактовать ODR-015 как открытое архитектурное решение.
 
 ## Правило
 
@@ -96,3 +86,4 @@ Issue #59 является implementation gate: сначала закрываю�
 - API response envelope — закрыт `ADR-0014`.
 - Event occurrence materialization — закрыт `ADR-0015`.
 - Document ownership — закрыт `ADR-0016`.
+- ODR-015 audit infrastructure contract — закрыт `ADR-0024`.

@@ -608,19 +608,21 @@ M:N связь статьи и тегов.
 
 ### AuditLog
 
-Неизменяемая прикладная запись аудита.
+Неизменяемая (append-only) прикладная запись аудита. Канонический контракт зафиксирован ADR-0024 (закрывает ODR-015); физическая схема — `database-schema.md` §19.
 
 Минимальные поля:
 
-- id;
-- actor_user_id;
-- action;
-- target_type;
-- target_id;
-- occurred_at;
-- request_id/correlation_id;
-- outcome;
-- change_summary/diff reference.
+- id (UUID, immutable);
+- occurred_at (timezone-aware, UTC);
+- actor_type (`user`/`system`); actor_user_id обязателен для `user`, NULL для `system` — синтетический "System" User не создаётся;
+- club_id (nullable, контекст события, не механизм авторизации);
+- action (стабильный business action code из закрытого на данном этапе словаря ADR-0024 §4 — не HTTP method/URL/UI text);
+- resource_type/resource_id (оба nullable, заполняются или не заполняются парой);
+- outcome (`success`/`failure`);
+- request_id/correlation_id (используют существующий request correlation механизм; новая distributed tracing система не создаётся);
+- details (JSONB; только явно сформированные безопасные данные — пароли, хэши паролей, access/refresh/session/reset/verification/invitation tokens, API keys, cookies, Authorization header и иные credentials/secrets запрещены; ORM entity/HTTP request/Session никогда не сериализуются автоматически).
+
+Retention/deletion для AuditLog не определён этим документом — см. ODR-013 и `docs/03-architecture/data-retention-and-deletion.md`.
 
 ## 20. Settings domain
 
