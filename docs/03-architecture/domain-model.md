@@ -277,7 +277,11 @@ Group принадлежит одному Club. GroupMembership допустим
 
 ### EventParticipation
 
-Связь Person с Event. Каноническая persistence-модель и deferred registration policy определяются отдельным контрактом.
+Связь Person с Event.
+
+Текущая принятая persistence-модель определена Issue #51 в соответствии с ADR-0023 §4: `id`, `event_id`, `person_id`, `registration_status`, `created_at`, `updated_at`. Не более одной записи на пару Event/Person (DB-level ограничение).
+
+Registration/attendance policy, self-registration, переходы `registration_status` и связанные бизнес-правила остаются отдельным deferred business decision (ADR-0020 §4) и не входят в текущий персистентный контракт — см. также `data-model.md` §"EventParticipation" (текущая модель и отложенные концепции) и §11 "Attendance" ниже.
 
 ### EventStaffAssignment
 

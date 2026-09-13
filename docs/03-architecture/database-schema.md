@@ -329,24 +329,22 @@ An occurrence is the unit to which attendance and operational changes attach.
 
 ### `event_participations`
 
+Currently accepted persistence model (Issue #51, per ADR-0023 §4):
+
 - `id` PK
 - `event_id` FK
 - `person_id` FK
 - `registration_status`
-- `attendance_status` nullable until attendance exists
-- `participant_role` nullable
-- `registered_at` nullable
-- `attendance_marked_at` nullable
-- `absence_reason` nullable
-- `result` nullable
-- `notes` nullable
 - timestamps
 
-Constraints:
+Constraints (implemented):
 
-- one participation row per person/event;
-- absence reason required for statuses that represent excused/unexcused absence according to business rules;
-- attendance must not exist for a person without valid participation unless an administrator explicitly creates historical attendance.
+- `UNIQUE(event_id, person_id)` — at most one participation row per Event/Person, enforced by PostgreSQL, not application code;
+- `registration_status` is a plain string with no CHECK/enum constraint. ADR-0020 §4's five values (`invited`, `registered`, `waitlisted`, `declined`, `removed`) are documented reference values only, not an enforced vocabulary; the full transition graph and registration policy remain a separate deferred business decision.
+
+#### Deferred (not implemented) concepts
+
+`attendance_status`, `participant_role`, `registered_at`, `attendance_marked_at`, `absence_reason`, `result`, `notes` are possible future attributes and are **not** part of the currently implemented model. Attendance is treated as a dependency separate from EventParticipation (ADR-0023 §4; see also `domain-model.md` §11 "Attendance") and requires its own separate architectural/business decision before any of these are introduced.
 
 ## 10. Trips
 
