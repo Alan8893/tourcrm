@@ -226,7 +226,11 @@ Core fields:
 - `start_at` required
 - `end_at` required
 - `timezone` required
-- `location` nullable
+- `location_type`
+- `location_name`
+- `location_address` nullable
+- `location_latitude` nullable
+- `location_longitude` nullable
 - `status` required
 - `cancellation_reason` nullable
 - `created_by` FK
