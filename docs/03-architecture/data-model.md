@@ -14,7 +14,7 @@
 
 Чистые association/junction tables, не имеющие самостоятельной доменной идентичности и жизненного цикла, могут использовать составной первичный ключ из своих внешних ключей. Это исключение явно фиксируется в физической database specification.
 
-Предпочтительный внешний формат идентификаторов API — UUID/ULID-подобный opaque identifier.
+Предпочтительный внешний формат идентификаторов API — UUID/ULID-подобный opaque identifier. Конкретный выбор фиксируется database ADR.
 
 ### 2.2 Timestamps
 
@@ -22,25 +22,77 @@
 
 ### 2.3 Audit fields
 
-Для изменяемых сущностей при необходимости используются `created_at`, `updated_at`, `created_by`, `updated_by`. Исторические записи дополнительно используют специализированные audit entities, где одного `updated_at` недостаточно.
+Для изменяемых сущностей при необходимости:
+
+- `created_at`;
+- `updated_at`;
+- `created_by`;
+- `updated_by`.
+
+Исторические записи дополнительно используют специализированные audit entities, где одного updated_at недостаточно.
 
 ## 3. Identity domain
 
 ### Person
 
-Физическое лицо. Ключевые поля: `id`, `first_name`, `last_name`, `middle_name`, `birth_date`, `phone`, `email`, `address`, photo reference, timestamps.
+Представляет физическое лицо.
+
+Ключевые поля:
+
+- id;
+- first_name;
+- last_name;
+- middle_name nullable;
+- birth_date nullable;
+- phone nullable;
+- email nullable;
+- address nullable;
+- photo reference nullable;
+- created_at;
+- updated_at.
+
+Медицинские, финансовые и документные данные не встраиваются в Person без отдельного обоснования.
 
 ### User
 
-Учётная запись. `User N:1 Person`. Ключевые поля: `id`, `person_id`, login/username identifier, normalized identifier, password hash metadata, `status`, `email_verified_at`, `last_login_at`, timestamps.
+Представляет учётную запись.
+
+Связь:
+
+`User N:1 Person`
+
+Ключевые поля:
+
+- id;
+- person_id;
+- login/username identifier;
+- normalized identifier;
+- password hash metadata;
+- status;
+- email_verified_at;
+- last_login_at;
+- created_at;
+- updated_at.
 
 ### Club
 
 Текущий installation domain.
 
+`Club 1:N ClubMembership`
+
 ### ClubMembership
 
-Историческое членство Person в Club. `Person 1:N ClubMembership`, `Club 1:N ClubMembership`. Membership принадлежит одному Club и одному Person; исторические membership не удаляются без специальной процедуры.
+Историческое членство Person в Club.
+
+`Person 1:N ClubMembership`
+`Club 1:N ClubMembership`
+
+Ограничения:
+
+- membership принадлежит одному club;
+- membership относится к одному person;
+- исторические membership не удаляются без специальной процедуры;
+- одновременно active membership для одного person и club не должно дублироваться.
 
 ## 4. Authorization domain
 
@@ -58,36 +110,38 @@ M:N связь Role ↔ Permission.
 
 ### UserRoleAssignment
 
-Связь User ↔ Role с context/scope; может быть ограничена Club scope.
+M:N/assignment связь User ↔ Role с context/scope.
+
+Связь может быть ограничена club scope.
 
 ### PermissionScope
 
-Логический справочник/набор scope. Канонический словарь определяется ADR-0013.
+Может быть отдельным справочником или enum/configuration entity, если этого требует реализация.
 
 ## 5. Guardian domain
 
 ### GuardianRelationship
 
-Club-neutral связь Person ↔ Person через семантику guardian/child.
+M:N Person ↔ Person через семантику guardian/child.
 
 Канонические поля:
 
-- `id`;
-- `guardian_person_id`;
-- `child_person_id`;
-- `relationship_type`;
-- `status`;
-- `is_primary_contact`;
-- `valid_from`;
-- `valid_to`;
-- `created_at`;
-- `updated_at`.
+- id;
+- guardian_person_id;
+- child_person_id;
+- relationship_type;
+- status;
+- is_primary_contact;
+- valid_from;
+- valid_to;
+- created_at;
+- updated_at.
 
 Канонические значения `status`: `active`, `inactive`, `revoked`.
 
-`guardian_person_id != child_person_id`. Дублирующие active relationships одной пары/типа не допускаются. Исторические inactive/revoked сохраняются. Для одного ребёнка допускается не более одной одновременно действующей primary-contact relationship.
+Ограничение: guardian_person_id != child_person_id. Дублирующие active relationships одной пары и relationship_type не допускаются; исторические inactive/revoked сохраняются. Для одного ребёнка допускается не более одной одновременно действующей primary-contact relationship.
 
-Club authorization guardian access определяется отдельно через active GuardianRelationship, membership ребёнка и применимую membership policy; сама GuardianRelationship не получает `club_id`.
+GuardianRelationship не содержит `club_id`; Club authorization определяется через active relationship, membership ребёнка и применимую membership policy.
 
 ## 6. Group domain
 
@@ -97,107 +151,167 @@ Club authorization guardian access определяется отдельно ч�
 
 `Club 1:N Group`
 
-Поля: `id`, `club_id`, `name`, `description`, `status`, `valid_from`, `valid_to`, `created_at`, `updated_at`.
+Канонические поля:
 
-`Group.status` остаётся строковым значением; канонический набор lifecycle-значений этим документом не задаётся.
+- id;
+- club_id;
+- name;
+- description;
+- status;
+- valid_from;
+- valid_to;
+- created_at;
+- updated_at.
+
+`Group.status` остаётся строковым значением. Канонический набор lifecycle-значений этим документом не задаётся.
 
 ### GroupMembership
 
 Историческая ассоциация `ClubMembership` с `Group`.
 
-`ClubMembership 1:N GroupMembership`, `Group 1:N GroupMembership`.
+`ClubMembership 1:N GroupMembership`
+`Group 1:N GroupMembership`
 
-Поля: `id`, `group_id`, `club_membership_id`, `valid_from`, `valid_to`, `membership_status`, `created_at`, `updated_at`.
+Канонические поля:
 
-`person_id` не хранится: Person определяется через `club_membership_id -> ClubMembership.person_id`. `membership_status` — каноническое имя поля. `is_primary` и `assigned_by` не являются частью persistence-модели.
+- id;
+- group_id;
+- club_membership_id;
+- valid_from;
+- valid_to;
+- membership_status;
+- created_at;
+- updated_at.
+
+`person_id` в `GroupMembership` не хранится: Person определяется через `club_membership_id -> ClubMembership.person_id`.
+
+`membership_status` — каноническое имя поля; отдельного `status` для этой association-модели нет.
+
+`is_primary` не является частью первой persistence-модели. Возможность одновременной принадлежности к нескольким группам и концепция основной группы требуют отдельного business-policy решения.
+
+`assigned_by` не является доменным полем GroupMembership; информация об инициаторе изменения относится к применимой audit/created-by инфраструктуре.
+
+Исторические записи сохраняются. Закрытие периода не удаляет запись.
 
 ### GroupInstructorAssignment
 
-Явная историческая связь User с Group для определения ответственности.
+Явная историческая связь пользователя с группой для определения ответственности.
 
-Поля: `id`, `group_id`, `user_id`, `role_in_group`, `is_primary`, `valid_from`, `valid_to`, `created_at`, `updated_at`.
+`User 1:N GroupInstructorAssignment`
+`Group 1:N GroupInstructorAssignment`
 
-`own_groups` основывается на active explicit `GroupInstructorAssignment`, а не только на глобальной роли instructor.
+Канонические поля:
 
-Cross-Club invariant: `Group.club_id == ClubMembership.club_id` для GroupMembership; assigned User должен иметь active ClubMembership в Club группы для GroupInstructorAssignment. Enforcement выполняется application/service layer согласно ADR-0022.
+- id;
+- group_id;
+- user_id;
+- role_in_group;
+- is_primary;
+- valid_from;
+- valid_to;
+- created_at;
+- updated_at.
+
+`user_id` используется потому, что ответственность для authorization относится к аутентифицированному User principal.
+
+`role_in_group` пока не закрывается enum-справочником; его допустимый словарь должен быть согласован с моделью ответственности Event.
+
+`is_primary` различает основного ответственного инструктора и другие явные назначения.
+
+Scope `own_groups` основывается на активном явном `GroupInstructorAssignment`, а не только на глобальной роли instructor.
+
+Group и все связанные с ним объекты должны принадлежать одному Club. GroupMembership допустим только при совпадении `Group.club_id` и `ClubMembership.club_id`. Для GroupInstructorAssignment назначаемый User должен иметь active ClubMembership в Club группы. Enforcement этого cross-Club invariant выполняется application/service layer согласно ADR-0022.
 
 ### EventGroupTarget
 
-Каноническая связь `Event ↔ Group`, определённая ADR-0023.
+Каноническая связь Event с Group, определённая ADR-0023.
 
 Поля:
 
-- `id`;
-- `event_id`;
-- `group_id`;
-- `valid_from`;
-- `valid_to`;
-- `created_at`;
-- `updated_at`.
+- id;
+- event_id;
+- group_id;
+- valid_from;
+- valid_to;
+- created_at;
+- updated_at.
 
-Event может иметь несколько targets, Group может быть target нескольких Events. История сохраняется. Связь допустима только при `Event.club_id == Group.club_id` и проверяется через authoritative application/service boundary согласно ADR-0022.
+Event может быть адресован нескольким Groups, Group может быть целью нескольких Events. История сохраняется. `Event.club_id == Group.club_id` обязателен и проверяется через authoritative application/service boundary согласно ADR-0022.
 
-`own_groups` = active EventGroupTarget + active GroupInstructorAssignment requester. Targeting не создаёт EventParticipation.
+`own_groups` основывается на active EventGroupTarget + active GroupInstructorAssignment requester. Targeting не создаёт EventParticipation.
 
 ## 7. Event domain
 
 ### Event
 
-Базовое мероприятие. `Club 1:N Event`.
+Базовое мероприятие.
 
-Поля по ADR-0019:
+`Club 1:N Event`
 
-- `id`;
-- `club_id`;
-- `event_type`;
-- `title`;
-- `description`;
-- `start_at`;
-- `end_at`;
-- `timezone`;
-- `location_type`;
-- `location_name`;
-- `location_address`;
-- `location_latitude`;
-- `location_longitude`;
-- `status`;
-- `cancellation_reason`;
-- `created_by`;
-- `updated_by`;
-- `created_at`;
-- `updated_at`.
+Поля верхнего уровня:
 
-Lifecycle определяется ADR-0018.
+- id;
+- club_id;
+- event_type;
+- title;
+- description;
+- start_at;
+- end_at;
+- timezone;
+- location_type;
+- location_name;
+- location_address nullable;
+- location_latitude nullable;
+- location_longitude nullable;
+- status;
+- cancellation_reason nullable;
+- created_by;
+- updated_by;
+- timestamps.
 
 ### EventParticipation
 
-Отдельная связь Person с Event, необходимая для `self` и участнических сценариев.
+Связь Person/ClubMembership с Event.
 
-Минимальная dependency-модель должна сохранять как минимум `event_id`, `person_id`, registration state и timestamps; для полной attendance/registration модели дополнительные поля фиксируются отдельным контрактом.
+`Event 1:N EventParticipation`
+`Person 1:N EventParticipation`
 
-Наиболее важное правило: `EventGroupTarget` не создаёт EventParticipation автоматически.
+Ключевые поля:
+
+- event_id;
+- person_id;
+- registration_status;
+- attendance_status;
+- participant_role nullable;
+- registered_at;
+- attendance_marked_at nullable;
+- absence_reason nullable;
+- result nullable;
+- notes nullable.
+
+Должно существовать ограничение на дублирование участия одного человека в одном событии.
+
+Политика self-registration и детальные registration transitions остаются отдельным deferred business decision.
 
 ### EventStaffAssignment
 
-Каноническая явная связь `User ↔ Event`, определённая ADR-0023.
+Явная связь Event с ответственными/инструкторами.
 
-Поля:
+Канонические поля:
 
-- `id`;
-- `event_id`;
-- `user_id`;
-- `role_in_event`;
-- `is_primary`;
-- `valid_from`;
-- `valid_to`;
-- `created_at`;
-- `updated_at`.
+- id;
+- event_id;
+- user_id;
+- role_in_event;
+- is_primary;
+- valid_from;
+- valid_to;
+- created_at;
+- updated_at.
 
 Допускается несколько active assignments, но не более одной active primary assignment для Event. История сохраняется.
 
-Assigned User допустим только при active ClubMembership его Person в Club Event. `Event.created_by` не является заменой EventStaffAssignment и не является источником `own_events`.
-
-`own_events` основывается на active EventStaffAssignment.
+Assigned User допустим только если Person имеет active ClubMembership в Club Event. `Event.created_by` не заменяет EventStaffAssignment и не является источником `own_events`.
 
 ## 8. Recurrence domain
 
@@ -213,21 +327,51 @@ Assigned User допустим только при active ClubMembership его 
 
 ### EventOccurrence
 
-Материализованный occurrence-слой согласно ADR-0015. Series остаётся источником recurrence truth; materialization выполняется в конфигурируемом горизонте, по умолчанию 180 дней.
+Может быть представлением/слоем для конкретного occurrence; физическая стратегия выбирается при проектировании schedule service.
 
-Единичные исключения не должны уничтожать историю серии.
+Каноническая стратегия materialization определяется ADR-0015: series является recurrence source of truth, occurrence materialization выполняется в конфигурируемом горизонте, по умолчанию 180 дней.
+
+Ключевое требование: единичный перенесённый/отменённый occurrence не должен ломать правило всей серии.
 
 ## 9. Trip domain
 
 ### Trip
 
-Расширение Event 1:1. `Event 1:0..1 Trip`.
+Расширение Event 1:1.
 
-Поля включают tourism type, difficulty, region, route, planned/actual distance, planned/actual duration, leader и result data согласно специализированной модели.
+`Event 1:0..1 Trip`
+
+Поля:
+
+- event_id;
+- tourism_type;
+- difficulty_category nullable;
+- region nullable;
+- route_id nullable;
+- planned_distance nullable;
+- actual_distance nullable;
+- planned_duration nullable;
+- actual_duration nullable;
+- leader_person_id;
+- result_status;
+- notes.
 
 ### TripParticipant
 
 Специализированная связь участника с походом.
+
+`Trip 1:N TripParticipant`
+`Person 1:N TripParticipant`
+
+Поля:
+
+- trip_id;
+- person_id;
+- role_in_trip;
+- actual_participation;
+- completed_distance nullable;
+- result nullable;
+- notes nullable.
 
 ## 10. Route domain
 
@@ -237,17 +381,38 @@ Assigned User допустим только при active ClubMembership его 
 
 ### RoutePoint
 
-`Route 1:N RoutePoint` с sequence, coordinates, elevation и описательными полями.
+`Route 1:N RoutePoint`
+
+Поля:
+
+- route_id;
+- sequence;
+- latitude;
+- longitude;
+- elevation nullable;
+- name nullable;
+- point_type nullable;
+- description nullable.
 
 ### RouteFile
 
-Метаданные внешнего/файлового объекта GPX. Исходный GPX не хранится непосредственно в PostgreSQL blob без отдельного ADR.
+Метаданные внешнего/файлового объекта GPX.
+
+`Route 1:N RouteFile`
+
+Исходный GPX не хранится непосредственно в PostgreSQL blob без отдельного ADR.
 
 ## 11. Tourist profile
 
 ### TouristProfile
 
-`Person 1:0..1 TouristProfile`. Производные/описательные данные. Первичные факты походов находятся в Trip/TripParticipant.
+`Person 1:0..1 TouristProfile`
+
+Хранит предпочтительно производные/описательные данные.
+
+Первичные факты о походах находятся в Trip/TripParticipant.
+
+Для агрегатов допускается материализованное хранение, если предусмотрен безопасный механизм пересчёта.
 
 ### TourismType
 
@@ -281,7 +446,19 @@ Assigned User допустим только при active ClubMembership его 
 
 ### AchievementAward
 
-Связь Person ↔ Achievement с `person_id`, `achievement_id`, `awarded_at`, award method, `awarded_by`, optional `source_event_id`, metadata и revoke fields.
+Связь Person ↔ Achievement.
+
+Поля:
+
+- person_id;
+- achievement_id;
+- awarded_at;
+- award_method manual/automatic;
+- awarded_by nullable;
+- source_event_id nullable;
+- metadata;
+- revoked_at nullable;
+- revoke_reason nullable.
 
 ## 13. Knowledge domain
 
@@ -297,9 +474,13 @@ Assigned User допустим только при active ClubMembership его 
 
 Версия опубликованного/изменённого материала.
 
-### KnowledgeTag / KnowledgeArticleTag
+### KnowledgeTag
 
-Теги и M:N связь статьи с тегами.
+Тег.
+
+### KnowledgeArticleTag
+
+M:N связь статьи и тегов.
 
 ### KnowledgeRelation
 
@@ -309,15 +490,37 @@ Assigned User допустим только при active ClubMembership его 
 
 ### Document
 
-Унифицированный документ/файл с метаданными. Security-sensitive ownership должен использовать явные FK-backed ownership relations согласно ADR-0016.
+Унифицированный документ/файл с метаданными.
 
-### DocumentType / DocumentVersion
+Поскольку объект может относиться к разным доменам, физическая модель должна избегать неограниченного числа nullable foreign keys без архитектурного решения.
 
-Тип документа и история версий.
+Возможные стратегии:
 
-### ConsentType / ConsentVersion / ConsentRecord
+- polymorphic reference;
+- отдельные link tables;
+- document aggregate ownership.
 
-Тип согласия, версия текста и факт предоставления/отзыва согласия.
+Выбор фиксируется ADR.
+
+### DocumentType
+
+Тип документа.
+
+### DocumentVersion
+
+История версий файла/метаданных, если требуется immutable history.
+
+### ConsentType
+
+Тип согласия/политики.
+
+### ConsentVersion
+
+Конкретная версия текста согласия.
+
+### ConsentRecord
+
+Факт предоставления/отзыва согласия конкретным субъектом.
 
 ## 15. Equipment domain
 
@@ -331,25 +534,45 @@ Assigned User допустим только при active ClubMembership его 
 
 ### EquipmentIssue
 
-История выдачи с привязкой к Equipment, Person и optional Event.
+История выдачи.
+
+Связи:
+
+`Equipment 1:N EquipmentIssue`
+`Person 1:N EquipmentIssue`
+`Event 1:N EquipmentIssue` optional.
 
 ## 16. Finance domain
 
 ### FinancialAccount
 
-Счёт/касса/кошелёк клуба.
+Счёт/касса/кошелёк в логике клуба.
 
-### Payment / Expense
+### Payment
 
-Поступление/платёж и расход.
+Поступление/платёж.
 
-### EventBudget / EventExpense
+### Expense
 
-Бюджет и расходы мероприятия.
+Расход.
 
-### ParticipantCharge / ParticipantPaymentAllocation
+### EventBudget
 
-Начисление участнику и связь оплаты с начислением/основанием.
+Бюджет мероприятия.
+
+### EventExpense
+
+Связь расхода с мероприятием.
+
+### ParticipantCharge
+
+Начисление конкретному участнику при необходимости.
+
+### ParticipantPaymentAllocation
+
+Связь оплаты с начислением/основанием.
+
+Физическая финансовая модель должна обеспечивать трассируемость суммы от операции до основания.
 
 ## 17. Notification domain
 
@@ -367,52 +590,111 @@ Assigned User допустим только при active ClubMembership его 
 
 ### NotificationDelivery
 
-Попытка/результат доставки по конкретному каналу.
+Отдельная попытка доставки по конкретному каналу.
 
-## 18. Audit domain
+Это позволяет один объект Notification доставлять по нескольким каналам без дублирования бизнес-события.
 
-### AuditEvent
+## 18. Communication domain
 
-Нормализованный audit event с actor, action, object reference, timestamp и metadata. Secrets и необоснованные чувствительные данные не записываются.
+### Announcement
 
-## 19. Calendar / integration domain
+Официальное сообщение клуба.
 
-Календарные внешние связи, iCalendar feeds и интеграции должны быть отдельными сущностями/адаптерами и не должны изменять базовый Event contract без ADR.
+### Message/Conversation
 
-## 20. Relationship and authorization traceability
+Может быть добавлено позже после отдельного требования и ADR. Не считать встроенный чат частью MVP без явного решения.
 
-Канонические источники relationship-based scopes:
+## 19. Audit domain
 
-| Scope | Источник relationship |
-|---|---|
-| `all` | Club-level permission/object policy |
-| `own_groups` | active EventGroupTarget + active GroupInstructorAssignment |
-| `own_events` | active EventStaffAssignment |
-| `self` | requester Person's eligible EventParticipation |
-| `children` | active GuardianRelationship + child EventParticipation or active Group membership through EventGroupTarget |
-| `none` | no access |
+### AuditLog
 
-`assigned_events` — alias `own_events`; `own_records` не является canonical scope.
+Неизменяемая прикладная запись аудита.
 
-## 21. Cross-Club ownership
+Минимальные поля:
 
-User является Club-neutral и может участвовать в нескольких Clubs.
+- id;
+- actor_user_id;
+- action;
+- target_type;
+- target_id;
+- occurred_at;
+- request_id/correlation_id;
+- outcome;
+- change_summary/diff reference.
 
-Все Group/Event relationship writes проходят authoritative ownership validation в application/service layer. Проверка ownership и запись выполняются в одной транзакции с необходимой concurrency protection.
+## 20. Settings domain
 
-Database отвечает за обычную referential integrity, interval constraints, uniqueness/exclusion и deletion protection; отдельные redundant `club_id` и DB triggers для этих relationship invariants не вводятся без отдельного ADR.
+### SystemSetting
 
-## 22. Канонические ADR
+Техническая/системная настройка.
 
-- ADR-0013 — scope vocabulary.
-- ADR-0016 — document ownership.
-- ADR-0018 — Event lifecycle.
-- ADR-0019 — Event field model.
-- ADR-0020 — Event authorization and participation contract.
-- ADR-0021 — Group persistence model.
-- ADR-0022 — Cross-Club ownership integrity.
-- ADR-0023 — Event responsibility, EventGroupTarget and GuardianRelationship persistence.
+### FeatureSetting
 
-## 23. Правило изменения модели
+Настройка доступности функции.
 
-Новая доменная сущность или изменение существующего relationship contract не считается согласованным только по реализации. Сначала обновляется нормативная документация и при необходимости создаётся/обновляется ADR; затем Issue implementation становится исполнимым без изобретения бизнес-семантики.
+Должна иметь scope (например club), значение и аудит изменения.
+
+## 21. Главные кардинальности
+
+```text
+Club 1:N Person через ClubMembership
+Person 1:0..1 User
+Person M:N Person через GuardianRelationship
+Club 1:N Group
+ClubMembership 1:N GroupMembership
+Group 1:N GroupMembership
+User 1:N GroupInstructorAssignment
+Group 1:N GroupInstructorAssignment
+Club 1:N Event
+Event M:N Person через EventParticipation
+Event M:N Group через EventGroupTarget
+Event 1:N EventStaffAssignment
+Event 1:0..1 Trip
+Trip M:N Person через TripParticipant
+Route 1:N RoutePoint
+Route 1:N RouteFile
+Person 1:0..1 TouristProfile
+Person M:N Skill через PersonSkill
+Person M:N Qualification через PersonQualification
+Person M:N Achievement через AchievementAward
+Person 1:N Document links/ownership
+Person M:N Equipment через EquipmentIssue history
+Event 1:N Finance/Expense relations
+Notification 1:N NotificationDelivery
+User 1:N AuditLog
+```
+
+## 22. Referential integrity
+
+Удаление родительской сущности должно быть запрещено, каскадным либо архивирующим только после определения семантики для каждой связи.
+
+Особенно запрещается бездумный cascade delete для:
+
+- Person;
+- User;
+- Event;
+- Trip;
+- Payment;
+- Expense;
+- AchievementAward;
+- ConsentRecord;
+- AuditLog.
+
+Cross-Club ownership is mandatory for Group relationships: a GroupMembership is valid only when Group and ClubMembership belong to the same Club; a GroupInstructorAssignment is valid only when the assigned User has an active ClubMembership in the Group's Club. EventGroupTarget additionally requires Event.club_id == Group.club_id. Application/service-layer enforcement follows ADR-0022.
+
+## 23. Indexing principles
+
+Физическая БД должна иметь индексы на:
+
+- уникальные логины/идентификаторы;
+- внешние ключи;
+- поля поиска участников;
+- поля фильтрации Event по датам/status/club;
+- EventParticipation по event/person;
+- TripParticipant по trip/person;
+- актуальные membership/group membership;
+- document expiration;
+- notification delivery state;
+- audit timestamp/target.
+
+Полный набор индексов определяется после API/query design.
