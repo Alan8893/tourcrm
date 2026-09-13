@@ -35,7 +35,7 @@ import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.exc import IntegrityError
 
-from app.db.events import Event, EventGroupTarget
+from app.db.events import Event, EventGroupTarget, EventParticipation
 from app.db.groups import Group
 from app.db.identity import Club, Person, User
 from app.db.session import session_scope
@@ -366,18 +366,16 @@ def test_overlapping_target_intervals_for_same_event_and_group_are_allowed() -> 
 @requires_postgres
 def test_creating_an_event_group_target_has_no_participation_side_effect() -> None:
     """ADR-0023 §2: targeting is audience selection only and must never
-    create EventParticipation, registration or attendance.
-    EventParticipation is not yet part of the persistence layer at all
-    (a later, separate Issue) — confirmed directly here, together with
-    the fact that the only observable effect of creating an
-    EventGroupTarget is the one new row itself.
+    create EventParticipation, registration or attendance. Issue #51
+    added EventParticipation as its own persistence entity (this test
+    originally proved the absence of a side effect by asserting that
+    table didn't exist at all — updated here to check the real
+    invariant directly now that the table legitimately exists), so this
+    confirms directly that creating an EventGroupTarget inserts no
+    EventParticipation row, alongside the fact that the only observable
+    effect of creating an EventGroupTarget is the one new row itself.
     """
     with session_scope() as session:
-        tables = session.execute(
-            text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
-        ).scalars().all()
-        assert "event_participations" not in tables
-
         club = _make_club()
         session.add(club)
         session.commit()
@@ -392,6 +390,9 @@ def test_creating_an_event_group_target_has_no_participation_side_effect() -> No
 
         rows = session.execute(select(EventGroupTarget)).scalars().all()
         assert [row.id for row in rows] == [target.id]
+
+        participations = session.execute(select(EventParticipation)).scalars().all()
+        assert participations == []
 
 
 # --- foreign key integrity -------------------------------------------------
