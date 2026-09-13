@@ -71,9 +71,16 @@ def scope_matches(scope_type: str, context: ResourceContext) -> bool:
     raise ValueError(f"Unhandled scope_type: {scope_type!r}")
 
 
-def _applicable_assignments(
+def applicable_assignments(
     session: Session, user_id: uuid.UUID, permission_code: str
 ) -> list[UserRoleAssignment]:
+    """All of the user's UserRoleAssignment rows that grant `permission_code`
+    (via the assignment's Role -> RolePermission -> Permission chain).
+
+    Public because domain-level query filtering (e.g. Event list scope
+    filtering, Issue #40) needs the identical query to build per-assignment
+    SQL predicates, not just the aggregate allow/deny `can()` returns.
+    """
     stmt = (
         select(UserRoleAssignment)
         .join(RolePermission, RolePermission.role_id == UserRoleAssignment.role_id)
@@ -94,7 +101,7 @@ def can(
     assignment's club boundary and scope both match `context`.
     """
     resolved_context = context if context is not None else ResourceContext()
-    assignments = _applicable_assignments(session, user_id, permission_code)
+    assignments = applicable_assignments(session, user_id, permission_code)
     return any(
         club_boundary_matches(assignment.club_id, resolved_context.club_id)
         and scope_matches(assignment.scope_type, resolved_context)
