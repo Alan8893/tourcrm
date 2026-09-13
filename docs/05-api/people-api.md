@@ -23,7 +23,9 @@ API не смешивает:
 
 `/api/v1`
 
-People namespace: `/api/v1/people`
+Persons namespace: `/api/v1/persons`
+
+Ресурс использует имя `persons`, а не `people`: это приведено в соответствие с ADR-0004 (API-контракт должен соответствовать `docs/05-api/api-contract.md`), `api-contract.md` §4 (canonical resource naming: `/persons`) и `docs/05-api/endpoint-inventory.md` §3, которые уже независимо используют `/persons`. Ранее этот документ использовал `/api/v1/people`, что противоречило обоим документам; исправлено без изменения семантики endpoints.
 
 Membership namespace: `/api/v1/memberships`
 
@@ -33,7 +35,7 @@ Guardians namespace: `/api/v1/guardians`
 
 ## 4. Получение списка людей
 
-### GET `/api/v1/people`
+### GET `/api/v1/persons`
 
 Permission: `person.read` с подходящим scope.
 
@@ -43,7 +45,7 @@ Permission: `person.read` с подходящим scope.
 
 ## 5. Получение Person
 
-### GET `/api/v1/people/{person_id}`
+### GET `/api/v1/persons/{person_id}`
 
 Доступ определяется `person.read` + scope.
 
@@ -53,7 +55,7 @@ API возвращает только поля, разрешённые конк�
 
 ## 6. Создание Person
 
-### POST `/api/v1/people`
+### POST `/api/v1/persons`
 
 Создание Person доступно уполномоченным администраторам/инструкторам согласно permission policy.
 
@@ -61,13 +63,13 @@ API возвращает только поля, разрешённые конк�
 
 ## 7. Обновление Person
 
-### PATCH `/api/v1/people/{person_id}`
+### PATCH `/api/v1/persons/{person_id}`
 
 Частичное обновление с audit для значимых изменений и optimistic concurrency там, где потеря параллельного изменения недопустима.
 
 ## 8. Архивирование Person
 
-### POST `/api/v1/people/{person_id}/archive`
+### POST `/api/v1/persons/{person_id}/archive`
 
 Архивирование не уничтожает историю мероприятий, походов, документов, финансов и аудита.
 
@@ -174,7 +176,7 @@ Request:
 
 ## 16. Group membership history
 
-### GET `/api/v1/people/{person_id}/groups`
+### GET `/api/v1/persons/{person_id}/groups`
 
 Возвращает текущую и историческую принадлежность человека к группам.
 
@@ -197,11 +199,11 @@ Request:
 
 Self-link guardian → same person запрещён. Дублирующие активные relationships одного типа для одной пары не допускаются; исторические `inactive`/`revoked` сохраняются. Для ребёнка допускается не более одной одновременно действующей primary-contact relationship.
 
-### GET `/api/v1/people/{person_id}/guardians`
+### GET `/api/v1/persons/{person_id}/guardians`
 
 Доступ только при наличии `guardian.read` и подходящего scope.
 
-### POST `/api/v1/people/{person_id}/guardians`
+### POST `/api/v1/persons/{person_id}/guardians`
 
 Создаёт relationship с существующим Person или запускает controlled linking flow.
 
