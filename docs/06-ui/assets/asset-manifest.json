@@ -1,28 +1,25 @@
 {
-  "schemaVersion": "1.2",
+  "schemaVersion": "1.3",
   "productionFormatPolicy": {
     "icons": {
-      "preferred": "svg",
-      "fallback": "png",
-      "rule": "Use SVG when the approved visual character can be preserved at target UI sizes; use PNG/WebP when raster artwork is visually superior. Format never justifies simplifying approved artwork."
+      "preferred": "webp",
+      "fallback": "svg",
+      "sizes": [16, 20, 24, 32, 48, 64],
+      "rule": "Approved TourCRM icon artwork is delivered as transparent WebP when raster preserves the agreed visual character better than SVG. SVG must not be used as a reason to simplify the artwork."
     },
     "illustrations": {
-      "preferred": "png",
+      "preferred": "webp",
       "variants": ["desktop", "tablet", "mobile"],
       "rule": "Illustrations are full TourCRM artwork. Responsive variants are separate compositions where necessary, not merely resized exports."
     }
   },
   "assets": [
-    {
-      "id": "icon.navigation.groups",
-      "type": "icon",
-      "category": "navigation",
-      "status": "format-validation",
-      "source": "assets/ui/icons/navigation/groups/groups.svg",
-      "rasterTest": "assets/ui/icons/navigation/groups/groups-24.png",
-      "sizes": [24],
-      "themes": ["light"],
-      "description": "Groups navigation icon; first production SVG/PNG fidelity test."
-    }
+    {"id":"icon.navigation.home","type":"icon","category":"navigation","status":"approved","format":"webp","path":"assets/ui/icons/navigation/home/","sizes":[16,20,24,32,48,64],"states":["default","hover","active","disabled"],"themes":["light","dark","monochrome"]},
+    {"id":"icon.navigation.people","type":"icon","category":"navigation","status":"approved","format":"webp","path":"assets/ui/icons/navigation/people/","sizes":[16,20,24,32,48,64],"states":["default","hover","active","disabled"],"themes":["light","dark","monochrome"]},
+    {"id":"icon.navigation.groups","type":"icon","category":"navigation","status":"approved","format":"webp","path":"assets/ui/icons/navigation/groups/","sizes":[16,20,24,32,48,64],"states":["default","hover","active","disabled"],"themes":["light","dark","monochrome"]},
+    {"id":"icon.navigation.events","type":"icon","category":"navigation","status":"approved","format":"webp","path":"assets/ui/icons/navigation/events/","sizes":[16,20,24,32,48,64],"states":["default","hover","active","disabled"],"themes":["light","dark","monochrome"]},
+    {"id":"icon.navigation.achievements","type":"icon","category":"navigation","status":"approved","format":"webp","path":"assets/ui/icons/navigation/achievements/","sizes":[16,20,24,32,48,64],"states":["default","hover","active","disabled"],"themes":["light","dark","monochrome"]},
+    {"id":"icon.navigation.reports","type":"icon","category":"navigation","status":"approved","format":"webp","path":"assets/ui/icons/navigation/reports/","sizes":[16,20,24,32,48,64],"states":["default","hover","active","disabled"],"themes":["light","dark","monochrome"]},
+    {"id":"icon.navigation.settings","type":"icon","category":"navigation","status":"approved","format":"webp","path":"assets/ui/icons/navigation/settings/","sizes":[16,20,24,32,48,64],"states":["default","hover","active","disabled"],"themes":["light","dark","monochrome"]}
   ]
 }
