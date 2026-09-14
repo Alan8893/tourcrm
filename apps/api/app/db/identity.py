@@ -230,6 +230,15 @@ class ClubMembership(Base):
             using="gist",
             name="ck_club_memberships_no_overlapping_active",
         ),
+        # database-schema.md §23: "active membership queries by club_id,
+        # person_id, status" is a required index category. The GiST
+        # exclusion constraint above indexes (person_id, membership_type)
+        # but only for status='active' rows, which does not serve a
+        # person's full membership history (Issue #62 `GET
+        # /persons/{person_id}/memberships`) or a status-filtered,
+        # club-wide listing (`GET /memberships?club_id=...&status=...`).
+        sa.Index("ix_club_memberships_person_id", "person_id"),
+        sa.Index("ix_club_memberships_club_id_status", "club_id", "status"),
     )
 
     club: Mapped["Club"] = relationship(back_populates="memberships")

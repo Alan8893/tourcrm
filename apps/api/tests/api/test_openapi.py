@@ -1,9 +1,7 @@
 """OpenAPI foundation: reflects the real app, no fictitious domain endpoints."""
 
 _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
-    "person",
     "user",
-    "member",
     "guardian",
     "trip",
     "route",
@@ -19,7 +17,10 @@ _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
 # endpoint (Issue #40) has a documented `group_id` query filter
 # (events-api.md §4) referencing the already-implemented Group
 # persistence for scope/search purposes — it is not a fictitious Group
-# CRUD domain endpoint.
+# CRUD domain endpoint. "person"/"member" are likewise no longer forbidden:
+# Issue #62 adds the real Person/ClubMembership API (see _PERSON_PATHS/
+# _MEMBERSHIP_PATHS below). "guardian" stays forbidden — GuardianRelationship
+# API is Issue #64, not implemented here.
 
 
 def test_openapi_schema_is_served(real_client) -> None:
@@ -52,16 +53,33 @@ _EVENT_PATHS = {
     "/api/v1/events/{event_id}/archive",
 }
 
+_PERSON_PATHS = {
+    "/api/v1/persons",
+    "/api/v1/persons/{person_id}",
+    "/api/v1/persons/{person_id}/memberships",
+}
+
+_MEMBERSHIP_PATHS = {
+    "/api/v1/memberships",
+    "/api/v1/memberships/{membership_id}",
+    "/api/v1/memberships/{membership_id}/status",
+}
+
 
 def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
     schema = real_client.get("/openapi.json").json()
 
-    # Health (Issue #10), authentication (Issue #33) and the first Event
-    # API slice (Issue #40) are the only domain endpoints so far — no
-    # Person/Group/Trip/etc. CRUD endpoints have been added under /api/v1.
+    # Health (Issue #10), authentication (Issue #33), the first Event API
+    # slice (Issue #40), and the Person/ClubMembership API (Issue #62) are
+    # the only domain endpoints so far — no Group/Trip/GuardianRelationship/
+    # etc. CRUD endpoints have been added under /api/v1.
     assert (
         set(schema["paths"].keys())
-        == {"/health/live", "/health/ready"} | _AUTH_PATHS | _EVENT_PATHS
+        == {"/health/live", "/health/ready"}
+        | _AUTH_PATHS
+        | _EVENT_PATHS
+        | _PERSON_PATHS
+        | _MEMBERSHIP_PATHS
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()
