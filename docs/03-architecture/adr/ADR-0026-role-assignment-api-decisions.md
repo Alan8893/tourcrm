@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted; partially superseded by ADR-0027 for ClubMembership effectivity.
 
 ## Context
 
@@ -50,7 +50,7 @@ The following combinations are canonical in MVP:
 
 A club-scoped RoleAssignment may be created only when the target User has an active `ClubMembership` in the target Club.
 
-Ending the target User's ClubMembership does not automatically delete or revoke the RoleAssignment. However, the ended membership prevents that assignment from granting effective Club access while the required active membership is absent.
+Ending the target User's ClubMembership does not automatically delete, revoke, close, or otherwise mutate the RoleAssignment. Whether membership is an additional prerequisite for later effective authorization is governed by ADR-0027 and domain-specific policies, not by this ADR.
 
 The authorization context `club_id` on AuditLog remains descriptive only and is never itself an authorization grant, consistent with ADR-0024.
 
@@ -91,7 +91,8 @@ Business mutation and audit insertion occur in the same transaction under ADR-00
 
 - Role assignments have durable history without destructive revoke.
 - Authorization scope remains separate from object ownership and does not require `scope_ref_id` for `own_groups` or `own_events`.
-- Club membership remains the prerequisite for club-scoped role authority.
+- Active ClubMembership is required when creating a club-scoped RoleAssignment, preserving cross-Club integrity.
+- Ending ClubMembership does not by itself revoke or invalidate an otherwise effective RoleAssignment; see ADR-0027.
 - `role.manage` cannot be used to delegate arbitrary object-scoped role administration or mutate the RBAC catalog.
 - The existing RoleAssignment persistence model requires temporal validity fields to implement this ADR if they are not already present.
 
@@ -113,8 +114,10 @@ This ADR does not introduce:
 ## Traceability
 
 - Issue #73 — Specification gate: RoleAssignment API
+- Issue #74 — Implement RoleAssignment API
 - ADR-0013 — Canonical Scope Vocabulary
 - ADR-0017 — Identity and Authorization Documentation Canonicalization
 - ADR-0022 — Cross-Club Ownership Integrity
 - ADR-0024 — Canonical Audit Infrastructure
 - ADR-0025 — People & Membership API decisions
+- ADR-0027 — RoleAssignment and ClubMembership effectivity
