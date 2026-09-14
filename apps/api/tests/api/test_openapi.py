@@ -1,7 +1,6 @@
 """OpenAPI foundation: reflects the real app, no fictitious domain endpoints."""
 
 _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
-    "user",
     "trip",
     "route",
     "achievement",
@@ -19,7 +18,17 @@ _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
 # are likewise no longer forbidden: Issue #62 adds the real Person/
 # ClubMembership API (see _PERSON_PATHS/_MEMBERSHIP_PATHS below). "guardian"
 # is no longer forbidden either: Issue #64 adds the real GuardianRelationship
-# API (see _GUARDIAN_RELATIONSHIP_PATHS/_ME_PATHS below).
+# API (see _GUARDIAN_RELATIONSHIP_PATHS/_ME_PATHS below). "user" is no
+# longer forbidden either: this check scans the full serialized `paths`
+# object, not just route strings, so it also matches query-parameter and
+# schema-property names — Issue #74's `GET /role-assignments?user_id=...`
+# filter (an inline query parameter, always literally embedded under
+# `paths`, unlike a request-body field which is `$ref`'d to
+# `components/schemas` and so was never caught by this check even before
+# this change) is exactly such a case. `User` itself is not a fictitious
+# domain this guard was ever meant to catch — it has existed since
+# Issue #19's identity foundation, and no standalone `/api/v1/users` CRUD
+# endpoint exists or is added here.
 
 
 def test_openapi_schema_is_served(real_client) -> None:
