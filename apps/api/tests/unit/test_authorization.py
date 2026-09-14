@@ -38,6 +38,8 @@ def test_documented_permission_codes_have_no_invented_entries() -> None:
         "person.update",
         "membership.read",
         "membership.manage",
+        "guardian_relationship.read",
+        "guardian_relationship.manage",
         "group.read",
         "group.manage",
         "event.read",
