@@ -23,15 +23,28 @@ A source/master artwork may be retained separately when required for future expo
 | Area | Status | Scope |
 |---|---|---|
 | Brand | approved concept | production files to be added in this PR series |
-| Navigation | approved | production set follows approved Navigation Icons v1; format validation in progress |
-| Actions | approved | production set follows approved Actions Icons v1; format validation in progress |
-| Status | approved | production set follows approved Status Icons v1; format validation in progress |
-| Domain | approved | production set follows approved Domain Icons v1; format validation in progress |
+| Navigation | approved | production set follows approved Navigation Icons v1; `Groups` is the first SVG/PNG fidelity test |
+| Actions | approved | production set follows approved Actions Icons v1; format validation pending |
+| Status | approved | production set follows approved Status Icons v1; format validation pending |
+| Domain | approved | production set follows approved Domain Icons v1; format validation pending |
 | Achievements | approved concept | artwork production in progress |
 | Empty states | reset to concept | previous generic flat SVG placeholders removed; production artwork must follow approved TourCRM illustration style |
 | System states | planned | next P1 batch |
 | Onboarding | planned | following system states |
 | Decorative | deferred | P2 |
+
+## Groups icon format test
+
+Stable ID: `icon.navigation.groups`
+
+Current test files:
+
+- `assets/ui/icons/navigation/groups/groups.svg`
+- `assets/ui/icons/navigation/groups/groups-24.png`
+
+Status: `format-validation`.
+
+The test is deliberately not marked `production` until SVG and PNG are visually compared at the intended UI size and the result is accepted. The goal is to preserve the approved TourCRM icon character rather than to force a technically preferred format.
 
 ## Rules
 
