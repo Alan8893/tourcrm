@@ -14,11 +14,7 @@ tests/integration/test_identity.py:
 """
 
 import datetime
-import os
-import subprocess
-import sys
 import uuid
-from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, select, text
@@ -30,26 +26,8 @@ from app.db.session import session_scope
 from app.events.lifecycle import InvalidTimezoneError
 from app.events.vocabulary import CANONICAL_EVENT_STATUSES, CANONICAL_EVENT_TYPES
 
+from ._schema_reset import run_alembic
 from .conftest import requires_postgres
-
-API_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _run_alembic(*args: str, database_url: str) -> subprocess.CompletedProcess:
-    env = {**os.environ, "DATABASE_URL": database_url}
-    return subprocess.run(
-        [sys.executable, "-m", "alembic", *args],
-        cwd=API_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-
-
-@pytest.fixture(autouse=True)
-def _migrated_schema(database_url: str) -> None:
-    result = _run_alembic("upgrade", "head", database_url=database_url)
-    assert result.returncode == 0, result.stderr
 
 
 def _utc(*args: int) -> datetime.datetime:
@@ -550,7 +528,7 @@ def test_events_downgrade_then_upgrade_preserves_a_working_schema(database_url: 
     # migrations (e.g. Issue #41's Group persistence) can be stacked on
     # top of the events migration, and a relative offset would then
     # downgrade past the wrong revision.
-    downgrade = _run_alembic("downgrade", "d7e9e112d370", database_url=database_url)
+    downgrade = run_alembic("downgrade", "d7e9e112d370", database_url=database_url)
     assert downgrade.returncode == 0, downgrade.stderr
 
     engine = create_engine(database_url)
@@ -566,7 +544,7 @@ def test_events_downgrade_then_upgrade_preserves_a_working_schema(database_url: 
         engine.dispose()
     assert "events" not in tables
 
-    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    upgrade = run_alembic("upgrade", "head", database_url=database_url)
     assert upgrade.returncode == 0, upgrade.stderr
 
     with session_scope() as session:

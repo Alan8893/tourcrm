@@ -9,11 +9,7 @@ Tests are skipped (not faked) when no database is configured — see
 conftest.py's `requires_postgres` marker.
 """
 
-import os
-import subprocess
-import sys
 import uuid
-from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, select, text
@@ -22,20 +18,8 @@ from app.db.errors import DatabaseConnectionError
 from app.db.foundation import FoundationHealthCheck
 from app.db.session import check_connection, session_scope
 
+from ._schema_reset import reset_schema, run_alembic
 from .conftest import requires_postgres
-
-API_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _run_alembic(*args: str, database_url: str) -> subprocess.CompletedProcess:
-    env = {**os.environ, "DATABASE_URL": database_url}
-    return subprocess.run(
-        [sys.executable, "-m", "alembic", *args],
-        cwd=API_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
 
 
 @requires_postgres
@@ -46,7 +30,19 @@ def test_application_can_connect_to_postgresql(database_url: str) -> None:
 
 @requires_postgres
 def test_migrations_apply_on_a_clean_database(database_url: str) -> None:
-    result = _run_alembic("upgrade", "head", database_url=database_url)
+    """Unlike the rest of tests/integration, this test's own point is to
+    prove migrations apply starting from a genuinely EMPTY schema — the
+    session-scoped baseline the other tests rely on (conftest.py) already
+    has every migration applied by the time this test starts, so it
+    deliberately drops back to an empty schema first, then restores to
+    head before finishing (matching the same self-contained pattern the
+    `*_downgrade_then_upgrade_*` tests use) so the next test still gets
+    the normal baseline-equivalent state conftest.py's per-test reset
+    expects.
+    """
+    reset_schema(database_url)
+
+    result = run_alembic("upgrade", "head", database_url=database_url)
     assert result.returncode == 0, result.stderr
 
     engine = create_engine(database_url)
@@ -67,20 +63,20 @@ def test_migrations_apply_on_a_clean_database(database_url: str) -> None:
 
 @requires_postgres
 def test_repeated_upgrade_head_is_idempotent(database_url: str) -> None:
-    first = _run_alembic("upgrade", "head", database_url=database_url)
+    first = run_alembic("upgrade", "head", database_url=database_url)
     assert first.returncode == 0, first.stderr
 
-    second = _run_alembic("upgrade", "head", database_url=database_url)
+    second = run_alembic("upgrade", "head", database_url=database_url)
     assert second.returncode == 0, second.stderr
 
-    current = _run_alembic("current", database_url=database_url)
+    current = run_alembic("current", database_url=database_url)
     assert current.returncode == 0, current.stderr
     assert "(head)" in current.stdout
 
 
 @requires_postgres
 def test_orm_session_reads_and_writes_through_migrated_schema(database_url: str) -> None:
-    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    upgrade = run_alembic("upgrade", "head", database_url=database_url)
     assert upgrade.returncode == 0, upgrade.stderr
 
     # session_scope() is the same session boundary future request handlers
