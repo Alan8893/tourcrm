@@ -26,7 +26,7 @@ from datetime import datetime
 from typing import Optional
 
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, ExcludeConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -48,6 +48,23 @@ BASELINE_ROLE_CODES = ("admin", "instructor", "member", "guardian")
 # ADR-0025 §2 (Issue #64) — the migration seeding this table
 # (65aa6d48bf08) catches up the two codes that e5ae1ad9e1e1's original
 # seed predates.
+# ADR-0026 §1/Issue #74: the temporal-uniqueness exclusion constraint below
+# must treat two NULL `club_id`/`scope_ref_id` values as equal (a global
+# assignment must still conflict with another overlapping global
+# assignment for the same user/role/scope_type) — but PostgreSQL 16's
+# `EXCLUDE USING gist` does not support the `NULLS NOT DISTINCT` clause
+# that `uq_user_role_assignments_no_duplicate` used below (that clause is
+# UNIQUE/index-only as of PG16; verified empirically against this
+# project's own PostgreSQL 16 instance — `ALTER TABLE ... EXCLUDE ...
+# NULLS NOT DISTINCT` raises a syntax error). The standard, well-known
+# PostgreSQL workaround is to fold NULL to a fixed sentinel value inside
+# the constraint expression via `COALESCE`, so two NULLs compare equal
+# under `=` for exclusion purposes without changing the column's actual
+# nullability or stored data. This sentinel is never a real `Club`/
+# scope-reference id (ADR-0010: application-generated UUIDs are random
+# v4s, astronomically unlikely to collide with the all-zero UUID).
+_NULL_SENTINEL_UUID = "00000000-0000-0000-0000-000000000000"
+
 DOCUMENTED_PERMISSION_CODES = (
     "person.read",
     "person.update",
@@ -176,17 +193,45 @@ class RolePermission(Base):
 
 
 class UserRoleAssignment(Base):
-    """A Role assigned to a User, with an independent scope.
+    """A Role assigned to a User, with an independent scope and a
+    historical `[valid_from, valid_to)` validity interval (Issue #74,
+    implementing ADR-0026 §1).
 
     docs/03-architecture/domain-model.md §7; database-schema.md §6.4
     `user_role_assignments`; ADR-0005 (`User -> Role -> Permission -> Scope`);
-    ADR-0013 (canonical scope vocabulary).
+    ADR-0013 (canonical scope vocabulary); ADR-0026 §1 (temporal validity/
+    revoke semantics); docs/02-requirements/roles-and-permissions.md §19.
 
     Scope is a property of the assignment, not of the role itself — a role
     is a fixed set of permissions; `scope_type`/`scope_ref_id` say how far a
     *particular* assignment of that role reaches. Explicit deny is out of
     scope (roles-and-permissions.md §13 / auth-and-authorization.md §15:
     role permissions are additive; a deny model needs its own ADR).
+
+    `valid_from`/`valid_to`: `valid_to = NULL` is an open-ended, currently
+    effective assignment. Revoke never deletes or mutates `valid_from`; it
+    sets `valid_to` to the server UTC time of the revoke (see
+    app.role_assignments.service.revoke_role_assignment) — the row remains
+    as immutable history, matching the identical pattern already used for
+    `GroupMembership`/`GroupInstructorAssignment`/`EventStaffAssignment`/
+    `ClubMembership`/`GuardianRelationship`. Re-assignment after revoke is
+    a new row, never a reopened interval.
+
+    `valid_from` has a `server_default` (unlike its sibling temporal
+    entities, none of which do): those entities accept a *client-supplied*
+    `valid_from` at creation (e.g. people-api.md §14/§15's documented
+    request bodies), so a DB default would never actually apply and was
+    deliberately omitted to force an explicit value. roles-and-
+    permissions.md §19.1 instead documents `valid_from` as
+    "серверно/доменом определяемое" (server/domain-determined) — never
+    client-suppliable — so app.role_assignments.service always sets it to
+    `now()` explicitly on create; the `server_default` here exists purely
+    as a robustness backstop (e.g. for the many pre-existing test helpers
+    across other domains' test suites that construct a
+    `UserRoleAssignment` directly, out of this Issue's scope to touch, and
+    for any future direct-ORM construction) so a row is never left without
+    a valid interval start rather than encoding any different business
+    rule.
     """
 
     __tablename__ = "user_role_assignments"
@@ -204,6 +249,7 @@ class UserRoleAssignment(Base):
     )
     # Nullable: database-schema.md §6.4 "club_id FK nullable if global role
     # is supported" — a global (installation-wide) assignment is permitted.
+    # ADR-0026 §2: required for every scope_type except `none`.
     club_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), sa.ForeignKey("clubs.id", ondelete="RESTRICT"), nullable=True
     )
@@ -211,7 +257,15 @@ class UserRoleAssignment(Base):
     # No FK: the table `scope_ref_id` points into depends on `scope_type`
     # (e.g. a group vs. an event) and no such table exists yet in this
     # codebase — same reasoning as Person.photo_file_id in Issue #17.
+    # ADR-0026 §2: not used by any MVP scope — always NULL in this slice.
     scope_ref_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # ADR-0026 §1 / roles-and-permissions.md §19.1 — see class docstring
+    # for why this (uniquely among this codebase's temporal entities) has
+    # a server_default.
+    valid_from: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+    )
+    valid_to: Mapped[Optional[datetime]] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
     )
@@ -227,20 +281,36 @@ class UserRoleAssignment(Base):
             "scope_type IN ('all','self','children','own_groups','own_events','none')",
             name="ck_user_role_assignments_scope_type_valid",
         ),
-        # Issue #19: "no meaningless duplicate assignment of the same role
-        # with the same scope/club parameters". `NULLS NOT DISTINCT` (PG15+)
-        # so two rows that both have club_id/scope_ref_id NULL (a global
-        # assignment, or one with no specific scope reference) still count
-        # as duplicates of each other, not as distinct rows per plain SQL
-        # NULL semantics.
-        sa.UniqueConstraint(
-            "user_id",
-            "role_id",
-            "club_id",
-            "scope_type",
-            "scope_ref_id",
-            name="uq_user_role_assignments_no_duplicate",
-            postgresql_nulls_not_distinct=True,
+        sa.CheckConstraint(
+            "valid_to IS NULL OR valid_to >= valid_from",
+            name="ck_user_role_assignments_valid_to_after_valid_from",
+        ),
+        # ADR-0026 §1/Issue #74: replaces the old unconditional
+        # `uq_user_role_assignments_no_duplicate` (Issue #19), which could
+        # never represent revoke + historical re-assignment for the same
+        # (user, role, club, scope_type, scope_ref_id) tuple. This GiST
+        # exclusion constraint is the temporal generalization of that same
+        # invariant: it still forbids a *duplicate concurrent* assignment,
+        # but now scoped to *overlapping* `[valid_from, valid_to)`
+        # intervals rather than forbidding any second row unconditionally
+        # — sequential historical intervals and touching boundaries are
+        # allowed, exactly like `ck_group_memberships_no_duplicate_active`/
+        # `ck_group_instructor_assignments_one_active_primary`
+        # (app.db.groups) and `ck_club_memberships_no_overlapping_active`
+        # (app.db.identity). `club_id`/`scope_ref_id` are folded through
+        # `COALESCE` to `_NULL_SENTINEL_UUID` — see that constant's own
+        # comment for why (PG16 `EXCLUDE` has no `NULLS NOT DISTINCT`).
+        # Requires `btree_gist`, already created by the identity foundation
+        # migration (80dd15675404).
+        ExcludeConstraint(
+            (sa.column("user_id"), "="),
+            (sa.column("role_id"), "="),
+            (sa.func.coalesce(sa.column("club_id"), _NULL_SENTINEL_UUID), "="),
+            (sa.column("scope_type"), "="),
+            (sa.func.coalesce(sa.column("scope_ref_id"), _NULL_SENTINEL_UUID), "="),
+            (sa.func.tstzrange(sa.column("valid_from"), sa.column("valid_to")), "&&"),
+            using="gist",
+            name="ck_user_role_assignments_no_overlapping_active",
         ),
     )
 

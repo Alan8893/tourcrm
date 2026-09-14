@@ -8,6 +8,7 @@ tests/integration/test_identity.py:
     pytest tests/integration -v
 """
 
+import datetime
 import uuid
 
 import pytest
@@ -28,6 +29,10 @@ from app.db.session import session_scope
 
 from ._schema_reset import run_alembic
 from .conftest import requires_postgres
+
+
+def _utc(*args: int) -> datetime.datetime:
+    return datetime.datetime(*args, tzinfo=datetime.timezone.utc)
 
 
 def _make_club(**overrides: object) -> Club:
@@ -334,9 +339,14 @@ def test_duplicate_user_role_assignment_is_rejected() -> None:
 
 @requires_postgres
 def test_duplicate_global_assignment_with_null_club_is_rejected() -> None:
-    # NULLS NOT DISTINCT: two global (club_id=None) assignments of the same
-    # role/scope to the same user must still count as duplicates, unlike
-    # plain SQL NULL semantics.
+    # `ck_user_role_assignments_no_overlapping_active` (a GiST EXCLUDE
+    # constraint, Issue #74/ADR-0026 §1) COALESCEs the nullable club_id to
+    # a sentinel UUID before comparing: two global (club_id=None)
+    # assignments of the same role/scope to the same user must still
+    # count as the same identity tuple (and, with both left open-ended,
+    # overlap in time), unlike plain SQL NULL semantics. See
+    # test_role_assignment_open_ended_overlap_is_rejected below for the
+    # dedicated temporal-overlap tests.
     with session_scope() as session:
         person = _make_person()
         user = _make_user(person)
@@ -409,6 +419,225 @@ def test_deleting_a_role_with_an_assignment_is_restricted() -> None:
         session.commit()
 
         session.delete(role)
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+# --- UserRoleAssignment temporal validity invariant (ADR-0026 §1, Issue #74) ---
+#
+# `ck_user_role_assignments_no_overlapping_active` (a GiST EXCLUDE
+# constraint) is the DB-level enforcement of ADR-0026 §1's "no
+# overlapping intervals for the same (user_id, role_id, club_id,
+# scope_type, scope_ref_id)" invariant — it replaces the plain
+# uniqueness constraint tested above once valid_from/valid_to exist.
+# These tests are the DB-level proof of the interval-overlap formula,
+# mirroring GroupInstructorAssignment's own is_primary invariant tests
+# in test_groups.py exactly, including the two directly-required edge
+# cases: a touching boundary is allowed (not an overlap — this is what
+# makes "revoke, then re-assign" work), and two open-ended assignments
+# always conflict.
+
+
+def _make_role_assignment(user: User, role: Role, **overrides: object) -> UserRoleAssignment:
+    defaults: dict[str, object] = {
+        "user_id": user.id,
+        "role_id": role.id,
+        "scope_type": "all",
+        "valid_from": _utc(2024, 1, 1),
+    }
+    defaults.update(overrides)
+    return UserRoleAssignment(**defaults)  # type: ignore[arg-type]
+
+
+@requires_postgres
+def test_role_assignment_full_overlap_is_rejected() -> None:
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        role = _make_role(code="temporal-full-overlap")
+        session.add_all([person, user, role])
+        session.commit()
+
+        first = _make_role_assignment(
+            user, role, valid_from=_utc(2024, 9, 1), valid_to=_utc(2024, 10, 1)
+        )
+        session.add(first)
+        session.commit()
+
+        second = _make_role_assignment(
+            user, role, valid_from=_utc(2024, 9, 1), valid_to=_utc(2024, 10, 1)
+        )
+        session.add(second)
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+@requires_postgres
+def test_role_assignment_partial_overlap_is_rejected() -> None:
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        role = _make_role(code="temporal-partial-overlap")
+        session.add_all([person, user, role])
+        session.commit()
+
+        first = _make_role_assignment(
+            user, role, valid_from=_utc(2024, 9, 1), valid_to=_utc(2024, 10, 1)
+        )
+        session.add(first)
+        session.commit()
+
+        second = _make_role_assignment(
+            user, role, valid_from=_utc(2024, 9, 15), valid_to=_utc(2024, 10, 15)
+        )
+        session.add(second)
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+@requires_postgres
+def test_role_assignment_open_ended_overlap_is_rejected() -> None:
+    """Two open-ended (`valid_to=NULL`) assignments for the same identity
+    tuple always overlap — NULL is an unbounded/ongoing end, not "no
+    constraint"."""
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        role = _make_role(code="temporal-open-overlap")
+        session.add_all([person, user, role])
+        session.commit()
+
+        first = _make_role_assignment(user, role, valid_from=_utc(2024, 9, 1))
+        session.add(first)
+        session.commit()
+
+        second = _make_role_assignment(user, role, valid_from=_utc(2024, 10, 1))
+        session.add(second)
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+@requires_postgres
+def test_role_assignment_touching_boundary_is_allowed() -> None:
+    """A shared boundary — one assignment's `valid_to` equals the next
+    one's `valid_from` — is NOT an overlap under `[valid_from, valid_to)`
+    semantics. This is exactly the "revoke, then re-assign" shape ADR-0026
+    §1 requires: revoke closes the interval, and a new assignment may
+    validly begin at (or after) that same instant."""
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        role = _make_role(code="temporal-touching")
+        session.add_all([person, user, role])
+        session.commit()
+
+        first = _make_role_assignment(
+            user, role, valid_from=_utc(2024, 9, 1), valid_to=_utc(2024, 10, 1)
+        )
+        session.add(first)
+        session.commit()
+
+        second = _make_role_assignment(user, role, valid_from=_utc(2024, 10, 1))
+        session.add(second)
+        session.commit()  # must not raise: touching, not overlapping
+
+        rows = session.execute(
+            select(UserRoleAssignment).where(UserRoleAssignment.user_id == user.id)
+        ).scalars().all()
+        assert len(rows) == 2
+
+
+@requires_postgres
+def test_role_assignment_sequential_historical_periods_are_allowed() -> None:
+    """Two fully closed, non-overlapping historical periods (a gap between
+    them, not just a touching boundary) are allowed."""
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        role = _make_role(code="temporal-sequential")
+        session.add_all([person, user, role])
+        session.commit()
+
+        first = _make_role_assignment(
+            user, role, valid_from=_utc(2024, 1, 1), valid_to=_utc(2024, 6, 1)
+        )
+        session.add(first)
+        session.commit()
+
+        second = _make_role_assignment(
+            user, role, valid_from=_utc(2024, 7, 1), valid_to=_utc(2024, 9, 1)
+        )
+        session.add(second)
+        session.commit()  # must not raise: a gap, not an overlap
+
+        rows = session.execute(
+            select(UserRoleAssignment).where(UserRoleAssignment.user_id == user.id)
+        ).scalars().all()
+        assert len(rows) == 2
+
+
+@requires_postgres
+def test_role_assignment_overlap_with_different_role_id_is_allowed() -> None:
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        role_a = _make_role(code="temporal-role-a")
+        role_b = _make_role(code="temporal-role-b")
+        session.add_all([person, user, role_a, role_b])
+        session.commit()
+
+        session.add(_make_role_assignment(user, role_a, valid_from=_utc(2024, 1, 1)))
+        session.add(_make_role_assignment(user, role_b, valid_from=_utc(2024, 1, 1)))
+        session.commit()  # must not raise: different role_id, not the same tuple
+
+        rows = session.execute(
+            select(UserRoleAssignment).where(UserRoleAssignment.user_id == user.id)
+        ).scalars().all()
+        assert len(rows) == 2
+
+
+@requires_postgres
+def test_role_assignment_overlap_with_different_scope_type_is_allowed() -> None:
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        club = _make_club()
+        role = _make_role(code="temporal-scope-type")
+        session.add_all([person, user, club, role])
+        session.commit()
+
+        session.add(
+            _make_role_assignment(
+                user, role, club_id=club.id, scope_type="own_groups", valid_from=_utc(2024, 1, 1)
+            )
+        )
+        session.add(
+            _make_role_assignment(
+                user, role, club_id=club.id, scope_type="own_events", valid_from=_utc(2024, 1, 1)
+            )
+        )
+        session.commit()  # must not raise: different scope_type, not the same tuple
+
+        rows = session.execute(
+            select(UserRoleAssignment).where(UserRoleAssignment.user_id == user.id)
+        ).scalars().all()
+        assert len(rows) == 2
+
+
+@requires_postgres
+def test_role_assignment_valid_to_before_valid_from_is_rejected() -> None:
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        role = _make_role(code="temporal-invalid-interval")
+        session.add_all([person, user, role])
+        session.commit()
+
+        session.add(
+            _make_role_assignment(
+                user, role, valid_from=_utc(2024, 6, 1), valid_to=_utc(2024, 1, 1)
+            )
+        )
         with pytest.raises(IntegrityError):
             session.commit()
 

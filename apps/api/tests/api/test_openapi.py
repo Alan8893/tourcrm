@@ -1,7 +1,6 @@
 """OpenAPI foundation: reflects the real app, no fictitious domain endpoints."""
 
 _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
-    "user",
     "trip",
     "route",
     "achievement",
@@ -19,7 +18,17 @@ _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
 # are likewise no longer forbidden: Issue #62 adds the real Person/
 # ClubMembership API (see _PERSON_PATHS/_MEMBERSHIP_PATHS below). "guardian"
 # is no longer forbidden either: Issue #64 adds the real GuardianRelationship
-# API (see _GUARDIAN_RELATIONSHIP_PATHS/_ME_PATHS below).
+# API (see _GUARDIAN_RELATIONSHIP_PATHS/_ME_PATHS below). "user" is no
+# longer forbidden either: this check scans the full serialized `paths`
+# object, not just route strings, so it also matches query-parameter and
+# schema-property names — Issue #74's `GET /role-assignments?user_id=...`
+# filter (an inline query parameter, always literally embedded under
+# `paths`, unlike a request-body field which is `$ref`'d to
+# `components/schemas` and so was never caught by this check even before
+# this change) is exactly such a case. `User` itself is not a fictitious
+# domain this guard was ever meant to catch — it has existed since
+# Issue #19's identity foundation, and no standalone `/api/v1/users` CRUD
+# endpoint exists or is added here.
 
 
 def test_openapi_schema_is_served(real_client) -> None:
@@ -88,16 +97,24 @@ _GROUP_PATHS = {
 # `/api/v1/groups/{group_id}/members/{person_id}/transfer` — both are
 # deliberately not implemented (people-api.md §15.3-15.4, Issue #71 §3).
 
+_ROLE_ASSIGNMENT_PATHS = {
+    "/api/v1/role-assignments",
+    "/api/v1/role-assignments/{assignment_id}/revoke",
+}
+# No `/api/v1/roles`, `/api/v1/permissions`, `/api/v1/audit-logs*` — all
+# deliberately out of Issue #74's scope (endpoint-inventory.md §24,
+# ADR-0026's explicit non-goals).
+
 
 def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
     schema = real_client.get("/openapi.json").json()
 
     # Health (Issue #10), authentication (Issue #33), the first Event API
     # slice (Issue #40), the Person/ClubMembership API (Issue #62), the
-    # GuardianRelationship API (Issue #64), and the Group/GroupMembership/
-    # GroupInstructorAssignment API (Issue #71) are the only domain
-    # endpoints so far — no Trip/etc. CRUD endpoints have been added under
-    # /api/v1.
+    # GuardianRelationship API (Issue #64), the Group/GroupMembership/
+    # GroupInstructorAssignment API (Issue #71), and the RoleAssignment API
+    # (Issue #74) are the only domain endpoints so far — no Trip/etc. CRUD
+    # endpoints have been added under /api/v1.
     assert (
         set(schema["paths"].keys())
         == {"/health/live", "/health/ready"}
@@ -108,6 +125,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _GUARDIAN_RELATIONSHIP_PATHS
         | _ME_PATHS
         | _GROUP_PATHS
+        | _ROLE_ASSIGNMENT_PATHS
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()

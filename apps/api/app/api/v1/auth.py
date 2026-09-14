@@ -10,6 +10,7 @@ defines one; that belongs to a future People/Membership admin API).
 import logging
 import uuid
 
+import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -257,11 +258,21 @@ def get_current_session_info(
 ) -> MeResponse:
     user = db.get(User, principal.user_id)
     assert user is not None
+    # Issue #74/ADR-0026 §1: UserRoleAssignment now carries a
+    # `[valid_from, valid_to)` validity interval — a revoked assignment
+    # must not appear here as if it were still one of the caller's
+    # current roles. Same `valid_from <= now() AND (valid_to IS NULL OR
+    # now() < valid_to)` convention used everywhere else in this codebase.
+    now = sa.func.now()
     assignments = (
         db.execute(
             select(UserRoleAssignment, Role.code)
             .join(Role, Role.id == UserRoleAssignment.role_id)
-            .where(UserRoleAssignment.user_id == principal.user_id)
+            .where(
+                UserRoleAssignment.user_id == principal.user_id,
+                UserRoleAssignment.valid_from <= now,
+                sa.or_(UserRoleAssignment.valid_to.is_(None), now < UserRoleAssignment.valid_to),
+            )
         )
         .all()
     )
