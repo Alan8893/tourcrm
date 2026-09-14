@@ -8,6 +8,8 @@ Accepted. Closes ODR-015. Closes the audit-record-shape portion of ODR-013; **re
 
 **Amended by ADR-0025 §11:** adds `membership.updated` for non-lifecycle changes to an existing `ClubMembership` (currently `membership_type`). The list in §4 is the current canonical vocabulary.
 
+**Amended by ADR-0028:** extends the closed vocabulary with recurrence/occurrence business actions defined below.
+
 ## Context
 
 The system requires significant business mutations to be auditable, but a canonical persistence contract, write boundary and failure mode had not previously been defined. Existing unimplemented `AuditLog` sketches using `target_type`/`target_id`, `ip_address`, `user_agent` and a bare `status` are superseded by this ADR.
@@ -54,7 +56,7 @@ The application provides no update/delete operation for audit rows. No database 
 
 ### 4. Audit-required action vocabulary (closed)
 
-The following **29 action codes** are canonical. The vocabulary must not be extended without a corresponding ADR amendment and migration.
+The following **37 action codes** are canonical. The vocabulary must not be extended without a corresponding ADR amendment and migration.
 
 ```text
 person.created
@@ -92,9 +94,20 @@ event.created
 event.updated
 event.status_changed
 event.archived
+
+event_series.created
+event_series.updated
+event_series.version_created
+event_series.status_changed
+event_occurrence.exception_created
+event_occurrence.exception_changed
+event_occurrence.status_changed
+event_occurrence.series_rebound
 ```
 
 `membership.updated` is for non-lifecycle changes to an existing `ClubMembership`, currently `membership_type`. It is distinct from `membership.status_changed` and `membership.ended`. `membership.ended` is emitted when `left_at` is first set. A status transition that also ends a membership period may emit both `membership.status_changed` and `membership.ended`.
+
+For recurrence, `event_series.version_created` records creation of a successor Series version; `event_series.updated` is reserved for mutations that do not create a successor version. `event_occurrence.series_rebound` records an already-materialized occurrence being rebound at an accepted Series version boundary. Exception creation/change and occurrence lifecycle transitions use their dedicated codes.
 
 `action` values are stable business codes, never HTTP methods, URL paths or arbitrary UI text.
 
@@ -152,4 +165,5 @@ This ADR defines persistence and the write boundary only. It does not create an 
 - ADR-0013 — Scope canonicalization
 - ADR-0022 — Cross-Club ownership integrity
 - ADR-0025 — People & Membership API decisions and audit-vocabulary amendments
+- ADR-0028 — Event Recurrence Persistence and Series Versioning
 - `docs/03-architecture/data-retention-and-deletion.md`
