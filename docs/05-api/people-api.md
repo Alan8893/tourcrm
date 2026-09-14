@@ -286,13 +286,30 @@ Permission: `group.manage` + scope + object relationship.
 
 ### 16.1. Lifecycle
 
-`GroupInstructorAssignment` не имеет отдельного полевого статуса — активность определяется наличием записи и интервалом `[valid_from, valid_to)`: запись активна, пока `valid_to` не установлен (или ещё не наступил). Завершение выполняется только через `POST /api/v1/group-instructor-assignments/{id}/end`, который устанавливает `valid_to`. Отдельного `PATCH` endpoint для этой сущности нет (см. `docs/05-api/endpoint-inventory.md` §7) — изменение `role_in_group`/`is_primary` существующей записи не поддерживается; для этого запись завершается и создаётся новая.
+`GroupInstructorAssignment` не имеет отдельного полевого статуса — его период действия представлен полуоткрытым интервалом `[valid_from, valid_to)`: `valid_from` — момент начала действия, `valid_to = NULL` — открытый (бесконечный) конец периода. На заданный момент времени `t` запись считается действующей, если `valid_from <= t` и (`valid_to` не установлен либо `t < valid_to`). Завершение выполняется только через `POST /api/v1/group-instructor-assignments/{id}/end`, который устанавливает `valid_to`. Отдельного `PATCH` endpoint для этой сущности нет (см. `docs/05-api/endpoint-inventory.md` §7) — изменение `role_in_group`/`is_primary` существующей записи не поддерживается; для этого запись завершается и создаётся новая.
 
-### 16.2. `is_primary` — максимум один активный primary на группу
+### 16.2. `is_primary` — не более одного одновременно действующего primary на группу
 
-Не более одной активной (`valid_to` не установлен/не наступил) записи `GroupInstructorAssignment` с `is_primary = true` может существовать для одной и той же `group_id` одновременно (Issue #69, PO decision, закрывает GAP-GROUP-005). Это — обязательный database invariant, документируемый здесь, но **не реализуемый** в рамках текущего specification-gate slice (текущая схема `apps/api/app/db/groups.py` не имеет соответствующего exclusion constraint, в отличие от `EventStaffAssignment`/`ck_event_staff_assignments_one_active_primary`); его реализация — предмет отдельного implementation Issue.
+Для одной и той же `group_id` не допускается существование двух записей `GroupInstructorAssignment` с `is_primary = true`, чьи периоды действия **пересекаются** (Issue #69, PO decision, закрывает GAP-GROUP-005). Каноническое правило оперирует именно пересечением интервалов, а не «активностью на текущий момент» — назначение primary на будущий или прошедший исторический период учитывается наравне с назначением, действующим прямо сейчас.
 
-Попытка создать вторую активную `is_primary = true` запись для той же группы, пока первая активна, отклоняется с кодом `duplicate_primary_instructor`, HTTP 409. Автоматическое понижение (demotion) существующего primary-инструктора **не выполняется** — это не является канонически принятым поведением (Issue #69, PO decision explicitly excludes automatic demotion). Чтобы назначить нового primary-инструктора, клиент должен сначала завершить существующую активную primary-запись (`POST .../end`), а затем создать новую с `is_primary = true`.
+Период каждого assignment — полуоткрытый интервал `[valid_from, valid_to)`, где `valid_to = NULL` означает открытый (бесконечный) конец. Два `is_primary = true` assignment одной группы конфликтуют тогда и только тогда, когда их интервалы `[valid_from₁, valid_to₁)` и `[valid_from₂, valid_to₂)` пересекаются, то есть:
+
+```text
+valid_from₁ < valid_to₂ (или valid_to₂ не установлен)
+И
+valid_from₂ < valid_to₁ (или valid_to₁ не установлен)
+```
+
+Совпадение границы — `valid_to` одного assignment равен `valid_from` другого — пересечением **не считается**: последовательные исторические primary-назначения без временного наложения допустимы. Например:
+
+- Допустимо: A = `[2026-09-01, 2026-10-01)`, B = `[2026-10-01, NULL)` — границы совпадают, интервалы не пересекаются.
+- Допустимо: A = `[2026-09-01, 2026-09-30)`, B = `[2026-10-01, NULL)` — непересекающиеся исторические/текущий период.
+- Запрещено: A = `[2026-09-01, 2026-09-30)`, B = `[2026-09-15, 2026-10-15)` — частичное пересечение.
+- Запрещено: A = `[2026-09-01, NULL)`, B = `[2026-10-01, NULL)` — оба открытых периода пересекаются после 2026-10-01.
+
+Это — обязательный database invariant, документируемый здесь, но **не реализуемый** в рамках текущего specification-gate slice (текущая схема `apps/api/app/db/groups.py` не имеет соответствующего constraint). Его реализация — предмет отдельного implementation Issue и должна быть выражена как temporal/exclusion constraint на уровне БД (по аналогии с существующим подходом для temporal-ограничений в проекте), а не как простой partial unique index по `group_id WHERE is_primary = true` — такой индекс запретил бы допустимые последовательные исторические primary-назначения.
+
+Попытка создать `is_primary = true` запись, чей интервал пересекается с интервалом уже существующей `is_primary = true` записи той же группы, отклоняется с кодом `duplicate_primary_instructor`, HTTP 409. Автоматическое понижение (demotion) существующего primary-инструктора **не выполняется** — это не является канонически принятым поведением (Issue #69, PO decision explicitly excludes automatic demotion). Чтобы назначить нового primary-инструктора на пересекающийся период, клиент должен сначала завершить (сократить интервал) существующую конфликтующую primary-запись (`POST .../end`), а затем создать новую с `is_primary = true`.
 
 ### 16.3. Cross-Club integrity
 
@@ -489,7 +506,7 @@ ADR-0025 §8: до определения отдельной permission/scope po
 - отсутствие более одной действующей primary-contact relationship для ребёнка;
 - невозможность создать `GroupMembership` или `GroupInstructorAssignment` для архивной (`status = archived`) группы (§14.1, §15, §16);
 - отсутствие дублирующего активного `GroupMembership` для одной и той же пары `(group_id, club_membership_id)` (§15.2 — документированный DB invariant, реализация вне текущего slice);
-- отсутствие более одной активной `is_primary = true` записи `GroupInstructorAssignment` на одну группу (§16.2 — документированный DB invariant, реализация вне текущего slice);
+- отсутствие пересекающихся по интервалу `[valid_from, valid_to)` `is_primary = true` записей `GroupInstructorAssignment` на одну группу (§16.2 — документированный DB invariant, реализация вне текущего slice);
 - проверка существования и принадлежности объектов одному Club там, где это применимо (в том числе `Group.club_id == ClubMembership.club_id` для `GroupMembership`, ADR-0022 §4, и активный `ClubMembership` для `GroupInstructorAssignment`, ADR-0022 §5);
 - Guardian authorization учитывает active relationship и interval validity.
 
@@ -538,7 +555,7 @@ Group/GroupMembership/GroupInstructorAssignment-специфичные machine-r
 - `group_archived` — HTTP 409 (§15, §16 — попытка создать membership/instructor assignment для архивной группы);
 - `group_membership_immutable_field` — HTTP 422 (§15 `PATCH` — попытка изменить `group_id`/`club_membership_id`/`membership_status`);
 - `duplicate_group_membership` — HTTP 409 (§15.2 — дублирующее активное membership в той же группе);
-- `duplicate_primary_instructor` — HTTP 409 (§16.2 — вторая активная `is_primary = true` запись на группу);
+- `duplicate_primary_instructor` — HTTP 409 (§16.2 — `is_primary = true` запись с интервалом, пересекающимся с уже существующей `is_primary = true` записью той же группы);
 - `group_membership_club_mismatch` — HTTP 422 (ADR-0022 §4 cross-Club validation, соответствует `GroupMembershipClubMismatchError` в `apps/api/app/groups/service.py`);
 - `instructor_club_membership_missing` — HTTP 422 (ADR-0022 §5 cross-Club validation, соответствует `InstructorClubMembershipMissingError`).
 
@@ -583,7 +600,7 @@ Group/GroupMembership/GroupInstructorAssignment endpoints не вводят proj
 17. `GroupMembership.membership_status` имеет ровно два значения (`active`, `ended`) и ровно один допустимый переход.
 18. Один человек может одновременно состоять в нескольких разных группах, включая пересекающиеся интервалы; дублирующее активное членство в одной и той же группе запрещено.
 19. Отдельного `/transfer` endpoint для GroupMembership не существует нигде в этом контракте.
-20. Группа может иметь несколько инструкторов; не более одного активного `is_primary = true` на группу; автоматическое понижение существующего primary не выполняется.
+20. Группа может иметь несколько инструкторов; на одну группу не допускается двух `is_primary = true` записей с пересекающимися интервалами `[valid_from, valid_to)` (последовательные непересекающиеся primary-назначения допустимы); автоматическое понижение существующего primary не выполняется.
 21. Один инструктор может иметь `GroupInstructorAssignment` в нескольких группах.
 22. `Group` не имеет обязательного типа/категории; `Program`/`Section`/`Direction` не вводятся.
 23. `Event` и `Group` — разные сущности и не объединяются.
