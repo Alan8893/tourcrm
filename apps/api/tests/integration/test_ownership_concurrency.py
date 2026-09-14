@@ -90,11 +90,11 @@ import uuid
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from app.authorization.club_ownership import user_has_active_club_membership
 from app.db.events import Event, EventGroupTarget, EventStaffAssignment
-from app.db.groups import Group, GroupInstructorAssignment
+from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 from app.db.identity import Club, ClubMembership, Person, User
 from app.db.session import session_scope
 from app.events.service import (
@@ -107,9 +107,12 @@ from app.events.service import (
 )
 from app.events.service import _lock_group_club_id as _lock_group_club_id_for_event_targeting
 from app.groups.service import (
+    DuplicateActiveGroupMembershipError,
+    GroupInstructorPrimaryConflictError,
     InstructorClubMembershipMissingError,
     _lock_group_club_id,
     create_group_instructor_assignment,
+    create_group_membership,
 )
 
 from .conftest import requires_postgres
@@ -630,6 +633,7 @@ def test_group_instructor_assignment_ownership_check_still_rejects_cross_club_un
                     user_id=user_id,
                     role_in_group="instructor",
                     valid_from=_utc(2024, 1, 1),
+                    actor_user_id=user_id,
                 )
                 result["outcome"] = "succeeded"
             except InstructorClubMembershipMissingError:
@@ -844,3 +848,263 @@ def test_event_group_target_creation_remains_rejected_despite_unrelated_concurre
     thread_b.join(timeout=10)
 
     assert result["outcome"] == "rejected"
+
+
+# --- GroupMembership: concurrent duplicate-active race (people-api.md §15.2, Issue #71) ---
+
+
+@requires_postgres
+def test_concurrent_duplicate_group_memberships_leave_exactly_one_active() -> None:
+    """Real-concurrency proof for the GiST exclusion constraint backing
+    "at most one active GroupMembership per (group_id, club_membership_id)"
+    (people-api.md §15.2): two transactions racing to create an
+    overlapping active GroupMembership for the same Group/ClubMembership
+    pair must never both succeed. The DB constraint, not just the
+    application-layer check-then-insert, is what must hold under race
+    conditions.
+    """
+
+    trial_count = 30
+    for trial in range(trial_count):
+        with session_scope() as setup:
+            club = Club(name=f"c-{uuid.uuid4().hex[:8]}", status="active")
+            person = Person(last_name="Ivanova", first_name="Anna")
+            setup.add_all([club, person])
+            setup.commit()
+            user = User(
+                person=person,
+                login_identifier=f"u-{uuid.uuid4().hex[:8]}@example.com",
+                status="active",
+            )
+            membership = ClubMembership(
+                club_id=club.id,
+                person_id=person.id,
+                membership_type="regular",
+                status="active",
+                joined_at=_utc(2024, 1, 1),
+            )
+            group = Group(
+                club_id=club.id,
+                name=f"Test Group {uuid.uuid4().hex[:8]}",
+                status="active",
+                valid_from=_utc(2024, 1, 1),
+            )
+            setup.add_all([user, membership, group])
+            setup.commit()
+            user_id, membership_id, group_id = user.id, membership.id, group.id
+
+        start_gate = threading.Barrier(2, timeout=10)
+        result: dict[str, str] = {}
+
+        def attempt(name: str, valid_from: datetime.datetime) -> None:
+            with session_scope() as session:
+                start_gate.wait()
+                try:
+                    create_group_membership(
+                        session,
+                        group_id=group_id,
+                        club_membership_id=membership_id,
+                        valid_from=valid_from,
+                        actor_user_id=user_id,
+                    )
+                    result[name] = "succeeded"
+                except DuplicateActiveGroupMembershipError:
+                    result[name] = "rejected"
+
+        thread_a = threading.Thread(target=attempt, args=("a", _utc(2024, 1, 1)))
+        thread_b = threading.Thread(target=attempt, args=("b", _utc(2024, 6, 1)))
+        thread_a.start()
+        thread_b.start()
+        thread_a.join(timeout=10)
+        thread_b.join(timeout=10)
+
+        with session_scope() as check:
+            active_count = check.execute(
+                text(
+                    "SELECT count(*) FROM group_memberships "
+                    "WHERE group_id = :g AND club_membership_id = :cm "
+                    "AND membership_status = 'active'"
+                ),
+                {"g": str(group_id), "cm": str(membership_id)},
+            ).scalar_one()
+
+        assert active_count == 1, (
+            f"trial {trial}: expected exactly one surviving active GroupMembership, "
+            f"got {active_count}; outcomes={result}"
+        )
+
+
+# --- GroupInstructorAssignment: concurrent primary-overlap race (people-api.md §16.2) ---
+
+
+@requires_postgres
+def test_concurrent_primary_group_instructor_assignments_leave_exactly_one() -> None:
+    """Real-concurrency proof for the GiST exclusion constraint backing
+    "no two overlapping is_primary=true GroupInstructorAssignment rows
+    per Group" (people-api.md §16.2): two transactions racing to create
+    overlapping primary assignments for the same Group must never both
+    succeed.
+    """
+
+    trial_count = 30
+    for trial in range(trial_count):
+        with session_scope() as setup:
+            club = Club(name=f"c-{uuid.uuid4().hex[:8]}", status="active")
+            person_a = Person(last_name="Ivanova", first_name="Anna")
+            person_b = Person(last_name="Petrov", first_name="Boris")
+            setup.add_all([club, person_a, person_b])
+            setup.commit()
+            user_a = User(
+                person=person_a,
+                login_identifier=f"ua-{uuid.uuid4().hex[:8]}@example.com",
+                status="active",
+            )
+            user_b = User(
+                person=person_b,
+                login_identifier=f"ub-{uuid.uuid4().hex[:8]}@example.com",
+                status="active",
+            )
+            membership_a = ClubMembership(
+                club_id=club.id,
+                person_id=person_a.id,
+                membership_type="regular-a",
+                status="active",
+                joined_at=_utc(2024, 1, 1),
+            )
+            membership_b = ClubMembership(
+                club_id=club.id,
+                person_id=person_b.id,
+                membership_type="regular-b",
+                status="active",
+                joined_at=_utc(2024, 1, 1),
+            )
+            group = Group(
+                club_id=club.id,
+                name=f"Test Group {uuid.uuid4().hex[:8]}",
+                status="active",
+                valid_from=_utc(2024, 1, 1),
+            )
+            setup.add_all([user_a, user_b, membership_a, membership_b, group])
+            setup.commit()
+            user_a_id, user_b_id, group_id = user_a.id, user_b.id, group.id
+
+        start_gate = threading.Barrier(2, timeout=10)
+        result: dict[str, str] = {}
+
+        def attempt(name: str, user_id: uuid.UUID) -> None:
+            with session_scope() as session:
+                start_gate.wait()
+                try:
+                    create_group_instructor_assignment(
+                        session,
+                        group_id=group_id,
+                        user_id=user_id,
+                        role_in_group="leader",
+                        valid_from=_utc(2024, 1, 1),
+                        is_primary=True,
+                        actor_user_id=user_id,
+                    )
+                    result[name] = "succeeded"
+                except GroupInstructorPrimaryConflictError:
+                    result[name] = "rejected"
+
+        thread_a = threading.Thread(target=attempt, args=("a", user_a_id))
+        thread_b = threading.Thread(target=attempt, args=("b", user_b_id))
+        thread_a.start()
+        thread_b.start()
+        thread_a.join(timeout=10)
+        thread_b.join(timeout=10)
+
+        with session_scope() as check:
+            primary_count = check.execute(
+                text(
+                    "SELECT count(*) FROM group_instructor_assignments "
+                    "WHERE group_id = :g AND is_primary = true"
+                ),
+                {"g": str(group_id)},
+            ).scalar_one()
+
+        assert primary_count == 1, (
+            f"trial {trial}: expected exactly one surviving primary assignment, "
+            f"got {primary_count}; outcomes={result}"
+        )
+
+
+# --- GroupMembership: non-overlapping different Groups never conflict under race ---
+
+
+@requires_postgres
+def test_concurrent_memberships_in_different_groups_never_conflict() -> None:
+    """Regression guard for the exclusion constraint's scope: two
+    concurrent GroupMembership creations for the same
+    (person, club_membership) but *different* Groups must both succeed,
+    even under a real race, never spuriously rejected."""
+
+    with session_scope() as setup:
+        club = Club(name=f"c-{uuid.uuid4().hex[:8]}", status="active")
+        person = Person(last_name="Ivanova", first_name="Anna")
+        setup.add_all([club, person])
+        setup.commit()
+        user = User(
+            person=person, login_identifier=f"u-{uuid.uuid4().hex[:8]}@example.com", status="active"
+        )
+        membership = ClubMembership(
+            club_id=club.id,
+            person_id=person.id,
+            membership_type="regular",
+            status="active",
+            joined_at=_utc(2024, 1, 1),
+        )
+        group_a = Group(
+            club_id=club.id,
+            name=f"Group A {uuid.uuid4().hex[:8]}",
+            status="active",
+            valid_from=_utc(2024, 1, 1),
+        )
+        group_b = Group(
+            club_id=club.id,
+            name=f"Group B {uuid.uuid4().hex[:8]}",
+            status="active",
+            valid_from=_utc(2024, 1, 1),
+        )
+        setup.add_all([user, membership, group_a, group_b])
+        setup.commit()
+        user_id, membership_id, group_a_id, group_b_id = (
+            user.id,
+            membership.id,
+            group_a.id,
+            group_b.id,
+        )
+
+    start_gate = threading.Barrier(2, timeout=10)
+    result: dict[str, str] = {}
+
+    def attempt(name: str, group_id: uuid.UUID) -> None:
+        with session_scope() as session:
+            start_gate.wait()
+            try:
+                create_group_membership(
+                    session,
+                    group_id=group_id,
+                    club_membership_id=membership_id,
+                    valid_from=_utc(2024, 1, 1),
+                    actor_user_id=user_id,
+                )
+                result[name] = "succeeded"
+            except DuplicateActiveGroupMembershipError:
+                result[name] = "rejected"
+
+    thread_a = threading.Thread(target=attempt, args=("a", group_a_id))
+    thread_b = threading.Thread(target=attempt, args=("b", group_b_id))
+    thread_a.start()
+    thread_b.start()
+    thread_a.join(timeout=10)
+    thread_b.join(timeout=10)
+
+    assert result == {"a": "succeeded", "b": "succeeded"}
+
+    with session_scope() as check:
+        rows = check.execute(
+            select(GroupMembership).where(GroupMembership.club_membership_id == membership_id)
+        ).scalars().all()
+    assert len(rows) == 2

@@ -185,10 +185,13 @@ def test_group_description_is_optional() -> None:
 
 
 @requires_postgres
-@pytest.mark.parametrize(
-    "status_value", ["active", "closed", "archived", "some-made-up-status", "anything at all"]
-)
-def test_group_status_accepts_any_string_no_enum_exists(status_value: str) -> None:
+@pytest.mark.parametrize("status_value", ["active", "archived"])
+def test_group_status_accepts_canonical_values(status_value: str) -> None:
+    """people-api.md §14.1 (PO decision, Issue #69) closes the vocabulary
+    ADR-0021 §1 originally left open — superseding the previous revision
+    of this test (`test_group_status_accepts_any_string_no_enum_exists`),
+    which documented the pre-Issue-#69 unconstrained-string behavior.
+    """
     with session_scope() as session:
         club = _make_club()
         session.add(club)
@@ -196,10 +199,29 @@ def test_group_status_accepts_any_string_no_enum_exists(status_value: str) -> No
 
         group = _make_group(club, status=status_value)
         session.add(group)
-        session.commit()  # must not raise: no CHECK/enum constraint exists
+        session.commit()  # must not raise: both are canonical values
 
         fetched = session.execute(select(Group).where(Group.id == group.id)).scalar_one()
         assert fetched.status == status_value
+
+
+@requires_postgres
+@pytest.mark.parametrize(
+    "status_value", ["closed", "some-made-up-status", "anything at all", "pending"]
+)
+def test_group_status_rejects_non_canonical_values(status_value: str) -> None:
+    """people-api.md §14.1: the `ck_groups_status_valid` CHECK constraint
+    enforces the closed `active`/`archived` vocabulary — a value that is
+    neither is rejected at the database layer."""
+    with session_scope() as session:
+        club = _make_club()
+        session.add(club)
+        session.commit()
+
+        group = _make_group(club, status=status_value)
+        session.add(group)
+        with pytest.raises(IntegrityError):
+            session.commit()
 
 
 @requires_postgres
@@ -340,6 +362,121 @@ def test_group_membership_valid_to_is_optional() -> None:
             select(GroupMembership).where(GroupMembership.id == membership.id)
         ).scalar_one()
         assert fetched.valid_to is None
+
+
+@requires_postgres
+@pytest.mark.parametrize("status_value", ["active", "ended"])
+def test_group_membership_status_accepts_canonical_values(status_value: str) -> None:
+    """people-api.md §15.1 (PO decision, Issue #69) closes the
+    `membership_status` vocabulary ADR-0021 §2 originally left open."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        club_membership = _make_club_membership(club, person)
+        group = _make_group(club)
+        session.add_all([club_membership, group])
+        session.commit()
+
+        membership = _make_group_membership(
+            group, club_membership, membership_status=status_value
+        )
+        session.add(membership)
+        session.commit()  # must not raise: both are canonical values
+
+        fetched = session.execute(
+            select(GroupMembership).where(GroupMembership.id == membership.id)
+        ).scalar_one()
+        assert fetched.membership_status == status_value
+
+
+@requires_postgres
+@pytest.mark.parametrize("status_value", ["pending", "closed", "some-made-up-status"])
+def test_group_membership_status_rejects_non_canonical_values(status_value: str) -> None:
+    """people-api.md §15.1: the
+    `ck_group_memberships_membership_status_valid` CHECK constraint
+    enforces the closed `active`/`ended` vocabulary."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        club_membership = _make_club_membership(club, person)
+        group = _make_group(club)
+        session.add_all([club_membership, group])
+        session.commit()
+
+        membership = _make_group_membership(
+            group, club_membership, membership_status=status_value
+        )
+        session.add(membership)
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+@requires_postgres
+def test_group_membership_duplicate_active_in_same_group_is_rejected() -> None:
+    """people-api.md §15.2 (PO decision, Issue #69): at most one active
+    `GroupMembership` may exist for the same `(group_id,
+    club_membership_id)` pair at a time — enforced by the
+    `ck_group_memberships_no_duplicate_active` GiST exclusion constraint.
+    Contrast with `test_simultaneous_membership_in_multiple_groups_is_allowed`
+    below: the restriction is scoped to the *same* Group only."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        club_membership = _make_club_membership(club, person)
+        group = _make_group(club)
+        session.add_all([club_membership, group])
+        session.commit()
+
+        first = _make_group_membership(group, club_membership, valid_from=_utc(2024, 1, 1))
+        session.add(first)
+        session.commit()
+
+        second = _make_group_membership(group, club_membership, valid_from=_utc(2024, 6, 1))
+        session.add(second)
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+@requires_postgres
+def test_group_membership_sequential_active_periods_in_same_group_are_allowed() -> None:
+    """A closed (`membership_status='ended'`) period never blocks a new
+    active one for the same `(group_id, club_membership_id)` pair — the
+    exclusion constraint is scoped to `membership_status = 'active'`
+    rows only."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        club_membership = _make_club_membership(club, person)
+        group = _make_group(club)
+        session.add_all([club_membership, group])
+        session.commit()
+
+        first = _make_group_membership(
+            group,
+            club_membership,
+            valid_from=_utc(2024, 1, 1),
+            valid_to=_utc(2024, 6, 1),
+            membership_status="ended",
+        )
+        session.add(first)
+        session.commit()
+
+        second = _make_group_membership(group, club_membership, valid_from=_utc(2024, 6, 1))
+        session.add(second)
+        session.commit()  # must not raise: the first period is not active
+
+        rows = session.execute(
+            select(GroupMembership).where(GroupMembership.group_id == group.id)
+        ).scalars().all()
+        assert len(rows) == 2
 
 
 @requires_postgres
@@ -651,6 +788,265 @@ def test_is_primary_defaults_to_false_when_not_specified() -> None:
             )
         ).scalar_one()
         assert fetched.is_primary is False
+
+
+# --- is_primary temporal-overlap invariant (people-api.md §16.2) ----------
+#
+# Review of an earlier draft of the canonical contract flagged that the
+# invariant must be expressed as an *interval overlap*
+# (`[valid_from, valid_to)`), not as "is_primary=true AND currently
+# active" — see people-api.md §16.2 and Issue #71 §11.2 for the exact
+# formula. The tests below are the DB-level proof of that formula,
+# including the two directly-requested edge cases: a touching boundary
+# is allowed (not an overlap), and two open-ended primaries always
+# conflict.
+
+
+def _two_users(person_a: Person, person_b: Person) -> tuple[User, User]:
+    return _make_user(person_a), _make_user(person_b)
+
+
+@requires_postgres
+def test_primary_instructor_full_overlap_is_rejected() -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person_a = _make_person(first_name="Timofey")
+        person_b = _make_person(first_name="Anastasia")
+        session.add_all([club, person_a, person_b])
+        session.commit()
+        user_a, user_b = _two_users(person_a, person_b)
+        group = _make_group(club)
+        session.add_all([user_a, user_b, group])
+        session.commit()
+
+        first = _make_group_instructor_assignment(
+            group,
+            user_a,
+            is_primary=True,
+            valid_from=_utc(2024, 9, 1),
+            valid_to=_utc(2024, 10, 1),
+        )
+        session.add(first)
+        session.commit()
+
+        second = _make_group_instructor_assignment(
+            group,
+            user_b,
+            is_primary=True,
+            valid_from=_utc(2024, 9, 1),
+            valid_to=_utc(2024, 10, 1),
+        )
+        session.add(second)
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+@requires_postgres
+def test_primary_instructor_partial_overlap_is_rejected() -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person_a = _make_person(first_name="Timofey")
+        person_b = _make_person(first_name="Anastasia")
+        session.add_all([club, person_a, person_b])
+        session.commit()
+        user_a, user_b = _two_users(person_a, person_b)
+        group = _make_group(club)
+        session.add_all([user_a, user_b, group])
+        session.commit()
+
+        first = _make_group_instructor_assignment(
+            group,
+            user_a,
+            is_primary=True,
+            valid_from=_utc(2024, 9, 1),
+            valid_to=_utc(2024, 10, 1),
+        )
+        session.add(first)
+        session.commit()
+
+        second = _make_group_instructor_assignment(
+            group,
+            user_b,
+            is_primary=True,
+            valid_from=_utc(2024, 9, 15),
+            valid_to=_utc(2024, 10, 15),
+        )
+        session.add(second)
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+@requires_postgres
+def test_primary_instructor_open_ended_overlap_is_rejected() -> None:
+    """Two open-ended (`valid_to=NULL`) primaries always overlap — NULL
+    is treated as an unbounded/ongoing end, not "no constraint"."""
+    with session_scope() as session:
+        club = _make_club()
+        person_a = _make_person(first_name="Timofey")
+        person_b = _make_person(first_name="Anastasia")
+        session.add_all([club, person_a, person_b])
+        session.commit()
+        user_a, user_b = _two_users(person_a, person_b)
+        group = _make_group(club)
+        session.add_all([user_a, user_b, group])
+        session.commit()
+
+        first = _make_group_instructor_assignment(
+            group, user_a, is_primary=True, valid_from=_utc(2024, 9, 1)
+        )
+        session.add(first)
+        session.commit()
+
+        second = _make_group_instructor_assignment(
+            group, user_b, is_primary=True, valid_from=_utc(2024, 10, 1)
+        )
+        session.add(second)
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+@requires_postgres
+def test_primary_instructor_touching_boundary_is_allowed() -> None:
+    """A shared boundary — one assignment's `valid_to` equals the next
+    one's `valid_from` — is NOT an overlap under `[valid_from, valid_to)`
+    semantics (people-api.md §16.2's explicit example)."""
+    with session_scope() as session:
+        club = _make_club()
+        person_a = _make_person(first_name="Timofey")
+        person_b = _make_person(first_name="Anastasia")
+        session.add_all([club, person_a, person_b])
+        session.commit()
+        user_a, user_b = _two_users(person_a, person_b)
+        group = _make_group(club)
+        session.add_all([user_a, user_b, group])
+        session.commit()
+
+        first = _make_group_instructor_assignment(
+            group,
+            user_a,
+            is_primary=True,
+            valid_from=_utc(2024, 9, 1),
+            valid_to=_utc(2024, 10, 1),
+        )
+        session.add(first)
+        session.commit()
+
+        second = _make_group_instructor_assignment(
+            group, user_b, is_primary=True, valid_from=_utc(2024, 10, 1)
+        )
+        session.add(second)
+        session.commit()  # must not raise: touching, not overlapping
+
+        rows = session.execute(
+            select(GroupInstructorAssignment).where(
+                GroupInstructorAssignment.group_id == group.id
+            )
+        ).scalars().all()
+        assert len(rows) == 2
+
+
+@requires_postgres
+def test_primary_instructor_sequential_historical_periods_are_allowed() -> None:
+    """Two fully closed, non-overlapping historical primary periods for
+    the same Group are allowed (not just the touching-boundary case)."""
+    with session_scope() as session:
+        club = _make_club()
+        person_a = _make_person(first_name="Timofey")
+        person_b = _make_person(first_name="Anastasia")
+        session.add_all([club, person_a, person_b])
+        session.commit()
+        user_a, user_b = _two_users(person_a, person_b)
+        group = _make_group(club)
+        session.add_all([user_a, user_b, group])
+        session.commit()
+
+        first = _make_group_instructor_assignment(
+            group,
+            user_a,
+            is_primary=True,
+            valid_from=_utc(2024, 1, 1),
+            valid_to=_utc(2024, 6, 1),
+        )
+        session.add(first)
+        session.commit()
+
+        second = _make_group_instructor_assignment(
+            group,
+            user_b,
+            is_primary=True,
+            valid_from=_utc(2024, 7, 1),
+            valid_to=_utc(2024, 9, 1),
+        )
+        session.add(second)
+        session.commit()  # must not raise: a gap, not an overlap
+
+        rows = session.execute(
+            select(GroupInstructorAssignment).where(
+                GroupInstructorAssignment.group_id == group.id
+            )
+        ).scalars().all()
+        assert len(rows) == 2
+
+
+@requires_postgres
+def test_non_primary_overlapping_assignments_are_unrestricted() -> None:
+    """The exclusion constraint is scoped to `is_primary = true` rows
+    only — overlapping non-primary assignments for the same Group are
+    never restricted, including many simultaneous non-primary
+    instructors."""
+    with session_scope() as session:
+        club = _make_club()
+        person_a = _make_person(first_name="Timofey")
+        person_b = _make_person(first_name="Anastasia")
+        session.add_all([club, person_a, person_b])
+        session.commit()
+        user_a, user_b = _two_users(person_a, person_b)
+        group = _make_group(club)
+        session.add_all([user_a, user_b, group])
+        session.commit()
+
+        first = _make_group_instructor_assignment(
+            group, user_a, is_primary=False, valid_from=_utc(2024, 1, 1)
+        )
+        second = _make_group_instructor_assignment(
+            group, user_b, is_primary=False, valid_from=_utc(2024, 1, 1)
+        )
+        session.add_all([first, second])
+        session.commit()  # must not raise: is_primary=false is unrestricted
+
+        rows = session.execute(
+            select(GroupInstructorAssignment).where(
+                GroupInstructorAssignment.group_id == group.id
+            )
+        ).scalars().all()
+        assert len(rows) == 2
+
+
+@requires_postgres
+def test_primary_instructor_overlap_across_different_groups_is_allowed() -> None:
+    """The invariant is scoped per-`group_id` — two different Groups may
+    each have their own, independently overlapping-in-time primary
+    instructor."""
+    with session_scope() as session:
+        club = _make_club()
+        person_a = _make_person(first_name="Timofey")
+        person_b = _make_person(first_name="Anastasia")
+        session.add_all([club, person_a, person_b])
+        session.commit()
+        user_a, user_b = _two_users(person_a, person_b)
+        group_a = _make_group(club)
+        group_b = _make_group(club)
+        session.add_all([user_a, user_b, group_a, group_b])
+        session.commit()
+
+        first = _make_group_instructor_assignment(
+            group_a, user_a, is_primary=True, valid_from=_utc(2024, 1, 1)
+        )
+        second = _make_group_instructor_assignment(
+            group_b, user_b, is_primary=True, valid_from=_utc(2024, 1, 1)
+        )
+        session.add_all([first, second])
+        session.commit()  # must not raise: different groups
 
 
 @requires_postgres
