@@ -292,7 +292,7 @@ Permission: `group.manage` + scope + object relationship.
 
 Для одной и той же `group_id` не допускается существование двух записей `GroupInstructorAssignment` с `is_primary = true`, чьи периоды действия **пересекаются** (Issue #69, PO decision, закрывает GAP-GROUP-005). Каноническое правило оперирует именно пересечением интервалов, а не «активностью на текущий момент» — назначение primary на будущий или прошедший исторический период учитывается наравне с назначением, действующим прямо сейчас.
 
-Период каждого assignment — полуоткрытый интервал `[valid_from, valid_to)`, где `valid_to = NULL` означает открытый (бесконечный) конец. Два `is_primary = true` assignment одной группы конфликтуют тогда и только тогда, когда их интервалы `[valid_from₁, valid_to₁)` и `[valid_from₂, valid_to₂)` пересекаются, то есть:
+Период каждого assignment — полуоткрытый интервал `[valid_from, valid_to)`, где `valid_to = NULL` означает открытый (бесконечный) конец периода. Два `is_primary = true` assignment одной группы конфликтуют тогда и только тогда, когда их интервалы `[valid_from₁, valid_to₁)` и `[valid_from₂, valid_to₂)` пересекаются, то есть:
 
 ```text
 valid_from₁ < valid_to₂ (или valid_to₂ не установлен)
@@ -583,7 +583,7 @@ Authorization denial (нет permission, либо permission есть, но scop
 
 ## 30. Concurrency and idempotency — сводка для Group domain
 
-Group/GroupMembership/GroupInstructorAssignment endpoints не вводят project-wide или domain-specific optimistic-concurrency механизм (version column, ETag/If-Match) и не вводят `Idempotency-Key` — согласуется с `api-contract.md` §18-19 и уже принятым прецедентом для Person/Membership/GuardianRelationship (§7, ADR-0025 §10). `PATCH`/`POST .../archive`/`POST .../end` используют last-write-wins семантику. Cross-Club validation (ADR-0022 §6) и `is_primary`-invariant (§16.2), когда они будут реализованы, используют транзакционную блокировку на уровне service layer (см. `apps/api/app/groups/service.py` как implementation evidence существующего паттерна `SELECT ... FOR SHARE` в одной транзакции с записью) — это механизм целостности данных, а не client-facing idempotency/concurrency contract, и не заменяет и не расширяет пункты выше.
+Group/GroupMembership/GroupInstructorAssignment endpoints не вводят project-wide или domain-specific optimistic-concurrency механизм (version column, ETag/If-Match) и не вводят `Idempotency-Key` — согласуется с `api-contract.md` §18-19 и уже принятым прецедентом для Person/Membership/GuardianRelationship (§7, ADR-0025 §10). `PATCH`/`POST .../archive`/`POST .../end` используют last-write-wins семантику. Cross-Club validation (ADR-0022 §6) и `is_primary`-invariant (§16.2) используют транзакционную блокировку/защиту целостности на уровне service/DB layer (см. `apps/api/app/groups/service.py` как implementation evidence существующего паттерна и миграцию Group constraints) — это механизм целостности данных, а не client-facing idempotency/concurrency contract, и не заменяет и не расширяет пункты выше.
 
 ## 31. Acceptance Criteria
 
