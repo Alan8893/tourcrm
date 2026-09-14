@@ -44,11 +44,17 @@ BASELINE_ROLE_CODES = ("admin", "instructor", "member", "guardian")
 
 # roles-and-permissions.md §4: the documented permission catalog. Issue #19
 # is explicit that only this set is implemented — no invented permissions.
+# `guardian_relationship.read`/`guardian_relationship.manage` were added by
+# ADR-0025 §2 (Issue #64) — the migration seeding this table
+# (65aa6d48bf08) catches up the two codes that e5ae1ad9e1e1's original
+# seed predates.
 DOCUMENTED_PERMISSION_CODES = (
     "person.read",
     "person.update",
     "membership.read",
     "membership.manage",
+    "guardian_relationship.read",
+    "guardian_relationship.manage",
     "group.read",
     "group.manage",
     "event.read",

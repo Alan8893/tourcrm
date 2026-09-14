@@ -6,15 +6,21 @@ ADR-0014 (response envelope), ADR-0017 (Person has no `status`),
 ADR-0024/ADR-0025 (audit).
 
 Endpoints intentionally NOT implemented here (Issue #62 non-goals):
-GuardianRelationship (Issue #64), Group/Role-assignment/Invitation/
-RegistrationRequest/Import API, and `POST /persons/{person_id}/archive`.
-The last is a genuine, still-open gap (Issue #62 GAP-7): "archiving a
-Person" has no defined effect anywhere in canonical docs, and `Person`
-has no `status`/lifecycle field (ADR-0017) that could represent it —
-adding one would be a new persistence field, which Issue #62 §6
-prohibits without a separate decision. Implementing this endpoint would
-require inventing either a new column or an unspecified business rule;
-neither is done here — see the Issue #62 implementation report.
+Group/Role-assignment/Invitation/RegistrationRequest/Import API, and
+`POST /persons/{person_id}/archive`. The last is a genuine, still-open
+gap (Issue #62 GAP-7): "archiving a Person" has no defined effect
+anywhere in canonical docs, and `Person` has no `status`/lifecycle field
+(ADR-0017) that could represent it — adding one would be a new
+persistence field, which Issue #62 §6 prohibits without a separate
+decision. Implementing this endpoint would require inventing either a
+new column or an unspecified business rule; neither is done here — see
+the Issue #62 implementation report.
+
+`GET/POST /persons/{person_id}/guardian-relationships` (Issue #64 §7)
+live here rather than in app.api.v1.guardian_relationships, mirroring how
+`GET /persons/{person_id}/memberships` lives here rather than in
+app.api.v1.memberships — only the top-level `/guardian-relationships/{id}
+...` paths live in that other module.
 
 Existence-hiding for the single-Person endpoints (detail/update),
 mirroring app.api.v1.events exactly: a Person that does not exist and a
@@ -38,14 +44,31 @@ from app.api.deps import (
 from app.api.errors import APIError
 from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
+from app.api.v1.guardian_relationships import guardian_relationship_out
+from app.api.v1.guardian_relationships_schemas import (
+    GuardianRelationshipCreateRequest,
+    GuardianRelationshipOut,
+)
 from app.api.v1.memberships_schemas import MembershipOut
 from app.api.v1.persons_schemas import PersonCreateRequest, PersonOut, PersonUpdateRequest
 from app.authorization.context import ResourceContext
 from app.authorization.service import Authorizer
 from app.db.identity import Person
 from app.db.session import get_db
+from app.people import guardian_service
 from app.people import service as people_service
 from app.people.authorization import is_person_visible
+from app.people.guardian_authorization import build_guardian_relationship_create_context
+from app.people.guardian_lifecycle import (
+    DuplicateActiveGuardianRelationshipError,
+    DuplicatePrimaryContactError,
+    SelfLinkNotAllowedError,
+)
+from app.people.guardian_queries import (
+    GUARDIAN_RELATIONSHIP_DEFAULT_SORT,
+    list_guardian_relationships_for_child,
+)
+from app.people.guardian_queries import InvalidSortError as InvalidGuardianSortError
 from app.people.queries import (
     MEMBERSHIP_DEFAULT_SORT,
     PERSON_DEFAULT_SORT,
@@ -236,3 +259,94 @@ def list_person_memberships(
         items=[_membership_out(membership) for membership in rows],
         pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
     )
+
+
+@router.get(
+    "/{person_id}/guardian-relationships",
+    response_model=CollectionResponse[GuardianRelationshipOut],
+)
+def list_person_guardian_relationships(
+    person_id: uuid.UUID,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    sort: str = Query(default=GUARDIAN_RELATIONSHIP_DEFAULT_SORT),
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+) -> CollectionResponse[GuardianRelationshipOut]:
+    """Guardians of `person_id` — the child-side view (Issue #64 §7)."""
+    if db.get(Person, person_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+
+    try:
+        rows, total = list_guardian_relationships_for_child(
+            db,
+            person_id=person_id,
+            user_id=principal.user_id,
+            permission_code="guardian_relationship.read",
+            page=page,
+            page_size=page_size,
+            sort=sort,
+        )
+    except InvalidGuardianSortError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_sort", f"Unsupported sort value: {sort}"
+        ) from exc
+
+    pages = (total + page_size - 1) // page_size if total else 0
+    return CollectionResponse(
+        items=[guardian_relationship_out(relationship) for relationship in rows],
+        pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
+    )
+
+
+@router.post(
+    "/{person_id}/guardian-relationships",
+    status_code=status.HTTP_201_CREATED,
+    response_model=GuardianRelationshipOut,
+)
+def create_person_guardian_relationship(
+    person_id: uuid.UUID,
+    payload: GuardianRelationshipCreateRequest,
+    request: Request,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> GuardianRelationshipOut:
+    """Create a GuardianRelationship with `person_id` as the child side
+    (Issue #64 §7-8)."""
+    if db.get(Person, person_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+    if db.get(Person, payload.guardian_person_id) is None:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "invalid_person_id",
+            "guardian_person_id does not exist",
+        )
+
+    authorizer = Authorizer(
+        session=db, user_id=principal.user_id, permission_code="guardian_relationship.manage"
+    )
+    context = build_guardian_relationship_create_context(
+        db, child_person_id=person_id, requester_user_id=principal.user_id
+    )
+    authorizer.check(context)
+
+    try:
+        relationship = guardian_service.create_guardian_relationship(
+            db,
+            guardian_person_id=payload.guardian_person_id,
+            child_person_id=person_id,
+            relationship_type=payload.relationship_type,
+            is_primary_contact=payload.is_primary_contact,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
+        )
+    except SelfLinkNotAllowedError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "guardian_link_not_allowed", str(exc)
+        ) from exc
+    except (DuplicateActiveGuardianRelationshipError, DuplicatePrimaryContactError) as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "guardian_link_not_allowed", str(exc)
+        ) from exc
+    return guardian_relationship_out(relationship)

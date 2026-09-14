@@ -2,7 +2,6 @@
 
 _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
     "user",
-    "guardian",
     "trip",
     "route",
     "achievement",
@@ -19,8 +18,9 @@ _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
 # persistence for scope/search purposes — it is not a fictitious Group
 # CRUD domain endpoint. "person"/"member" are likewise no longer forbidden:
 # Issue #62 adds the real Person/ClubMembership API (see _PERSON_PATHS/
-# _MEMBERSHIP_PATHS below). "guardian" stays forbidden — GuardianRelationship
-# API is Issue #64, not implemented here.
+# _MEMBERSHIP_PATHS below). "guardian" is no longer forbidden either:
+# Issue #64 adds the real GuardianRelationship API (see
+# _GUARDIAN_RELATIONSHIP_PATHS/_ME_PATHS below).
 
 
 def test_openapi_schema_is_served(real_client) -> None:
@@ -65,14 +65,24 @@ _MEMBERSHIP_PATHS = {
     "/api/v1/memberships/{membership_id}/status",
 }
 
+_GUARDIAN_RELATIONSHIP_PATHS = {
+    "/api/v1/persons/{person_id}/guardian-relationships",
+    "/api/v1/guardian-relationships/{relationship_id}",
+    "/api/v1/guardian-relationships/{relationship_id}/terminate",
+}
+
+_ME_PATHS = {
+    "/api/v1/me/children",
+}
+
 
 def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
     schema = real_client.get("/openapi.json").json()
 
     # Health (Issue #10), authentication (Issue #33), the first Event API
-    # slice (Issue #40), and the Person/ClubMembership API (Issue #62) are
-    # the only domain endpoints so far — no Group/Trip/GuardianRelationship/
-    # etc. CRUD endpoints have been added under /api/v1.
+    # slice (Issue #40), the Person/ClubMembership API (Issue #62), and the
+    # GuardianRelationship API (Issue #64) are the only domain endpoints so
+    # far — no Group/Trip/etc. CRUD endpoints have been added under /api/v1.
     assert (
         set(schema["paths"].keys())
         == {"/health/live", "/health/ready"}
@@ -80,6 +90,8 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _EVENT_PATHS
         | _PERSON_PATHS
         | _MEMBERSHIP_PATHS
+        | _GUARDIAN_RELATIONSHIP_PATHS
+        | _ME_PATHS
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()
