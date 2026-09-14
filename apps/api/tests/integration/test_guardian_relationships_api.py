@@ -788,6 +788,27 @@ def test_patch_guardian_relationship_unauthorized_returns_404(client: TestClient
         headers=_csrf_headers(client),
     )
     assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "guardian_relationship_not_found"
+
+
+@requires_postgres
+def test_patch_nonexistent_guardian_relationship_returns_404(client: TestClient) -> None:
+    with session_scope() as session:
+        requester = _make_person()
+        requester_user = _make_user(requester)
+        session.add_all([requester, requester_user])
+        session.commit()
+        requester_user_id = requester_user.id
+    _grant_permission(requester_user_id, "guardian_relationship.manage", scope_type="all")
+    _authenticate_as(requester_user_id)
+
+    response = client.patch(
+        f"/api/v1/guardian-relationships/{uuid.uuid4()}",
+        json={"relationship_type": "grandparent"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "guardian_relationship_not_found"
 
 
 @requires_postgres
@@ -815,9 +836,50 @@ def test_patch_guardian_relationship_idor_unrelated_self_scope_returns_404(
         headers=_csrf_headers(client),
     )
     assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "guardian_relationship_not_found"
     with session_scope() as session:
         victim = session.get(GuardianRelationship, relationship_id)
         assert victim.relationship_type != "grandparent"
+
+
+@requires_postgres
+def test_patch_guardian_relationship_missing_and_unauthorized_are_indistinguishable(
+    client: TestClient,
+) -> None:
+    """Existence-hiding: a PATCH on a relationship that does not exist and
+    one that exists but the requester cannot access must be identical
+    from the public API's point of view — same status, same code, same
+    message (Issue #64 error-contract fix)."""
+    with session_scope() as session:
+        guardian, guardian_user, child, _ = _make_guardian_child_requester(session)
+        denied_person = _make_person(first_name="Denied")
+        denied_user = _make_user(denied_person)
+        session.add_all([denied_person, denied_user])
+        session.commit()
+        relationship = _make_guardian_relationship(guardian, child)
+        session.add(relationship)
+        session.commit()
+        existing_id, denied_user_id = relationship.id, denied_user.id
+    _grant_permission(denied_user_id, "guardian_relationship.manage", scope_type="none")
+    _authenticate_as(denied_user_id)
+
+    missing_response = client.patch(
+        f"/api/v1/guardian-relationships/{uuid.uuid4()}",
+        json={"relationship_type": "grandparent"},
+        headers=_csrf_headers(client),
+    )
+    denied_response = client.patch(
+        f"/api/v1/guardian-relationships/{existing_id}",
+        json={"relationship_type": "grandparent"},
+        headers=_csrf_headers(client),
+    )
+    assert missing_response.status_code == denied_response.status_code == 404
+    assert (
+        missing_response.json()["error"]["code"]
+        == denied_response.json()["error"]["code"]
+        == "guardian_relationship_not_found"
+    )
+    assert missing_response.json()["error"]["message"] == denied_response.json()["error"]["message"]
 
 
 @requires_postgres
@@ -931,6 +993,26 @@ def test_terminate_guardian_relationship_without_permission_returns_404(
         headers=_csrf_headers(client),
     )
     assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "guardian_relationship_not_found"
+
+
+@requires_postgres
+def test_terminate_nonexistent_guardian_relationship_returns_404(client: TestClient) -> None:
+    with session_scope() as session:
+        requester = _make_person()
+        requester_user = _make_user(requester)
+        session.add_all([requester, requester_user])
+        session.commit()
+        requester_user_id = requester_user.id
+    _grant_permission(requester_user_id, "guardian_relationship.manage", scope_type="all")
+    _authenticate_as(requester_user_id)
+
+    response = client.post(
+        f"/api/v1/guardian-relationships/{uuid.uuid4()}/terminate",
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "guardian_relationship_not_found"
 
 
 @requires_postgres
@@ -953,9 +1035,45 @@ def test_terminate_guardian_relationship_idor_returns_404(client: TestClient) ->
         headers=_csrf_headers(client),
     )
     assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "guardian_relationship_not_found"
     with session_scope() as session:
         victim = session.get(GuardianRelationship, relationship_id)
         assert victim.status == "active"
+
+
+@requires_postgres
+def test_terminate_guardian_relationship_missing_and_unauthorized_are_indistinguishable(
+    client: TestClient,
+) -> None:
+    """Terminate-side equivalent of the PATCH existence-hiding test above."""
+    with session_scope() as session:
+        guardian, guardian_user, child, _ = _make_guardian_child_requester(session)
+        denied_person = _make_person(first_name="Denied")
+        denied_user = _make_user(denied_person)
+        session.add_all([denied_person, denied_user])
+        session.commit()
+        relationship = _make_guardian_relationship(guardian, child, status="active")
+        session.add(relationship)
+        session.commit()
+        existing_id, denied_user_id = relationship.id, denied_user.id
+    _grant_permission(denied_user_id, "guardian_relationship.manage", scope_type="none")
+    _authenticate_as(denied_user_id)
+
+    missing_response = client.post(
+        f"/api/v1/guardian-relationships/{uuid.uuid4()}/terminate",
+        headers=_csrf_headers(client),
+    )
+    denied_response = client.post(
+        f"/api/v1/guardian-relationships/{existing_id}/terminate",
+        headers=_csrf_headers(client),
+    )
+    assert missing_response.status_code == denied_response.status_code == 404
+    assert (
+        missing_response.json()["error"]["code"]
+        == denied_response.json()["error"]["code"]
+        == "guardian_relationship_not_found"
+    )
+    assert missing_response.json()["error"]["message"] == denied_response.json()["error"]["message"]
 
 
 # --- GET /me/children ------------------------------------------------------

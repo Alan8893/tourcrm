@@ -14,12 +14,19 @@ and app.api.v1.memberships.
 Existence-hiding for PATCH/terminate, mirroring every other single-
 resource endpoint in this codebase: a relationship that does not exist
 and one that exists but the caller is not authorized to act on receive
-an identical 404.
+an identical 404 — same status, same body, same machine-readable `code`
+(`guardian_relationship_not_found`, per Issue #64 §17's canonical
+`GUARDIAN_RELATIONSHIP_NOT_FOUND`, lowercased to match this codebase's
+actual `APIError` code convention — see e.g. `invalid_membership_transition`
+in app.api.v1.memberships, not the uppercase spelling docs use). Raised
+via `APIError` (never a plain `HTTPException`) so the response carries
+this specific code instead of the generic `not_found` the shared
+`http_exception_handler` would otherwise produce.
 """
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -45,7 +52,8 @@ from app.people.guardian_lifecycle import (
 
 router = APIRouter(prefix="/guardian-relationships", tags=["guardian-relationships"])
 
-_NOT_FOUND_DETAIL = "Guardian relationship not found"
+_NOT_FOUND_MESSAGE = "Guardian relationship not found"
+_NOT_FOUND_CODE = "guardian_relationship_not_found"
 
 
 def guardian_relationship_out(relationship: GuardianRelationship) -> GuardianRelationshipOut:
@@ -80,14 +88,17 @@ def get_authorized_guardian_relationship_or_404(
         stmt = stmt.with_for_update()
     relationship = db.execute(stmt).scalar_one_or_none()
     if relationship is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+        raise APIError(status.HTTP_404_NOT_FOUND, _NOT_FOUND_CODE, _NOT_FOUND_MESSAGE)
 
     context = build_guardian_relationship_resource_context(
         db, relationship=relationship, requester_user_id=user_id
     )
     authorizer = Authorizer(session=db, user_id=user_id, permission_code=permission_code)
     if not authorizer.is_allowed(context):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+        # Deliberately the same status/code/message as "does not exist"
+        # above — an existing-but-unauthorized relationship must be
+        # indistinguishable from a nonexistent one (IDOR protection).
+        raise APIError(status.HTTP_404_NOT_FOUND, _NOT_FOUND_CODE, _NOT_FOUND_MESSAGE)
     return relationship
 
 
