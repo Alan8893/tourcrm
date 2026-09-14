@@ -282,3 +282,67 @@ Frontend должен:
 - medical_responsible;
 
 без переписывания модели authorization.
+
+## 19. RoleAssignment contract
+
+`RoleAssignment` связывает User с существующей Role и несёт собственный authorization scope. Один User может иметь несколько RoleAssignment; effective permissions являются additive union с последующей проверкой scope и object-level policies.
+
+### 19.1 Validity and revoke
+
+RoleAssignment имеет временной интервал `[valid_from, valid_to)`.
+
+- `valid_from` — серверно/доменом определяемое начало действия назначения;
+- `valid_to = NULL` означает открытый, действующий интервал;
+- revoke не удаляет assignment, а закрывает его интервал установкой `valid_to` в серверное UTC-время операции;
+- завершённый assignment сохраняется как историческая запись;
+- повторный revoke уже завершённого assignment запрещён;
+- повторное назначение после revoke создаётся отдельным RoleAssignment, а старый интервал не переоткрывается.
+
+Эффективным считается только assignment, действующий в момент проверки authorization и не нарушающий остальные условия доступа, включая состояние User и ClubMembership.
+
+### 19.2 Scope combinations
+
+Для RoleAssignment канонические комбинации таковы:
+
+| Scope | `club_id` | `scope_ref_id` |
+|---|---|---|
+| `all` | обязателен | `NULL` |
+| `self` | обязателен | `NULL` |
+| `children` | обязателен | `NULL` |
+| `own_groups` | обязателен | `NULL` |
+| `own_events` | обязателен | `NULL` |
+| `none` | `NULL` | `NULL` |
+
+`scope_ref_id` в MVP не используется для этих scopes. В частности, `own_groups` определяется через доменную связь пользователя с Group, а `own_events` — через EventStaffAssignment, а не через ссылку на конкретный объект в RoleAssignment.
+
+`self`, `children`, `own_groups` и `own_events` всегда ограничены указанным Club. Global `self`/`children`/`own_groups`/`own_events` assignments в MVP не поддерживаются.
+
+### 19.3 Role catalog mutability
+
+Базовые/system roles (`admin`, `instructor`, `member`, `guardian`) и их permission sets не управляются через RoleAssignment API. Текущий slice не предоставляет Role CRUD, Permission CRUD или RolePermission CRUD.
+
+`role.manage` не предоставляет права изменять каталог ролей или их permissions.
+
+### 19.4 Cross-Club integrity
+
+Для club-scoped RoleAssignment целевой User должен иметь активный `ClubMembership` в указанном Club.
+
+Club-scoped assignment не может быть создан для User, который не состоит в соответствующем Club.
+
+Если ClubMembership целевого User впоследствии заканчивается, RoleAssignment не удаляется и не изменяется автоматически, но такой assignment не предоставляет эффективный Club-доступ при authorization, пока отсутствует требуемое активное членство.
+
+### 19.5 `role.manage` authorization
+
+`role.manage` является permission управления RoleAssignment, но не Role/Permission catalog.
+
+Для MVP `role.manage` допускается только со scope `all`:
+
+- `all + club_id = NULL` — управление RoleAssignment в любом Club;
+- `all + конкретный club_id` — управление RoleAssignment только в этом Club;
+- `self`, `children`, `own_groups`, `own_events` и `none` не являются допустимыми scopes для `role.manage`.
+
+Scope вызывающего пользователя определяет разрешённый target Club. Остальные проверки целевого RoleAssignment применяются независимо от права вызывающего.
+
+### 19.6 RoleAssignment audit
+
+Назначение, изменение и отзыв RoleAssignment используют закрытые audit action codes `role_assignment.created`, `role_assignment.changed` и `role_assignment.revoked` из ADR-0024. Audit mutation и business mutation выполняются в одной транзакции по общим правилам ADR-0024.
