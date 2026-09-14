@@ -12,6 +12,8 @@
 
 Описывает правило повторения. В согласованной модели используется RFC 5545-compatible RRULE. В MVP поддерживаются `FREQ`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH`, `COUNT`, `UNTIL`; входной `UNTIL` нормализуется в `series_end` и не дублируется в канонической модели.
 
+UI работает со структурированными параметрами повторения. Произвольный ввод raw RRULE не является MVP-возможностью. Backend формирует и валидирует каноническое RRULE.
+
 ### EventSeries
 
 EventSeries — отдельная от Event сущность и версия логического повторяющегося расписания, принадлежащая одному Club.
@@ -19,6 +21,9 @@ EventSeries — отдельная от Event сущность и версия �
 Канонические поля:
 
 - id;
+- root_series_id;
+- version;
+- supersedes_series_id nullable;
 - club_id;
 - name;
 - description;
@@ -34,11 +39,19 @@ EventSeries — отдельная от Event сущность и версия �
 - created_at;
 - updated_at.
 
-`timezone` обязателен и является IANA timezone. `series_end` и `occurrence_limit` могут использоваться одновременно; действует первое достигнутое ограничение. При отсутствии обоих ограничений серия бессрочная.
+Для первой версии `root_series_id = id`, `version = 1`, `supersedes_series_id = NULL`. Для каждой следующей версии `root_series_id` сохраняется, `version` увеличивается на единицу, а `supersedes_series_id` указывает на непосредственно предыдущую версию.
+
+Текущая версия — терминальная версия цепочки, то есть версия, которую ещё не supersede'нула следующая версия. Отдельное `is_current` не хранится.
+
+Внутри одного `root_series_id` комбинация `(root_series_id, version)` уникальна, и у одной версии не может быть более одного непосредственного successor.
+
+`timezone` обязателен и является IANA timezone. `series_end` и `occurrence_limit` могут использоваться одновременно; действует первое достигнутое ограничение. При отсутствии обоих ограничений серия бессрочная с точки зрения recurrence definition и ограничивается только lifecycle/materialization policy.
 
 EventSeries не является Event и не содержит обязательных связей с группами, инструкторами или участниками. Эти связи относятся к конкретному EventOccurrence.
 
 При операции "this and following" создаётся новая версия EventSeries с точки выбранного будущего `scheduled` occurrence. Историческая версия сохраняется, а последовательность версий одной логической серии должна быть восстанавливаема.
+
+Создание новой версии является транзакционной операцией. Источник изменения проверяется на актуальность под DB-level lock. Если исходная версия уже получила successor, устаревшая операция отклоняется с `409 Conflict`; автоматического rebase нет.
 
 ### EventOccurrence
 
@@ -64,6 +77,8 @@ EventOccurrence — конкретное materialized проведение Event
 
 `name`, `description` и `event_type` являются snapshot данных серии. `starts_at` и `ends_at` — фактическое время конкретного occurrence. `timezone` сохраняет контекст расписания occurrence.
 
+Для идемпотентной материализации система должна иметь детерминированный ключ конкретного recurrence occurrence внутри версии серии. PostgreSQL uniqueness должна защищать от повторного создания одной и той же точки расписания при конкурентной materialization.
+
 Lifecycle:
 
 ```text
@@ -80,13 +95,42 @@ scheduled
 
 Отдельная сущность для текущего отклонения occurrence от правила серии. Для одного occurrence допускается не более одной актуальной exception. История действий хранится через Audit.
 
+Канонические поля:
+
+- id;
+- occurrence_id UNIQUE;
+- exception_type;
+- original_start_at;
+- effective_start_at nullable;
+- effective_end_at nullable;
+- overrides JSONB;
+- cancellation_reason nullable;
+- created_by;
+- created_at;
+- updated_at.
+
 MVP-типы: `rescheduled`, `cancelled`.
 
-`rescheduled` хранит исходные и эффективные дату/время. `cancelled` требует причину. Отмена не удаляет occurrence. Перенос сохраняет его `id`.
+`overrides` содержит только backend allow-list разрешённых полей EventOccurrence. Каждый override проходит обычную типовую и доменную валидацию. JSONB не является обходом доменных правил.
+
+`rescheduled` хранит исходные и эффективные дату/время и не меняет lifecycle status: occurrence остаётся `scheduled`. `cancelled` требует причину и переводит occurrence в терминальное состояние `cancelled`. Отмена не удаляет occurrence. Перенос сохраняет его `id`.
+
+### Versioning and occurrence rebinding
+
+При "this and following":
+
+- создаётся новый EventSeries version;
+- выбранный будущий `scheduled` occurrence сохраняет свой `id`;
+- если выбранный occurrence уже materialized, он rebinding'ится на новую версию и получает соответствующий snapshot новой версии;
+- следующие occurrences относятся к новой версии;
+- прошедшие occurrences не изменяются;
+- cancelled occurrence не может быть boundary для новой версии; выбирается следующий `scheduled` occurrence.
+
+Новый occurrence не создаётся только ради rebinding существующего occurrence.
 
 ### Materialization
 
-Материализация соответствует ADR-0015:
+Материализация соответствует ADR-0015 и ADR-0028:
 
 - default horizon: 180 дней вперёд;
 - horizon может расширяться при запросе периода за пределами материализованного диапазона;
@@ -94,13 +138,12 @@ MVP-типы: `rescheduled`, `cancelled`.
 - повторный запуск не создаёт дубликаты;
 - существующие occurrences не удаляются автоматически;
 - occurrence с operational history сохраняется;
-- стабильный occurrence ID сохраняется при изменениях серии.
+- стабильный occurrence ID сохраняется при изменениях серии;
+- `paused` останавливает создание новых occurrences;
+- `cancelled` Series навсегда останавливает дальнейшую генерацию;
+- paused/cancelled Series не приводит автоматически к удалению или отмене уже materialized будущих occurrences.
 
-Создание/изменение серии должно сделать ближайшие occurrences доступными сразу; поддержание полного горизонта выполняется background materialization. Concurrency должна быть безопасной за счёт DB-level uniqueness/idempotency, а не только application lock.
-
-При `this and following` выбранный будущий `scheduled` occurrence сохраняет свой `id`, но переводится на новую версию EventSeries; следующие occurrences принадлежат новой версии. Прошедшие occurrences не изменяются. `cancelled` occurrence не может быть точкой начала новой версии.
-
-Materializer не должен автоматически удалять или отменять уже созданные будущие occurrences только из-за `paused`/`cancelled` Series; отмена конкретного occurrence является отдельной явной операцией.
+Создание/изменение серии должно сделать ближайшие occurrences доступными сразу; поддержание полного горизонта выполняется background materialization. Concurrency должна быть безопасной за счёт DB-level uniqueness/locking/idempotency, а не только application lock.
 
 ## 9. Trip domain
 
