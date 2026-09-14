@@ -115,20 +115,34 @@ Invitation secrets are never returned after creation.
 
 ## 9. Recurring event series / occurrences
 
-- `GET /event-series`
-- `POST /event-series`
-- `GET /event-series/{id}`
-- `PATCH /event-series/{id}`
-- `POST /event-series/{id}/pause`
-- `POST /event-series/{id}/resume`
-- `POST /event-series/{id}/cancel`
-- `GET /event-series/{id}/occurrences`
-- `GET /event-occurrences/{id}`
-- `PATCH /event-occurrences/{id}`
-- `POST /event-occurrences/{id}/cancel`
-- `POST /event-occurrences/{id}/reschedule`
+The canonical recurrence resource paths are aligned with `docs/05-api/events-api.md` and ADR-0028. The older `/event-series` and `/event-occurrences` paths are not canonical.
 
-Series mutation semantics must prevent unintended retroactive modification of completed occurrences.
+### EventSeries
+
+- `POST /events/series`
+- `GET /events/series/{series_id}`
+- `PATCH /events/series/{series_id}`
+- `POST /events/series/{series_id}/exceptions`
+- `GET /events/series/{series_id}/occurrences`
+
+### EventOccurrence
+
+- `GET /events/occurrences/{occurrence_id}`
+- `PATCH /events/occurrences/{occurrence_id}`
+
+Series/occurrence mutation semantics:
+
+- recurrence changes must declare an explicit update scope;
+- `this occurrence` changes only the selected occurrence through an occurrence exception/override;
+- `this and following` creates a new EventSeries version beginning at a selected future `scheduled` occurrence;
+- `entire series` changes the current series version according to the explicit recurrence policy, without rewriting immutable past occurrences;
+- the selected occurrence retains its stable ID when rebound to a new series version;
+- a cancelled occurrence cannot be the boundary for a new version;
+- concurrent version creation uses transactional DB locking and stale-source detection; stale operations fail with `409 Conflict` rather than being automatically rebased;
+- series lifecycle is `active ↔ paused →/active → cancelled → archived` with the exact allowed transitions defined by ADR-0028;
+- occurrence lifecycle is `scheduled → in_progress → completed` or `scheduled → cancelled`;
+- reschedule is an exception, not a lifecycle status;
+- exceptions are auditable and do not delete occurrences.
 
 ## 10. Attendance
 
