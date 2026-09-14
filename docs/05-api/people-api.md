@@ -220,9 +220,9 @@ Permission: `group.manage` + scope + object relationship.
 
 Один человек может одновременно иметь несколько активных `GroupMembership` в **разных** группах, включая пересекающиеся по времени интервалы `[valid_from, valid_to)` — ограничение на это не вводится (Issue #69, PO decision).
 
-В пределах **одной и той же** группы дублирующее одновременное активное членство запрещено: не более одной записи `GroupMembership` со `membership_status = active` может существовать для одной и той же пары `(group_id, club_membership_id)` одновременно (Issue #69, PO decision). Это — обязательный database invariant, который документируется здесь, но **не реализуется** в рамках текущего specification-gate slice (текущая схема `apps/api/app/db/groups.py` не имеет соответствующего exclusion constraint); его реализация — предмет отдельного implementation Issue.
+В пределах **одной и той же** группы дублирующее одновременное активное членство запрещено: не более одной записи `GroupMembership` со `membership_status = active` может существовать для одной и той же пары `(group_id, club_membership_id)` одновременно (Issue #69, PO decision). Это — обязательный database invariant и реализовано на уровне БД текущим Group API implementation slice через temporal/exclusion constraint на `[valid_from, valid_to)` для активных записей. Простого partial unique index недостаточно, поскольку каноническое правило допускает последовательные исторические интервалы.
 
-Cross-Club integrity (ADR-0022 §4): `GroupMembership` валиден только при `Group.club_id == ClubMembership.club_id`. Проверка и запись выполняются в одной транзакции тем же каноническим service-механизмом, что уже реализован в `apps/api/app/groups/service.py` (implementation evidence, не источник бизнес-решения) — endpoint должен вызывать этот существующий shared-механизм, а не дублировать проверку.
+Cross-Club integrity (ADR-0022 §4): `GroupMembership` валиден только при `Group.club_id == ClubMembership.club_id`. Проверка и запись выполняются в одной транзакции тем же каноническим service-механизмом, что реализован в `apps/api/app/groups/service.py` (implementation evidence, не источник бизнес-решения) — endpoint должен вызывать этот существующий shared-механизм, а не дублировать проверку.
 
 ### 15.3. Перевод между группами — нет отдельного endpoint
 
@@ -307,19 +307,25 @@ valid_from₂ < valid_to₁ (или valid_to₁ не установлен)
 - Запрещено: A = `[2026-09-01, 2026-09-30)`, B = `[2026-09-15, 2026-10-15)` — частичное пересечение.
 - Запрещено: A = `[2026-09-01, NULL)`, B = `[2026-10-01, NULL)` — оба открытых периода пересекаются после 2026-10-01.
 
-Это — обязательный database invariant, документируемый здесь, но **не реализуемый** в рамках текущего specification-gate slice (текущая схема `apps/api/app/db/groups.py` не имеет соответствующего constraint). Его реализация — предмет отдельного implementation Issue и должна быть выражена как temporal/exclusion constraint на уровне БД (по аналогии с существующим подходом для temporal-ограничений в проекте), а не как простой partial unique index по `group_id WHERE is_primary = true` — такой индекс запретил бы допустимые последовательные исторические primary-назначения.
+Это — обязательный database invariant и реализовано на уровне БД текущим Group API implementation slice через temporal/exclusion constraint на `[valid_from, valid_to)` для `is_primary = true` записей. Простой partial unique index по `group_id WHERE is_primary = true` не используется, поскольку он запретил бы допустимые последовательные исторические primary-назначения.
 
 Попытка создать `is_primary = true` запись, чей интервал пересекается с интервалом уже существующей `is_primary = true` записи той же группы, отклоняется с кодом `duplicate_primary_instructor`, HTTP 409. Автоматическое понижение (demotion) существующего primary-инструктора **не выполняется** — это не является канонически принятым поведением (Issue #69, PO decision explicitly excludes automatic demotion). Чтобы назначить нового primary-инструктора на пересекающийся период, клиент должен сначала завершить (сократить интервал) существующую конфликтующую primary-запись (`POST .../end`), а затем создать новую с `is_primary = true`.
 
 ### 16.3. Cross-Club integrity
 
-Cross-Club integrity (ADR-0022 §5): `GroupInstructorAssignment` валиден только если Person назначаемого `User` имеет **активный** `ClubMembership` в Club целевой группы; сам факт наличия глобальной роли `instructor` недостаточен. Проверка и запись выполняются в одной транзакции тем же каноническим service-механизмом, что уже реализован в `apps/api/app/groups/service.py` (implementation evidence) — endpoint должен вызывать этот существующий shared-механизм.
+Cross-Club integrity (ADR-0022 §5): `GroupInstructorAssignment` валиден только если Person назначаемого `User` имеет **активный** `ClubMembership` в Club целевой группы; сам факт наличия глобальной роли `instructor` недостаточен. Проверка и запись выполняются в одной транзакции тем же каноническим service-механизмом, что реализован в `apps/api/app/groups/service.py` (implementation evidence) — endpoint должен вызывать этот существующий shared-механизм.
 
 ### GET `/api/v1/groups/{group_id}/instructors`
 
 Permission: `group.read` + scope + object relationship на `group_id`.
 
-Pagination обязательна. Фильтр по активности (наличие/отсутствие `valid_to`, §16.1).
+Pagination обязательна. Канонический фильтр активности называется `has_ended`:
+
+- `has_ended=false` — только действующие назначения, у которых `valid_to IS NULL`;
+- `has_ended=true` — только завершённые назначения, у которых `valid_to IS NOT NULL`;
+- параметр не передан — без фильтра по активности.
+
+Имя `has_ended` выбрано как каноническое query-поле для явного различения активных и завершённых исторических assignment и является частью текущего API-контракта. Фильтр не изменяет point-in-time semantics §16.1.
 
 ### POST `/api/v1/groups/{group_id}/instructors`
 
@@ -358,252 +364,3 @@ Permission: `group.manage` + scope + object relationship.
 `GuardianRelationship` — Club-neutral связь Person ↔ Person. Канонические persistence-поля:
 
 - `id`;
-- `guardian_person_id`;
-- `child_person_id`;
-- `relationship_type`;
-- `status`;
-- `is_primary_contact`;
-- `valid_from`;
-- `valid_to`;
-- `created_at`;
-- `updated_at`.
-
-Канонические значения `status`: `active`, `inactive`, `revoked`.
-
-Self-link guardian → same person запрещён. Дублирующие активные relationships одного типа для одной пары не допускаются; исторические `inactive`/`revoked` сохраняются. Для ребёнка допускается не более одной одновременно действующей primary-contact relationship.
-
-Permissions: `guardian_relationship.read` (чтение), `guardian_relationship.manage` (создание/изменение/terminate) — приняты ADR-0025 §2. Ранее использовавшийся здесь `guardian.read` не был каноническим permission и заменён. Никакие другие GuardianRelationship-специфичные permissions не вводятся.
-
-URI: канонический ресурс — `guardian-relationships`, не `guardians` (ADR-0025 §4). `/guardians` не сохраняется как alias нигде в этом контракте, включая вложенную коллекцию под Person.
-
-Authorization/scope: `GuardianRelationship` остаётся Club-neutral и не имеет `club_id` (ADR-0023 §3) — обычное club-scoped assignment само по себе не превращается в доступ к `GuardianRelationship`: только глобальное (без `club_id`) assignment авторизует доступ к этой сущности. Из канонического scope vocabulary (ADR-0013) для `GuardianRelationship` применимы `all`, `self`, `children`, `none`; `own_groups`/`own_events` к этой сущности неприменимы (нет Group/Event relationship) и всегда fail closed. `self` означает, что requester сам является `child_person_id` конкретного relationship. `children` означает, что requester — активный (`status = active`, в пределах `[valid_from, valid_to)`) guardian ребёнка, к которому относится relationship. Новые scopes не вводятся.
-
-### GET `/api/v1/persons/{person_id}/guardian-relationships`
-
-Доступ только при наличии `guardian_relationship.read` и подходящего scope.
-
-### POST `/api/v1/persons/{person_id}/guardian-relationships`
-
-Создаёт `GuardianRelationship` с существующим Person непосредственно. Permission: `guardian_relationship.manage`.
-
-Request concept:
-
-```json
-{
-  "guardian_person_id": "...",
-  "relationship_type": "parent",
-  "is_primary_contact": true,
-  "status": "active"
-}
-```
-
-Создаваемый relationship всегда имеет `status = active`. Состояние `pending` для `GuardianRelationship` не существует и backend не должен его принимать.
-
-Отдельный confirmation/controlled-linking workflow в текущем MVP не используется. Если в будущем потребуется подтверждение связи, оно должно быть реализовано как отдельный workflow/entity (аналогично `RegistrationRequest` для `ClubMembership`, ADR-0025 §5) и не должно вводить `pending` в lifecycle `GuardianRelationship`.
-
-### PATCH `/api/v1/guardian-relationships/{relationship_id}`
-
-Изменяет relationship type/primary contact согласно permission (`guardian_relationship.manage`) и lifecycle rules. Не изменяет `status` напрямую — переходы `status` выполняются только через `terminate` (ниже) либо natural lifecycle (истечение `valid_to`).
-
-### POST `/api/v1/guardian-relationships/{relationship_id}/terminate`
-
-Прекращает актуальность связи без уничтожения истории. Permission: `guardian_relationship.manage`.
-
-Каноническая семантика (ADR-0025 §3): `terminate` всегда переводит relationship в `status = revoked`. Альтернативного исхода нет; `terminate` уже `revoked` relationship отклоняется (соответствующий HTTP status, canonical error code `guardian_link_not_allowed` — см. §29). `inactive` — отдельное, не-revoked историческое состояние и никогда не является результатом `terminate`.
-
-### Lifecycle: stored status и read-time expiry
-
-Canonical stored-значения `status`: `active`, `inactive`, `revoked`. Других значений (в частности `pending`, `verified`, `rejected`, `terminated`) не существует.
-
-`inactive` достигается естественным истечением `valid_to`, а не отдельным действием API. Это оценивается **at read time**: если stored `status = active`, но `valid_to` уже в прошлом, API при чтении (в списках, в детальном представлении, при authorization-проверках) рассматривает relationship как `inactive`. При этом stored значение в БД не переписывается никаким write-действием, и для этого не используется background job, scheduler или отдельный worker — производный статус вычисляется непосредственно в момент запроса.
-
-## 19. My children
-
-### GET `/api/v1/me/children`
-
-Возвращает детей текущего authenticated guardian только по active, interval-valid `GuardianRelationship` и при выполнении authorization policy (`guardian_relationship.read`).
-
-Endpoint не принимает `guardian_id`, `person_id` или любой другой client-supplied UUID, который мог бы подменить собой authenticated principal — единственный источник идентичности requester это сессия. Наличие такого параметра в query не является и не может являться доказательством права доступа.
-
-Возвращает только собственных детей requester: Persons, для которых существует relationship с `guardian_person_id = requester`, `status = active` и текущим моментом внутри `[valid_from, valid_to)` (см. §18 "Lifecycle: stored status и read-time expiry"). `revoked` relationships исключаются всегда; relationships с истёкшим `valid_to` исключаются как не-active по той же read-time-логике.
-
-Parent-visible projection для каждого ребёнка ограничена полями:
-
-```text
-id
-full_name
-birth_date
-photo_file_id
-```
-
-`phone`, `email`, `address` и другие чувствительные Person-поля в этой projection не возвращаются (см. §26).
-
-## 20. Child context
-
-Для родителя frontend может выбирать active child context, но backend на каждом запросе самостоятельно проверяет relationship и permission.
-
-Наличие `child_id` в URL или query не является доказательством права доступа.
-
-## 21. Pending registrations — вынесено из текущего контракта
-
-ADR-0025 §5: самостоятельная регистрация — отдельная сущность/workflow `RegistrationRequest` (`docs/04-modules/people-and-membership.md` §10), а не переход `ClubMembership.status`. Ранее описанные здесь `GET /api/v1/memberships/pending`, `POST /api/v1/memberships/{membership_id}/approve`, `POST /api/v1/memberships/{membership_id}/reject` описывали конфликтующую модель и удалены из контракта.
-
-`RegistrationRequest` persistence-модель, API и approval workflow остаются вне scope текущего implementation slice People & Membership и требуют отдельного Issue после отдельной спецификации.
-
-## 22. Import
-
-### POST `/api/v1/memberships/imports`
-
-Создаёт import job для загрузки участников из согласованного формата.
-
-Import должен быть асинхронным, если размер превышает синхронный лимит.
-
-### GET `/api/v1/memberships/imports/{import_id}`
-
-Возвращает статус и статистику import job.
-
-### GET `/api/v1/memberships/imports/{import_id}/errors`
-
-Возвращает строки/ошибки импорта без раскрытия чужих конфиденциальных данных сверх прав requester.
-
-Import должен поддерживать dry-run до применения изменений.
-
-## 23. Invitation
-
-Auth contract определён в `docs/05-api/auth-api.md`.
-
-People API предоставляет административное представление приглашённого membership после успешной активации.
-
-## 24. Role assignment — вынесено из текущего контракта
-
-ADR-0025 §6: канонический API-ресурс — top-level `/api/v1/role-assignments` (совпадает с `docs/05-api/endpoint-inventory.md` §24), а не вложенный `/api/v1/users/{user_id}/roles`, ранее описанный здесь. Role assignment API реализуется отдельным Issue вне текущего implementation slice People & Membership.
-
-Role assignment не меняет Person.
-
-## 25. Instructor assignment
-
-Инструктор — Person/User с соответствующим role assignment. Само наличие роли не означает ответственность за конкретную группу или Event.
-
-Для группы используется `GroupInstructorAssignment` — полный контракт (permission/scope/lifecycle/is_primary-invariant/cross-Club integrity) определён в §16.
-
-Для мероприятия используется `EventStaffAssignment`, определённая ADR-0023. Она является явным источником `own_events`; `Event.created_by` не является заменой этой связи. `GroupInstructorAssignment` и `EventStaffAssignment` — разные сущности; ответственность за группу не подразумевает автоматическую ответственность за Event, и наоборот.
-
-## 26. Sensitive profile sections
-
-API должен поддерживать отдельные policy areas для contact data, address, medical/safety data, documents, emergency contacts и guardian data.
-
-Не следует выдавать полный Person object любому requester с общим `person.read`.
-
-ADR-0025 §8: до определения отдельной permission/scope policy для этих полей `phone`, `email` и `address` не выдаются через baseline Person API ни одному requester (включая обладателя `person.read`). Это принятое ограничение scope текущего implementation slice, а не временный недосмотр.
-
-## 27. Validation
-
-Минимальные проверки:
-
-- корректность форматов дат;
-- отсутствие невозможных интервалов membership;
-- корректность guardian relationship lifecycle;
-- отсутствие более одной действующей primary-contact relationship для ребёнка;
-- невозможность создать `GroupMembership` или `GroupInstructorAssignment` для архивной (`status = archived`) группы (§14.1, §15, §16);
-- отсутствие дублирующего активного `GroupMembership` для одной и той же пары `(group_id, club_membership_id)` (§15.2 — документированный DB invariant, реализация вне текущего slice);
-- отсутствие пересекающихся по интервалу `[valid_from, valid_to)` `is_primary = true` записей `GroupInstructorAssignment` на одну группу (§16.2 — документированный DB invariant, реализация вне текущего slice);
-- проверка существования и принадлежности объектов одному Club там, где это применимо (в том числе `Group.club_id == ClubMembership.club_id` для `GroupMembership`, ADR-0022 §4, и активный `ClubMembership` для `GroupInstructorAssignment`, ADR-0022 §5);
-- Guardian authorization учитывает active relationship и interval validity.
-
-## 28. Audit
-
-Audit обязателен для создания/изменения/архивирования Person, membership status, создания/изменения/архивирования Group, создания/изменения/завершения GroupMembership, создания/завершения GroupInstructorAssignment, создания/изменения/терминации GuardianRelationship, role assignments и import execution.
-
-Используется исключительно закрытый словарь `action` ADR-0024 §4 — новые audit action codes этим контрактом не вводятся:
-
-- `POST /api/v1/groups` → `group.created`;
-- `PATCH /api/v1/groups/{group_id}` → `group.updated`;
-- `POST /api/v1/groups/{group_id}/archive` → `group.updated` (ADR-0024 не содержит отдельного `group.archived`/`group.status_changed`; архивирование сознательно отображается на существующий `group.updated`, а не порождает новый код — Issue #69, PO decision);
-- `POST /api/v1/groups/{group_id}/members` → `group_membership.created`;
-- `PATCH /api/v1/group-memberships/{id}` → `group_membership.updated`;
-- `POST /api/v1/group-memberships/{id}/end` → `group_membership.ended`;
-- `POST /api/v1/groups/{group_id}/instructors` → `group_instructor_assignment.created`;
-- `POST /api/v1/group-instructor-assignments/{id}/end` → `group_instructor_assignment.ended`.
-
-`group_instructor_assignment.updated` входит в закрытый словарь ADR-0024, но не используется ни одним endpoint этого контракта: `GroupInstructorAssignment` не имеет `PATCH` (§16.1).
-
-## 29. Ошибки
-
-Используется общий error contract.
-
-Типовые ошибки (перечислены в исходном/каноническом написании этого раздела; фактический machine-readable `code` в реализованных доменах — lowercase snake_case, например `guardian_relationship_not_found`, `invalid_membership_transition`):
-
-- `PERSON_NOT_FOUND`;
-- `MEMBERSHIP_NOT_FOUND`;
-- `GROUP_NOT_FOUND` (реализуется как `group_not_found`, HTTP 404, existence-hiding — см. ниже);
-- `GUARDIAN_RELATIONSHIP_NOT_FOUND` (реализовано как `guardian_relationship_not_found`, HTTP 404);
-- `DUPLICATE_PERSON`;
-- `INVALID_MEMBERSHIP_TRANSITION`;
-- `GUARDIAN_LINK_NOT_ALLOWED` (реализовано как `guardian_link_not_allowed`);
-- `INSUFFICIENT_SCOPE`;
-- `ROLE_ASSIGNMENT_NOT_ALLOWED`;
-- `IMPORT_VALIDATION_FAILED`.
-
-Group/GroupMembership/GroupInstructorAssignment-специфичные machine-readable коды (§14–§16), все — lowercase snake_case, согласно установленной конвенции:
-
-- `group_not_found` — HTTP 404, existence-hiding (см. ниже);
-- `group_membership_not_found` — HTTP 404, existence-hiding;
-- `group_instructor_assignment_not_found` — HTTP 404, existence-hiding;
-- `invalid_group_status_transition` — HTTP 409 (§14.1, например повторный `archive`);
-- `invalid_group_membership_transition` — HTTP 409 (§15.1, например повторный `end`);
-- `invalid_group_instructor_assignment_transition` — HTTP 409 (§16.1, например повторный `end`);
-- `group_archived` — HTTP 409 (§15, §16 — попытка создать membership/instructor assignment для архивной группы);
-- `group_membership_immutable_field` — HTTP 422 (§15 `PATCH` — попытка изменить `group_id`/`club_membership_id`/`membership_status`);
-- `duplicate_group_membership` — HTTP 409 (§15.2 — дублирующее активное membership в той же группе);
-- `duplicate_primary_instructor` — HTTP 409 (§16.2 — `is_primary = true` запись с интервалом, пересекающимся с уже существующей `is_primary = true` записью той же группы);
-- `group_membership_club_mismatch` — HTTP 422 (ADR-0022 §4 cross-Club validation, соответствует `GroupMembershipClubMismatchError` в `apps/api/app/groups/service.py`);
-- `instructor_club_membership_missing` — HTTP 422 (ADR-0022 §5 cross-Club validation, соответствует `InstructorClubMembershipMissingError`).
-
-`INVALID_GROUP_TRANSFER` удалён из контракта: отдельного transfer-endpoint не существует (§15.3), поэтому отдельный error code для несуществующей операции не нужен.
-
-### Group / GroupMembership / GroupInstructorAssignment: existence-hiding для item-level operations
-
-`GET /api/v1/groups/{group_id}`, `PATCH /api/v1/groups/{group_id}`, `POST /api/v1/groups/{group_id}/archive`, `PATCH /api/v1/group-memberships/{id}`, `POST /api/v1/group-memberships/{id}/end`, `GET /api/v1/groups/{group_id}/instructors`, `POST /api/v1/groups/{group_id}/instructors` и `POST /api/v1/group-instructor-assignments/{id}/end` защищены от IDOR через existence-hiding по тому же паттерну, что и GuardianRelationship (§18, см. также ниже в этом разделе): объект, который реально не существует, и объект, который существует, но requester к нему не авторизован (permission есть, но scope/object relationship не подходит), возвращают одинаковый HTTP 404 с одинаковым machine-readable кодом (`group_not_found`/`group_membership_not_found`/`group_instructor_assignment_not_found` соответственно).
-
-### GuardianRelationship: existence-hiding для `PATCH`/`terminate`
-
-`PATCH /api/v1/guardian-relationships/{relationship_id}` и `POST /api/v1/guardian-relationships/{relationship_id}/terminate` защищены от IDOR через existence-hiding: relationship, который реально не существует, и relationship, который существует, но requester к нему не авторизован, возвращают одинаковый HTTP 404 с одинаковым machine-readable кодом `guardian_relationship_not_found` — по публичному ответу их невозможно отличить друг от друга.
-
-Для validation/business-link ошибок (self-link, дублирующая active relationship, дублирующая primary-contact relationship, повторный `terminate` уже `revoked` relationship) используется canonical machine-readable код `guardian_link_not_allowed` с соответствующим HTTP status (422 для validation-ошибок при создании/изменении, 409 для повторного `terminate`).
-
-### `INSUFFICIENT_SCOPE`
-
-Authorization denial (нет permission, либо permission есть, но scope/object relationship не подходит) во всех реализованных доменах — Person, Membership, GuardianRelationship и Event — использует единый generic-механизм и возвращает `forbidden`, не раскрывая, какая именно permission или scope не подошли. Это намеренная security-политика: ответ не должен давать requester информацию, полезную для подбора доступа. `INSUFFICIENT_SCOPE` как отдельный machine-readable код в реализованных доменах не эмитируется; в этом контракте он остаётся зарезервированным/непроверенным написанием, а не описанием фактического поведения API. Group/GroupMembership/GroupInstructorAssignment endpoints следуют тому же generic-механизму — отдельный machine-readable код авторизационного отказа для них не вводится.
-
-## 30. Concurrency and idempotency — сводка для Group domain
-
-Group/GroupMembership/GroupInstructorAssignment endpoints не вводят project-wide или domain-specific optimistic-concurrency механизм (version column, ETag/If-Match) и не вводят `Idempotency-Key` — согласуется с `api-contract.md` §18-19 и уже принятым прецедентом для Person/Membership/GuardianRelationship (§7, ADR-0025 §10). `PATCH`/`POST .../archive`/`POST .../end` используют last-write-wins семантику. Cross-Club validation (ADR-0022 §6) и `is_primary`-invariant (§16.2), когда они будут реализованы, используют транзакционную блокировку на уровне service layer (см. `apps/api/app/groups/service.py` как implementation evidence существующего паттерна `SELECT ... FOR SHARE` в одной транзакции с записью) — это механизм целостности данных, а не client-facing idempotency/concurrency contract, и не заменяет и не расширяет пункты выше.
-
-## 31. Acceptance Criteria
-
-1. Person и User не смешиваются.
-2. Один Person может иметь несколько доменных ролей.
-3. Membership сохраняет историю.
-4. Group membership сохраняет историю.
-5. Один guardian может иметь несколько детей.
-6. Один ребёнок может иметь несколько guardians.
-7. Parent API показывает только разрешённых детей по GuardianRelationship.
-8. Child id никогда не заменяет authorization check.
-9. Sensitive fields защищены отдельными permissions/scopes.
-10. Pending membership не становится active без требуемого approval.
-11. Import поддерживает dry-run.
-12. Role changes не изменяют Person или Membership.
-13. Исторически значимые записи не удаляются физически по обычным CRUD endpoint'ам.
-14. Значимые операции попадают в audit.
-15. Все endpoint'ы соблюдают общие правила API и security.
-16. `Group.status` имеет ровно два значения (`active`, `archived`) и ровно один допустимый переход; нет отдельного restore/unarchive endpoint.
-17. `GroupMembership.membership_status` имеет ровно два значения (`active`, `ended`) и ровно один допустимый переход.
-18. Один человек может одновременно состоять в нескольких разных группах, включая пересекающиеся интервалы; дублирующее активное членство в одной и той же группе запрещено.
-19. Отдельного `/transfer` endpoint для GroupMembership не существует нигде в этом контракте.
-20. Группа может иметь несколько инструкторов; на одну группу не допускается двух `is_primary = true` записей с пересекающимися интервалами `[valid_from, valid_to)` (последовательные непересекающиеся primary-назначения допустимы); автоматическое понижение существующего primary не выполняется.
-21. Один инструктор может иметь `GroupInstructorAssignment` в нескольких группах.
-22. `Group` не имеет обязательного типа/категории; `Program`/`Section`/`Direction` не вводятся.
-23. `Event` и `Group` — разные сущности и не объединяются.
-24. Guardian/родитель не становится инструктором группы через `GroupInstructorAssignment`.
-25. Все Group/GroupMembership/GroupInstructorAssignment permissions, scopes и audit action codes взяты из существующих канонических каталогов (`roles-and-permissions.md` §4-5, ADR-0013, ADR-0024) — новые не введены.
-26. `docs/05-api/endpoint-inventory.md` §7 и данный контракт не противоречат друг другу.
