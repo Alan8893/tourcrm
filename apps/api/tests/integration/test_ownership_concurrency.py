@@ -81,15 +81,10 @@ real-concurrency proof to `create_event_group_target`'s
 """
 
 import datetime
-import os
-import subprocess
-import sys
 import threading
 import time
 import uuid
-from pathlib import Path
 
-import pytest
 from sqlalchemy import select, text
 
 from app.authorization.club_ownership import user_has_active_club_membership
@@ -116,25 +111,6 @@ from app.groups.service import (
 )
 
 from .conftest import requires_postgres
-
-API_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _run_alembic(*args: str, database_url: str) -> subprocess.CompletedProcess:
-    env = {**os.environ, "DATABASE_URL": database_url}
-    return subprocess.run(
-        [sys.executable, "-m", "alembic", *args],
-        cwd=API_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-
-
-@pytest.fixture(autouse=True)
-def _migrated_schema(database_url: str) -> None:
-    result = _run_alembic("upgrade", "head", database_url=database_url)
-    assert result.returncode == 0, result.stderr
 
 
 def _utc(*args: int) -> datetime.datetime:

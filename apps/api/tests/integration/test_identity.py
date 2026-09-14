@@ -13,11 +13,7 @@ Run with a reachable PostgreSQL instance, matching tests/integration/test_databa
 """
 
 import datetime
-import os
-import subprocess
-import sys
 import uuid
-from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, select, text
@@ -26,30 +22,8 @@ from sqlalchemy.exc import IntegrityError
 from app.db.identity import Club, ClubMembership, Person, User
 from app.db.session import session_scope
 
+from ._schema_reset import run_alembic
 from .conftest import requires_postgres
-
-API_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _run_alembic(*args: str, database_url: str) -> subprocess.CompletedProcess:
-    env = {**os.environ, "DATABASE_URL": database_url}
-    return subprocess.run(
-        [sys.executable, "-m", "alembic", *args],
-        cwd=API_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-
-
-@pytest.fixture(autouse=True)
-def _migrated_schema(database_url: str) -> None:
-    # conftest.py's autouse _clean_database fixture (which runs first, per
-    # pytest's parent-conftest-before-module ordering) only resets the raw
-    # schema — these tests need the identity tables/constraints that only
-    # `alembic upgrade head` creates, matching tests/integration/test_database.py.
-    result = _run_alembic("upgrade", "head", database_url=database_url)
-    assert result.returncode == 0, result.stderr
 
 
 def _utc(*args: int) -> datetime.datetime:
@@ -347,7 +321,7 @@ def test_club_name_must_be_unique() -> None:
 
 @requires_postgres
 def test_identity_migration_applies_on_a_clean_database(database_url: str) -> None:
-    result = _run_alembic("upgrade", "head", database_url=database_url)
+    result = run_alembic("upgrade", "head", database_url=database_url)
     assert result.returncode == 0, result.stderr
 
     engine = create_engine(database_url)

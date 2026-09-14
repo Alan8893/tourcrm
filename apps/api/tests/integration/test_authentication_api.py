@@ -8,11 +8,7 @@ Run with a reachable PostgreSQL instance:
     pytest tests/integration -v
 """
 
-import os
-import subprocess
-import sys
 import uuid
-from pathlib import Path
 
 import pytest
 from fastapi import APIRouter, Depends, FastAPI
@@ -29,26 +25,7 @@ from app.main import app
 
 from .conftest import requires_postgres
 
-API_ROOT = Path(__file__).resolve().parents[2]
-
 _PASSWORD = "correcthorsebattery"
-
-
-def _run_alembic(*args: str, database_url: str) -> subprocess.CompletedProcess:
-    env = {**os.environ, "DATABASE_URL": database_url}
-    return subprocess.run(
-        [sys.executable, "-m", "alembic", *args],
-        cwd=API_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-
-
-@pytest.fixture(autouse=True)
-def _migrated_schema(database_url: str) -> None:
-    result = _run_alembic("upgrade", "head", database_url=database_url)
-    assert result.returncode == 0, result.stderr
 
 
 @pytest.fixture

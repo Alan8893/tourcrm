@@ -17,12 +17,8 @@ tests/integration/test_identity.py:
 """
 
 import datetime
-import os
-import subprocess
-import sys
 import threading
 import uuid
-from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, select, text
@@ -33,26 +29,8 @@ from app.db.groups import Group, GroupMembership
 from app.db.identity import Club, ClubMembership, GuardianRelationship, Person
 from app.db.session import session_scope
 
+from ._schema_reset import run_alembic
 from .conftest import requires_postgres
-
-API_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _run_alembic(*args: str, database_url: str) -> subprocess.CompletedProcess:
-    env = {**os.environ, "DATABASE_URL": database_url}
-    return subprocess.run(
-        [sys.executable, "-m", "alembic", *args],
-        cwd=API_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-
-
-@pytest.fixture(autouse=True)
-def _migrated_schema(database_url: str) -> None:
-    result = _run_alembic("upgrade", "head", database_url=database_url)
-    assert result.returncode == 0, result.stderr
 
 
 def _utc(*args: int) -> datetime.datetime:
@@ -495,7 +473,7 @@ def test_event_participation_downgrade_then_upgrade_preserves_a_working_schema(
     # Pinned to the absolute pre-EventParticipation revision rather
     # than a relative "-1", so this test keeps targeting the right
     # migration once a later migration becomes the new head.
-    downgrade = _run_alembic("downgrade", "d0023b757548", database_url=database_url)
+    downgrade = run_alembic("downgrade", "d0023b757548", database_url=database_url)
     assert downgrade.returncode == 0, downgrade.stderr
 
     engine = create_engine(database_url)
@@ -511,7 +489,7 @@ def test_event_participation_downgrade_then_upgrade_preserves_a_working_schema(
         engine.dispose()
     assert "event_participations" not in tables
 
-    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    upgrade = run_alembic("upgrade", "head", database_url=database_url)
     assert upgrade.returncode == 0, upgrade.stderr
 
     with session_scope() as session:

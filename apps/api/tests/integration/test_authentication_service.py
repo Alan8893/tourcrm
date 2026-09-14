@@ -10,14 +10,10 @@ tests/integration/test_authentication.py's `requires_postgres` pattern:
     pytest tests/integration -v
 """
 
-import os
-import subprocess
-import sys
 import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -30,26 +26,6 @@ from app.db.identity import User
 from app.db.session import session_scope
 
 from .conftest import requires_postgres
-
-API_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _run_alembic(*args: str, database_url: str) -> subprocess.CompletedProcess:
-    env = {**os.environ, "DATABASE_URL": database_url}
-    return subprocess.run(
-        [sys.executable, "-m", "alembic", *args],
-        cwd=API_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-
-
-@pytest.fixture(autouse=True)
-def _migrated_schema(database_url: str) -> None:
-    result = _run_alembic("upgrade", "head", database_url=database_url)
-    assert result.returncode == 0, result.stderr
-
 
 _PASSWORD = "correcthorsebattery"
 
