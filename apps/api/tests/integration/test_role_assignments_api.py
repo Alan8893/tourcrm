@@ -644,6 +644,45 @@ def test_create_role_assignment_club_scoped_without_active_membership_is_rejecte
 
 
 @requires_postgres
+def test_create_role_assignment_membership_in_another_club_is_rejected(
+    client: TestClient,
+) -> None:
+    """The target's active ClubMembership must be in the *target* Club of
+    the assignment being created — an active membership in some other
+    Club does not satisfy ADR-0026 §3's cross-Club integrity check."""
+    with session_scope() as session:
+        club_a = _make_club()
+        club_b = _make_club()
+        session.add_all([club_a, club_b])
+        session.commit()
+        caller_person = _make_person(first_name="Caller")
+        session.add(caller_person)
+        session.commit()
+        caller = _make_user(caller_person)
+        session.add(caller)
+        session.commit()
+        caller_id, club_a_id = caller.id, club_a.id
+        # Target has an active membership, but only in Club B.
+        target_id, _ = _setup_target_with_membership(session, club_b)
+    _grant_permission(caller_id, "role.manage", scope_type="all")
+    _authenticate_as(caller_id)
+    role_id = _baseline_role_id("member")
+
+    response = client.post(
+        "/api/v1/role-assignments",
+        json={
+            "user_id": str(target_id),
+            "role_id": str(role_id),
+            "scope_type": "all",
+            "club_id": str(club_a_id),
+        },
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "role_assignment_club_membership_missing"
+
+
+@requires_postgres
 def test_create_role_assignment_with_ended_membership_is_rejected(client: TestClient) -> None:
     with session_scope() as session:
         club = _make_club()
