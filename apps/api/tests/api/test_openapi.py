@@ -12,15 +12,14 @@ _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
     "notification",
     "knowledge",
 )
-# "group" is deliberately not in the list above: the real Event list
-# endpoint (Issue #40) has a documented `group_id` query filter
-# (events-api.md §4) referencing the already-implemented Group
-# persistence for scope/search purposes — it is not a fictitious Group
-# CRUD domain endpoint. "person"/"member" are likewise no longer forbidden:
-# Issue #62 adds the real Person/ClubMembership API (see _PERSON_PATHS/
-# _MEMBERSHIP_PATHS below). "guardian" is no longer forbidden either:
-# Issue #64 adds the real GuardianRelationship API (see
-# _GUARDIAN_RELATIONSHIP_PATHS/_ME_PATHS below).
+# "group" is deliberately not in the list above: Issue #71 adds the real
+# Group/GroupMembership/GroupInstructorAssignment API (see _GROUP_PATHS
+# below), and the Event list endpoint (Issue #40) already had a documented
+# `group_id` query filter (events-api.md §4) before that. "person"/"member"
+# are likewise no longer forbidden: Issue #62 adds the real Person/
+# ClubMembership API (see _PERSON_PATHS/_MEMBERSHIP_PATHS below). "guardian"
+# is no longer forbidden either: Issue #64 adds the real GuardianRelationship
+# API (see _GUARDIAN_RELATIONSHIP_PATHS/_ME_PATHS below).
 
 
 def test_openapi_schema_is_served(real_client) -> None:
@@ -75,14 +74,30 @@ _ME_PATHS = {
     "/api/v1/me/children",
 }
 
+_GROUP_PATHS = {
+    "/api/v1/groups",
+    "/api/v1/groups/{group_id}",
+    "/api/v1/groups/{group_id}/archive",
+    "/api/v1/groups/{group_id}/members",
+    "/api/v1/group-memberships/{membership_id}",
+    "/api/v1/group-memberships/{membership_id}/end",
+    "/api/v1/groups/{group_id}/instructors",
+    "/api/v1/group-instructor-assignments/{assignment_id}/end",
+}
+# No `/api/v1/groups/{group_id}/members/bulk` and no
+# `/api/v1/groups/{group_id}/members/{person_id}/transfer` — both are
+# deliberately not implemented (people-api.md §15.3-15.4, Issue #71 §3).
+
 
 def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
     schema = real_client.get("/openapi.json").json()
 
     # Health (Issue #10), authentication (Issue #33), the first Event API
-    # slice (Issue #40), the Person/ClubMembership API (Issue #62), and the
-    # GuardianRelationship API (Issue #64) are the only domain endpoints so
-    # far — no Group/Trip/etc. CRUD endpoints have been added under /api/v1.
+    # slice (Issue #40), the Person/ClubMembership API (Issue #62), the
+    # GuardianRelationship API (Issue #64), and the Group/GroupMembership/
+    # GroupInstructorAssignment API (Issue #71) are the only domain
+    # endpoints so far — no Trip/etc. CRUD endpoints have been added under
+    # /api/v1.
     assert (
         set(schema["paths"].keys())
         == {"/health/live", "/health/ready"}
@@ -92,6 +107,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _MEMBERSHIP_PATHS
         | _GUARDIAN_RELATIONSHIP_PATHS
         | _ME_PATHS
+        | _GROUP_PATHS
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()
