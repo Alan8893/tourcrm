@@ -94,6 +94,16 @@ def applicable_assignments(
     Public because domain-level query filtering (e.g. Event list scope
     filtering, Issue #40) needs the identical query to build per-assignment
     SQL predicates, not just the aggregate allow/deny `can()` returns.
+
+    Deliberately does NOT check ClubMembership status. ADR-0027 (RoleAssignment
+    and ClubMembership effectivity) settled this explicitly: active
+    ClubMembership is a creation-time integrity prerequisite for a club-scoped
+    RoleAssignment (enforced once, in app.role_assignments.service.
+    create_role_assignment), never a later, universal authorization
+    prerequisite — this engine must not acquire that requirement merely
+    because an assignment has a non-null `club_id`, since it would silently
+    change already-shipped Event/Person/Membership/Group authorization
+    semantics. Do not "fix" this by adding a ClubMembership join here.
     """
     now = sa.func.now()
     stmt = (

@@ -1,10 +1,18 @@
 """RoleAssignment create/revoke service layer (Issue #74, implementing
-ADR-0026).
+ADR-0026 and ADR-0027).
 
 Canonical sources: docs/03-architecture/adr/ADR-0026-role-assignment-api-
-decisions.md, docs/02-requirements/roles-and-permissions.md §19,
-docs/03-architecture/adr/ADR-0022-cross-club-ownership-integrity.md,
+decisions.md, docs/03-architecture/adr/ADR-0027-role-assignment-and-club-
+membership-effectivity.md, docs/02-requirements/roles-and-permissions.md
+§19, docs/03-architecture/adr/ADR-0022-cross-club-ownership-integrity.md,
 docs/03-architecture/adr/ADR-0024-audit-infrastructure.md.
+
+ADR-0027: the active-ClubMembership check below is a creation-time
+integrity prerequisite only (this module's own concern). It is never
+re-checked later, and ending the target's ClubMembership afterward never
+touches the resulting RoleAssignment row — see
+app.authorization.service.applicable_assignments's own docstring for why
+the shared authorization engine has no corresponding check.
 
 This module performs no authorization: the caller (the API router) must
 have already resolved and checked `role.manage` (via
@@ -48,9 +56,11 @@ class RoleAssignmentError(Exception):
 
 
 class RoleAssignmentClubMembershipMissingError(RoleAssignmentError):
-    """ADR-0026 §3: a club-scoped RoleAssignment may be created only when
-    the target User has an active ClubMembership in the target Club —
-    regardless of any role/permission the User may already hold."""
+    """ADR-0026 §3/ADR-0027 §1: a club-scoped RoleAssignment may be
+    created only when the target User has an active ClubMembership in
+    the target Club at creation time — regardless of any role/permission
+    the User may already hold. This is a creation-time integrity check
+    only; it is never re-evaluated after the assignment exists."""
 
     def __init__(self, *, user_id: uuid.UUID, club_id: uuid.UUID) -> None:
         super().__init__(f"User {user_id} has no active ClubMembership in club {club_id}")

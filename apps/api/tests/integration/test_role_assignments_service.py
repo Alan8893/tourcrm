@@ -1,5 +1,5 @@
 """Real PostgreSQL integration tests for app.role_assignments.service
-(Issue #74, implementing ADR-0026).
+(Issue #74, implementing ADR-0026 and ADR-0027).
 
 Run with a reachable PostgreSQL instance, matching
 tests/integration/test_groups_service.py:
@@ -7,22 +7,17 @@ tests/integration/test_groups_service.py:
     export TEST_DATABASE_URL=postgresql+psycopg://tourcrm:***@localhost:5432/tourcrm_test
     pytest tests/integration -v
 
-Known gap (see also tests/integration/test_role_assignments_api.py's own
-module docstring): ADR-0026 §1/roles-and-permissions.md §19.1/§19.4
-additionally require that a club-scoped RoleAssignment stop granting
-*effective* Club access once the target User's ClubMembership in that
-Club ends — while leaving the RoleAssignment row itself untouched. That
-second half is NOT implemented or tested here: enforcing it correctly
-requires changing the one shared `app.authorization.service.
-applicable_assignments()` used by every domain's authorization (Event,
-Person, Membership, Group), which would silently change already-shipped,
-already-accepted behavior for those domains and break existing tests
-that were never written against this requirement. This is a genuine,
-unresolved specification conflict — see the PR description's "BLOCKING
-SPECIFICATION CONFLICT" section. Only the half that is unconditionally
-true today — ending a ClubMembership does not delete or otherwise change
-the RoleAssignment row — is tested below
-(`test_ending_target_club_membership_does_not_touch_the_role_assignment_row`).
+ADR-0027 (RoleAssignment and ClubMembership effectivity) settles what was
+an open question during initial implementation: ending the target User's
+ClubMembership is a creation-time integrity prerequisite only, never a
+later effectivity condition. It does not delete, revoke, or otherwise
+mutate the RoleAssignment row, and it does NOT make an otherwise
+temporally-effective RoleAssignment ineffective — the shared
+`app.authorization.service.applicable_assignments()`/`Authorizer` engine
+deliberately gained no ClubMembership check (ADR-0027 §2: "MUST NOT
+acquire a universal requirement"). `test_ending_target_club_membership_
+leaves_the_role_assignment_effective` below asserts this directly via
+the real authorization engine, not just "the row is unchanged".
 """
 
 import datetime
@@ -36,8 +31,10 @@ import pytest
 from sqlalchemy import select
 
 from app.audit.vocabulary import CANONICAL_AUDIT_ACTIONS
+from app.authorization.context import ResourceContext
+from app.authorization.service import can
 from app.db.audit import AuditLog
-from app.db.authorization import Role, UserRoleAssignment
+from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
 from app.db.identity import Club, ClubMembership, Person, User
 from app.db.session import session_scope
 from app.role_assignments.lifecycle import (
@@ -508,12 +505,17 @@ def test_revoke_audit_details_contain_no_secrets_or_orm_dump() -> None:
 
 
 @requires_postgres
-def test_ending_target_club_membership_does_not_touch_the_role_assignment_row() -> None:
-    """ADR-0026 §1/§19.4: ending the target User's ClubMembership must
-    never delete or auto-modify the RoleAssignment row itself. (The
-    complementary "does not grant effective access" half is a documented,
-    unresolved specification conflict — see this file's module
-    docstring — and is deliberately not asserted here.)"""
+def test_ending_target_club_membership_leaves_the_role_assignment_effective() -> None:
+    """ADR-0027 §1/§2: ending the target User's ClubMembership is a
+    creation-time integrity prerequisite only — it never deletes,
+    revokes, or otherwise mutates the RoleAssignment row, and it does
+    NOT make an otherwise temporally-effective RoleAssignment
+    ineffective. Asserted two ways: the row itself is untouched, AND the
+    real authorization engine (`app.authorization.service.can()`, the
+    same function every `Authorizer`/`role.manage` check goes through)
+    still grants the permission afterward — proving the shared engine
+    genuinely has no ClubMembership check, not merely that the row
+    wasn't deleted."""
     with session_scope() as session:
         club = _make_club()
         person = _make_person()
@@ -522,24 +524,30 @@ def test_ending_target_club_membership_does_not_touch_the_role_assignment_row() 
         target = _make_user(person)
         membership = _make_club_membership(club, person)
         role = _make_role()
-        session.add_all([target, membership, role])
+        permission = Permission(code=f"resource-{uuid.uuid4().hex[:8]}.read")
+        session.add_all([target, membership, role, permission])
         session.commit()
-        target_id, club_id, role_id, membership_id = (
+        session.add(RolePermission(role_id=role.id, permission_id=permission.id))
+        session.commit()
+        target_id, club_id, role_id, membership_id, permission_code = (
             target.id,
             club.id,
             role.id,
             membership.id,
+            permission.code,
         )
 
         assignment = create_role_assignment(
             session,
             user_id=target_id,
             role_id=role_id,
-            scope_type="own_groups",
+            scope_type="all",
             club_id=club_id,
             actor_user_id=target_id,
         )
         assignment_id = assignment.id
+
+        assert can(session, target_id, permission_code, ResourceContext(club_id=club_id))
 
     with session_scope() as session:
         membership = session.get(ClubMembership, membership_id)
@@ -553,3 +561,8 @@ def test_ending_target_club_membership_does_not_touch_the_role_assignment_row() 
         assert row is not None
         assert row.valid_to is None
         assert row.club_id == club_id
+
+        # The crux of ADR-0027: the shared authorization engine still
+        # grants the permission — the ended ClubMembership did not
+        # silently revoke effective access.
+        assert can(session, target_id, permission_code, ResourceContext(club_id=club_id))

@@ -1,7 +1,7 @@
 """HTTP-level integration tests for /api/v1/role-assignments (Issue #74,
-implementing ADR-0026): authorization matrix (global/club-scoped
-`role.manage`, cross-Club denial, role-name-alone insufficiency), scope
-combination matrix, cross-Club/ClubMembership integrity, temporal
+implementing ADR-0026 and ADR-0027): authorization matrix (global/club-
+scoped `role.manage`, cross-Club denial, role-name-alone insufficiency),
+scope combination matrix, cross-Club/ClubMembership integrity, temporal
 lifecycle (create/revoke/repeat-revoke/re-assignment), pagination/
 filters/sorting, IDOR existence-hiding, and audit recording.
 
@@ -13,13 +13,17 @@ Run with a reachable PostgreSQL instance:
     export TEST_DATABASE_URL=postgresql+psycopg://tourcrm:***@localhost:5432/tourcrm_test
     pytest tests/integration -v
 
-Known, documented gap (see also test_role_assignments_service.py's
-module docstring): this suite deliberately does NOT test "an ended
-ClubMembership makes the assignment ineffective for authorization" — see
-the "BLOCKING SPECIFICATION CONFLICT" section of this Issue's PR
-description. It DOES test the unconditionally-true half: ending a
-ClubMembership never deletes or mutates the RoleAssignment row
-(`test_ending_target_club_membership_leaves_the_role_assignment_row_untouched`).
+ADR-0027 (RoleAssignment and ClubMembership effectivity): ending a
+ClubMembership never deletes/mutates the RoleAssignment row, and — since
+this ADR settles what was an open question during initial
+implementation — never makes an otherwise temporally-effective
+RoleAssignment ineffective either. Both are asserted here:
+`test_ending_target_club_membership_leaves_the_role_assignment_row_untouched`
+checks the row, and
+`test_role_manage_remains_effective_after_callers_own_club_membership_ends`
+checks it through the real authorization boundary these endpoints
+enforce (a club-scoped `role.manage` caller can still use them after
+their own ClubMembership in that Club ends).
 """
 
 import datetime
@@ -726,6 +730,58 @@ def test_ending_target_club_membership_leaves_the_role_assignment_row_untouched(
     assert assignment_id in ids
     row = next(item for item in response.json()["items"] if item["id"] == assignment_id)
     assert row["valid_to"] is None
+
+
+@requires_postgres
+def test_role_manage_remains_effective_after_callers_own_club_membership_ends(
+    client: TestClient,
+) -> None:
+    """ADR-0027 regression test: create a club-scoped RoleAssignment
+    (here, the caller's own club-scoped role.manage grant), end the
+    target User's ClubMembership in that Club, and confirm the
+    assignment remains valid/effective according to its own temporal
+    interval — proven through the real authorization boundary (the
+    caller can still use these endpoints in that Club), not just by
+    inspecting the row. The shared Authorizer/applicable_assignments
+    engine is not modified to make this pass (ADR-0027 §2)."""
+    with session_scope() as session:
+        club = _make_club()
+        session.add(club)
+        session.commit()
+        caller_id, membership_id = _setup_target_with_membership(session, club)
+        club_id = club.id
+        other_target_id, _ = _setup_target_with_membership(session, club)
+    _grant_permission(caller_id, "role.manage", scope_type="all", club_id=club_id)
+    _authenticate_as(caller_id)
+    role_id = _baseline_role_id("member")
+
+    with session_scope() as session:
+        membership = session.get(ClubMembership, membership_id)
+        assert membership is not None
+        membership.status = "inactive"
+        membership.left_at = _utc(2024, 6, 1)
+        session.commit()
+
+    # The caller's own role.manage assignment is unaffected by their
+    # ClubMembership ending — they can still create...
+    created = client.post(
+        "/api/v1/role-assignments",
+        json={
+            "user_id": str(other_target_id),
+            "role_id": str(role_id),
+            "scope_type": "all",
+            "club_id": str(club_id),
+        },
+        headers=_csrf_headers(client),
+    )
+    assert created.status_code == 201, created.text
+
+    # ...and revoke RoleAssignments in that Club.
+    revoke = client.post(
+        f"/api/v1/role-assignments/{created.json()['id']}/revoke", headers=_csrf_headers(client)
+    )
+    assert revoke.status_code == 200, revoke.text
+    assert revoke.json()["valid_to"] is not None
 
 
 # --- Target/Role existence ----------------------------------------------
