@@ -126,11 +126,23 @@ def list_group_instructor_assignments_page(
     page: int,
     page_size: int,
     sort: str = GROUP_INSTRUCTOR_ASSIGNMENT_DEFAULT_SORT,
+    has_ended: Optional[bool] = None,
 ) -> tuple[list[GroupInstructorAssignment], int]:
+    """people-api.md §16.1/§16.3: `GroupInstructorAssignment` has no status
+    field — its "activity" filter is the documented presence/absence of
+    `valid_to` (§16.1), not a point-in-time `now()` comparison (that
+    formula is §16.2's `is_primary`-overlap invariant, a different,
+    unrelated rule). `has_ended=False` -> `valid_to IS NULL`;
+    `has_ended=True` -> `valid_to IS NOT NULL`; omitted -> no filter.
+    """
     if sort not in _GROUP_INSTRUCTOR_ASSIGNMENT_SORT_COLUMNS:
         raise InvalidSortError(sort)
 
     conditions: list[sa.ColumnElement[bool]] = [GroupInstructorAssignment.group_id == group_id]
+    if has_ended is True:
+        conditions.append(GroupInstructorAssignment.valid_to.isnot(None))
+    elif has_ended is False:
+        conditions.append(GroupInstructorAssignment.valid_to.is_(None))
 
     total = session.execute(
         sa.select(sa.func.count()).select_from(GroupInstructorAssignment).where(*conditions)

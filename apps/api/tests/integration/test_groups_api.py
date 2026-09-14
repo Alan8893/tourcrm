@@ -294,6 +294,102 @@ def test_own_groups_scope_requires_active_assignment_not_just_instructor_role(
     assert response.json()["error"]["code"] == "group_not_found"
 
 
+# --- GET /groups — status filter whitelist (people-api.md §14.1) ----------
+
+
+@requires_postgres
+def test_list_groups_status_filter_active(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        active_group = _make_group(club, status="active")
+        archived_group = _make_group(club, status="archived")
+        session.add_all([requester, active_group, archived_group])
+        session.commit()
+        requester_id, active_id, archived_id = requester.id, active_group.id, archived_group.id
+    _grant_permission(requester_id, "group.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get("/api/v1/groups", params={"status": "active"})
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(active_id) in ids
+    assert str(archived_id) not in ids
+
+
+@requires_postgres
+def test_list_groups_status_filter_archived(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        active_group = _make_group(club, status="active")
+        archived_group = _make_group(club, status="archived")
+        session.add_all([requester, active_group, archived_group])
+        session.commit()
+        requester_id, active_id, archived_id = requester.id, active_group.id, archived_group.id
+    _grant_permission(requester_id, "group.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get("/api/v1/groups", params={"status": "archived"})
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(archived_id) in ids
+    assert str(active_id) not in ids
+
+
+@requires_postgres
+def test_list_groups_without_status_filter_returns_both(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        active_group = _make_group(club, status="active")
+        archived_group = _make_group(club, status="archived")
+        session.add_all([requester, active_group, archived_group])
+        session.commit()
+        requester_id, active_id, archived_id = requester.id, active_group.id, archived_group.id
+    _grant_permission(requester_id, "group.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get("/api/v1/groups")
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()["items"]}
+    assert {str(active_id), str(archived_id)} <= ids
+
+
+@requires_postgres
+@pytest.mark.parametrize("bad_value", ["pending", "foo", "ACTIVE", "Archived"])
+def test_list_groups_status_filter_rejects_non_canonical_values(
+    client: TestClient, bad_value: str
+) -> None:
+    """people-api.md §14.1: `active`/`archived` is a closed vocabulary — an
+    unknown value must be rejected with 422, never silently turned into a
+    filter that matches nothing (200 + empty list)."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        session.add(requester)
+        session.commit()
+        requester_id = requester.id
+    _grant_permission(requester_id, "group.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get("/api/v1/groups", params={"status": bad_value})
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "validation_error"
+
+
 # --- GET /groups/{id} — IDOR existence-hiding -------------------------------
 
 
@@ -1020,6 +1116,171 @@ def test_list_group_members_requires_group_read_and_hides_via_404(client: TestCl
 
 
 @requires_postgres
+def test_list_group_members_membership_status_filter_active(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        club_membership = _make_club_membership(club, person)
+        group = _make_group(club)
+        session.add_all([requester, club_membership, group])
+        session.commit()
+        active_membership = GroupMembership(
+            group_id=group.id,
+            club_membership_id=club_membership.id,
+            valid_from=_utc(2024, 1, 1),
+            membership_status="active",
+        )
+        session.add(active_membership)
+        session.commit()
+
+        second_person = _make_person(first_name="Second")
+        session.add(second_person)
+        session.commit()
+        second_club_membership = _make_club_membership(
+            club, second_person, membership_type="regular-b"
+        )
+        session.add(second_club_membership)
+        session.commit()
+        ended_membership = GroupMembership(
+            group_id=group.id,
+            club_membership_id=second_club_membership.id,
+            valid_from=_utc(2024, 1, 1),
+            valid_to=_utc(2024, 6, 1),
+            membership_status="ended",
+        )
+        session.add(ended_membership)
+        session.commit()
+        requester_id, group_id = requester.id, group.id
+        active_id, ended_id = active_membership.id, ended_membership.id
+    _grant_permission(requester_id, "group.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get(
+        f"/api/v1/groups/{group_id}/members", params={"membership_status": "active"}
+    )
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(active_id) in ids
+    assert str(ended_id) not in ids
+
+
+@requires_postgres
+def test_list_group_members_membership_status_filter_ended(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        club_membership = _make_club_membership(club, person)
+        group = _make_group(club)
+        session.add_all([requester, club_membership, group])
+        session.commit()
+        active_membership = GroupMembership(
+            group_id=group.id,
+            club_membership_id=club_membership.id,
+            valid_from=_utc(2024, 1, 1),
+            membership_status="active",
+        )
+        session.add(active_membership)
+        session.commit()
+
+        second_person = _make_person(first_name="Second")
+        session.add(second_person)
+        session.commit()
+        second_club_membership = _make_club_membership(
+            club, second_person, membership_type="regular-b"
+        )
+        session.add(second_club_membership)
+        session.commit()
+        ended_membership = GroupMembership(
+            group_id=group.id,
+            club_membership_id=second_club_membership.id,
+            valid_from=_utc(2024, 1, 1),
+            valid_to=_utc(2024, 6, 1),
+            membership_status="ended",
+        )
+        session.add(ended_membership)
+        session.commit()
+        requester_id, group_id = requester.id, group.id
+        active_id, ended_id = active_membership.id, ended_membership.id
+    _grant_permission(requester_id, "group.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get(
+        f"/api/v1/groups/{group_id}/members", params={"membership_status": "ended"}
+    )
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(ended_id) in ids
+    assert str(active_id) not in ids
+
+
+@requires_postgres
+def test_list_group_members_without_membership_status_filter_returns_both(
+    client: TestClient,
+) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        club_membership = _make_club_membership(club, person)
+        group = _make_group(club)
+        session.add_all([requester, club_membership, group])
+        session.commit()
+        active_membership = GroupMembership(
+            group_id=group.id,
+            club_membership_id=club_membership.id,
+            valid_from=_utc(2024, 1, 1),
+            membership_status="active",
+        )
+        session.add(active_membership)
+        session.commit()
+        requester_id, group_id = requester.id, group.id
+        active_id = active_membership.id
+    _grant_permission(requester_id, "group.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get(f"/api/v1/groups/{group_id}/members")
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(active_id) in ids
+
+
+@requires_postgres
+@pytest.mark.parametrize("bad_value", ["pending", "foo", "ACTIVE"])
+def test_list_group_members_membership_status_filter_rejects_non_canonical_values(
+    client: TestClient, bad_value: str
+) -> None:
+    """people-api.md §15.1: `active`/`ended` is a closed vocabulary — an
+    unknown value must be rejected with 422, never silently turned into a
+    filter that matches nothing."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        group = _make_group(club)
+        session.add_all([requester, group])
+        session.commit()
+        requester_id, group_id = requester.id, group.id
+    _grant_permission(requester_id, "group.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get(
+        f"/api/v1/groups/{group_id}/members", params={"membership_status": bad_value}
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+@requires_postgres
 def test_list_group_instructors_after_grant(client: TestClient) -> None:
     with session_scope() as session:
         club = _make_club()
@@ -1039,6 +1300,135 @@ def test_list_group_instructors_after_grant(client: TestClient) -> None:
     response = client.get(f"/api/v1/groups/{group_id}/instructors")
     assert response.status_code == 200, response.text
     assert response.json()["pagination"]["total"] == 1
+
+
+# --- GET /groups/{id}/instructors — activity filter (people-api.md §16.1/§16.3) ---
+
+
+@requires_postgres
+def test_list_group_instructors_has_ended_false_returns_active_only(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        group = _make_group(club)
+        session.add_all([requester, group])
+        session.commit()
+        active_assignment = _make_group_instructor_assignment(
+            group, requester, valid_from=_utc(2024, 1, 1)
+        )
+        session.add(active_assignment)
+        session.commit()
+
+        second_person = _make_person(first_name="Second")
+        session.add(second_person)
+        session.commit()
+        second_user = _make_user(second_person)
+        session.add(second_user)
+        session.commit()
+        ended_assignment = _make_group_instructor_assignment(
+            group, second_user, valid_from=_utc(2024, 1, 1), valid_to=_utc(2024, 6, 1)
+        )
+        session.add(ended_assignment)
+        session.commit()
+        requester_id, group_id = requester.id, group.id
+        active_id, ended_id = active_assignment.id, ended_assignment.id
+    _grant_permission(requester_id, "group.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get(
+        f"/api/v1/groups/{group_id}/instructors", params={"has_ended": "false"}
+    )
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(active_id) in ids
+    assert str(ended_id) not in ids
+
+
+@requires_postgres
+def test_list_group_instructors_has_ended_true_returns_ended_only(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        group = _make_group(club)
+        session.add_all([requester, group])
+        session.commit()
+        active_assignment = _make_group_instructor_assignment(
+            group, requester, valid_from=_utc(2024, 1, 1)
+        )
+        session.add(active_assignment)
+        session.commit()
+
+        second_person = _make_person(first_name="Second")
+        session.add(second_person)
+        session.commit()
+        second_user = _make_user(second_person)
+        session.add(second_user)
+        session.commit()
+        ended_assignment = _make_group_instructor_assignment(
+            group, second_user, valid_from=_utc(2024, 1, 1), valid_to=_utc(2024, 6, 1)
+        )
+        session.add(ended_assignment)
+        session.commit()
+        requester_id, group_id = requester.id, group.id
+        active_id, ended_id = active_assignment.id, ended_assignment.id
+    _grant_permission(requester_id, "group.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get(
+        f"/api/v1/groups/{group_id}/instructors", params={"has_ended": "true"}
+    )
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(ended_id) in ids
+    assert str(active_id) not in ids
+
+
+@requires_postgres
+def test_list_group_instructors_without_has_ended_filter_returns_both(
+    client: TestClient,
+) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        group = _make_group(club)
+        session.add_all([requester, group])
+        session.commit()
+        active_assignment = _make_group_instructor_assignment(
+            group, requester, valid_from=_utc(2024, 1, 1)
+        )
+        session.add(active_assignment)
+        session.commit()
+
+        second_person = _make_person(first_name="Second")
+        session.add(second_person)
+        session.commit()
+        second_user = _make_user(second_person)
+        session.add(second_user)
+        session.commit()
+        ended_assignment = _make_group_instructor_assignment(
+            group, second_user, valid_from=_utc(2024, 1, 1), valid_to=_utc(2024, 6, 1)
+        )
+        session.add(ended_assignment)
+        session.commit()
+        requester_id, group_id = requester.id, group.id
+        active_id, ended_id = active_assignment.id, ended_assignment.id
+    _grant_permission(requester_id, "group.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get(f"/api/v1/groups/{group_id}/instructors")
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()["items"]}
+    assert {str(active_id), str(ended_id)} <= ids
+    assert response.json()["pagination"]["total"] == 2
 
 
 # --- Audit trail sanity ------------------------------------------------

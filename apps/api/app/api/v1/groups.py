@@ -26,6 +26,7 @@ per-row visibility filter is needed for those two list endpoints.
 """
 
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import select
@@ -225,7 +226,12 @@ def list_groups(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=100),
     sort: str = Query(default=GROUP_DEFAULT_SORT),
-    status_: str | None = Query(default=None, alias="status"),
+    # people-api.md §14.1: closed active/archived vocabulary (app.db.groups.
+    # CANONICAL_GROUP_STATUSES) — Literal, not `str`, so FastAPI/Pydantic's
+    # own request-validation mechanism rejects any other value with the
+    # existing generic `validation_error` code (HTTP 422) rather than a
+    # filter that silently matches nothing.
+    status_: Literal["active", "archived"] | None = Query(default=None, alias="status"),
     principal: CurrentPrincipal = Depends(require_authenticated_principal),
     db: Session = Depends(get_db),
 ) -> CollectionResponse[GroupOut]:
@@ -352,7 +358,10 @@ def list_group_members(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=100),
     sort: str = Query(default=GROUP_MEMBERSHIP_DEFAULT_SORT),
-    membership_status: str | None = Query(default=None),
+    # people-api.md §15.1: closed active/ended vocabulary (app.db.groups.
+    # CANONICAL_GROUP_MEMBERSHIP_STATUSES) — see the identical rationale on
+    # list_groups' `status_` parameter above.
+    membership_status: Literal["active", "ended"] | None = Query(default=None),
     principal: CurrentPrincipal = Depends(require_authenticated_principal),
     db: Session = Depends(get_db),
 ) -> CollectionResponse[GroupMembershipOut]:
@@ -514,6 +523,11 @@ def list_group_instructors(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=100),
     sort: str = Query(default=GROUP_INSTRUCTOR_ASSIGNMENT_DEFAULT_SORT),
+    # people-api.md §16.1/§16.3: filter by activity — presence/absence of
+    # `valid_to`. has_ended=false -> active/ongoing (valid_to IS NULL);
+    # has_ended=true -> ended/historical (valid_to IS NOT NULL); omitted ->
+    # no filter, all assignments.
+    has_ended: bool | None = Query(default=None),
     principal: CurrentPrincipal = Depends(require_authenticated_principal),
     db: Session = Depends(get_db),
 ) -> CollectionResponse[GroupInstructorAssignmentOut]:
@@ -522,7 +536,7 @@ def list_group_instructors(
     )
     try:
         rows, total = list_group_instructor_assignments_page(
-            db, group_id=group_id, page=page, page_size=page_size, sort=sort
+            db, group_id=group_id, page=page, page_size=page_size, sort=sort, has_ended=has_ended
         )
     except InvalidSortError as exc:
         raise APIError(
