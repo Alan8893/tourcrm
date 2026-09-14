@@ -24,8 +24,8 @@ TourCRM_Assets_<category>_<priority>.zip
 |---|---|---|---|---|
 | `TourCRM_Assets_Brand_P0-P1.zip` | Brand derivatives | BR-001…BR-008 (8) | Planned | `docs/06-ui/assets/packages/brand/` |
 | `TourCRM_Assets_Navigation_P0.zip` | Approved P0 navigation icon set | NAV-001…NAV-007 (7) | **Approved / uploaded** | `docs/06-ui/assets/packages/navigation/` |
-| `TourCRM_Assets_Actions_P0.zip` | Core action icons | ACT-001…ACT-017 (17) | **Production candidate / awaiting visual approval** | `docs/06-ui/assets/packages/actions/` |
-| `TourCRM_Assets_Status_P0.zip` | Product and semantic status icons | STA-001…STA-009 (9) | Planned | `docs/06-ui/assets/packages/status/` |
+| `TourCRM_Assets_Actions_P0.zip` | Core action icons | ACT-001…ACT-017 (17) | **Approved / uploaded** | `docs/06-ui/assets/packages/actions/` |
+| `TourCRM_Assets_Status_P0.zip` | Product and semantic status icons | STA-001…STA-009 (9) | **Uploaded / pending final package review** | `docs/06-ui/assets/packages/status/` |
 | `TourCRM_Assets_Domain_P0-P1.zip` | Person, membership, role, Group and Event icons | DOM-001…DOM-022 (22) | Planned | `docs/06-ui/assets/packages/domain/` |
 | `TourCRM_Assets_Achievements_P0-P1.zip` | Achievement frames, states and initial artwork | ACH-001…ACH-018 (18) | Planned | `docs/06-ui/assets/packages/achievements/` |
 | `TourCRM_Assets_Illustrations_P0-P1.zip` | Empty, system and onboarding illustrations | ILL-001…ILL-015 (15) | Planned | `docs/06-ui/assets/packages/illustrations/` |
@@ -47,7 +47,7 @@ The catalog defines this order:
 10. Illustrations
 11. P2 Decorative assets
 
-Navigation P0 is already complete. The current production block is **Action Icons P0**.
+Navigation and Actions P0 are approved. Status P0 is uploaded and awaits final package review. The next production block after Status is **Domain P0/P1**.
 
 ## Navigation package
 
@@ -83,9 +83,9 @@ navigation/<icon-name>/<icon-name>-<size>.webp
 
 The archive is a documentation/design-system handoff package. It is not the application integration source under `assets/ui/` until the implementation stage.
 
-## Actions P0 candidate
+## Actions P0 package
 
-The current source catalog text lists these core actions:
+The P0 Actions package contains these 17 core actions from the source catalog:
 
 ```text
 add
@@ -107,7 +107,7 @@ download
 upload
 ```
 
-The local candidate package contains these 17 actions at 16, 20, 24, 32, 48 and 64 px as transparent WebP. It remains a **visual approval candidate** until the artwork is reviewed against the already approved TourCRM visual language.
+Each action is delivered at 16, 20, 24, 32, 48 and 64 px as transparent WebP, plus a package manifest.
 
 Archive filename:
 
@@ -115,10 +115,32 @@ Archive filename:
 TourCRM_Assets_Actions_P0.zip
 ```
 
-Local candidate checksum:
+Repository path:
 
 ```text
-7d049760bde1b6b5bb0534a2712adcc18507b8e123e8a82cce41c4b549a81175
+ docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0.zip
+```
+
+## Status P0 package
+
+The P0 Status package contains 9 semantic status assets from the source catalog. The package has been uploaded to its designated repository directory and is pending final package integrity/manifest review.
+
+Archive filename:
+
+```text
+TourCRM_Assets_Status_P0.zip
+```
+
+Repository path:
+
+```text
+ docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0.zip
+```
+
+Package checksum:
+
+```text
+SHA-256: e333128bb0e320c3d55f5b1c396b0836602bb0c98bec85b73efa6303f040e396
 ```
 
 ## Package completion rule
@@ -140,21 +162,15 @@ Archives must be uploaded into their corresponding package directory on branch `
 Correct:
 
 ```text
- docs/06-ui/assets/packages/navigation/TourCRM_Assets_Navigation_P0.zip
+ docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0.zip
 ```
 
 Incorrect:
 
 ```text
- TourCRM_Assets_Navigation_P0.zip
+ TourCRM_Assets_Status_P0.zip
 ```
 
-## Checksum
+## Integrity
 
-The current Navigation package is SHA-256:
-
-```text
-33faefb69535dd546406d9b72a47393ca6fc3341bc0a5d653193de45eeb98604
-```
-
-The checksum is retained as the integrity reference for the uploaded handoff package.
+Checksums are recorded only for packages whose local source artifact has been hashed. After manual upload, the repository copy is treated as the handoff artifact and must remain unchanged unless the package is explicitly versioned.
