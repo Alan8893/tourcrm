@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1.1",
+  "schemaVersion": "1.2",
   "productionFormatPolicy": {
     "icons": {
       "preferred": "svg",
@@ -12,5 +12,17 @@
       "rule": "Illustrations are full TourCRM artwork. Responsive variants are separate compositions where necessary, not merely resized exports."
     }
   },
-  "assets": []
+  "assets": [
+    {
+      "id": "icon.navigation.groups",
+      "type": "icon",
+      "category": "navigation",
+      "status": "format-validation",
+      "source": "assets/ui/icons/navigation/groups/groups.svg",
+      "rasterTest": "assets/ui/icons/navigation/groups/groups-24.png",
+      "sizes": [24],
+      "themes": ["light"],
+      "description": "Groups navigation icon; first production SVG/PNG fidelity test."
+    }
+  ]
 }
