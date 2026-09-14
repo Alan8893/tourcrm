@@ -7,6 +7,7 @@ from app.api.v1.guardian_relationships import router as guardian_relationships_r
 from app.api.v1.me import router as me_router
 from app.api.v1.memberships import router as memberships_router
 from app.api.v1.persons import router as persons_router
+from app.api.v1.role_assignments import router as role_assignments_router
 
 # Versioned API boundary per docs/03-architecture/application-architecture.md (§9-10)
 # and ADR-0004 (API architecture). Domain routers are added here by their own
@@ -21,4 +22,5 @@ router.include_router(persons_router)
 router.include_router(memberships_router)
 router.include_router(guardian_relationships_router)
 router.include_router(groups_router)
+router.include_router(role_assignments_router)
 router.include_router(me_router)

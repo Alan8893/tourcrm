@@ -21,6 +21,7 @@ one applicable, matching assignment is enough) — no explicit deny exists
 import uuid
 from dataclasses import dataclass
 
+import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -74,18 +75,37 @@ def scope_matches(scope_type: str, context: ResourceContext) -> bool:
 def applicable_assignments(
     session: Session, user_id: uuid.UUID, permission_code: str
 ) -> list[UserRoleAssignment]:
-    """All of the user's UserRoleAssignment rows that grant `permission_code`
-    (via the assignment's Role -> RolePermission -> Permission chain).
+    """All of the user's *currently effective* UserRoleAssignment rows that
+    grant `permission_code` (via the assignment's Role -> RolePermission ->
+    Permission chain).
+
+    ADR-0026 §1 / Issue #74: "Effective authorization considers only
+    assignments valid at the authorization-check time" — a revoked
+    (`valid_to` in the past) assignment must never continue granting
+    permissions project-wide. This is the one, central query every
+    permission check in the codebase goes through (via `can()`/
+    `Authorizer`), so the temporal filter lives here rather than being
+    repeated per caller — matching the `valid_from <= now() AND (valid_to
+    IS NULL OR now() < valid_to)` convention already used identically by
+    every other temporal entity's own authorization/visibility resolution
+    (app.events.authorization, app.groups.authorization,
+    app.people.guardian_authorization).
 
     Public because domain-level query filtering (e.g. Event list scope
     filtering, Issue #40) needs the identical query to build per-assignment
     SQL predicates, not just the aggregate allow/deny `can()` returns.
     """
+    now = sa.func.now()
     stmt = (
         select(UserRoleAssignment)
         .join(RolePermission, RolePermission.role_id == UserRoleAssignment.role_id)
         .join(Permission, Permission.id == RolePermission.permission_id)
-        .where(UserRoleAssignment.user_id == user_id, Permission.code == permission_code)
+        .where(
+            UserRoleAssignment.user_id == user_id,
+            Permission.code == permission_code,
+            UserRoleAssignment.valid_from <= now,
+            sa.or_(UserRoleAssignment.valid_to.is_(None), now < UserRoleAssignment.valid_to),
+        )
     )
     return list(session.execute(stmt).scalars().all())
 

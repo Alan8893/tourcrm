@@ -88,16 +88,24 @@ _GROUP_PATHS = {
 # `/api/v1/groups/{group_id}/members/{person_id}/transfer` — both are
 # deliberately not implemented (people-api.md §15.3-15.4, Issue #71 §3).
 
+_ROLE_ASSIGNMENT_PATHS = {
+    "/api/v1/role-assignments",
+    "/api/v1/role-assignments/{assignment_id}/revoke",
+}
+# No `/api/v1/roles`, `/api/v1/permissions`, `/api/v1/audit-logs*` — all
+# deliberately out of Issue #74's scope (endpoint-inventory.md §24,
+# ADR-0026's explicit non-goals).
+
 
 def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
     schema = real_client.get("/openapi.json").json()
 
     # Health (Issue #10), authentication (Issue #33), the first Event API
     # slice (Issue #40), the Person/ClubMembership API (Issue #62), the
-    # GuardianRelationship API (Issue #64), and the Group/GroupMembership/
-    # GroupInstructorAssignment API (Issue #71) are the only domain
-    # endpoints so far — no Trip/etc. CRUD endpoints have been added under
-    # /api/v1.
+    # GuardianRelationship API (Issue #64), the Group/GroupMembership/
+    # GroupInstructorAssignment API (Issue #71), and the RoleAssignment API
+    # (Issue #74) are the only domain endpoints so far — no Trip/etc. CRUD
+    # endpoints have been added under /api/v1.
     assert (
         set(schema["paths"].keys())
         == {"/health/live", "/health/ready"}
@@ -108,6 +116,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _GUARDIAN_RELATIONSHIP_PATHS
         | _ME_PATHS
         | _GROUP_PATHS
+        | _ROLE_ASSIGNMENT_PATHS
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()

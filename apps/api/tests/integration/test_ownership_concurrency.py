@@ -88,6 +88,8 @@ import uuid
 from sqlalchemy import select, text
 
 from app.authorization.club_ownership import user_has_active_club_membership
+from app.db.audit import AuditLog
+from app.db.authorization import Role, UserRoleAssignment
 from app.db.events import Event, EventGroupTarget, EventStaffAssignment
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 from app.db.identity import Club, ClubMembership, Person, User
@@ -108,6 +110,12 @@ from app.groups.service import (
     _lock_group_club_id,
     create_group_instructor_assignment,
     create_group_membership,
+)
+from app.role_assignments.lifecycle import InvalidRoleAssignmentTransitionError
+from app.role_assignments.service import (
+    DuplicateRoleAssignmentError,
+    create_role_assignment,
+    revoke_role_assignment,
 )
 
 from .conftest import requires_postgres
@@ -1084,3 +1092,167 @@ def test_concurrent_memberships_in_different_groups_never_conflict() -> None:
             select(GroupMembership).where(GroupMembership.club_membership_id == membership_id)
         ).scalars().all()
     assert len(rows) == 2
+
+
+# --- UserRoleAssignment: concurrent create race (ADR-0026 §1, Issue #74) --
+
+
+@requires_postgres
+def test_concurrent_duplicate_role_assignments_leave_exactly_one() -> None:
+    """Real-concurrency proof for the GiST exclusion constraint backing
+    "no overlapping intervals for the same (user_id, role_id, club_id,
+    scope_type, scope_ref_id)" (ADR-0026 §1): two transactions racing to
+    create the same overlapping RoleAssignment must never both succeed —
+    the DB constraint, not just app.role_assignments.service's
+    check-then-insert, is what must hold under a real race."""
+
+    trial_count = 30
+    for trial in range(trial_count):
+        with session_scope() as setup:
+            person = Person(last_name="Ivanova", first_name=f"Anna-{uuid.uuid4().hex[:8]}")
+            setup.add(person)
+            setup.commit()
+            user = User(
+                person=person,
+                login_identifier=f"u-{uuid.uuid4().hex[:8]}@example.com",
+                status="active",
+            )
+            role = Role(code=f"role-{uuid.uuid4().hex[:8]}", name="Test role")
+            setup.add_all([user, role])
+            setup.commit()
+            user_id, role_id = user.id, role.id
+
+        start_gate = threading.Barrier(2, timeout=10)
+        result: dict[str, str] = {}
+
+        def attempt(name: str) -> None:
+            with session_scope() as session:
+                start_gate.wait()
+                try:
+                    create_role_assignment(
+                        session,
+                        user_id=user_id,
+                        role_id=role_id,
+                        scope_type="none",
+                        actor_user_id=user_id,
+                    )
+                    result[name] = "succeeded"
+                except DuplicateRoleAssignmentError:
+                    result[name] = "rejected"
+
+        thread_a = threading.Thread(target=attempt, args=("a",))
+        thread_b = threading.Thread(target=attempt, args=("b",))
+        thread_a.start()
+        thread_b.start()
+        thread_a.join(timeout=10)
+        thread_b.join(timeout=10)
+
+        with session_scope() as check:
+            row_count = check.execute(
+                select(UserRoleAssignment).where(UserRoleAssignment.user_id == user_id)
+            ).scalars().all()
+            audit_count = check.execute(
+                text(
+                    "SELECT count(*) FROM audit_logs "
+                    "WHERE action = 'role_assignment.created' AND resource_id IN "
+                    "(SELECT id FROM user_role_assignments WHERE user_id = :u)"
+                ),
+                {"u": str(user_id)},
+            ).scalar_one()
+
+        assert len(row_count) == 1, (
+            f"trial {trial}: expected exactly one surviving RoleAssignment, "
+            f"got {len(row_count)}; outcomes={result}"
+        )
+        assert audit_count == 1, (
+            f"trial {trial}: expected exactly one role_assignment.created audit row, "
+            f"got {audit_count}"
+        )
+
+
+# --- UserRoleAssignment: concurrent revoke race (ADR-0026 §1, Issue #74) --
+
+
+@requires_postgres
+def test_concurrent_revoke_of_the_same_role_assignment_succeeds_exactly_once() -> None:
+    """Real-concurrency proof that revoke's pessimistic row lock
+    (app.api.v1.role_assignments._get_authorized_role_assignment_or_404's
+    `lock=True` `SELECT ... FOR UPDATE`, replicated here exactly as the
+    router issues it) makes "only one of two simultaneous revoke requests
+    for the same open assignment may succeed" hold under a real race, and
+    that the loser produces no second `role_assignment.revoked` audit
+    row."""
+
+    trial_count = 30
+    for trial in range(trial_count):
+        with session_scope() as setup:
+            person = Person(last_name="Ivanova", first_name=f"Anna-{uuid.uuid4().hex[:8]}")
+            setup.add(person)
+            setup.commit()
+            user = User(
+                person=person,
+                login_identifier=f"u-{uuid.uuid4().hex[:8]}@example.com",
+                status="active",
+            )
+            role = Role(code=f"role-{uuid.uuid4().hex[:8]}", name="Test role")
+            setup.add_all([user, role])
+            setup.commit()
+            user_id, role_id = user.id, role.id
+
+            assignment = create_role_assignment(
+                setup,
+                user_id=user_id,
+                role_id=role_id,
+                scope_type="none",
+                actor_user_id=user_id,
+            )
+            assignment_id = assignment.id
+
+        start_gate = threading.Barrier(2, timeout=10)
+        result: dict[str, str] = {}
+
+        def attempt_revoke(name: str) -> None:
+            with session_scope() as session:
+                start_gate.wait()
+                # Exactly the router's own lock pattern
+                # (app.api.v1.role_assignments._get_authorized_role_assignment_or_404
+                # with lock=True): SELECT ... FOR UPDATE before mutating.
+                locked = session.execute(
+                    select(UserRoleAssignment)
+                    .where(UserRoleAssignment.id == assignment_id)
+                    .with_for_update()
+                ).scalar_one()
+                try:
+                    revoke_role_assignment(session, assignment=locked, actor_user_id=user_id)
+                    result[name] = "succeeded"
+                except InvalidRoleAssignmentTransitionError:
+                    result[name] = "rejected"
+
+        thread_a = threading.Thread(target=attempt_revoke, args=("a",))
+        thread_b = threading.Thread(target=attempt_revoke, args=("b",))
+        thread_a.start()
+        thread_b.start()
+        thread_a.join(timeout=10)
+        thread_b.join(timeout=10)
+
+        successes = [name for name, outcome in result.items() if outcome == "succeeded"]
+        assert len(successes) == 1, (
+            f"trial {trial}: expected exactly one successful revoke, "
+            f"got {successes}; outcomes={result}"
+        )
+
+        with session_scope() as check:
+            row = check.get(UserRoleAssignment, assignment_id)
+            assert row is not None
+            assert row.valid_to is not None
+
+            audit_count = check.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "role_assignment.revoked",
+                    AuditLog.resource_id == assignment_id,
+                )
+            ).scalars().all()
+        assert len(audit_count) == 1, (
+            f"trial {trial}: expected exactly one role_assignment.revoked audit row, "
+            f"got {len(audit_count)}"
+        )
