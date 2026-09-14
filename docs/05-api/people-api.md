@@ -121,11 +121,17 @@ Request:
 
 API валидирует допустимость перехода, permission requester и обязательные данные.
 
-## 13. История membership
+## 13. Membership history
 
-### GET `/api/v1/memberships/{membership_id}/history`
+### GET `/api/v1/persons/{person_id}/memberships`
 
-Возвращает исторические изменения membership и связанные значимые события без раскрытия секретов.
+Возвращает membership-периоды указанного Person, включая текущие и исторические периоды, согласно canonical `ClubMembership` lifecycle.
+
+Один `ClubMembership` представляет один непрерывный период членства. Повторное вступление после `inactive` создаёт новый membership period, а не переиспользует существующую запись (Issue #62 accepted decisions).
+
+Изменения membership и значимые lifecycle transitions (создание, `membership_type`, status transitions) фиксируются через audit infrastructure согласно ADR-0024, а не через отдельный read API.
+
+Отдельный endpoint `GET /api/v1/memberships/{membership_id}/history` не используется и не является частью текущего контракта: после реализации Issue #62 он был явно исключён из API slice (см. implementation report Issue #62), поскольку для `ClubMembership` не существует отдельной history/versioning persistence-модели, а полноценный audit-read API не входит в non-goals текущего slice.
 
 ## 14. Группы
 
@@ -201,9 +207,11 @@ Request:
 
 Self-link guardian → same person запрещён. Дублирующие активные relationships одного типа для одной пары не допускаются; исторические `inactive`/`revoked` сохраняются. Для ребёнка допускается не более одной одновременно действующей primary-contact relationship.
 
-Permissions: `guardian_relationship.read` (чтение), `guardian_relationship.manage` (создание/изменение/terminate) — приняты ADR-0025 §2. Ранее использовавшийся здесь `guardian.read` не был каноническим permission и заменён.
+Permissions: `guardian_relationship.read` (чтение), `guardian_relationship.manage` (создание/изменение/terminate) — приняты ADR-0025 §2. Ранее использовавшийся здесь `guardian.read` не был каноническим permission и заменён. Никакие другие GuardianRelationship-специфичные permissions не вводятся.
 
 URI: канонический ресурс — `guardian-relationships`, не `guardians` (ADR-0025 §4). `/guardians` не сохраняется как alias нигде в этом контракте, включая вложенную коллекцию под Person.
+
+Authorization/scope: `GuardianRelationship` остаётся Club-neutral и не имеет `club_id` (ADR-0023 §3) — обычное club-scoped assignment само по себе не превращается в доступ к `GuardianRelationship`: только глобальное (без `club_id`) assignment авторизует доступ к этой сущности. Из канонического scope vocabulary (ADR-0013) для `GuardianRelationship` применимы `all`, `self`, `children`, `none`; `own_groups`/`own_events` к этой сущности неприменимы (нет Group/Event relationship) и всегда fail closed. `self` означает, что requester сам является `child_person_id` конкретного relationship. `children` означает, что requester — активный (`status = active`, в пределах `[valid_from, valid_to)`) guardian ребёнка, к которому относится relationship. Новые scopes не вводятся.
 
 ### GET `/api/v1/persons/{person_id}/guardian-relationships`
 
@@ -211,7 +219,7 @@ URI: канонический ресурс — `guardian-relationships`, не `g
 
 ### POST `/api/v1/persons/{person_id}/guardian-relationships`
 
-Создаёт relationship с существующим Person или запускает controlled linking flow. Permission: `guardian_relationship.manage`.
+Создаёт `GuardianRelationship` с существующим Person непосредственно. Permission: `guardian_relationship.manage`.
 
 Request concept:
 
@@ -224,7 +232,9 @@ Request concept:
 }
 ```
 
-Backend не должен принимать `pending` как статус `GuardianRelationship`: если требуется отдельное подтверждение, это является workflow-состоянием процесса linking и не меняет канонический status relationship.
+Создаваемый relationship всегда имеет `status = active`. Состояние `pending` для `GuardianRelationship` не существует и backend не должен его принимать.
+
+Отдельный confirmation/controlled-linking workflow в текущем MVP не используется. Если в будущем потребуется подтверждение связи, оно должно быть реализовано как отдельный workflow/entity (аналогично `RegistrationRequest` для `ClubMembership`, ADR-0025 §5) и не должно вводить `pending` в lifecycle `GuardianRelationship`.
 
 ### PATCH `/api/v1/guardian-relationships/{relationship_id}`
 
@@ -234,15 +244,34 @@ Backend не должен принимать `pending` как статус `Guar
 
 Прекращает актуальность связи без уничтожения истории. Permission: `guardian_relationship.manage`.
 
-Каноническая семантика (ADR-0025 §3): `terminate` всегда переводит relationship в `status = revoked`. `inactive` — отдельное, не-revoked историческое состояние, достигаемое иными lifecycle-событиями (например, естественным истечением `valid_to`), а не явным действием `terminate`.
+Каноническая семантика (ADR-0025 §3): `terminate` всегда переводит relationship в `status = revoked`. Альтернативного исхода нет; `terminate` уже `revoked` relationship отклоняется (соответствующий HTTP status, canonical error code `guardian_link_not_allowed` — см. §28). `inactive` — отдельное, не-revoked историческое состояние и никогда не является результатом `terminate`.
+
+### Lifecycle: stored status и read-time expiry
+
+Canonical stored-значения `status`: `active`, `inactive`, `revoked`. Других значений (в частности `pending`, `verified`, `rejected`, `terminated`) не существует.
+
+`inactive` достигается естественным истечением `valid_to`, а не отдельным действием API. Это оценивается **at read time**: если stored `status = active`, но `valid_to` уже в прошлом, API при чтении (в списках, в детальном представлении, при authorization-проверках) рассматривает relationship как `inactive`. При этом stored значение в БД не переписывается никаким write-действием, и для этого не используется background job, scheduler или отдельный worker — производный статус вычисляется непосредственно в момент запроса.
 
 ## 18. My children
 
 ### GET `/api/v1/me/children`
 
-Возвращает детей текущего authenticated guardian только по active, interval-valid `GuardianRelationship` и при выполнении authorization policy.
+Возвращает детей текущего authenticated guardian только по active, interval-valid `GuardianRelationship` и при выполнении authorization policy (`guardian_relationship.read`).
 
-Для каждого ребёнка возвращается только разрешённый parent-visible projection.
+Endpoint не принимает `guardian_id`, `person_id` или любой другой client-supplied UUID, который мог бы подменить собой authenticated principal — единственный источник идентичности requester это сессия. Наличие такого параметра в query не является и не может являться доказательством права доступа.
+
+Возвращает только собственных детей requester: Persons, для которых существует relationship с `guardian_person_id = requester`, `status = active` и текущим моментом внутри `[valid_from, valid_to)` (см. §17 "Lifecycle: stored status и read-time expiry"). `revoked` relationships исключаются всегда; relationships с истёкшим `valid_to` исключаются как не-active по той же read-time-логике.
+
+Parent-visible projection для каждого ребёнка ограничена полями:
+
+```text
+id
+full_name
+birth_date
+photo_file_id
+```
+
+`phone`, `email`, `address` и другие чувствительные Person-поля в этой projection не возвращаются (см. §25).
 
 ## 19. Child context
 
@@ -322,19 +351,29 @@ Audit обязателен для создания/изменения/архив
 
 Используется общий error contract.
 
-Типовые ошибки:
+Типовые ошибки (перечислены в исходном/каноническом написании этого раздела; фактический machine-readable `code` в реализованных доменах — lowercase snake_case, например `guardian_relationship_not_found`, `invalid_membership_transition`):
 
 - `PERSON_NOT_FOUND`;
 - `MEMBERSHIP_NOT_FOUND`;
 - `GROUP_NOT_FOUND`;
-- `GUARDIAN_RELATIONSHIP_NOT_FOUND`;
+- `GUARDIAN_RELATIONSHIP_NOT_FOUND` (реализовано как `guardian_relationship_not_found`, HTTP 404);
 - `DUPLICATE_PERSON`;
 - `INVALID_MEMBERSHIP_TRANSITION`;
 - `INVALID_GROUP_TRANSFER`;
-- `GUARDIAN_LINK_NOT_ALLOWED`;
+- `GUARDIAN_LINK_NOT_ALLOWED` (реализовано как `guardian_link_not_allowed`);
 - `INSUFFICIENT_SCOPE`;
 - `ROLE_ASSIGNMENT_NOT_ALLOWED`;
 - `IMPORT_VALIDATION_FAILED`.
+
+### GuardianRelationship: existence-hiding для `PATCH`/`terminate`
+
+`PATCH /api/v1/guardian-relationships/{relationship_id}` и `POST /api/v1/guardian-relationships/{relationship_id}/terminate` защищены от IDOR через existence-hiding: relationship, который реально не существует, и relationship, который существует, но requester к нему не авторизован, возвращают одинаковый HTTP 404 с одинаковым machine-readable кодом `guardian_relationship_not_found` — по публичному ответу их невозможно отличить друг от друга.
+
+Для validation/business-link ошибок (self-link, дублирующая active relationship, дублирующая primary-contact relationship, повторный `terminate` уже `revoked` relationship) используется canonical machine-readable код `guardian_link_not_allowed` с соответствующим HTTP status (422 для validation-ошибок при создании/изменении, 409 для повторного `terminate`).
+
+### `INSUFFICIENT_SCOPE`
+
+Authorization denial (нет permission, либо permission есть, но scope/object relationship не подходит) во всех реализованных доменах — Person, Membership, GuardianRelationship и Event — использует единый generic-механизм и возвращает `forbidden`, не раскрывая, какая именно permission или scope не подошли. Это намеренная security-политика: ответ не должен давать requester информацию, полезную для подбора доступа. `INSUFFICIENT_SCOPE` как отдельный machine-readable код в реализованных доменах не эмитируется; в этом контракте он остаётся зарезервированным/непроверенным написанием, а не описанием фактического поведения API.
 
 ## 29. Acceptance Criteria
 
