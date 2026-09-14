@@ -695,6 +695,42 @@ def test_own_groups_denies_co_membership_without_instructor_assignment(client: T
 
 
 @requires_postgres
+def test_own_groups_denies_cross_club_group_for_person_even_with_inconsistent_data(
+    client: TestClient,
+) -> None:
+    """Same requirement as the Membership-side equivalent
+    (test_membership_own_groups_denies_cross_club_group_even_with_inconsistent_data):
+    the Person authorization query itself must reject a GroupMembership
+    that inconsistently points to a Group in a different Club than the
+    Person's own ClubMembership, not rely on ADR-0022/service-layer
+    integrity to prevent this state from ever existing.
+    """
+    with session_scope() as session:
+        club_a = _make_club()
+        club_b = _make_club()
+        instructor_person = _make_person()
+        instructor_user = _make_user(instructor_person)
+        member_person = _make_person()
+        session.add_all([club_a, club_b, instructor_person, instructor_user, member_person])
+        session.commit()
+        # member_person's ClubMembership is in club_a, but the Group (and
+        # its GroupMembership row) are in club_b.
+        club_membership = _make_club_membership(club_a, member_person)
+        group = _make_group(club_b)
+        session.add_all([club_membership, group])
+        session.commit()
+        session.add(_make_group_membership(group, club_membership))
+        session.add(_make_group_instructor_assignment(group, instructor_user))
+        session.commit()
+        instructor_user_id, member_person_id = instructor_user.id, member_person.id
+    _grant_permission(instructor_user_id, "person.read", scope_type="own_groups")
+    _authenticate_as(instructor_user_id)
+
+    response = client.get(f"/api/v1/persons/{member_person_id}")
+    assert response.status_code == 404, response.text
+
+
+@requires_postgres
 def test_list_persons_all_scope_returns_all_persons(client: TestClient) -> None:
     with session_scope() as session:
         requester_person = _make_person()
@@ -986,6 +1022,95 @@ def test_get_membership_all_scope_succeeds(client: TestClient) -> None:
     response = client.get(f"/api/v1/memberships/{membership_id}")
     assert response.status_code == 200, response.text
     assert response.json()["id"] == str(membership_id)
+
+
+@requires_postgres
+def test_membership_own_groups_active_chain_grants_access(client: TestClient) -> None:
+    """own_groups on the ClubMembership resource itself, via a fully
+    active Person -> ClubMembership -> GroupMembership -> Group ->
+    GroupInstructorAssignment -> requesting User chain.
+    """
+    with session_scope() as session:
+        club = _make_club()
+        instructor_person = _make_person()
+        instructor_user = _make_user(instructor_person)
+        member_person = _make_person()
+        session.add_all([club, instructor_person, instructor_user, member_person])
+        session.commit()
+        club_membership, group = _setup_group_membership(session, club=club, person=member_person)
+        session.add(_make_group_instructor_assignment(group, instructor_user))
+        session.commit()
+        instructor_user_id, membership_id = instructor_user.id, club_membership.id
+    _grant_permission(instructor_user_id, "membership.read", scope_type="own_groups")
+    _authenticate_as(instructor_user_id)
+
+    response = client.get(f"/api/v1/memberships/{membership_id}")
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == str(membership_id)
+
+
+@requires_postgres
+def test_membership_own_groups_denies_inactive_club_membership(client: TestClient) -> None:
+    """The ClubMembership resource being accessed must itself be active
+    — an active GroupMembership/GroupInstructorAssignment chain is not
+    enough on its own (this is the specific gap fixed in
+    `_own_group_condition_for_membership`).
+    """
+    with session_scope() as session:
+        club = _make_club()
+        instructor_person = _make_person()
+        instructor_user = _make_user(instructor_person)
+        member_person = _make_person()
+        session.add_all([club, instructor_person, instructor_user, member_person])
+        session.commit()
+        club_membership, group = _setup_group_membership(
+            session, club=club, person=member_person, club_membership_status="archived"
+        )
+        session.add(_make_group_instructor_assignment(group, instructor_user))
+        session.commit()
+        instructor_user_id, membership_id = instructor_user.id, club_membership.id
+    _grant_permission(instructor_user_id, "membership.read", scope_type="own_groups")
+    _authenticate_as(instructor_user_id)
+
+    response = client.get(f"/api/v1/memberships/{membership_id}")
+    assert response.status_code == 404, response.text
+
+
+@requires_postgres
+def test_membership_own_groups_denies_cross_club_group_even_with_inconsistent_data(
+    client: TestClient,
+) -> None:
+    """The authorization boundary itself must reject a GroupMembership
+    that (inconsistently, bypassing app.groups.service/ADR-0022) points
+    to a Group in a different Club than the ClubMembership it is
+    supposedly for — the query must not rely solely on write-time
+    service-layer integrity to prevent cross-Club access.
+    """
+    with session_scope() as session:
+        club_a = _make_club()
+        club_b = _make_club()
+        instructor_person = _make_person()
+        instructor_user = _make_user(instructor_person)
+        member_person = _make_person()
+        session.add_all([club_a, club_b, instructor_person, instructor_user, member_person])
+        session.commit()
+        # member_person's ClubMembership is in club_a, but the Group (and
+        # its GroupMembership row) are in club_b — an inconsistent state
+        # that should never occur via the real API, constructed directly
+        # here to prove the authorization query itself guards against it.
+        club_membership = _make_club_membership(club_a, member_person)
+        group = _make_group(club_b)
+        session.add_all([club_membership, group])
+        session.commit()
+        session.add(_make_group_membership(group, club_membership))
+        session.add(_make_group_instructor_assignment(group, instructor_user))
+        session.commit()
+        instructor_user_id, membership_id = instructor_user.id, club_membership.id
+    _grant_permission(instructor_user_id, "membership.read", scope_type="own_groups")
+    _authenticate_as(instructor_user_id)
+
+    response = client.get(f"/api/v1/memberships/{membership_id}")
+    assert response.status_code == 404, response.text
 
 
 @requires_postgres

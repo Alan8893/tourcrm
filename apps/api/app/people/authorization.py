@@ -53,7 +53,7 @@ from sqlalchemy.orm import Session, aliased
 
 from app.authorization.context import ResourceContext
 from app.authorization.service import applicable_assignments
-from app.db.groups import GroupInstructorAssignment, GroupMembership
+from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 from app.db.identity import ClubMembership, Person, User
 
 _ACTIVE_GROUP_MEMBERSHIP_STATUS = "active"
@@ -80,6 +80,12 @@ def _own_group_condition_for_person(
     requesting User`. Co-membership in the same Group without a matching
     `GroupInstructorAssignment` row is never sufficient.
 
+    `Group` is joined explicitly (not skipped as an implied hop between
+    `GroupMembership` and `GroupInstructorAssignment`) so this predicate
+    can itself enforce `Group.club_id == ClubMembership.club_id` — the
+    authorization boundary must hold even against inconsistent/historical
+    data, not rely solely on ADR-0022's write-time integrity checks.
+
     When `club_id` is given (a club-scoped assignment), the match is
     additionally restricted to that specific Club's ClubMembership —
     required because a club-scoped `own_groups` assignment must not
@@ -87,10 +93,12 @@ def _own_group_condition_for_person(
     """
     cm = aliased(ClubMembership)
     gm = aliased(GroupMembership)
+    group = aliased(Group)
     gia = aliased(GroupInstructorAssignment)
     conditions = [
         cm.person_id == person_id,
         cm.status == _ACTIVE_CLUB_MEMBERSHIP_STATUS,
+        group.club_id == cm.club_id,
         gia.user_id == requester_user_id,
         gm.membership_status == _ACTIVE_GROUP_MEMBERSHIP_STATUS,
         _active_interval(gm.valid_from, gm.valid_to),
@@ -101,7 +109,8 @@ def _own_group_condition_for_person(
     return sa.exists(
         sa.select(cm.id)
         .join(gm, gm.club_membership_id == cm.id)
-        .join(gia, gia.group_id == gm.group_id)
+        .join(group, group.id == gm.group_id)
+        .join(gia, gia.group_id == group.id)
         .where(*conditions)
     )
 
@@ -112,14 +121,26 @@ def _own_group_condition_for_membership(
     """Same as `_own_group_condition_for_person` but keyed directly by an
     existing `ClubMembership.id` — used when a `ClubMembership` row is
     already loaded (avoids an extra join back through `person_id`).
+
+    Re-checks that the referenced ClubMembership is itself active and
+    that the Group found via GroupMembership belongs to that same
+    ClubMembership's Club — both required by Issue #62's accepted
+    authorization chain, and enforced here directly rather than assumed
+    from ADR-0022 write-time integrity alone.
     """
+    cm = aliased(ClubMembership)
     gm = aliased(GroupMembership)
+    group = aliased(Group)
     gia = aliased(GroupInstructorAssignment)
     return sa.exists(
         sa.select(gm.id)
-        .join(gia, gia.group_id == gm.group_id)
+        .join(cm, cm.id == gm.club_membership_id)
+        .join(group, group.id == gm.group_id)
+        .join(gia, gia.group_id == group.id)
         .where(
-            gm.club_membership_id == club_membership_id,
+            cm.id == club_membership_id,
+            cm.status == _ACTIVE_CLUB_MEMBERSHIP_STATUS,
+            group.club_id == cm.club_id,
             gia.user_id == requester_user_id,
             gm.membership_status == _ACTIVE_GROUP_MEMBERSHIP_STATUS,
             _active_interval(gm.valid_from, gm.valid_to),
