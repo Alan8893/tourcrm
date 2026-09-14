@@ -24,7 +24,7 @@ TourCRM_Assets_<category>_<priority>.zip
 |---|---|---|---|---|
 | `TourCRM_Assets_Brand_P0-P1.zip` | Brand derivatives | BR-001…BR-008 (8) | Planned | `docs/06-ui/assets/packages/brand/` |
 | `TourCRM_Assets_Navigation_P0.zip` | Approved P0 navigation icon set | NAV-001…NAV-007 (7) | **Approved / uploaded** | `docs/06-ui/assets/packages/navigation/` |
-| `TourCRM_Assets_Actions_P0-P1.zip` | Action icons | ACT-001…ACT-024 (24) | Planned | `docs/06-ui/assets/packages/actions/` |
+| `TourCRM_Assets_Actions_P0.zip` | Core action icons | ACT-001…ACT-017 (17) | **Production candidate / awaiting visual approval** | `docs/06-ui/assets/packages/actions/` |
 | `TourCRM_Assets_Status_P0.zip` | Product and semantic status icons | STA-001…STA-009 (9) | Planned | `docs/06-ui/assets/packages/status/` |
 | `TourCRM_Assets_Domain_P0-P1.zip` | Person, membership, role, Group and Event icons | DOM-001…DOM-022 (22) | Planned | `docs/06-ui/assets/packages/domain/` |
 | `TourCRM_Assets_Achievements_P0-P1.zip` | Achievement frames, states and initial artwork | ACH-001…ACH-018 (18) | Planned | `docs/06-ui/assets/packages/achievements/` |
@@ -47,7 +47,7 @@ The catalog defines this order:
 10. Illustrations
 11. P2 Decorative assets
 
-Navigation P0 is already complete. The next production block is **Action Icons P0**.
+Navigation P0 is already complete. The current production block is **Action Icons P0**.
 
 ## Navigation package
 
@@ -82,6 +82,44 @@ navigation/<icon-name>/<icon-name>-<size>.webp
 ```
 
 The archive is a documentation/design-system handoff package. It is not the application integration source under `assets/ui/` until the implementation stage.
+
+## Actions P0 candidate
+
+The current source catalog text lists these core actions:
+
+```text
+add
+edit
+delete
+archive
+restore
+search
+filter
+sort
+save
+cancel
+confirm
+close
+back
+forward
+more
+download
+upload
+```
+
+The local candidate package contains these 17 actions at 16, 20, 24, 32, 48 and 64 px as transparent WebP. It remains a **visual approval candidate** until the artwork is reviewed against the already approved TourCRM visual language.
+
+Archive filename:
+
+```text
+TourCRM_Assets_Actions_P0.zip
+```
+
+Local candidate checksum:
+
+```text
+7d049760bde1b6b5bb0534a2712adcc18507b8e123e8a82cce41c4b549a81175
+```
 
 ## Package completion rule
 
