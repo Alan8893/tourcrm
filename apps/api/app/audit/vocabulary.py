@@ -60,5 +60,14 @@ CANONICAL_AUDIT_ACTIONS: frozenset[str] = frozenset(
         "event.updated",
         "event.status_changed",
         "event.archived",
+        # Event recurrence (ADR-0028 amendment to ADR-0024 §4)
+        "event_series.created",
+        "event_series.updated",
+        "event_series.version_created",
+        "event_series.status_changed",
+        "event_occurrence.exception_created",
+        "event_occurrence.exception_changed",
+        "event_occurrence.status_changed",
+        "event_occurrence.series_rebound",
     }
 )

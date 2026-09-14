@@ -14,6 +14,7 @@ from app.db import (
     audit,  # noqa: E402,F401  (registers model on Base.metadata)
     authentication,  # noqa: E402,F401  (registers models on Base.metadata)
     authorization,  # noqa: E402,F401  (registers models on Base.metadata)
+    event_recurrence,  # noqa: E402,F401  (registers models on Base.metadata)
     events,  # noqa: E402,F401  (registers model on Base.metadata)
     foundation,  # noqa: E402,F401  (registers model on Base.metadata)
     groups,  # noqa: E402,F401  (registers models on Base.metadata)
