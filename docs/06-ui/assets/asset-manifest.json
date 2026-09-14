@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "1.0",
+  "assets": [
+    {
+      "id": "illustration.empty.groups",
+      "type": "illustration",
+      "category": "empty-state",
+      "status": "production",
+      "file": "assets/ui/illustrations/empty/empty-groups.svg",
+      "sizes": [32, 64, 128, 256],
+      "themes": ["light", "dark"],
+      "description": "Empty state for an account with no groups."
+    },
+    {
+      "id": "illustration.empty.people",
+      "type": "illustration",
+      "category": "empty-state",
+      "status": "production",
+      "file": "assets/ui/illustrations/empty/empty-people.svg",
+      "sizes": [32, 64, 128, 256],
+      "themes": ["light", "dark"],
+      "description": "Empty state for an account with no people."
+    },
+    {
+      "id": "illustration.empty.events",
+      "type": "illustration",
+      "category": "empty-state",
+      "status": "production",
+      "file": "assets/ui/illustrations/empty/empty-events.svg",
+      "sizes": [32, 64, 128, 256],
+      "themes": ["light", "dark"],
+      "description": "Empty state for an account with no events."
+    },
+    {
+      "id": "illustration.empty.achievements",
+      "type": "illustration",
+      "category": "empty-state",
+      "status": "production",
+      "file": "assets/ui/illustrations/empty/empty-achievements.svg",
+      "sizes": [32, 64, 128, 256],
+      "themes": ["light", "dark"],
+      "description": "Empty state for an account with no achievements."
+    },
+    {
+      "id": "illustration.empty.search",
+      "type": "illustration",
+      "category": "empty-state",
+      "status": "production",
+      "file": "assets/ui/illustrations/empty/empty-search.svg",
+      "sizes": [32, 64, 128, 256],
+      "themes": ["light", "dark"],
+      "description": "Empty search state."
+    },
+    {
+      "id": "illustration.no-results",
+      "type": "illustration",
+      "category": "empty-state",
+      "status": "production",
+      "file": "assets/ui/illustrations/empty/no-results.svg",
+      "sizes": [32, 64, 128, 256],
+      "themes": ["light", "dark"],
+      "description": "Generic no-results state."
+    }
+  ]
+}
