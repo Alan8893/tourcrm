@@ -1,4 +1,4 @@
-# ADR-0028 — Event Recurrence Persistence and Series Versioning
+# TourCRM — ADR-0028 — Event Recurrence Persistence and Series Versioning
 
 - Status: Accepted
 - Date: 2026-09-14
@@ -22,18 +22,6 @@ These decisions require an explicit physical persistence model and concurrency s
 
 A recurring schedule is represented by a logical `EventSeries` and one or more immutable versions of that logical series.
 
-```text
-Logical Series
-  ├── EventSeries v1
-  │      └── EventOccurrence*
-  ├── EventSeries v2
-  │      └── EventOccurrence*
-  └── EventSeries v3
-         └── EventOccurrence*
-```
-
-`EventOccurrence` is the concrete operational occurrence. It is not recreated merely because its series is edited.
-
 ### 2. EventSeries version chain
 
 Each physical `EventSeries` version contains:
@@ -47,23 +35,13 @@ Each physical `EventSeries` version contains:
 - lifecycle/status fields;
 - audit timestamps and actor fields where applicable.
 
-For version 1:
+For version 1: `root_series_id = id`, `version = 1`, `supersedes_series_id = NULL`.
 
-- `root_series_id = id`;
-- `version = 1`;
-- `supersedes_series_id = NULL`.
-
-For later versions:
-
-- `root_series_id` is inherited from the root;
-- `version = previous_version + 1`;
-- `supersedes_series_id = previous_version.id`.
+For later versions, `root_series_id` is inherited from the root, `version = previous_version + 1`, and `supersedes_series_id = previous_version.id`.
 
 The current version is the terminal version in the chain: it is not superseded by another version. No stored `is_current` flag is used.
 
-A database uniqueness constraint must prevent two versions with the same `(root_series_id, version)`.
-
-A database-level integrity mechanism must prevent more than one successor from being created for the same predecessor.
+A database uniqueness constraint must prevent two versions with the same `(root_series_id, version)`. A database-level integrity mechanism must prevent more than one successor from being created for the same predecessor.
 
 ### 3. Version boundaries
 
@@ -201,16 +179,41 @@ Object-level authorization and Club ownership checks remain mandatory.
 
 ### 12. Audit
 
-At minimum, the following business actions are auditable:
+The recurrence domain extends the canonical audit vocabulary with these stable action codes:
 
-- series creation;
-- series update/version creation;
-- series pause/resume/cancel/archive;
-- occurrence exception creation/change;
-- occurrence lifecycle changes;
-- occurrence rebinding to a new series version.
+| Action code | Meaning |
+|---|---|
+| `event_series.created` | Initial EventSeries version created. |
+| `event_series.updated` | Current Series version's mutable non-versioning data changed where the operation does not create a successor version. |
+| `event_series.version_created` | New EventSeries version created by a "this and following" change. |
+| `event_series.status_changed` | EventSeries lifecycle transition (`active/paused/cancelled/archived`). |
+| `event_occurrence.exception_created` | First exception created for an occurrence. |
+| `event_occurrence.exception_changed` | Existing current exception changed. |
+| `event_occurrence.status_changed` | EventOccurrence lifecycle transition. |
+| `event_occurrence.series_rebound` | Already-materialized occurrence rebound to a new EventSeries version at a version boundary. |
 
-Stable action codes must be added to the canonical audit vocabulary before implementation.
+These actions are business audit events and follow ADR-0024: mutation and audit are committed atomically; audit is append-only; no secrets or security-sensitive request data are stored.
+
+A single user operation may legitimately produce more than one audit record when it changes multiple business resources. For example, a "this and following" change may emit `event_series.version_created` and `event_occurrence.series_rebound` for the materialized boundary occurrence.
+
+### 13. Canonical physical persistence
+
+The canonical physical recurrence model is defined by `docs/03-architecture/database-schema-recurrence.md`.
+
+`event_occurrences` do not require a nullable bridge to a separate `events` row. Occurrence snapshots contain the operational Event fields needed by the occurrence domain. Existing non-recurring Event persistence remains governed by ADR-0019/ADR-0023.
+
+`event_occurrence_exceptions` has a unique `occurrence_id` and stores the current exception state. Historical exception actions are represented by the immutable audit stream.
+
+### 14. Implementation boundary
+
+The following remain implementation details and must not become undocumented business rules:
+
+- exact PostgreSQL index/exclusion expression for materialization identity;
+- exact recurrence parser library;
+- exact locking statement and transaction isolation level, provided the required conflict semantics are preserved;
+- notification delivery implementation;
+- calendar/iCalendar projection storage;
+- attendance persistence.
 
 ## Consequences
 
@@ -228,6 +231,7 @@ Stable action codes must be added to the canonical audit vocabulary before imple
 - The data model contains explicit series versions rather than mutating one recurrence row in place.
 - Version creation and materialization require transactional concurrency handling.
 - The API must expose or internally carry source-version information for conflict detection.
+- Recurrence audit vocabulary grows beyond the existing single-Event vocabulary.
 
 ## Rejected alternatives
 
