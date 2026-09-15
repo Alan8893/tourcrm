@@ -195,14 +195,59 @@ RRULE должен валидироваться backend.
 
 Возвращает calendar projection для requester после применения `event.read` и scope/object policy.
 
-Поддерживает filtering by:
+#### Query parameters
 
-- current user;
-- groups;
-- event types;
-- date range.
+`from` и `to` обязательны. Они задают интервал календаря **`[from, to)`**: `from` включается, `to` не включается.
 
-Фильтры не могут расширять доступ.
+Границы должны быть timezone-aware RFC 3339 timestamps. Сервер нормализует их к canonical UTC instant для выборки. Локальное отображение выполняется клиентом с учётом timezone события/пользователя.
+
+Запрос без обеих границ не является валидным календарным запросом.
+
+Поддерживаются дополнительные фильтры, только сужающие уже авторизованный набор:
+
+- `user_id` — текущий пользователь/связанный с ним пользовательский контекст по разрешённой объектной политике;
+- `group_id` — группа;
+- `event_type` — тип мероприятия;
+- `status` — статус.
+
+Фильтры не могут расширять доступ requester.
+
+Calendar collection использует стандартный API v1 pagination envelope. `page` и `page_size` соответствуют общим API conventions; серверные default/max значения являются глобальной конфигурацией.
+
+Результат сортируется по `start_at` по возрастанию. Сортировка является серверной и детерминированной: при одинаковом `start_at` используется стабильный `id` как tie-breaker. Произвольное поле сортировки клиентом не поддерживается.
+
+### Calendar status visibility
+
+Calendar projection возвращает occurrences/events со статусами:
+
+- `published`;
+- `in_progress`;
+- `completed`;
+- `cancelled`.
+
+`draft` и `archived` в обычную calendar projection не входят.
+
+Прошедшие `completed` и `cancelled` записи возвращаются, если попадают в явно запрошенный диапазон. Отменённое проведение не удаляется из calendar projection: оно возвращается со статусом `cancelled`, чтобы календарь мог явно показать отмену.
+
+### Recurring occurrences and materialization
+
+Для recurring events calendar projection работает с persisted `EventOccurrence` и не вычисляет RRULE самостоятельно.
+
+Если запрошенный `to` выходит за текущий materialized planning horizon, backend автоматически расширяет materialization до необходимого диапазона в рамках правил ADR-0015/ADR-0028. Материализация должна оставаться idempotent и concurrency-safe.
+
+Calendar authorization для recurring occurrences использует occurrence-level relationships согласно ADR-0029:
+
+- staff/responsibility → `own_events`;
+- group targeting + applicable GroupInstructorAssignment → `own_groups`;
+- participation → `self` / `children`.
+
+`occurrence.club_id` сам по себе не предоставляет доступ за пределами разрешённой object/scope policy.
+
+### Calendar response identity
+
+Каждый calendar item представляет одно конкретное occurrence/event и содержит стабильный public opaque `id` исходной сущности. Для recurring occurrence не создаётся второй календарный identity.
+
+The response must identify whether the item is an ordinary Event or EventOccurrence and, for recurring occurrences, expose the governing series identifier/version where that information is part of the public contract.
 
 ## 17. iCalendar
 
@@ -447,9 +492,9 @@ Audit обязателен для:
 5. Participant list и calendar соблюдают canonical permission/scope/object policy.
 6. Parent видит только разрешённые данные детей через active GuardianRelationship.
 7. Cancellation/critical schedule changes могут инициировать notification events.
-8. iCalendar feed не раскрывает данные, недоступные requester.
-9. Недопустимые status transitions отклоняются.
-10. Attendance correction после закрытия требует `attendance.update`, reason и audit.
-11. Все изменения значимых сущностей audit'ed.
-12. API соблюдает общий error/pagination/idempotency contract.
-13. API не использует неканонические permissions `event.archive`, `event.participant.read`, `event.participant.manage`, `attendance.correct`, `event.schedule.manage`.
+8. iCalendar feed не раскрывает данные, не разрешённые requester.
+9. Calendar range uses `[from,to)` with both bounds required.
+10. Calendar projection excludes `draft` and `archived`, but includes `cancelled` and `completed` occurrences inside the requested range.
+11. Calendar uses standard pagination and deterministic `start_at` ordering.
+12. Calendar automatically extends occurrence materialization when requested `to` exceeds the current materialized horizon.
+13. Recurring calendar authorization uses occurrence-level relationships according to ADR-0029.
