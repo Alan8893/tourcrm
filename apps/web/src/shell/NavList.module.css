@@ -1,0 +1,30 @@
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.link:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-text-primary);
+}
+
+.linkActive {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-hover);
+}
+
+.label {
+  font-size: var(--font-size-base);
+}

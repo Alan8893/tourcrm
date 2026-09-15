@@ -1,0 +1,10 @@
+.wrapper {
+  padding: var(--space-10) var(--space-4);
+  text-align: center;
+  color: var(--color-text-secondary);
+}
+
+.title {
+  color: var(--color-text-primary);
+  margin-bottom: var(--space-2);
+}

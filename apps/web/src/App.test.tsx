@@ -1,12 +1,58 @@
-import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { render, screen, within } from "@testing-library/react";
 
 import { App } from "./App";
+import { stubFetch } from "./test/renderWithProviders";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("App", () => {
-  it("renders the placeholder root component", () => {
+  it("renders exactly the seven approved navigation items, the brand logo and a profile area, and lands on Home", async () => {
+    stubFetch([
+      { match: "/auth/me", response: {}, status: 401 },
+      {
+        match: "/events",
+        response: { items: [], pagination: { page: 1, page_size: 5, total: 0, pages: 0 } },
+      },
+    ]);
+
     render(<App />);
 
-    expect(screen.getByText("TourCRM")).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Основная навигация" });
+    const expectedItems = [
+      "Главная",
+      "Люди",
+      "Группы",
+      "События",
+      "Достижения",
+      "Отчёты",
+      "Настройки",
+    ];
+    const links = within(nav).getAllByRole("link");
+    expect(links).toHaveLength(7);
+    expectedItems.forEach((label) => {
+      expect(within(nav).getByRole("link", { name: label })).toBeInTheDocument();
+    });
+
+    expect(screen.getByAltText("TourCRM «Вектор»")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Гость/ })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /TourCRM/ })).toBeInTheDocument();
+  });
+
+  it("gives the current page an accessible current-page marker", async () => {
+    stubFetch([
+      { match: "/auth/me", response: {}, status: 401 },
+      {
+        match: "/events",
+        response: { items: [], pagination: { page: 1, page_size: 5, total: 0, pages: 0 } },
+      },
+    ]);
+
+    render(<App />);
+
+    const homeLink = await screen.findByRole("link", { name: "Главная" });
+    expect(homeLink).toHaveAttribute("aria-current", "page");
   });
 });

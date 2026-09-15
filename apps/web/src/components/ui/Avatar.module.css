@@ -1,0 +1,16 @@
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-hover);
+  font-weight: 700;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.guest {
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+}
