@@ -1,8 +1,9 @@
 {
-  "schemaVersion": "1.5",
+  "schemaVersion": "2.0",
   "assetLifecycle": {
     "currentStage": "documentation-handoff",
     "documentationSourceOfTruth": "docs/06-ui/assets/",
+    "packageSourceOfTruth": "docs/06-ui/assets/packages/",
     "applicationIntegrationPath": "assets/ui/",
     "integrationIsSeparateStage": true
   },
@@ -11,21 +12,76 @@
       "preferred": "webp",
       "fallback": null,
       "sizes": [16, 20, 24, 32, 48, 64],
-      "rule": "TourCRM production UI icon assets are raster WebP. SVG is not used for production UI assets."
+      "rule": "TourCRM production UI icons are raster WebP. SVG is not used."
     },
     "illustrations": {
-      "preferred": "webp",
+      "preferred": ["webp", "png"],
       "variants": ["desktop", "tablet", "mobile"],
-      "rule": "Illustrations are full TourCRM artwork. Responsive variants are separate compositions where necessary, not merely resized exports."
+      "rule": "Illustrations are full TourCRM artwork; responsive variants are separate compositions where necessary."
     }
   },
+  "packages": [
+    {"category":"navigation","status":"approved-production","archive":"docs/06-ui/assets/packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip","integrationPath":"assets/ui/icons/navigation/","assetCount":42,"catalogCount":7},
+    {"category":"actions","status":"approved-production","archive":"docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip","integrationPath":"assets/ui/icons/actions/","assetCount":102,"catalogCount":17},
+    {"category":"status","status":"approved-production","archive":"docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0_FINAL.zip","integrationPath":"assets/ui/icons/status/","assetCount":54,"catalogCount":9},
+    {"category":"achievements-p0","status":"approved-production","archive":"docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip","integrationPath":"assets/ui/achievements/","assetCount":null,"catalogCount":8},
+    {"category":"achievements-p1","status":"approved-production","archive":"docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip","integrationPath":"assets/ui/achievements/","assetCount":null,"catalogCount":10},
+    {"category":"illustrations-empty-states","status":"approved-production","archive":"docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip","integrationPath":"assets/ui/illustrations/","assetCount":null,"catalogCount":6},
+    {"category":"illustrations-system","status":"approved-production","archive":"docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip","integrationPath":"assets/ui/illustrations/","assetCount":null,"catalogCount":5},
+    {"category":"illustrations-onboarding","status":"approved-production","archive":"docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip","integrationPath":"assets/ui/illustrations/","assetCount":null,"catalogCount":4},
+    {"category":"domain","status":"working-concept","archiveDirectory":"docs/06-ui/assets/packages/domain/","integrationPath":"assets/ui/icons/domain/","catalogCount":22},
+    {"category":"brand","status":"planned","archiveDirectory":"docs/06-ui/assets/packages/brand/","integrationPath":"assets/ui/brand/","catalogCount":8},
+    {"category":"decorative","status":"deferred-p2","archiveDirectory":"docs/06-ui/assets/packages/decorative/","integrationPath":"assets/ui/decorative/","catalogCount":9}
+  ],
   "assets": [
-    {"id":"icon.navigation.home","type":"icon","category":"navigation","status":"approved-production","format":"webp","documentationPath":"docs/06-ui/assets/navigation/home/","implementationPath":"assets/ui/icons/navigation/home/","sizes":[16,20,24,32,48,64],"states":["default"]},
-    {"id":"icon.navigation.people","type":"icon","category":"navigation","status":"approved-production","format":"webp","documentationPath":"docs/06-ui/assets/navigation/people/","implementationPath":"assets/ui/icons/navigation/people/","sizes":[16,20,24,32,48,64],"states":["default"]},
-    {"id":"icon.navigation.groups","type":"icon","category":"navigation","status":"approved-production","format":"webp","documentationPath":"docs/06-ui/assets/navigation/groups/","implementationPath":"assets/ui/icons/navigation/groups/","sizes":[16,20,24,32,48,64],"states":["default"]},
-    {"id":"icon.navigation.events","type":"icon","category":"navigation","status":"approved-production","format":"webp","documentationPath":"docs/06-ui/assets/navigation/events/","implementationPath":"assets/ui/icons/navigation/events/","sizes":[16,20,24,32,48,64],"states":["default"]},
-    {"id":"icon.navigation.achievements","type":"icon","category":"navigation","status":"approved-production","format":"webp","documentationPath":"docs/06-ui/assets/navigation/achievements/","implementationPath":"assets/ui/icons/navigation/achievements/","sizes":[16,20,24,32,48,64],"states":["default"]},
-    {"id":"icon.navigation.reports","type":"icon","category":"navigation","status":"approved-production","format":"webp","documentationPath":"docs/06-ui/assets/navigation/reports/","implementationPath":"assets/ui/icons/navigation/reports/","sizes":[16,20,24,32,48,64],"states":["default"]},
-    {"id":"icon.navigation.settings","type":"icon","category":"navigation","status":"approved-production","format":"webp","documentationPath":"docs/06-ui/assets/navigation/settings/","implementationPath":"assets/ui/icons/navigation/settings/","sizes":[16,20,24,32,48,64],"states":["default"]}
+    {"id":"icon.navigation.home","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/home/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.navigation.people","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/people/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.navigation.groups","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/groups/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.navigation.events","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/events/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.navigation.achievements","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/achievements/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.navigation.reports","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/reports/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.navigation.settings","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/settings/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.add","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/add/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.edit","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/edit/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.delete","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/delete/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.archive","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/archive/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.restore","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/restore/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.search","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/search/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.filter","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/filter/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.sort","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/sort/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.save","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/save/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.cancel","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/cancel/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.confirm","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/confirm/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.close","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/close/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.back","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/back/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.forward","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/forward/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.more","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/more/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.download","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/download/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.upload","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/upload/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.planned","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/planned/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.ongoing","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/ongoing/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.completed","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/completed/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.ended","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/ended/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.archived","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/archived/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.success","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/success/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.warning","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/warning/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.error","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/error/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.info","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/info/","sizes":[16,20,24,32,48,64]}
+  ],
+  "illustrationCatalog": {
+    "emptyStates": ["empty-groups","empty-people","empty-events","empty-achievements","empty-search","no-results"],
+    "system": ["success","error","404","403","maintenance"],
+    "onboarding": ["welcome","first-group","first-event","first-achievement"]
+  },
+  "achievementCatalog": {
+    "p0": ["common","uncommon","rare","epic","legendary","earned","locked","progress"],
+    "p1": ["explorer","peak-reacher","veteran-tourist","team-player","camp-master","navigator","first-expedition","trail-walker","community-hero","adventure-leader"]
+  },
+  "doNotUse": [
+    "SVG production assets",
+    "superseded navigation package TourCRM_Assets_Navigation_P0.zip",
+    "generic icon-library substitutions without explicit design decision",
+    "concept sheets as application assets",
+    "working Domain archives as final production assets"
   ]
 }
