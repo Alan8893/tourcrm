@@ -53,7 +53,7 @@ This is the single source of truth for the brand mark. No SVG, ZIP archive or ge
 | Navigation | **CLOSED / APPROVED** | `packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` |
 | Actions | **CLOSED / APPROVED** | `packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` |
 | Status | **CLOSED / APPROVED** | `packages/status/TourCRM_Assets_Status_P0_FINAL.zip` |
-| Domain | **Approved / uploaded** | `packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` |
+| Domain | **CLOSED / APPROVED** | `packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` |
 | Achievements P0 | **Approved / uploaded** | `packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` |
 | Achievements P1 | **Approved / uploaded** | `packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` |
 | Illustrations — Empty States | **Approved / uploaded** | `packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` |
@@ -155,7 +155,7 @@ welcome first-group first-event first-achievement
 
 Empty-state illustrations are an approved place for the product's friendly/cute character, but each illustration must correspond to its actual semantic state.
 
-## Domain
+## Domain — CLOSED / APPROVED
 
 ### Production-approved artwork
 
@@ -179,7 +179,7 @@ The Domain package path is:
 packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip
 ```
 
-The binary ZIP is physically present in the repository and the package is now **Approved / uploaded**.
+The binary ZIP is physically present in the repository. Domain P2 is **CLOSED / APPROVED** for this asset-production stage.
 
 ### Domain semantic rules
 
@@ -191,7 +191,7 @@ The binary ZIP is physically present in the repository and the package is now **
 - `cancelled` is not automatically `error`.
 - No artwork is created for an undefined semantic ID; DOM-009 remains a GAP.
 
-Do not copy Domain assets into `assets/ui/` during this documentation hand-off. Application integration remains a separate stage.
+The approved Domain visual system must not be reopened or regenerated during the current asset-production stage. Any change requires an explicit Product Owner decision and a separate documented change. Do not copy Domain assets into `assets/ui/` during this documentation hand-off. Application integration remains a separate stage.
 
 ## Lifecycle gate
 
