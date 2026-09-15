@@ -29,7 +29,7 @@
     {"category":"illustrations-empty-states","status":"approved-production","archive":"docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip","integrationPath":"assets/ui/illustrations/","assetCount":24,"catalogCount":6},
     {"category":"illustrations-system","status":"approved-production","archive":"docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip","integrationPath":"assets/ui/illustrations/","assetCount":20,"catalogCount":5},
     {"category":"illustrations-onboarding","status":"approved-production","archive":"docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip","integrationPath":"assets/ui/illustrations/","assetCount":16,"catalogCount":4},
-    {"category":"domain","status":"production-approved-pending-upload","archive":"docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip","integrationPath":"assets/ui/icons/domain/","assetCount":49,"catalogCount":22},
+    {"category":"domain","status":"approved-production","archive":"docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip","integrationPath":"assets/ui/icons/domain/","assetCount":49,"catalogCount":22},
     {"category":"brand","status":"planned","archiveDirectory":"docs/06-ui/assets/packages/brand/","integrationPath":"assets/ui/brand/","catalogCount":8},
     {"category":"decorative","status":"deferred-p2","archiveDirectory":"docs/06-ui/assets/packages/decorative/","integrationPath":"assets/ui/decorative/","catalogCount":9}
   ],
@@ -67,13 +67,13 @@
     {"id":"icon.status.warning","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/warning/","sizes":[16,20,24,32,48,64]},
     {"id":"icon.status.error","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/error/","sizes":[16,20,24,32,48,64]},
     {"id":"icon.status.info","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/info/","sizes":[16,20,24,32,48,64]},
-    {"id":"icon.domain.membership","category":"domain","status":"production-approved-pending-upload","format":"webp","path":"assets/ui/icons/domain/DOM-006_membership_","sizes":[16,20,24,32,48,64]},
-    {"id":"icon.domain.relationship","category":"domain","status":"production-approved-pending-upload","format":"webp","path":"assets/ui/icons/domain/DOM-007_relationship_","sizes":[16,20,24,32,48,64]},
-    {"id":"icon.domain.instructor-assignment","category":"domain","status":"production-approved-pending-upload","format":"webp","path":"assets/ui/icons/domain/DOM-008_instructor-assignment_","sizes":[16,20,24,32,48,64]},
-    {"id":"icon.domain.group-members","category":"domain","status":"production-approved-pending-upload","format":"webp","path":"assets/ui/icons/domain/DOM-010_group-members_","sizes":[16,20,24,32,48,64]},
-    {"id":"icon.domain.group-instructor","category":"domain","status":"production-approved-pending-upload","format":"webp","path":"assets/ui/icons/domain/DOM-011_group-instructor_","sizes":[16,20,24,32,48,64]},
-    {"id":"icon.domain.primary-instructor","category":"domain","status":"production-approved-pending-upload","format":"webp","path":"assets/ui/icons/domain/DOM-012_primary-instructor_","sizes":[16,20,24,32,48,64]},
-    {"id":"icon.domain.trip","category":"domain","status":"production-approved-pending-upload","format":"webp","path":"assets/ui/icons/domain/DOM-021_trip_","sizes":[16,20,24,32,48,64]}
+    {"id":"icon.domain.membership","category":"domain","status":"approved-production","format":"webp","path":"assets/ui/icons/domain/DOM-006_membership_","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.domain.relationship","category":"domain","status":"approved-production","format":"webp","path":"assets/ui/icons/domain/DOM-007_relationship_","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.domain.instructor-assignment","category":"domain","status":"approved-production","format":"webp","path":"assets/ui/icons/domain/DOM-008_instructor-assignment_","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.domain.group-members","category":"domain","status":"approved-production","format":"webp","path":"assets/ui/icons/domain/DOM-010_group-members_","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.domain.group-instructor","category":"domain","status":"approved-production","format":"webp","path":"assets/ui/icons/domain/DOM-011_group-instructor_","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.domain.primary-instructor","category":"domain","status":"approved-production","format":"webp","path":"assets/ui/icons/domain/DOM-012_primary-instructor_","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.domain.trip","category":"domain","status":"approved-production","format":"webp","path":"assets/ui/icons/domain/DOM-021_trip_","sizes":[16,20,24,32,48,64]}
   ],
   "illustrationCatalog": {
     "emptyStates": ["empty-groups","empty-people","empty-events","empty-achievements","empty-search","no-results"],
