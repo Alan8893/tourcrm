@@ -223,6 +223,7 @@ Derived statistics must be reproducible from source facts.
 - `GET /qualifications/{id}`
 - `PATCH /qualifications/{id}`
 - `POST /persons/{id}/qualifications`
+- `PATCH /person-qualifications/{id}`
 - `POST /person-qualifications/{id}/revoke`
 
 ## 16. Achievements
@@ -293,6 +294,8 @@ Published article version must remain historically identifiable.
 - `GET /financial-accounts`
 - `POST /financial-accounts`
 - `GET /financial-accounts/{id}`
+- `PATCH /financial-accounts/{id}`
+- `GET /payments`
 - `POST /payments`
 - `GET /payments/{id}`
 - `PATCH /payments/{id}` where correction policy allows
