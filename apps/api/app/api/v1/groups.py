@@ -26,6 +26,7 @@ per-row visibility filter is needed for those two list endpoints.
 """
 
 import uuid
+from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -36,6 +37,7 @@ from app.api.deps import CurrentPrincipal, require_authenticated_principal, requ
 from app.api.errors import APIError
 from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
+from app.api.v1.events_schemas import CalendarItemOut
 from app.api.v1.groups_schemas import (
     GroupCreateRequest,
     GroupInstructorAssignmentCreateRequest,
@@ -46,10 +48,13 @@ from app.api.v1.groups_schemas import (
     GroupOut,
     GroupUpdateRequest,
 )
+from app.api.v1.schedule_params import parse_schedule_range
 from app.authorization.service import Authorizer
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 from app.db.identity import ClubMembership
 from app.db.session import get_db
+from app.events.calendar import CalendarItem
+from app.events.group_schedule import list_group_schedule_items_page
 from app.groups import service as group_service
 from app.groups.authorization import (
     build_group_create_context,
@@ -70,6 +75,7 @@ from app.groups.queries import (
     list_group_memberships_page,
     list_groups_page,
 )
+from app.groups.schedule_authorization import build_group_schedule_access
 
 router = APIRouter(tags=["groups"])
 groups_router = APIRouter(prefix="/groups", tags=["groups"])
@@ -347,6 +353,70 @@ def archive_group(
             status.HTTP_409_CONFLICT, "invalid_group_status_transition", str(exc)
         ) from exc
     return _group_out(group)
+
+
+def _schedule_item_out(item: CalendarItem) -> CalendarItemOut:
+    # Identical to app.api.v1.events._calendar_item_out — duplicated
+    # rather than imported, since that function is private to its own
+    # module; both endpoints reuse the same CalendarItem/CalendarItemOut
+    # identity contract on purpose (group-and-instructor-schedule-api.md
+    # §1: "no schedule-specific identity").
+    return CalendarItemOut(
+        id=item.id,
+        kind=item.kind,  # type: ignore[arg-type]
+        club_id=item.club_id,
+        event_type=item.event_type,
+        title=item.title,
+        description=item.description,
+        start_at=item.start_at,
+        end_at=item.end_at,
+        timezone=item.timezone,
+        status=item.status,
+        cancellation_reason=item.cancellation_reason,
+        series_id=item.series_id,
+        series_version=item.series_version,
+    )
+
+
+@groups_router.get("/{group_id}/schedule", response_model=CollectionResponse[CalendarItemOut])
+def get_group_schedule(
+    group_id: uuid.UUID,
+    from_: datetime | None = Query(default=None, alias="from"),
+    to: datetime | None = Query(default=None, alias="to"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+) -> CollectionResponse[CalendarItemOut]:
+    from_at, to_at = parse_schedule_range(from_, to)
+
+    # Existence-hiding gate (ODR-0002): a Group that does not exist and one
+    # that exists but the caller cannot see the schedule of are answered
+    # identically — never distinguishable, matching every other
+    # single-object endpoint in this module.
+    group = db.execute(select(Group).where(Group.id == group_id)).scalar_one_or_none()
+    if group is None:
+        raise APIError(status.HTTP_404_NOT_FOUND, _GROUP_NOT_FOUND_CODE, _GROUP_NOT_FOUND_MESSAGE)
+    access = build_group_schedule_access(
+        db, group=group, requester_user_id=principal.user_id, permission_code="event.read"
+    )
+    if not access.allowed:
+        raise APIError(status.HTTP_404_NOT_FOUND, _GROUP_NOT_FOUND_CODE, _GROUP_NOT_FOUND_MESSAGE)
+
+    items, total = list_group_schedule_items_page(
+        db,
+        group=group,
+        access=access,
+        from_at=from_at,
+        to_at=to_at,
+        page=page,
+        page_size=page_size,
+    )
+    pages = (total + page_size - 1) // page_size if total else 0
+    return CollectionResponse(
+        items=[_schedule_item_out(item) for item in items],
+        pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
+    )
 
 
 # --- GroupMembership ----------------------------------------------------
