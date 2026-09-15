@@ -43,7 +43,7 @@ Empty states, onboarding and supportive system feedback may be especially friend
 | Navigation | **Approved / uploaded** | `packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` |
 | Actions | **Approved / uploaded** | `packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` |
 | Status | **Approved / uploaded** | `packages/status/TourCRM_Assets_Status_P0_FINAL.zip` |
-| Domain | Working/concept; **not production-approved** | `packages/domain/` |
+| Domain | **Production artwork approved; binary upload pending** | `packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` |
 | Achievements P0 | **Approved / uploaded** | `packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` |
 | Achievements P1 | **Approved / uploaded** | `packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` |
 | Illustrations — Empty States | **Approved / uploaded** | `packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` |
@@ -135,11 +135,43 @@ welcome first-group first-event first-achievement
 
 Empty-state illustrations are an approved place for the product's friendly/cute character, but each illustration must correspond to its actual semantic state.
 
-## Domain gate
+## Domain
 
-The branch contains Domain working archives, but they remain outside the production-approved set. Do not copy them into `assets/ui/` as final assets.
+### Production-approved artwork
 
-This includes the Group metaphor: Navigation already owns the Groups icon, so Domain must not introduce an ambiguous duplicate.
+The Domain P2 visual batch has passed semantic and visual approval and standalone master/size validation for these seven assets:
+
+```text
+DOM-006 Membership
+DOM-007 Relationship
+DOM-008 Instructor assignment
+DOM-010 Group members
+DOM-011 Group instructor
+DOM-012 Primary instructor
+DOM-021 Trip / journey / route
+```
+
+The package contains 7 masters and 42 WebP exports, 49 files total. DOM-009 remains excluded because its semantic definition is not confirmed.
+
+The Domain package path is:
+
+```text
+docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip
+```
+
+The binary ZIP is the remaining repository hand-off step. Until it is physically uploaded to that path, Domain must not be labeled **Approved / uploaded**.
+
+### Domain semantic rules
+
+- Domain assets are semantic UI icons, not illustrations.
+- `DOM-010 Group members` must remain distinct from Navigation `Groups`.
+- `DOM-011 Group instructor` uses instructor + group context.
+- `DOM-012 Primary instructor` uses the approved star marker to distinguish the primary/responsible instructor.
+- Domain status mapping must be semantic and must not assume `domain status == asset name`.
+- `cancelled` is not automatically `error`.
+- No artwork is created for an undefined semantic ID; DOM-009 remains a GAP.
+
+Do not copy Domain assets into `assets/ui/` during this documentation hand-off. Application integration remains a separate stage.
 
 ## Lifecycle gate
 
@@ -151,6 +183,8 @@ A package becomes **Approved / uploaded** only after:
 4. format/size/naming validation;
 5. upload to the designated package directory;
 6. documentation and manifest update.
+
+For Domain P2, steps 1–4 are complete. The repository binary upload is still pending.
 
 Concept sheets and crops are never the application source.
 
