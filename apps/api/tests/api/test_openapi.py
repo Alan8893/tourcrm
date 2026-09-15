@@ -82,6 +82,8 @@ _GUARDIAN_RELATIONSHIP_PATHS = {
 
 _ME_PATHS = {
     "/api/v1/me/children",
+    # Issue #88 / TH-0083: Instructor Schedule.
+    "/api/v1/me/instructor-schedule",
 }
 
 _GROUP_PATHS = {
@@ -93,6 +95,8 @@ _GROUP_PATHS = {
     "/api/v1/group-memberships/{membership_id}/end",
     "/api/v1/groups/{group_id}/instructors",
     "/api/v1/group-instructor-assignments/{assignment_id}/end",
+    # Issue #88 / TH-0083: Group Schedule.
+    "/api/v1/groups/{group_id}/schedule",
 }
 # No `/api/v1/groups/{group_id}/members/bulk` and no
 # `/api/v1/groups/{group_id}/members/{person_id}/transfer` — both are
