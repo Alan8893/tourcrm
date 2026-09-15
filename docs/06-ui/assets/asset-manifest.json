@@ -1,0 +1,106 @@
+{
+  "schemaVersion": "2.0",
+  "assetLifecycle": {
+    "currentStage": "documentation-handoff",
+    "documentationSourceOfTruth": "docs/06-ui/assets/",
+    "packageSourceOfTruth": "docs/06-ui/assets/packages/",
+    "applicationIntegrationPath": "assets/ui/",
+    "integrationIsSeparateStage": true
+  },
+  "productionFormatPolicy": {
+    "icons": {
+      "preferred": "webp",
+      "fallback": null,
+      "sizes": [16, 20, 24, 32, 48, 64],
+      "rule": "TourCRM production UI icons are raster WebP. SVG is not used."
+    },
+    "illustrations": {
+      "preferred": ["webp", "png"],
+      "variants": ["desktop", "tablet", "mobile"],
+      "rule": "Illustrations are full TourCRM artwork; responsive variants are separate compositions where necessary."
+    },
+    "brand": {
+      "masterFormat": "png",
+      "masterPath": "docs/06-ui/assets/packages/brand/logo.png",
+      "rule": "The official TourCRM / Вектор logo is maintained as one master. No generated variant archive or SVG is part of this stage."
+    }
+  },
+  "packages": [
+    {"category":"navigation","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip","integrationPath":"assets/ui/icons/navigation/","assetCount":42,"catalogCount":7},
+    {"category":"actions","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip","integrationPath":"assets/ui/icons/actions/","assetCount":102,"catalogCount":17},
+    {"category":"status","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0_FINAL.zip","integrationPath":"assets/ui/icons/status/","assetCount":54,"catalogCount":9},
+    {"category":"achievements-p0","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip","integrationPath":"assets/ui/achievements/","assetCount":48,"catalogCount":8},
+    {"category":"achievements-p1","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip","integrationPath":"assets/ui/achievements/","assetCount":60,"catalogCount":10},
+    {"category":"illustrations-empty-states","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip","integrationPath":"assets/ui/illustrations/","assetCount":24,"catalogCount":6},
+    {"category":"illustrations-system","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip","integrationPath":"assets/ui/illustrations/","assetCount":20,"catalogCount":5},
+    {"category":"illustrations-onboarding","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip","integrationPath":"assets/ui/illustrations/","assetCount":16,"catalogCount":4},
+    {"category":"domain","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip","integrationPath":"assets/ui/icons/domain/","assetCount":49,"catalogCount":22},
+    {"category":"brand","status":"master-uploaded","master":"docs/06-ui/assets/packages/brand/logo.png","integrationPath":"assets/ui/brand/","assetCount":1,"catalogCount":1},
+    {"category":"decorative","status":"deferred-p2","changeControl":"deferred","archiveDirectory":"docs/06-ui/assets/packages/decorative/","integrationPath":"assets/ui/decorative/","catalogCount":9}
+  ],
+  "assets": [
+    {"id":"brand.logo.master","category":"brand","status":"master-uploaded","format":"png","path":"docs/06-ui/assets/packages/brand/logo.png"},
+    {"id":"icon.navigation.home","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/home/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.navigation.people","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/people/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.navigation.groups","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/groups/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.navigation.events","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/events/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.navigation.achievements","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/achievements/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.navigation.reports","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/reports/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.navigation.settings","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/settings/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.add","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/add/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.edit","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/edit/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.delete","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/delete/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.archive","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/archive/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.restore","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/restore/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.search","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/search/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.filter","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/filter/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.sort","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/sort/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.save","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/save/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.cancel","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/cancel/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.confirm","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/confirm/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.close","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/close/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.back","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/back/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.forward","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/forward/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.more","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/more/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.download","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/download/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.action.upload","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/upload/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.planned","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/planned/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.ongoing","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/ongoing/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.completed","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/completed/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.ended","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/ended/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.archived","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/archived/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.success","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/success/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.warning","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/warning/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.error","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/error/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.status.info","category":"status","status":"approved-production","format":"webp","path":"assets/ui/icons/status/info/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.domain.membership","category":"domain","status":"approved-production","format":"webp","path":"assets/ui/icons/domain/DOM-006_membership_","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.domain.relationship","category":"domain","status":"approved-production","format":"webp","path":"assets/ui/icons/domain/DOM-007_relationship_","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.domain.instructor-assignment","category":"domain","status":"approved-production","format":"webp","path":"assets/ui/icons/domain/DOM-008_instructor-assignment_","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.domain.group-members","category":"domain","status":"approved-production","format":"webp","path":"assets/ui/icons/domain/DOM-010_group-members_","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.domain.group-instructor","category":"domain","status":"approved-production","format":"webp","path":"assets/ui/icons/domain/DOM-011_group-instructor_","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.domain.primary-instructor","category":"domain","status":"approved-production","format":"webp","path":"assets/ui/icons/domain/DOM-012_primary-instructor_","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.domain.trip","category":"domain","status":"approved-production","format":"webp","path":"assets/ui/icons/domain/DOM-021_trip_","sizes":[16,20,24,32,48,64]}
+  ],
+  "illustrationCatalog": {
+    "emptyStates": ["empty-groups","empty-people","empty-events","empty-achievements","empty-search","no-results"],
+    "system": ["success","error","404","403","maintenance"],
+    "onboarding": ["welcome","first-group","first-event","first-achievement"]
+  },
+  "achievementCatalog": {
+    "p0": ["common","uncommon","rare","epic","legendary","earned","locked","progress"],
+    "p1": ["explorer","peak-reacher","veteran-tourist","team-player","camp-master","navigator","first-expedition","trail-walker","community-hero","adventure-leader"]
+  },
+  "domainCatalog": {
+    "catalogCount": 22,
+    "productionApproved": ["DOM-001","DOM-002","DOM-003","DOM-004","DOM-005","DOM-006","DOM-007","DOM-008","DOM-010","DOM-011","DOM-012","DOM-013","DOM-014","DOM-015","DOM-016","DOM-017","DOM-018","DOM-019","DOM-020","DOM-021","DOM-022"],
+    "gap": ["DOM-009"]
+  },
+  "doNotUse": [
+    "SVG production assets",
+    "superseded navigation package TourCRM_Assets_Navigation_P0.zip",
+    "generic icon-library substitutions without explicit design decision",
+    "concept sheets as application assets",
+    "working Domain archives as final production assets",
+    "generated Brand logo variants without explicit design/product need"
+  ]
+}
