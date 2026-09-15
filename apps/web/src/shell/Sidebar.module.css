@@ -1,0 +1,36 @@
+.sidebar {
+  grid-area: sidebar;
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  padding: var(--space-4) var(--space-3);
+  width: var(--shell-sidebar-width);
+}
+
+/* Tablet: preserve the same seven-item IA (spec §3 "do not simply scale
+   desktop down" is about layout composition, not about removing items) —
+   just compact to icon-only, labels remain for assistive tech via
+   NavList's `nav-label` class. */
+@media (max-width: 1023.98px) {
+  .sidebar {
+    width: 76px;
+    padding: var(--space-4) var(--space-2);
+  }
+
+  .sidebar :global(.nav-label) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+@media (max-width: 767.98px) {
+  .sidebar {
+    display: none;
+  }
+}

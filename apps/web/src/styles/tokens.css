@@ -1,0 +1,85 @@
+/**
+ * TourCRM design tokens (TH-0088 UI Foundation).
+ *
+ * Palette sampled from the official Brand master
+ * (docs/06-ui/assets/packages/brand/logo.png): purple/magenta, pink and
+ * yellow, balanced with warm neutrals per UI-FOUNDATION-SPEC.md §5/§10 and
+ * ASSET-PACKS.md's "nature/green tones balanced with purple/pink/yellow,
+ * purple as an accent, not the dominant UI color".
+ */
+:root {
+  /* Surfaces */
+  --color-bg: #faf8f4;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f4f0e8;
+  --color-border: #e7e0d3;
+  --color-border-strong: #d6cbb8;
+
+  /* Text */
+  --color-text-primary: #2c2620;
+  --color-text-secondary: #6b6153;
+  --color-text-muted: #988f7e;
+  --color-text-on-accent: #ffffff;
+
+  /* Brand accent — purple, used sparingly (see spec: "accent, not the
+     dominant visual field") */
+  --color-accent: #9c2c8f;
+  --color-accent-hover: #7e2273;
+  --color-accent-soft: #f5e6f2;
+  --color-accent-soft-border: #e9c7e0;
+
+  /* Secondary brand tones, for light supporting use only */
+  --color-brand-pink: #f0637a;
+  --color-brand-yellow: #e8c93b;
+
+  /* Semantic feedback (paired with icon + text, never color-only) */
+  --color-success: #2f8f5b;
+  --color-success-soft: #e6f4ec;
+  --color-warning: #b8791a;
+  --color-warning-soft: #faf0dd;
+  --color-danger: #c0392b;
+  --color-danger-soft: #fbe8e5;
+  --color-danger-hover: #9e2e22;
+  --color-info: #2f6fb8;
+  --color-info-soft: #e7f0fa;
+
+  /* Shape */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --radius-pill: 999px;
+
+  /* Elevation — restrained, per spec */
+  --shadow-sm: 0 1px 2px rgba(40, 30, 15, 0.06);
+  --shadow-md: 0 6px 20px rgba(40, 30, 15, 0.08);
+  --shadow-focus: 0 0 0 3px var(--color-accent-soft-border);
+
+  /* Spacing scale (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Typography */
+  --font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+  --font-size-sm: 0.8125rem;
+  --font-size-base: 0.9375rem;
+  --font-size-md: 1.0625rem;
+  --font-size-lg: 1.25rem;
+  --font-size-xl: 1.625rem;
+
+  /* Layout */
+  --shell-header-height: 64px;
+  --shell-sidebar-width: 248px;
+  --shell-mobile-nav-height: 64px;
+  --content-max-width: 1180px;
+
+  /* Focus ring — always visible, never suppressed */
+  --focus-ring-color: var(--color-accent);
+}

@@ -67,6 +67,12 @@ services:
         UID: ${HOST_UID:-1000}
         GID: ${HOST_GID:-1000}
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      # TH-0088: Vite proxies `/api` to the backend itself (see
+      # apps/web/vite.config.ts) rather than requiring backend CORS
+      # configuration — `backend` is this compose network's service name,
+      # never `localhost`, matching the existing DATABASE_URL convention.
+      VITE_API_PROXY_TARGET: http://backend:8000
     ports:
       - "${FRONTEND_PORT:-5173}:5173"
     volumes:

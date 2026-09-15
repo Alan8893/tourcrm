@@ -1,0 +1,32 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(30, 24, 18, 0.4);
+  z-index: 1000;
+  display: none;
+}
+
+@media (max-width: 767.98px) {
+  .overlay {
+    display: block;
+  }
+}
+
+.panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(280px, 84vw);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-4);
+  overflow-y: auto;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
