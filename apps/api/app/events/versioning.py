@@ -25,7 +25,12 @@ correct way to create a successor is `create_successor_version()`, which:
    `uq_event_series_one_successor_per_predecessor` UNIQUE constraint is a
    second, independent guarantee against a duplicate successor even if
    the row lock were somehow bypassed;
-5. rebinds every already-materialized occurrence at or after the boundary
+5. snapshot-copies every relationship-source definition (`SeriesStaff
+   Assignment`/`SeriesGroupTarget`/`SeriesParticipant`) from the current
+   version onto the successor (ADR-0030 §"Versioning and this_and_
+   following") — see app.events.series_relationships.
+   snapshot_copy_series_relationships;
+6. rebinds every already-materialized occurrence at or after the boundary
    (by `recurrence_anchor_at`, on the current version) to the successor —
    same `id`, same `recurrence_anchor_at`, never recreated (ADR-0028 §3:
    "Following occurrences belong to the new version" is not limited to the
@@ -36,8 +41,12 @@ correct way to create a successor is `create_successor_version()`, which:
    like a freshly materialized one would; an occurrence that already
    carries an exception keeps its own customized schedule/snapshot
    untouched — only `series_id` changes for it. Occurrences before the
-   boundary are never touched and remain on the historical version;
-6. audit + commit are the caller's responsibility, matching every other
+   boundary are never touched and remain on the historical version. Each
+   rebound occurrence's relationship categories are independently
+   resynced from the successor's freshly-copied definitions unless
+   protected by an occurrence-level override (ADR-0029/ADR-0030) — see
+   app.events.occurrence_relationships.propagate_occurrence_relationships;
+7. audit + commit are the caller's responsibility, matching every other
    service module in this codebase (app.role_assignments.service,
    app.groups.service): this module never calls
    app.audit.service.record_audit_event or session.commit()/rollback()
@@ -53,7 +62,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.event_recurrence import EventOccurrence, EventOccurrenceException, EventSeries
+from app.events.occurrence_relationships import propagate_occurrence_relationships
 from app.events.series_lifecycle import validate_boundary_occurrence_status
+from app.events.series_relationships import snapshot_copy_series_relationships
 
 
 class EventSeriesVersioningError(Exception):
@@ -250,6 +261,14 @@ def create_successor_version(
     session.add(successor)
     session.flush()
 
+    # ADR-0030 / database-schema-recurrence.md §5.4: "all predecessor
+    # relationship definitions are snapshot-copied into the successor
+    # before any successor-specific relationship change is applied" — the
+    # successor then owns a fully independent definition set.
+    snapshot_copy_series_relationships(
+        session, source_series_id=current.id, target_series_id=successor.id
+    )
+
     # ADR-0028 §3: same id, no new occurrence created — only the
     # governing series version changes, for the boundary and every
     # already-materialized occurrence chronologically at/after it.
@@ -271,6 +290,15 @@ def create_successor_version(
         # A protected occurrence (its own EventOccurrenceException) keeps
         # its customized schedule/snapshot untouched — only series_id
         # rebinds, per this round's ADR-0028 §3 clarification.
+
+        # ADR-0030 point 5/6 / database-schema-recurrence.md §5.4/§7:
+        # resync each relationship category that has no protected
+        # (occurrence-level override) row, from the successor's
+        # just-copied relationship-source definitions, evaluated at this
+        # occurrence's own scheduled start instant. A category with a
+        # protected override is left completely untouched — independent
+        # of whether the occurrence as a whole has an EventOccurrenceException.
+        propagate_occurrence_relationships(session, occurrence=occurrence, series=successor)
     session.flush()
 
     return successor, following_occurrences

@@ -44,6 +44,18 @@ Turns an `EventSeries` version's canonical RRULE into real, persisted
 - `ends_at = starts_at + duration_minutes`, `duration_minutes` read from
   the governing Series version snapshot (ADR-0028 §2 duration amendment) —
   never an implicit/default duration.
+- ADR-0029/ADR-0030: every newly materialized occurrence also gets its
+  applicable staff/group-target/participant relationship rows copied from
+  the governing Series version's relationship-source definitions, in the
+  *same* transaction as the occurrence row itself — see
+  app.events.occurrence_relationships.materialize_occurrence_relationships.
+  Only rows this call actually won the `ON CONFLICT DO NOTHING` race for
+  (i.e. rows this transaction itself just inserted) get their
+  relationships materialized, so a losing concurrent materializer never
+  double-creates relationship rows for an occurrence another transaction
+  already claimed — the same per-row race semantics as the occurrence
+  insert itself, never a partially-materialized occurrence visible to
+  authorization queries (ADR-0029 "Consistency and concurrency").
 
 Not an audited business event: ADR-0024/ADR-0028's closed audit
 vocabulary has no materialization action code, so this module never calls
@@ -64,6 +76,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.db.event_recurrence import EventOccurrence, EventSeries
+from app.events.occurrence_relationships import materialize_occurrence_relationships
 from app.events.rrule import expand_occurrences
 from app.events.versioning import get_current_series_version
 
@@ -143,6 +156,10 @@ def materialize_occurrences(
         .returning(EventOccurrence)
     )
     created = list(session.scalars(stmt).all())
+    # ADR-0029/ADR-0030: relationship snapshots are materialized in the
+    # same transaction as the occurrence itself — see module docstring.
+    for occurrence in created:
+        materialize_occurrence_relationships(session, occurrence=occurrence, series=current)
     session.commit()
     return created
 
