@@ -196,7 +196,7 @@ Production package:
 docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip
 ```
 
-Package contract: **7 standalone masters + 42 transparent WebP exports = 49 files**. Each approved P2 asset has WebP sizes `16/20/24/32/48/64` px. DOM-009 is excluded pending semantic definition.
+Package contract: **7 standalone PNG masters + 42 transparent WebP exports = 49 files**. Each approved P2 asset has WebP sizes `16/20/24/32/48/64` px. DOM-009 is excluded pending semantic definition.
 
 Production status: **CLOSED / APPROVED**. The P2 catalog and approved artwork are fixed for this asset-production stage. The binary ZIP is physically present in the repository at the designated package path.
 
@@ -207,6 +207,26 @@ assets/ui/icons/domain/
 ```
 
 It must not be populated as part of this hand-off.
+
+### Historical Domain archives
+
+The following archives are retained **as historical working material only**:
+
+```text
+TourCRM_Assets_Domain_P0.zip
+TourCRM_Assets_Domain_P1A.zip
+TourCRM_Assets_Domain_P1B_CLEAN.zip
+```
+
+They document earlier iterations of the Domain visual work and may contain artwork/variants that were considered during production. They are **not production source-of-truth packages** and must not be consumed by application integration or referenced as final assets.
+
+The production source of truth is exclusively:
+
+```text
+TourCRM_Assets_Domain_P2_FINAL.zip
+```
+
+Keeping the historical archives in the repository does not change their production status.
 
 ## Decorative — DEFERRED / P2
 
