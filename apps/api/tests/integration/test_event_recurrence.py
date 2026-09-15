@@ -1806,7 +1806,7 @@ def test_occurrence_authorization_follows_the_same_club_boundary() -> None:
         v1 = _make_series_v1(s, club_id=club_id, user_id=user_id)
         occ = _make_occurrence(s, series_id=v1.id, club_id=club_id, anchor=_START)
         _grant_all_scope(s, user_id=user_id, permission_code="event.read", club_id=club_id)
-        context = build_occurrence_resource_context(occurrence=occ)
+        context = build_occurrence_resource_context(s, occurrence=occ, user_id=user_id)
         authorizer = Authorizer(session=s, user_id=user_id, permission_code="event.read")
         assert authorizer.is_allowed(context) is True
 

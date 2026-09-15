@@ -69,5 +69,25 @@ CANONICAL_AUDIT_ACTIONS: frozenset[str] = frozenset(
         "event_occurrence.exception_changed",
         "event_occurrence.status_changed",
         "event_occurrence.series_rebound",
+        # EventSeries relationship sources / occurrence relationship
+        # overrides (ADR-0030 amendment to ADR-0024 §4)
+        "event_series_staff_assignment.created",
+        "event_series_staff_assignment.changed",
+        "event_series_staff_assignment.ended",
+        "event_series_group_target.created",
+        "event_series_group_target.changed",
+        "event_series_group_target.ended",
+        "event_series_participant.created",
+        "event_series_participant.changed",
+        "event_series_participant.ended",
+        "event_occurrence_staff_assignment.created",
+        "event_occurrence_staff_assignment.changed",
+        "event_occurrence_staff_assignment.ended",
+        "event_occurrence_group_target.created",
+        "event_occurrence_group_target.changed",
+        "event_occurrence_group_target.ended",
+        "event_occurrence_participant.created",
+        "event_occurrence_participant.changed",
+        "event_occurrence_participant.ended",
     }
 )
