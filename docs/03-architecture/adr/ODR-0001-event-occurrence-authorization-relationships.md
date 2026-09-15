@@ -1,23 +1,17 @@
 # ODR-0001 — EventOccurrence authorization relationships
 
 ## Status
-Resolved — ADR-0029 accepted Option A (materialize occurrence relationships).
+Resolved — 2026-09-15 by ADR-0029 (Option A).
 
 ## Resolution
 
-Recurring `EventOccurrence` authorization relationships are materialized at occurrence level. Staff/responsibility, group targeting and explicit participation relationships are attached directly to the concrete occurrence and are the authoritative relationship boundary for calendar authorization.
+Recurring EventOccurrence authorization relationships are materialized at occurrence level. ADR-0029 is authoritative.
 
-No nullable `event_id` bridge is introduced. No new permission or scope is introduced.
-
-## Consequence
-
-TH-0079 is no longer blocked by the relationship-model ambiguity. The recurrence schema/module/API documentation and the internal calendar specification must use ADR-0029 as the canonical relationship strategy.
+The general internal calendar specification gate is therefore unblocked. No implementation may introduce an alternative inheritance model, nullable `event_id` bridge, or new permission/scope.
 
 ## References
 
-- ADR-0013 — Scope Vocabulary;
-- ADR-0020 — Event Authorization and Participation;
-- ADR-0022 — Cross-Club Ownership Integrity;
-- ADR-0023 — Event Relationships and GuardianRelationship Persistence;
-- ADR-0028 — Event Recurrence Persistence and Series Versioning;
-- ADR-0029 — EventOccurrence authorization relationships.
+- ADR-0029 — EventOccurrence authorization relationships
+- ADR-0028 — Event recurrence persistence and versioning
+- ADR-0023 — Event relationships and GuardianRelationship persistence
+- ADR-0020 — Event authorization and participation contract
