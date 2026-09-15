@@ -105,6 +105,23 @@ _ROLE_ASSIGNMENT_PATHS = {
 # deliberately out of Issue #74's scope (endpoint-inventory.md §24,
 # ADR-0026's explicit non-goals).
 
+_EVENT_RECURRENCE_PATHS = {
+    "/api/v1/events/series",
+    "/api/v1/events/series/{series_id}",
+    "/api/v1/events/series/{series_id}/pause",
+    "/api/v1/events/series/{series_id}/resume",
+    "/api/v1/events/series/{series_id}/cancel",
+    "/api/v1/events/series/{series_id}/archive",
+    "/api/v1/events/series/{series_id}/exceptions",
+    "/api/v1/events/series/{series_id}/occurrences",
+    "/api/v1/events/occurrences/{occurrence_id}",
+}
+# No dedicated `/api/v1/events/occurrences/{occurrence_id}/cancel` or
+# `/reschedule` — both deliberately not canonical (docs/05-api/
+# event-recurrence-api.md, Issue #79): occurrence-level reschedule/
+# cancellation/allow-listed overrides go exclusively through
+# `POST /events/series/{series_id}/exceptions`.
+
 
 def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
     schema = real_client.get("/openapi.json").json()
@@ -112,9 +129,10 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
     # Health (Issue #10), authentication (Issue #33), the first Event API
     # slice (Issue #40), the Person/ClubMembership API (Issue #62), the
     # GuardianRelationship API (Issue #64), the Group/GroupMembership/
-    # GroupInstructorAssignment API (Issue #71), and the RoleAssignment API
-    # (Issue #74) are the only domain endpoints so far — no Trip/etc. CRUD
-    # endpoints have been added under /api/v1.
+    # GroupInstructorAssignment API (Issue #71), the RoleAssignment API
+    # (Issue #74), and the Event recurrence API (Issue #79) are the only
+    # domain endpoints so far — no Trip/etc. CRUD endpoints have been
+    # added under /api/v1.
     assert (
         set(schema["paths"].keys())
         == {"/health/live", "/health/ready"}
@@ -126,6 +144,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _ME_PATHS
         | _GROUP_PATHS
         | _ROLE_ASSIGNMENT_PATHS
+        | _EVENT_RECURRENCE_PATHS
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()
