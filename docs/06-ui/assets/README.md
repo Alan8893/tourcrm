@@ -51,16 +51,30 @@ Concept sheets and crops are never application source assets. Application integr
 
 ## Current package state
 
-- Navigation — Approved / uploaded
-- Actions — Approved / uploaded
-- Status — Approved / uploaded
-- Domain P2 — Approved / uploaded
-- Achievements P0/P1 — Approved / uploaded
-- Illustrations — Empty States / System / Onboarding — Approved / uploaded
-- Brand — Planned
-- Decorative — Deferred / P2
+- Brand — **Approved / uploaded**
+- Navigation — **Approved / uploaded / closed**
+- Actions — **Approved / uploaded / closed**
+- Status — **Approved / uploaded / closed**
+- Domain P2 — **Approved / uploaded / closed**
+- Achievements P0/P1 — **Approved / uploaded / closed**
+- Illustrations — **Empty States / System / Onboarding — Approved / uploaded / closed**
+- Decorative — **Deferred / P2**
 
-### Domain P2
+## Brand
+
+The official “Вектор” logo is the brand source of truth.
+
+Production master:
+
+```text
+docs/06-ui/assets/packages/brand/logo.png
+```
+
+Brand uses one official PNG master only. No SVG, ZIP or artificially generated logo variants are part of the production hand-off. Future technical derivatives, if required, must be derived from this master only after a concrete product need is approved.
+
+The application integration root `assets/ui/brand/` remains untouched in this hand-off.
+
+## Domain P2
 
 Production package:
 
@@ -81,5 +95,18 @@ The package is physically present in the repository and is approved/uploaded. Do
 - generic icon-library substitutions without explicit design decision
 - concept sheets as application assets
 - historical Domain P0/P1A/P1B archives as final production assets
+- the obsolete generated Brand variant archive
 
 See `ASSET-PACKS.md`, `ASSET-STATUS.md` and `asset-manifest.json` for the detailed registry and contract.
+
+## Next stage
+
+The production asset hand-off is complete for all currently approved packages. The next stage is application integration using the approved standalone assets.
+
+Integration must:
+
+- consume only approved production packages and the official Brand master
+- keep `assets/ui/` separate from the documentation/package source of truth
+- preserve semantic IDs and the approved visual language
+- not reopen closed Navigation, Actions, Status, Domain, Achievements or Illustration decisions
+- not introduce Decorative P2 assets unless the Product Owner explicitly starts that scope
