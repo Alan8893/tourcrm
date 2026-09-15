@@ -388,16 +388,94 @@ Correction содержит:
 
 ### GET `/api/v1/events/conflicts`
 
-Принимает период и optional actor/resource IDs.
+Возвращает **информационные, non-blocking конфликты** между авторизованными конкретными `Event`/`EventOccurrence` за указанный период.
 
-Conflict detection должна учитывать:
+#### Query parameters
 
-- overlapping times;
-- instructor assignment;
-- room/location/resource, если они моделируются;
-- participant constraints только когда явно включены в policy.
+`from` и `to` обязательны и задают канонический интервал **`[from,to)`**. Значения должны быть timezone-aware RFC 3339 timestamps и нормализуются к UTC instant.
 
-Conflict warning может быть non-blocking, если бизнес-правила позволяют.
+Дополнительные фильтры являются только narrowing-фильтрами уже авторизованного набора:
+
+- `user_id` — ограничивает конфликтные отношения указанным User;
+- `group_id` — ограничивает конфликтные отношения указанной Group.
+
+Фильтр не может расширять scope/object authorization requester.
+
+#### Conflict domains
+
+MVP поддерживает три domain/reason values:
+
+- `instructor` — один User имеет применимую staffing/responsibility relationship в обоих объектах;
+- `group` — одна Group явно targeted в обоих объектах;
+- `participant` — один Person имеет применимую EventParticipation в обоих объектах.
+
+GroupMembership alone, GuardianRelationship alone, role names, `created_by` и shared `club_id` не создают conflict relationship.
+
+Room/location/equipment/generic resource conflicts не входят в MVP.
+
+#### Time and concrete objects
+
+Conflict требует пересечения effective intervals:
+
+`max(a.start_at, b.start_at) < min(a.end_at, b.end_at)`.
+
+Touching boundaries do not conflict.
+
+Обычный Event может конфликтовать с EventOccurrence. Два EventOccurrence также могут конфликтовать. Для recurring объектов используются persisted materialized occurrences; RRULE не вычисляется отдельным conflict engine.
+
+Occurrence reschedule/exception учитывается по effective start/end после применения override/exception.
+
+#### Status participation
+
+Operational conflict candidates:
+
+Event:
+
+- `published`;
+- `in_progress`.
+
+EventOccurrence:
+
+- `scheduled`;
+- `in_progress`.
+
+`draft`, `completed`, `cancelled`, `archived` Event и `completed`, `cancelled` EventOccurrence не являются operational conflicts.
+
+#### Authorization and IDOR
+
+Conflict detection uses existing `event.read` permission and existing scope/object policy. No new permission or scope is introduced.
+
+Authorization is applied before result count, pagination and serialization. A conflict involving an inaccessible opposing object is not returned and must not reveal that object's existence through ID, title, type, time, count or pagination metadata.
+
+`occurrence.club_id` alone is never sufficient for non-`all` access.
+
+#### Response
+
+Each conflict is a **derived** result, not a persisted business entity. Its stable identity is derived from the canonical unordered pair of concrete object IDs plus the conflict domain.
+
+The result identifies:
+
+- `id` — deterministic conflict identity;
+- first concrete object: `object_type`, `object_id`;
+- second concrete object: `object_type`, `object_id`;
+- `domain`;
+- `overlap_start_at`;
+- `overlap_end_at`;
+- for recurring objects, the governing series/version where already part of the public occurrence contract.
+
+The pair is ordered deterministically. Collection ordering is deterministic by `overlap_start_at ASC, id ASC`.
+
+The endpoint uses the standard API v1 pagination envelope and common error/envelope conventions. Exact JSON field casing follows the existing API conventions.
+
+#### Recurrence materialization
+
+If `to` exceeds the currently materialized recurrence horizon, the existing ADR-0015/ADR-0028 materialization mechanism may extend materialization to satisfy the query. Conflict detection does not generate recurrence instances itself.
+
+#### Mutation behavior
+
+MVP conflict detection is advisory only. Event, EventSeries and EventOccurrence mutations are not rejected solely because a conflict exists. No automatic rescheduling is performed.
+
+There is no Club-configurable conflict severity policy in MVP.
 
 ## 29. Notifications side effects
 
@@ -428,6 +506,7 @@ Conflict warning может быть non-blocking, если бизнес-пра�
 | Attendance read | `attendance.read` |
 | Attendance update | `attendance.update` |
 | Attendance correction | `attendance.update` + mandatory reason + audit |
+| Conflict query | `event.read` |
 
 Canonical scopes:
 
@@ -448,53 +527,5 @@ Object-level policy is mandatory. A role name alone does not grant unrestricted 
 - `own_groups` — Events targeted to groups for which requester has an applicable responsible relationship;
 - `own_events` — Events explicitly assigned/responsible to requester;
 - `self` — requester's own participation/registration or explicitly self-visible Event data;
-- `children` — Event data related to persons connected through an active GuardianRelationship;
+- `children` — data for Persons linked through active GuardianRelationship and otherwise eligible under object policy;
 - `none` — no access.
-
-Guardian `children` scope never becomes unrestricted `all`. Instructor role alone never becomes unrestricted Event access.
-
-## 31. Validation
-
-Backend проверяет:
-
-- `start_at < end_at`;
-- валидную timezone;
-- event type;
-- существование и принадлежность объектов Club;
-- instructor availability policy;
-- group status;
-- registration policy where such policy has been accepted;
-- recurrence validity;
-- no invalid historical rewrite;
-- cancellation reason;
-- attendance status consistency.
-
-Until registration policy is accepted, self-registration operations are not implemented.
-
-## 32. Audit
-
-Audit обязателен для:
-
-- create/update/cancel/archive event;
-- recurrence changes;
-- occurrence exceptions;
-- participant status changes;
-- attendance changes;
-- attendance corrections;
-- instructor/leader assignment changes.
-
-## 33. Acceptance Criteria
-
-1. Нельзя изменить recurring schedule неоднозначно.
-2. Прошедшая посещаемость сохраняется при переносе мероприятия.
-3. Attendance относится к конкретному occurrence.
-4. Самостоятельная регистрация реализуется только после принятия и соблюдения registration policy.
-5. Participant list и calendar соблюдают canonical permission/scope/object policy.
-6. Parent видит только разрешённые данные детей через active GuardianRelationship.
-7. Cancellation/critical schedule changes могут инициировать notification events.
-8. iCalendar feed не раскрывает данные, не разрешённые requester.
-9. Calendar range uses `[from,to)` with both bounds required.
-10. Calendar projection excludes `draft` and `archived`, but includes `cancelled` and `completed` occurrences inside the requested range.
-11. Calendar uses standard pagination and deterministic `start_at` ordering.
-12. Calendar automatically extends occurrence materialization when requested `to` exceeds the current materialized horizon.
-13. Recurring calendar authorization uses occurrence-level relationships according to ADR-0029.
