@@ -89,5 +89,10 @@ CANONICAL_AUDIT_ACTIONS: frozenset[str] = frozenset(
         "event_occurrence_participant.created",
         "event_occurrence_participant.changed",
         "event_occurrence_participant.ended",
+        # Attendance (ADR-0032 §11 amendment to ADR-0024 §4)
+        "attendance.created",
+        "attendance.changed",
+        "attendance.bulk_changed",
+        "attendance.corrected",
     }
 )

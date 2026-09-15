@@ -16,13 +16,15 @@
 
 Посещаемость хранится относительно occurrence, а не только series/event.
 
+Resolved by ADR-0033 (PO decision): каждый обычный, не повторяющийся `Event` имеет ровно один concrete `EventOccurrence` (создаётся и синхронизируется вместе с Event), поэтому `{event_id}` в §22-25 ниже разрешается детерминированно — либо как Event → его единственный linked occurrence, либо (для recurring) напрямую как `EventOccurrence.id`. Attendance identity остаётся occurrence-only (`(occurrence_id, person_id)`, без `Attendance.event_id`) — см. ADR-0033.
+
 ## 3. Общий префикс
 
 `/api/v1/events`
 
-Attendance:
-
-`/api/v1/attendance`
+Attendance endpoints (§22-25) are nested under this same prefix
+(`/api/v1/events/{event_id}/attendance...`) — there is no separate
+top-level `/api/v1/attendance` route family.
 
 ## 4. Event list
 
@@ -338,7 +340,7 @@ Request concept:
 {
   "status": "present",
   "absence_reason": null,
-  "note": null
+  "comment": null
 }
 ```
 

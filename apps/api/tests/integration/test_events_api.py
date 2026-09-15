@@ -27,6 +27,7 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentPrincipal, get_current_principal
 from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.event_recurrence import EventOccurrence
 from app.db.events import Event, EventGroupTarget, EventParticipation, EventStaffAssignment
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 from app.db.identity import Club, ClubMembership, GuardianRelationship, Person, User
@@ -103,6 +104,36 @@ def _make_event(club: Club, **overrides: object) -> Event:
     }
     defaults.update(overrides)
     return Event(**defaults)  # type: ignore[arg-type]
+
+
+_EVENT_TO_OCCURRENCE_STATUS = {
+    "draft": "scheduled",
+    "published": "scheduled",
+    "in_progress": "in_progress",
+    "completed": "completed",
+    "cancelled": "cancelled",
+}
+
+
+def _make_event_occurrence_for(event: Event) -> EventOccurrence:
+    """ADR-0033: every Event has exactly one linked EventOccurrence — a
+    test that constructs an Event directly (bypassing create_event) and
+    then exercises update/status-transition/archive must also create the
+    matching occurrence, mirroring that invariant."""
+    return EventOccurrence(  # type: ignore[arg-type]
+        event_id=event.id,
+        series_id=None,
+        club_id=event.club_id,
+        name=event.title,
+        description=event.description,
+        event_type=event.event_type,
+        recurrence_anchor_at=event.start_at,
+        starts_at=event.start_at,
+        ends_at=event.end_at,
+        timezone=event.timezone,
+        status=_EVENT_TO_OCCURRENCE_STATUS.get(event.status, "scheduled"),
+        cancellation_reason=event.cancellation_reason,
+    )
 
 
 def _make_group(club: Club, **overrides: object) -> Group:
@@ -956,6 +987,8 @@ def test_update_event_with_permission_succeeds(client: TestClient) -> None:
         session.commit()
         event = _make_event(club)
         session.add(event)
+        session.flush()
+        session.add(_make_event_occurrence_for(event))
         session.commit()
         user_id, event_id = user.id, event.id
     _grant_permission(user_id, "event.update", scope_type="all")
@@ -1051,6 +1084,8 @@ def test_update_event_ignores_status_field_in_body(client: TestClient) -> None:
         session.commit()
         event = _make_event(club)
         session.add(event)
+        session.flush()
+        session.add(_make_event_occurrence_for(event))
         session.commit()
         user_id, event_id = user.id, event.id
     _grant_permission(user_id, "event.update", scope_type="all")
@@ -1078,6 +1113,8 @@ def test_transition_draft_to_published_succeeds(client: TestClient) -> None:
         session.commit()
         event = _make_event(club, status="draft")
         session.add(event)
+        session.flush()
+        session.add(_make_event_occurrence_for(event))
         session.commit()
         user_id, event_id = user.id, event.id
     _grant_permission(user_id, "event.update", scope_type="all")
@@ -1126,6 +1163,8 @@ def test_transition_published_to_cancelled_with_reason_succeeds(client: TestClie
         session.commit()
         event = _make_event(club, status="published")
         session.add(event)
+        session.flush()
+        session.add(_make_event_occurrence_for(event))
         session.commit()
         user_id, event_id = user.id, event.id
     _grant_permission(user_id, "event.cancel", scope_type="all")
@@ -1258,6 +1297,8 @@ def test_archive_with_manage_permission_succeeds(client: TestClient, from_status
         extra = {"cancellation_reason": "x"} if from_status == "cancelled" else {}
         event = _make_event(club, status=from_status, **extra)
         session.add(event)
+        session.flush()
+        session.add(_make_event_occurrence_for(event))
         session.commit()
         user_id, event_id = user.id, event.id
     _grant_permission(user_id, "event.manage", scope_type="all")

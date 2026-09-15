@@ -55,12 +55,13 @@ EventSeries не является Event и не содержит обязате�
 
 ### EventOccurrence
 
-EventOccurrence — конкретное materialized проведение EventSeries. Он является самостоятельной операционной сущностью и не требует промежуточного Event.
+EventOccurrence — конкретный операционный instance: либо materialized проведение EventSeries (recurring), либо (ADR-0033) единственный occurrence обычного, не повторяющегося Event, создаваемый вместе с ним и синхронизируемый с ним. В любом случае это самостоятельная операционная сущность со своими snapshot-полями, а не голый bridge-row.
 
 Канонические поля:
 
 - id;
-- series_id;
+- series_id nullable — только для recurring;
+- event_id nullable — только для non-recurring (ADR-0033); ровно одно из series_id/event_id должно быть заполнено (CHECK);
 - club_id;
 - name;
 - description;
@@ -89,7 +90,7 @@ scheduled
 
 `completed` и `cancelled` терминальны. Перенос не является отдельным статусом.
 
-Операционные связи относятся непосредственно к occurrence: `EventGroupTarget`, `EventStaffAssignment`, `EventParticipation` и будущая `Attendance`. Они не наследуются автоматически из EventSeries.
+Операционные связи относятся непосредственно к occurrence: `EventGroupTarget`, `EventStaffAssignment`, `EventParticipation` и `Attendance` (ADR-0032, Issue #94 / TH-0087 — `Attendance.occurrence_id`, `NOT NULL` FK на `event_occurrences.id`, каноническая identity `(occurrence_id, person_id)`; работает как для recurring, так и для non-recurring Event через его единственный linked occurrence, ADR-0033 — см. `domain-model.md` §11). Они не наследуются автоматически из EventSeries.
 
 ### EventOccurrenceException
 
