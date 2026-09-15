@@ -32,8 +32,8 @@ The visual language should feel welcoming, warm and approachable. Cute/lightly p
 | Area | Scope | State | Repository package/path | Future integration root |
 |---|---|---|---|---|
 | Brand | Official logo master (1) | **Master uploaded** | `docs/06-ui/assets/packages/brand/logo.png` | `assets/ui/brand/` |
-| Navigation | NAV-001…NAV-007 (7) | **Approved / uploaded** | `docs/06-ui/assets/packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` | `assets/ui/icons/navigation/` |
-| Actions | ACT-001…ACT-017 (17) | **Approved / uploaded** | `docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` | `assets/ui/icons/actions/` |
+| Navigation | NAV-001…NAV-007 (7) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` | `assets/ui/icons/navigation/` |
+| Actions | ACT-001…ACT-017 (17) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` | `assets/ui/icons/actions/` |
 | Status | STA-001…STA-009 (9) | **Approved / uploaded** | `docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0_FINAL.zip` | `assets/ui/icons/status/` |
 | Domain | DOM-001…DOM-022 (22) | **Approved / uploaded** | `docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` | `assets/ui/icons/domain/` |
 | Achievements P0 | rarity + state (8) | **Approved / uploaded** | `docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` | `assets/ui/achievements/` |
@@ -97,6 +97,8 @@ Archive:
 ```text
 docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip
 ```
+
+Production status: **CLOSED / APPROVED**. The catalog and approved artwork are fixed for this asset-production stage. Any future change requires an explicit Product Owner decision and a separate documented change.
 
 Integration root:
 
