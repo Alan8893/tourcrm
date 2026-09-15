@@ -59,7 +59,7 @@ This is the single source of truth for the brand mark. No SVG, ZIP archive or ge
 | Illustrations — Empty States | **CLOSED / APPROVED** | `packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` |
 | Illustrations — System | **CLOSED / APPROVED** | `packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip` |
 | Illustrations — Onboarding | **CLOSED / APPROVED** | `packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip` |
-| Decorative | Deferred / P2 | — |
+| Decorative | **DEFERRED / P2** | — |
 
 ## Approved Navigation — CLOSED
 
@@ -208,6 +208,22 @@ The binary ZIP is physically present in the repository. Domain P2 is **CLOSED / 
 - No artwork is created for an undefined semantic ID; DOM-009 remains a GAP.
 
 The approved Domain visual system must not be reopened or regenerated during the current asset-production stage. Any change requires an explicit Product Owner decision and a separate documented change. Do not copy Domain assets into `assets/ui/` during this documentation hand-off. Application integration remains a separate stage.
+
+## Decorative — DEFERRED / P2
+
+Decorative assets are intentionally outside the current production hand-off. No binary production package is approved or handed off for this category.
+
+Reserved catalog:
+
+```text
+DEC-001 … DEC-009
+```
+
+This is future P2 scope only. It must not be interpreted as an approved production-artwork set.
+
+No decorative asset should be generated, uploaded or integrated into `assets/ui/` as part of the current hand-off. Decorative artwork must not replace semantic Navigation, Action, Status, Domain or Achievement assets.
+
+When P2 work is explicitly started, the visual direction must remain consistent with the approved TourCRM visual foundation and existing custom artwork. Any new or changed decorative catalog item requires an explicit Product Owner decision before production creation.
 
 ## Lifecycle gate
 
