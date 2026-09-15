@@ -2,7 +2,7 @@
 
 ## Status
 
-Canonical addendum to `docs/03-architecture/database-schema.md` for the recurrence domain. Where the older recurrence section of `database-schema.md` conflicts with this document, this addendum and ADR-0028 are authoritative. Occurrence authorization relationship persistence is additionally governed by ADR-0029.
+Canonical addendum to `docs/03-architecture/database-schema.md` for the recurrence domain. Where the older recurrence section of `database-schema.md` conflicts with this document, this addendum and ADR-0028 are authoritative. Occurrence authorization relationship persistence is additionally governed by ADR-0029 and ADR-0030.
 
 ## 1. `event_series`
 
@@ -139,7 +139,83 @@ v1 → v2 → v3
 
 where each arrow is represented by `supersedes_series_id` on the newer version.
 
-## 5. Occurrence authorization relationships
+## 5. Series-level relationship source
+
+Per ADR-0030, every immutable `EventSeries` version owns its own relationship-definition snapshot. These source records are version-owned and have direct FK to `event_series.id`.
+
+### 5.1 `SeriesStaffAssignment`
+
+Logical fields:
+
+- `id` — PK, UUID;
+- `event_series_id` — FK to `event_series`;
+- `user_id` — FK to `users`;
+- `role_in_event` — required;
+- `is_primary` — required boolean;
+- `valid_from` — required, timezone-aware timestamp;
+- `valid_to` — nullable, timezone-aware timestamp;
+- `created_at`;
+- `updated_at`.
+
+Invariants:
+
+- `[valid_from, valid_to)` semantics; `valid_to = NULL` is open-ended;
+- the User relationship is subject to the same Club-boundary/authorization integrity rules as Event staffing;
+- only definitions effective at an occurrence's start instant are materialized to that occurrence;
+- duplicate concurrent definitions for the same Series/User/role relationship are prohibited according to the existing staffing temporal rules;
+- primary-assignment temporal invariants must preserve the existing Event staffing semantics rather than introduce a weaker unconditional uniqueness rule.
+
+### 5.2 `SeriesGroupTarget`
+
+Logical fields:
+
+- `id` — PK, UUID;
+- `event_series_id` — FK to `event_series`;
+- `group_id` — FK to `groups`;
+- `valid_from` — required, timezone-aware timestamp;
+- `valid_to` — nullable, timezone-aware timestamp;
+- `created_at`;
+- `updated_at`.
+
+Invariants:
+
+- `[valid_from, valid_to)` semantics; `valid_to = NULL` is open-ended;
+- the Group must belong to the same Club as the Series;
+- only definitions effective at an occurrence's start instant are materialized;
+- historical definitions remain immutable except through explicit lifecycle/relationship operations.
+
+### 5.3 `SeriesParticipant`
+
+Logical fields:
+
+- `id` — PK, UUID;
+- `event_series_id` — FK to `event_series`;
+- `person_id` — FK to `people`;
+- accepted participation fields/lifecycle required by the existing Event participation persistence boundary;
+- `valid_from` — required, timezone-aware timestamp;
+- `valid_to` — nullable, timezone-aware timestamp;
+- `created_at`;
+- `updated_at`.
+
+Invariants:
+
+- `[valid_from, valid_to)` semantics; `valid_to = NULL` is open-ended;
+- Person/membership and Club integrity follows the accepted Event participation model;
+- only definitions effective at an occurrence's start instant are materialized;
+- materialization does not introduce self-registration or attendance semantics.
+
+### 5.4 Version snapshot semantics
+
+When a successor Series version is created for `this_and_following`, all predecessor relationship definitions are snapshot-copied into the successor before any successor-specific relationship change is applied. The successor then owns an independent definition set.
+
+Existing future materialized occurrences are handled by the same explicit propagation operation that handles future Event snapshot fields:
+
+- occurrence IDs remain stable;
+- occurrence relationships are propagated from the successor source where they are not protected by an explicit occurrence-level override;
+- protected occurrence relationships remain authoritative;
+- past occurrence relationships are never rewritten.
+
+## 6. Occurrence authorization relationships
 
 Per ADR-0029, recurring occurrence authorization relationships are materialized directly against `EventOccurrence` and are authoritative for authorization of the concrete occurrence.
 
@@ -151,15 +227,15 @@ The implementation must provide occurrence-level persistence equivalent in seman
 
 These are occurrence-level relationship records, not fields copied into the occurrence JSON/snapshot. Their exact table names are an implementation detail, but each relationship must have a stable identity and direct FK to `event_occurrences`.
 
-When an occurrence is materialized, the applicable relationship definition from its governing Series version is materialized in the same transaction. A partially materialized occurrence must not be visible to authorization queries.
+When an occurrence is materialized, applicable definitions from its governing Series version are materialized into occurrence-level relationship records in the same transaction as occurrence creation. A partially materialized occurrence must not be visible to authorization queries.
 
-For already-materialized occurrences, relationship history remains attached to the occurrence. A later Series version does not rewrite past occurrence relationships. Propagation to future materialized occurrences must follow the explicit version-change rules defined by the implementation contract; it must not be inferred from `created_by` or `club_id`.
+For already-materialized future occurrences, a Series-version propagation operation updates only non-protected relationship records. An explicit occurrence-level relationship mutation establishes a protected override for the affected relationship. Past occurrence relationships remain historically stable.
 
 Materializing participation does not decide self-registration or attendance policy. Only explicitly associated participants are represented until those separate policies are specified.
 
 Existing non-recurrence Event persistence remains governed by ADR-0019/ADR-0023. Recurring occurrences must not introduce a competing nullable `event_id` identity bridge.
 
-## 6. Transaction and concurrency requirements
+## 7. Transaction and concurrency requirements
 
 Series version creation must run in one database transaction:
 
@@ -167,22 +243,24 @@ Series version creation must run in one database transaction:
 2. verify the caller's base version is still current;
 3. validate the new version boundary and recurrence definition;
 4. create the successor version;
-5. rebind the selected already-materialized scheduled occurrence when required;
-6. apply any explicitly defined occurrence relationship propagation;
-7. commit atomically.
+5. snapshot-copy all relationship definitions into the successor;
+6. rebind selected already-materialized scheduled occurrences when required;
+7. propagate non-protected occurrence relationship snapshots where required;
+8. commit atomically.
 
 If the base version is no longer current, the operation fails with `409 Conflict` and creates no successor.
 
 Materialization must rely on database-level uniqueness/idempotency so concurrent workers cannot create duplicate occurrences or duplicate occurrence relationships.
 
-## 7. Deferred implementation details
+## 8. Deferred implementation details
 
-The following are deliberately not invented by this addendum:
+The following remain implementation details:
 
 - exact PostgreSQL index/exclusion expression for the materialization identity;
-- exact PostgreSQL constraints/indexes for the new occurrence relationship tables;
+- exact PostgreSQL constraints/indexes for the relationship tables;
 - exact RRULE parser library;
 - exact physical table names for occurrence relationship records;
+- exact HTTP route naming for relationship CRUD/close operations, which must reconcile with the existing Event API rather than create duplicate semantics;
 - notification delivery implementation;
 - calendar/iCalendar projection storage;
 - attendance persistence.
