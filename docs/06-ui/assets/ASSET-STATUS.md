@@ -4,6 +4,12 @@
 
 The project is at the **documentation / production asset hand-off** stage. Application integration is a separate later task.
 
+### Product audience and visual direction
+
+TourCRM is primarily used by school-age users from grades 5–10, with club leaders, instructors and parents as important users as well. The interface should remain calm and friendly while allowing a warmer, cute/lightly playful character in appropriate places.
+
+Empty states, onboarding and supportive system feedback may be especially friendly or cute. Operational controls and semantic status indicators must remain immediately understandable.
+
 ### Source locations
 
 - Human-readable documentation: `docs/06-ui/assets/`
@@ -17,13 +23,17 @@ The project is at the **documentation / production asset hand-off** stage. Appli
 - Format: transparent WebP
 - Sizes: `16`, `20`, `24`, `32`, `48`, `64` px
 - SVG: **not used**
-- Generic icon-library replacements: not allowed without an explicit design decision
+- **Every production UI icon must be bespoke TourCRM artwork.**
+- Generic icon-library replacements, stock icon packs and default/canonical UI glyphs are not allowed without an explicit design decision.
+- Existing approved custom artwork is the visual reference for new artwork in the same family.
+- Visual uniqueness must never make the semantic meaning ambiguous.
 
 ### Illustrations
 
 - Format: PNG/WebP
 - Responsive variants may be `desktop`, `tablet`, `mobile`
 - Illustrations are full artwork/scenes, not simplified icons
+- Empty-state illustrations may use a cute/lightly playful treatment when it supports the product personality and remains semantically clear.
 
 ## Production status
 
@@ -73,6 +83,8 @@ add edit delete archive restore search filter sort save cancel confirm close bac
 
 Production output: 17 × 6 = **102 WebP assets**.
 
+The approved action artwork is the source of truth. Do not substitute a library icon because the action appears elsewhere in the UI.
+
 ## Approved Status
 
 9 statuses:
@@ -120,6 +132,8 @@ Onboarding:
 ```text
 welcome first-group first-event first-achievement
 ```
+
+Empty-state illustrations are an approved place for the product's friendly/cute character, but each illustration must correspond to its actual semantic state.
 
 ## Domain gate
 
