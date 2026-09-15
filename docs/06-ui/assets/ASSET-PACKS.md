@@ -34,8 +34,8 @@ The visual language should feel welcoming, warm and approachable. Cute/lightly p
 | Brand | Official logo master (1) | **Master uploaded** | `docs/06-ui/assets/packages/brand/logo.png` | `assets/ui/brand/` |
 | Navigation | NAV-001…NAV-007 (7) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` | `assets/ui/icons/navigation/` |
 | Actions | ACT-001…ACT-017 (17) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` | `assets/ui/icons/actions/` |
-| Status | STA-001…STA-009 (9) | **Approved / uploaded** | `docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0_FINAL.zip` | `assets/ui/icons/status/` |
-| Domain | DOM-001…DOM-022 (22) | **Approved / uploaded** | `docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` | `assets/ui/icons/domain/` |
+| Status | STA-001…STA-009 (9) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0_FINAL.zip` | `assets/ui/icons/status/` |
+| Domain | DOM-001…DOM-022 (22) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` | `assets/ui/icons/domain/` |
 | Achievements P0 | rarity + state (8) | **Approved / uploaded** | `docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` | `assets/ui/achievements/` |
 | Achievements P1 | artwork (10) | **Approved / uploaded** | `docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` | `assets/ui/achievements/` |
 | Illustrations — Empty | 6 | **Approved / uploaded** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` | `assets/ui/illustrations/` |
@@ -116,13 +116,13 @@ Archive:
 docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0_FINAL.zip
 ```
 
+Production status: **CLOSED / APPROVED**. The catalog, semantics and approved artwork are fixed for this asset-production stage. `ended` is the approved extinguished-campfire metaphor. Do not add extra statuses unless the catalog is explicitly changed.
+
 Integration root:
 
 ```text
 assets/ui/icons/status/
 ```
-
-`ended` is the approved extinguished-campfire metaphor. Do not add extra statuses unless the catalog is explicitly changed.
 
 ### Achievements
 
@@ -196,9 +196,9 @@ Production package:
 docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip
 ```
 
-Package contract: **7 standalone masters + 42 transparent WebP exports = 49 files**. Each approved asset has WebP sizes `16/20/24/32/48/64` px. DOM-009 is excluded pending semantic definition.
+Package contract: **7 standalone masters + 42 transparent WebP exports = 49 files**. Each approved P2 asset has WebP sizes `16/20/24/32/48/64` px. DOM-009 is excluded pending semantic definition.
 
-The P2 artwork is production-approved and the ZIP is physically present in the repository at the designated package path. The package is therefore **Approved / uploaded**.
+Production status: **CLOSED / APPROVED**. The P2 catalog and approved artwork are fixed for this asset-production stage. The binary ZIP is physically present in the repository at the designated package path.
 
 The application integration root remains:
 
