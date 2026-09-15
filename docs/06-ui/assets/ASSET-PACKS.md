@@ -23,7 +23,7 @@ TourCRM_Assets_<category>_<priority>.zip
 | Package | Scope | Catalog IDs | Current state | Target repository location |
 |---|---|---|---|---|
 | `TourCRM_Assets_Brand_P0-P1.zip` | Brand derivatives | BR-001…BR-008 (8) | Planned | `docs/06-ui/assets/packages/brand/` |
-| `TourCRM_Assets_Navigation_P0.zip` | Approved P0 navigation icon set | NAV-001…NAV-007 (7) | **Approved / uploaded** | `docs/06-ui/assets/packages/navigation/` |
+| `TourCRM_Visual_Assets_v1.0_FINAL.zip` | Approved P0 navigation visual asset set | NAV-001…NAV-007 (7) | **Approved / uploaded** | `docs/06-ui/assets/packages/navigation/` |
 | `TourCRM_Assets_Actions_P0.zip` | Core action icons | ACT-001…ACT-017 (17) | **Approved / uploaded** | `docs/06-ui/assets/packages/actions/` |
 | `TourCRM_Assets_Status_P0.zip` | Product and semantic status icons | STA-001…STA-009 (9) | **Uploaded / pending final package review** | `docs/06-ui/assets/packages/status/` |
 | `TourCRM_Assets_Domain_P0-P1.zip` | Person, membership, role, Group and Event icons | DOM-001…DOM-022 (22) | Planned | `docs/06-ui/assets/packages/domain/` |
@@ -61,25 +61,21 @@ The approved P0 Navigation set contains:
 - Reports
 - Settings
 
-The approved production handoff for Navigation uses transparent WebP at 16, 20, 24, 32, 48 and 64 px as the raster-preservation exception established for this custom iconography. It contains 42 production files: 7 icons × 6 sizes.
+The approved production handoff for Navigation uses transparent WebP at 16, 20, 24, 32, 48 and 64 px. The current package also includes high-resolution PNG raster masters and the approved navigation sheet for reference. No SVG assets are included.
 
 Archive filename:
 
 ```text
-TourCRM_Assets_Navigation_P0.zip
+TourCRM_Visual_Assets_v1.0_FINAL.zip
 ```
 
 Repository path:
 
 ```text
- docs/06-ui/assets/packages/navigation/TourCRM_Assets_Navigation_P0.zip
+docs/06-ui/assets/packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip
 ```
 
-Archive contents:
-
-```text
-navigation/<icon-name>/<icon-name>-<size>.webp
-```
+The superseded `TourCRM_Assets_Navigation_P0.zip` archive has been removed and must not be used.
 
 The archive is a documentation/design-system handoff package. It is not the application integration source under `assets/ui/` until the implementation stage.
 
@@ -118,7 +114,7 @@ TourCRM_Assets_Actions_P0.zip
 Repository path:
 
 ```text
- docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0.zip
+docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0.zip
 ```
 
 ## Status P0 package
@@ -134,7 +130,7 @@ TourCRM_Assets_Status_P0.zip
 Repository path:
 
 ```text
- docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0.zip
+docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0.zip
 ```
 
 Package checksum:
@@ -162,13 +158,13 @@ Archives must be uploaded into their corresponding package directory on branch `
 Correct:
 
 ```text
- docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0.zip
+docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0.zip
 ```
 
 Incorrect:
 
 ```text
- TourCRM_Assets_Status_P0.zip
+TourCRM_Assets_Status_P0.zip
 ```
 
 ## Integrity
