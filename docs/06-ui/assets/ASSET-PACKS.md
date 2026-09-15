@@ -35,7 +35,7 @@ The visual language should feel welcoming, warm and approachable. Cute/lightly p
 | Navigation | NAV-001…NAV-007 (7) | **Approved / uploaded** | `docs/06-ui/assets/packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` | `assets/ui/icons/navigation/` |
 | Actions | ACT-001…ACT-017 (17) | **Approved / uploaded** | `docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` | `assets/ui/icons/actions/` |
 | Status | STA-001…STA-009 (9) | **Approved / uploaded** | `docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0_FINAL.zip` | `assets/ui/icons/status/` |
-| Domain | DOM-001…DOM-022 (22) | **Production artwork approved; binary upload pending** | `docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` | `assets/ui/icons/domain/` |
+| Domain | DOM-001…DOM-022 (22) | **Approved / uploaded** | `docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` | `assets/ui/icons/domain/` |
 | Achievements P0 | rarity + state (8) | **Approved / uploaded** | `docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` | `assets/ui/achievements/` |
 | Achievements P1 | artwork (10) | **Approved / uploaded** | `docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` | `assets/ui/achievements/` |
 | Illustrations — Empty | 6 | **Approved / uploaded** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` | `assets/ui/illustrations/` |
@@ -85,7 +85,7 @@ Integration root:
 assets/ui/icons/actions/
 ```
 
-### Status — 9 icons / 54 WebP exports
+### Status — 9 icons / 54 WebP assets
 
 Catalog: `planned`, `ongoing`, `completed`, `ended`, `archived`, `success`, `warning`, `error`, `info`.
 
@@ -155,7 +155,7 @@ Integration root: `assets/ui/illustrations/`.
 
 Use the illustration matching the semantic screen state. Do not use an illustration as a replacement for an icon.
 
-## Domain — P2 production hand-off
+## Domain — P2 production package
 
 Approved P2 artwork:
 
@@ -177,7 +177,7 @@ docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip
 
 Package contract: **7 standalone masters + 42 transparent WebP exports = 49 files**. Each approved asset has WebP sizes `16/20/24/32/48/64` px. DOM-009 is excluded pending semantic definition.
 
-The P2 artwork is production-approved and has passed standalone-artwork, semantic, small-size and technical validation. The ZIP itself is the remaining repository upload step; until it is physically present in the repository, this registry deliberately does not claim `Approved / uploaded`.
+The P2 artwork is production-approved and the ZIP is physically present in the repository at the designated package path. The package is therefore **Approved / uploaded**.
 
 The application integration root remains:
 
