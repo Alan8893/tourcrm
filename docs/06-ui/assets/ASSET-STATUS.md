@@ -1,123 +1,153 @@
 # TourCRM UI Assets — Production Status
 
-This document defines the documentation-side asset hand-off for the TourCRM UI visual system.
+## Current stage
 
-## Asset lifecycle
+The project is at the **documentation / production asset hand-off** stage. Application integration is a separate later task.
 
-The UI asset workflow is intentionally separated from application implementation:
+### Source locations
 
-1. visual concept
-2. visual approval
-3. Asset Catalog / production specification
-4. production asset creation
-5. visual approval of the production asset
-6. documentation hand-off
-7. application integration
+- Human-readable documentation: `docs/06-ui/assets/`
+- Binary hand-off packages: `docs/06-ui/assets/packages/`
+- Future application copies: `assets/ui/`
 
-The current work is at the **documentation / production asset hand-off** stage. It must not be treated as frontend implementation work.
+## Production format policy
 
-## Documentation source of truth
+### Icons
 
-Approved visual assets are documented under `docs/06-ui/assets/` together with their stable manifest IDs, dimensions, formats and usage rules.
-
-Application-facing copies will later be placed under `assets/ui/` as part of a separate implementation/integration task. The frontend must consume those approved assets rather than recreate or substitute them.
-
-## Production format decision
-
-### UI icons
-
-The approved TourCRM navigation artwork is delivered as transparent WebP where raster output preserves the agreed visual character better than SVG. SVG must not be used as a reason to simplify or flatten the approved artwork.
-
-Approved navigation export sizes:
-
-- 16 px
-- 20 px
-- 24 px
-- 32 px
-- 48 px
-- 64 px
+- Format: transparent WebP
+- Sizes: `16`, `20`, `24`, `32`, `48`, `64` px
+- SVG: **not used**
+- Generic icon-library replacements: not allowed without an explicit design decision
 
 ### Illustrations
 
-Illustrations are treated as full TourCRM artwork, not as simplified UI icons. Production illustrations use PNG/WebP and may have separate responsive `desktop`, `tablet`, and `mobile` compositions where the layout benefits from separate compositions.
+- Format: PNG/WebP
+- Responsive variants may be `desktop`, `tablet`, `mobile`
+- Illustrations are full artwork/scenes, not simplified icons
 
-## Current production batch
+## Production status
 
-| Area | Status | Documentation stage |
+| Area | Status | Production package |
 |---|---|---|
-| Brand | approved concept | production hand-off pending |
-| Navigation | **approved production artwork** | P0 WebP pack documented |
-| Actions | approved | production hand-off pending |
-| Status | approved | production hand-off pending |
-| Domain | approved | production hand-off pending |
-| Achievements | approved concept | artwork production in progress |
-| Empty states | reset to concept | production artwork must follow approved TourCRM illustration style |
-| System states | planned | next P1 batch |
-| Onboarding | planned | following system states |
-| Decorative | deferred | P2 |
+| Brand | Planned | — |
+| Navigation | **Approved / uploaded** | `packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` |
+| Actions | **Approved / uploaded** | `packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` |
+| Status | **Approved / uploaded** | `packages/status/TourCRM_Assets_Status_P0_FINAL.zip` |
+| Domain | Working/concept; **not production-approved** | `packages/domain/` |
+| Achievements P0 | **Approved / uploaded** | `packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` |
+| Achievements P1 | **Approved / uploaded** | `packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` |
+| Illustrations — Empty States | **Approved / uploaded** | `packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` |
+| Illustrations — System | **Approved / uploaded** | `packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip` |
+| Illustrations — Onboarding | **Approved / uploaded** | `packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip` |
+| Decorative | Deferred / P2 | — |
 
-## P0 Navigation WebP pack
+## Approved Navigation
+
+Seven fixed navigation icons:
+
+`Home`, `People`, `Groups`, `Events`, `Achievements`, `Reports`, `Settings`.
 
 Stable IDs:
 
-- `icon.navigation.home`
-- `icon.navigation.people`
-- `icon.navigation.groups`
-- `icon.navigation.events`
-- `icon.navigation.achievements`
-- `icon.navigation.reports`
-- `icon.navigation.settings`
+```text
+icon.navigation.home
+icon.navigation.people
+icon.navigation.groups
+icon.navigation.events
+icon.navigation.achievements
+icon.navigation.reports
+icon.navigation.settings
+```
 
-The approved pack contains 7 navigation icons × 6 production sizes = **42 WebP assets**.
+Production output: 7 × 6 = **42 WebP assets**.
 
-The fixed navigation set is:
+`Settings` is the approved compass + wrench artwork. The visual design is closed and must not be reopened as a generic settings/gear icon.
 
-- Home
-- People
-- Groups
-- Events
-- Achievements
-- Reports
-- Settings
+## Approved Actions
 
-The visual design of these navigation icons is approved and must not be reopened as a concept exercise.
+17 actions:
 
-## State handling
+```text
+add edit delete archive restore search filter sort save cancel confirm close back forward more download upload
+```
 
-The approved artwork represents the base icon asset. UI states (`default`, `hover`, `active`, `disabled`) are an interaction-layer concern unless a state requires a materially different artwork asset.
+Production output: 17 × 6 = **102 WebP assets**.
 
-Do not create duplicate state files merely to encode CSS/UI state when the approved artwork itself does not change.
+## Approved Status
 
-## Repository separation
+9 statuses:
 
-### Documentation / design system
+```text
+planned ongoing completed ended archived success warning error info
+```
 
-`docs/06-ui/assets/`
+Production output: 9 × 6 = **54 WebP assets**.
 
-Contains:
+`ended` uses the approved extinguished-campfire metaphor. Do not introduce additional status meanings in this batch.
 
-- asset specifications;
-- stable IDs;
-- approved dimensions and formats;
-- asset catalog and status;
-- production hand-off packages where appropriate.
+## Approved Achievements
 
-### Application implementation
+P0 rarity/state set:
 
-`assets/ui/`
+```text
+common uncommon rare epic legendary
+earned locked progress
+```
 
-Contains the application-consumable copies of approved production assets. Population of this directory belongs to the frontend integration stage.
+P1 artwork:
 
-### Frontend
+```text
+explorer peak-reacher veteran-tourist team-player camp-master
+navigator first-expedition trail-walker community-hero adventure-leader
+```
 
-Frontend code references the approved production assets and does not replace them with generic icon-library equivalents.
+## Approved Illustrations
 
-## Rules
+Empty states:
 
-- Concept boards are reference material only and must not be imported by the application.
-- Every approved production asset receives a stable manifest ID.
-- Existing product/domain semantics are not changed by visual assets.
-- Do not replace an approved custom asset with a generic icon-library equivalent without an explicit design decision.
-- Do not simplify or flatten approved artwork merely to satisfy a preferred file format.
-- Every new production asset must pass visual comparison against the approved concept before being marked approved.
-- Documentation approval and application integration are separate milestones.
+```text
+empty-groups empty-people empty-events empty-achievements empty-search no-results
+```
+
+System:
+
+```text
+success error 404 403 maintenance
+```
+
+Onboarding:
+
+```text
+welcome first-group first-event first-achievement
+```
+
+## Domain gate
+
+The branch contains Domain working archives, but they remain outside the production-approved set. Do not copy them into `assets/ui/` as final assets.
+
+This includes the Group metaphor: Navigation already owns the Groups icon, so Domain must not introduce an ambiguous duplicate.
+
+## Lifecycle gate
+
+A package becomes **Approved / uploaded** only after:
+
+1. concept approval;
+2. standalone production asset creation;
+3. visual approval of production artwork;
+4. format/size/naming validation;
+5. upload to the designated package directory;
+6. documentation and manifest update.
+
+Concept sheets and crops are never the application source.
+
+## Change control
+
+When replacing a production package, update all of the following in the same logical change:
+
+- `ASSET-PACKS.md`
+- `ASSET-STATUS.md`
+- `asset-manifest.json`
+- affected package README
+- PR description
+
+Never silently revive a superseded archive.
