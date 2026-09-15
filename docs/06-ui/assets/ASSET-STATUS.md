@@ -50,8 +50,8 @@ This is the single source of truth for the brand mark. No SVG, ZIP archive or ge
 | Area | Status | Production package |
 |---|---|---|
 | Brand | **Master uploaded** | `packages/brand/logo.png` |
-| Navigation | **Approved / uploaded** | `packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` |
-| Actions | **Approved / uploaded** | `packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` |
+| Navigation | **CLOSED / APPROVED** | `packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` |
+| Actions | **CLOSED / APPROVED** | `packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` |
 | Status | **Approved / uploaded** | `packages/status/TourCRM_Assets_Status_P0_FINAL.zip` |
 | Domain | **Approved / uploaded** | `packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` |
 | Achievements P0 | **Approved / uploaded** | `packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` |
@@ -83,7 +83,9 @@ Production output: 7 × 6 = **42 WebP assets**.
 
 `Settings` is the approved compass + wrench artwork. The visual design is closed and must not be reopened as a generic settings/gear icon.
 
-## Approved Actions
+## Approved Actions — CLOSED
+
+The Actions visual system is fully agreed and closed for this asset-production stage.
 
 17 actions:
 
@@ -94,6 +96,8 @@ add edit delete archive restore search filter sort save cancel confirm close bac
 Production output: 17 × 6 = **102 WebP assets**.
 
 The approved action artwork is the source of truth. Do not substitute a library icon because the action appears elsewhere in the UI.
+
+Any change to the Actions catalog, artwork or semantics requires an explicit Product Owner decision and a separate documented change.
 
 ## Approved Status
 
