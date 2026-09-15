@@ -1,43 +1,86 @@
 # TourCRM UI Assets
 
-This directory is the documentation and design-system hand-off point for approved TourCRM visual assets.
+This directory is the human-readable entry point and design-system source of truth for approved TourCRM visual assets.
 
-## Separation from implementation
+## Start here
 
-`docs/06-ui/assets/` describes and stores approved visual assets before they are integrated into the application.
+1. `ASSET-PACKS.md` — complete registry: catalog, exact package paths, intended usage and future application paths.
+2. `ASSET-STATUS.md` — approval/production state and lifecycle gates.
+3. `asset-manifest.json` — machine-readable contract of packages, stable IDs, formats, sizes and integration paths.
+4. `production-format-decision.md` — production format decision.
+5. `packages/<category>/README.md` — package-specific hand-off instructions.
 
-Application-consumable copies belong to `assets/ui/` and are populated during a separate frontend integration task.
+## Repository separation
 
-This separation keeps the visual specification independent from implementation details and prevents frontend work from silently changing an approved design decision.
+```text
+docs/06-ui/assets/                 documentation + approved hand-off packages
+assets/ui/                         future application-consumable copies
+```
 
-## P0 Navigation Icons
+The two stages are intentionally separate. Frontend integration must consume approved production assets and must not silently recreate or substitute them.
 
-The P0 navigation system is approved and consists of seven custom TourCRM icons:
+## Production rules
 
-- Home
-- People
-- Groups
-- Events
-- Achievements
-- Reports
-- Settings
+- UI icons are raster WebP.
+- SVG is not used for TourCRM production UI assets.
+- Icon sizes are `16`, `20`, `24`, `32`, `48`, `64` px.
+- Illustrations use PNG/WebP and may have `desktop`, `tablet`, `mobile` compositions.
+- Concept boards/sheets are reference material only; use standalone production assets from the approved package.
+- Generic icon-library substitutions require an explicit design decision.
 
-Production format: transparent WebP.
+## Current approved production packages
 
-Production sizes: `16`, `20`, `24`, `32`, `48`, `64` px.
+### Navigation
 
-Total P0 production exports: **42 assets**.
+```text
+docs/06-ui/assets/packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip
+```
 
-The approved artwork must not be replaced by Material, Lucide, Font Awesome, or other generic icon-library equivalents without an explicit design decision.
+7 icons × 6 sizes = **42 WebP assets**.
 
-## Asset state
+### Actions
 
-The artwork itself is the approved base asset. Interaction states such as hover, active and disabled should normally be implemented at the UI layer. Separate bitmap files are required only when the artwork itself materially changes between states.
+```text
+docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip
+```
 
-## Manifest
+17 icons × 6 sizes = **102 WebP assets**.
 
-`asset-manifest.json` is the machine-readable contract containing stable asset IDs, formats, dimensions, documentation paths and future application integration paths.
+### Status
 
-## Production package
+```text
+docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0_FINAL.zip
+```
 
-The P0 navigation WebP package is maintained as a hand-off artifact during this documentation stage. It contains the 42 approved production exports; 512 px master files are not part of the P0 integration set.
+9 icons × 6 sizes = **54 WebP assets**.
+
+### Achievements
+
+```text
+docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip
+docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip
+```
+
+P0 contains rarity/state assets; P1 contains the approved achievement artwork set.
+
+### Illustrations
+
+```text
+docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip
+docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip
+docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip
+```
+
+These cover the current approved Empty State, System and Onboarding illustration catalogs.
+
+## Not final
+
+The Domain archives are working/concept material and are explicitly **not production-approved**. Brand has no production package yet. Decorative remains deferred P2.
+
+Do not copy non-approved packages into `assets/ui/` as final application assets.
+
+## Change control
+
+When a production package is replaced, update `ASSET-PACKS.md`, `ASSET-STATUS.md`, `asset-manifest.json`, the affected package README and the PR description together.
+
+**PR #75 is intentionally kept separate from application integration and must not be merged as part of this asset-production step.**
