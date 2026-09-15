@@ -350,11 +350,10 @@ Constraints (implemented):
 
 ### `attendance`
 
-Canonical model per ADR-0032 (Issue #94 / TH-0087):
+Canonical model per ADR-0032 §1 (Issue #94 / TH-0087) — occurrence-only identity, exactly as accepted:
 
 - `id` PK
-- `event_id` FK, nullable — set only for an ordinary, non-recurring `Event`
-- `occurrence_id` FK, nullable — set only for a recurring `EventOccurrence`
+- `occurrence_id` FK to `event_occurrences.id`, `NOT NULL`
 - `person_id` FK
 - `status` — exactly `present`/`absent`
 - `absence_reason` — nullable, closed vocabulary (`sick`, `family_reason`, `injury`, `education`, `work`, `other`), not club-configurable
@@ -363,11 +362,22 @@ Canonical model per ADR-0032 (Issue #94 / TH-0087):
 
 Constraints (implemented):
 
-- exactly one of `event_id`/`occurrence_id` is set (CHECK);
-- `UNIQUE(event_id, person_id)` and `UNIQUE(occurrence_id, person_id)`, each as a partial index scoped to the non-null column — together the DB-enforced "at most one Attendance row per concrete object/Person pair" ADR-0032 §1 requires;
+- `UNIQUE(occurrence_id, person_id)` — the single ordinary DB constraint ADR-0032 §1 requires;
 - `present` requires both `absence_reason` and `comment` to be `NULL` (CHECK).
 
-No `valid_from`/`valid_to`: unlike `EventGroupTarget`/`EventStaffAssignment`/`EventParticipation`, Attendance is a single current mark per object/Person pair, corrected in place (last-write-wins, ADR-0032 §12) rather than a historical relationship timeline.
+No `event_id` column and no per-object-type discriminator: an earlier
+draft of this implementation added a second nullable `event_id` FK to
+also support ordinary, non-recurring `Event`s, reasoning that ADR-0032
+§1's "For ordinary non-recurring Events, attendance is attached to the
+concrete event occurrence used by the existing Event API model" required
+it. That was reverted on review — no canonical source (ADR-0015,
+ADR-0028 §13, ADR-0029, ADR-0030) defines a mapping from an ordinary
+`Event` to a concrete `EventOccurrence`, so inventing one changed
+ADR-0032's canonical identity rather than resolving a technical detail.
+**Attendance for an ordinary, non-recurring `Event` is currently
+unsupported** — an open gap awaiting a PO decision, not resolved here.
+
+No `valid_from`/`valid_to`: unlike `EventGroupTarget`/`EventStaffAssignment`/`EventParticipation`, Attendance is a single current mark per occurrence/Person pair, corrected in place (last-write-wins, ADR-0032 §12) rather than a historical relationship timeline.
 
 ## 10. Trips
 

@@ -329,11 +329,13 @@ Event может быть адресован нескольким Groups; Group 
 
 ## 11. Attendance
 
-Resolved by ADR-0032 (Issue #94 / TH-0087): a separate `Attendance` entity, not a representation layered over `EventParticipation`. Attendance identity is `(occurrence_id, person_id)` for a recurring `EventOccurrence`, or the equivalent `(event_id, person_id)` for an ordinary non-recurring `Event` — there is no direct Event-level Attendance entity distinct from this single table, and no polymorphic bridge between `Event` and `EventOccurrence` themselves (that separation, established by ADR-0028 §13, is unchanged).
+Resolved by ADR-0032 (Issue #94 / TH-0087): a separate `Attendance` entity, not a representation layered over `EventParticipation`. Attendance identity is exactly `(occurrence_id, person_id)` for a concrete `EventOccurrence` (ADR-0032 §1) — `occurrence_id` is a real, `NOT NULL` FK to `event_occurrences.id`, not a nullable/polymorphic column, and `EventOccurrence` still has no bridge to `Event` (ADR-0028 §13, unchanged).
 
-Attendance requires an existing `EventParticipation` (or active `EventOccurrenceParticipant`) for the same object/Person — it never creates participation and is never deleted when participation ends or the object completes/cancels/archives.
+**Open gap:** no canonical source (ADR-0015, ADR-0028 §13, ADR-0029, ADR-0030) defines how an ordinary, non-recurring `Event` maps to a concrete `EventOccurrence`. ADR-0032 §1 says ordinary Events should receive Attendance too ("attached to the concrete event occurrence used by the existing Event API model"), but that mapping does not exist anywhere else in the canonical model — ADR-0015's materialization strategy is scoped entirely to recurring series. The implementation does not invent one (e.g. a second nullable FK, a generic object/discriminator column, or probing both tables by id); ordinary-Event Attendance is currently unsupported, pending a PO decision on either defining that mapping or scoping Attendance to recurring Occurrences only.
 
-Canonical statuses: exactly `present`/`absent` (used uniformly for both ordinary Events and recurring Occurrences). Absence reasons are a closed MVP vocabulary (`sick`, `family_reason`, `injury`, `education`, `work`, `other`), not club-configurable and not a CRUD entity.
+Attendance requires an active `EventOccurrenceParticipant` for the same occurrence/Person (the canonical occurrence-level participation record, per ADR-0029/ADR-0030 — ADR-0032's own prose says "EventParticipation" generically, but this implementation is occurrence-only) — it never creates participation and is never deleted when participation ends or the occurrence completes/cancels.
+
+Canonical statuses: exactly `present`/`absent`. Absence reasons are a closed MVP vocabulary (`sick`, `family_reason`, `injury`, `education`, `work`, `other`), not club-configurable and not a CRUD entity.
 
 ## 12. Trip
 

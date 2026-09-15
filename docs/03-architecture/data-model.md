@@ -89,7 +89,7 @@ scheduled
 
 `completed` и `cancelled` терминальны. Перенос не является отдельным статусом.
 
-Операционные связи относятся непосредственно к occurrence: `EventGroupTarget`, `EventStaffAssignment`, `EventParticipation` и `Attendance` (ADR-0032, Issue #94 / TH-0087 — `Attendance.occurrence_id`/`Attendance.event_id`, ровно один из двух). Они не наследуются автоматически из EventSeries.
+Операционные связи относятся непосредственно к occurrence: `EventGroupTarget`, `EventStaffAssignment`, `EventParticipation` и `Attendance` (ADR-0032, Issue #94 / TH-0087 — `Attendance.occurrence_id`, `NOT NULL` FK на `event_occurrences.id`, каноническая identity `(occurrence_id, person_id)`; ordinary non-recurring `Event` пока не поддерживается — см. `domain-model.md` §11). Они не наследуются автоматически из EventSeries.
 
 ### EventOccurrenceException
 

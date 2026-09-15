@@ -1,53 +1,82 @@
 """Event Attendance domain and service (Issue #94 / TH-0087).
 
 Canonical source: docs/03-architecture/adr/ADR-0032-event-attendance.md
-(every rule below follows it field-for-field unless a deviation is
-explicitly documented — see app.db.attendance module docstring for the
-one identity-level implementation detail this task had to resolve).
-Also relevant: ADR-0018 (Event lifecycle), ADR-0024 (audit),
-ADR-0028/ADR-0029/ADR-0030 (recurrence/occurrence authorization).
+§1: "Attendance is a concrete record for exactly one `EventOccurrence`
+and one `Person`." Also relevant: ADR-0015 (materialization), ADR-0018
+(Event lifecycle), ADR-0024 (audit), ADR-0028/ADR-0029/ADR-0030
+(recurrence/occurrence authorization/relationships).
 
 This module is pure domain/service: no FastAPI/HTTPException import. The
 API router (app.api.v1.events) resolves the `{event_id}` path parameter
-to a concrete object (`resolve_attendance_target`), performs the existing
-404-existence-hiding authorization gate exactly like every other single-
-object Event/Occurrence endpoint, and then calls into the functions
-below — mirroring the split already established between
-app.api.v1.events'/app.api.v1.events_series.py's own `_get_authorized_*`
-helpers and app.events.occurrence_relationships' pure service functions.
+to an `EventOccurrence` (`resolve_attendance_target`), performs the
+existing 404-existence-hiding authorization gate exactly like every
+other single-object Occurrence endpoint, and then calls into the
+functions below — mirroring the split already established between
+app.api.v1.events_series.py's own `_get_authorized_*` helpers and
+app.events.occurrence_relationships' pure service functions.
 
-## Object resolution: `{event_id}` names either an Event or an EventOccurrence
+## Object resolution: occurrence-only — ordinary Event is NOT supported
 
-ADR-0032 §1 requires both ordinary non-recurring `Event`s and recurring
-`EventOccurrence`s to receive Attendance through the *same* endpoint
-family (`/events/{event_id}/attendance...`, docs/05-api/events-api.md
-§22-25) — there is no separate occurrence-scoped attendance route.
-`resolve_attendance_target` therefore tries both tables by primary key;
-UUIDv4 identity spaces are disjoint in practice (app.db.attendance's own
-`ck_attendance_exactly_one_target` CHECK depends on the same assumption).
+ADR-0032 §1 also says: "For ordinary non-recurring Events, attendance is
+attached to the concrete event occurrence used by the existing Event API
+model" — but no canonical source defines what that concrete occurrence
+*is* for an ordinary Event. ADR-0015 (materialization) is scoped entirely
+to *recurring* series ("Recurring events require stable occurrence
+identities..."); it says nothing about non-recurring Events. ADR-0028 §13
+is explicit that `EventOccurrence` "is a first-class operational entity,
+not a nullable bridge to `Event`" and "has no `event_id` column at all".
+No other canonical source (ADR-0029, ADR-0030, events-api.md,
+data-model.md, database-schema.md, domain-model.md) defines any mapping
+from an ordinary `Event` to a concrete `EventOccurrence` either.
+
+An earlier revision of this module resolved that gap itself, by giving
+`Attendance` a second nullable `event_id` FK (a polymorphic-association
+scheme) so an ordinary Event's own id could stand in for an occurrence
+id. That was rejected on review: it re-decided ADR-0032's canonical
+identity (`(occurrence_id, person_id)`, a real FK to `event_occurrences`)
+rather than resolving a purely technical detail, and there is no
+accepted PO decision for it. It has been reverted — see
+app.db.attendance's own module docstring "Identity".
+
+**Consequently, Attendance in this implementation only ever resolves
+`{event_id}` against `EventOccurrence.id`.** An id that names an
+ordinary `Event` is not found (this module has no code path that even
+looks at the `events` table) and the endpoint 404s exactly as it would
+for any other nonexistent object. Attendance for an ordinary,
+non-recurring `Event` is unsupported pending a PO decision on how such
+an Event maps to a concrete occurrence identity (or whether ordinary
+Events are in scope for Attendance at all) — this is reported as an open
+GAP in the implementation report, not silently worked around.
+
+## Participation dependency (ADR-0032 §1/§6)
+
+ADR-0032's own prose says "EventParticipation" when describing the
+participation prerequisite, but that is the model's informal/generic
+name for "the participation relationship", not literally the Event-level
+`EventParticipation` table — this implementation is occurrence-only, and
+the canonical occurrence-level participation record ADR-0029/ADR-0030
+define for exactly this purpose is `EventOccurrenceParticipant`
+(app.db.event_recurrence_relationships), the same table
+app.events.series_authorization's own `_self_condition`/`_child_condition`
+already read for occurrence `self`/`children` authorization. Using it
+here is a direct, precedent-consistent application of that existing
+canonical source, not an invented parallel participation model.
 
 ## Lifecycle (ADR-0032 §5)
 
 Eligible-for-normal-change statuses mirror app.events.conflicts'
-`CONFLICT_EVENT_STATUSES`/`CONFLICT_OCCURRENCE_STATUSES` exactly — the
-same "operational window" status pairing already established for that
-feature (`published`/`in_progress` for `Event`, `scheduled`/`in_progress`
-for `EventOccurrence`). `completed` closes the normal window (correction
-endpoint only); every other status (`cancelled` for either object type,
-plus `draft`/`archived` for `Event`, pre-/post-operational states ADR-0032
-never discusses because the occurrence vocabulary has no equivalent)
-closes Attendance entirely — a deliberate, precedent-consistent
-generalization of ADR-0032 §5's occurrence-only wording to `Event`'s
-larger status vocabulary, not a new business rule: none of those states
-have eligible participants to mark either way.
+`CONFLICT_OCCURRENCE_STATUSES` exactly (`scheduled`/`in_progress`).
+`completed` closes the normal window (correction endpoint only);
+`cancelled` closes Attendance entirely.
 
 ## Participant visibility on GET (ADR-0032 §8/§9)
 
 Authorization for the endpoint itself (attendance.read/attendance.update
-against the resolved object) uses the existing single-object gate exactly
-like every other Event/Occurrence endpoint (`build_event_resource_context`/
-`build_occurrence_resource_context` + `Authorizer.is_allowed`) — this
-governs whether the object is visible/actionable *at all* (404 otherwise).
+against the resolved occurrence) uses the existing single-object gate
+exactly like every other Occurrence endpoint
+(`build_occurrence_resource_context` + `Authorizer.is_allowed`) — this
+governs whether the object is visible/actionable *at all* (404
+otherwise).
 
 Given that gate passes, `list_attendance`'s row-level restriction is a
 *second*, finer-grained filter: `all`/`own_events`/`own_groups` grant the
@@ -56,19 +85,19 @@ access); `self`/`children` restrict the visible rows to the requester's
 own Person / their eligible children's Persons respectively
 (roles-and-permissions.md §12's own Attendance-read row: "self ... self;
 children ... children"). No prior feature needed this per-row-within-one-
-already-authorized-object restriction (event_visibility_filter/
-occurrence_visibility_filter both filter *which objects* are visible
-across a list, never *which participants* within one already-visible
-object) — `_attendance_row_visibility` below is new but reuses the exact
-same `applicable_assignments`/`club_boundary_matches`/active-
+already-authorized-object restriction (occurrence_visibility_filter
+filters *which objects* are visible across a list, never *which
+participants* within one already-visible object) —
+`_attendance_row_visibility` below is new but reuses the exact same
+`applicable_assignments`/`club_boundary_matches`/active-
 GuardianRelationship-plus-ClubMembership building blocks as
-app.events.authorization/app.events.series_authorization, composed for
-this new shape rather than inventing a second authorization mechanism.
+app.events.series_authorization, composed for this new shape rather than
+inventing a second authorization mechanism.
 """
 
 import uuid
 from dataclasses import dataclass
-from typing import Any, Literal, Optional, Union
+from typing import Any, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
@@ -79,14 +108,10 @@ from app.authorization.service import applicable_assignments, club_boundary_matc
 from app.db.attendance import CANONICAL_ABSENCE_REASONS, CANONICAL_ATTENDANCE_STATUSES, Attendance
 from app.db.event_recurrence import EventOccurrence
 from app.db.event_recurrence_relationships import EventOccurrenceParticipant
-from app.db.events import Event, EventParticipation
 from app.db.identity import ClubMembership, GuardianRelationship, Person, User
 
-ObjectType = Literal["event", "occurrence"]
-
-# Mirrors app.events.conflicts.CONFLICT_EVENT_STATUSES/
-# CONFLICT_OCCURRENCE_STATUSES exactly — see module docstring "Lifecycle".
-ATTENDANCE_ELIGIBLE_EVENT_STATUSES: tuple[str, ...] = ("published", "in_progress")
+# Mirrors app.events.conflicts.CONFLICT_OCCURRENCE_STATUSES exactly — see
+# module docstring "Lifecycle".
 ATTENDANCE_ELIGIBLE_OCCURRENCE_STATUSES: tuple[str, ...] = ("scheduled", "in_progress")
 _COMPLETED_STATUS = "completed"
 _ACTIVE_CLUB_MEMBERSHIP_STATUS = "active"
@@ -98,26 +123,26 @@ class AttendanceError(Exception):
 
 
 class AttendanceLifecycleClosedError(AttendanceError):
-    """The object's current status allows neither a normal change nor a
-    correction (`cancelled`, or `Event`'s `draft`/`archived`)."""
+    """The occurrence's current status (`cancelled`) allows neither a
+    normal change nor a correction."""
 
 
 class AttendanceNormalWindowClosedError(AttendanceError):
-    """The object is `completed`: normal PUT is closed, use the
+    """The occurrence is `completed`: normal PUT is closed, use the
     correction endpoint (ADR-0032 §5)."""
 
 
 class AttendanceUseNormalEndpointError(AttendanceError):
-    """The object is not `completed`: the correction endpoint does not
-    apply, use the normal PUT endpoint instead."""
+    """The occurrence is not `completed`: the correction endpoint does
+    not apply, use the normal PUT endpoint instead."""
 
 
 class AttendanceParticipationMissingError(AttendanceError):
-    """ADR-0032 §6: the Person has no EventParticipation (Event) /
-    active EventOccurrenceParticipant (EventOccurrence) for this object."""
+    """ADR-0032 §6: the Person has no active `EventOccurrenceParticipant`
+    for this occurrence."""
 
     def __init__(self, *, person_id: uuid.UUID) -> None:
-        super().__init__(f"Person {person_id} has no participation for this object")
+        super().__init__(f"Person {person_id} has no participation for this occurrence")
         self.person_id = person_id
 
 
@@ -137,6 +162,16 @@ class AttendanceCorrectionReasonRequiredError(AttendanceError):
     """ADR-0032 §5/§11: a correction requires a mandatory reason."""
 
 
+class AttendanceNotFoundError(AttendanceError):
+    """Correction requires an existing Attendance record — it never
+    creates one (a correction is "previous value -> corrected value",
+    which is meaningless with no previous record)."""
+
+    def __init__(self, *, person_id: uuid.UUID) -> None:
+        super().__init__(f"No Attendance record exists for person {person_id} on this occurrence")
+        self.person_id = person_id
+
+
 def _active_interval(valid_from: Any, valid_to: Any) -> sa.ColumnElement[bool]:
     now = sa.func.now()
     return sa.and_(valid_from <= now, sa.or_(valid_to.is_(None), now < valid_to))
@@ -150,34 +185,28 @@ def _person_id_for_user(session: Session, user_id: uuid.UUID) -> uuid.UUID:
 
 
 def resolve_attendance_target(
-    session: Session, object_id: uuid.UUID
-) -> Optional[tuple[ObjectType, Union[Event, EventOccurrence]]]:
-    """Try `Event` first, then `EventOccurrence`, by primary key — see
-    module docstring "Object resolution". `None` if neither exists."""
-    event = session.get(Event, object_id)
-    if event is not None:
-        return "event", event
-    occurrence = session.get(EventOccurrence, object_id)
-    if occurrence is not None:
-        return "occurrence", occurrence
-    return None
+    session: Session, occurrence_id: uuid.UUID
+) -> Optional[EventOccurrence]:
+    """Look up the concrete `EventOccurrence` for the `{event_id}` path
+    parameter — see module docstring "Object resolution". `None` if it
+    does not exist (this includes an id naming an ordinary `Event`:
+    Attendance does not resolve those — see the module docstring)."""
+    return session.get(EventOccurrence, occurrence_id)
 
 
-def eligible_for_normal_change(object_type: ObjectType, status: str) -> bool:
-    if object_type == "event":
-        return status in ATTENDANCE_ELIGIBLE_EVENT_STATUSES
+def eligible_for_normal_change(status: str) -> bool:
     return status in ATTENDANCE_ELIGIBLE_OCCURRENCE_STATUSES
 
 
-def check_lifecycle_for_normal_change(object_type: ObjectType, status: str) -> None:
+def check_lifecycle_for_normal_change(status: str) -> None:
     if status == _COMPLETED_STATUS:
         raise AttendanceNormalWindowClosedError("Object is completed; use the correction endpoint")
-    if not eligible_for_normal_change(object_type, status):
+    if not eligible_for_normal_change(status):
         raise AttendanceLifecycleClosedError(f"Attendance is closed for status {status!r}")
 
 
-def check_lifecycle_for_correction(object_type: ObjectType, status: str) -> None:
-    if eligible_for_normal_change(object_type, status):
+def check_lifecycle_for_correction(status: str) -> None:
+    if eligible_for_normal_change(status):
         raise AttendanceUseNormalEndpointError(
             "Object is still open for normal changes; use the normal endpoint"
         )
@@ -185,31 +214,16 @@ def check_lifecycle_for_correction(object_type: ObjectType, status: str) -> None
         raise AttendanceLifecycleClosedError(f"Attendance is closed for status {status!r}")
 
 
-# --- Participant dependency (ADR-0032 §6) -----------------------------------
+# --- Participant dependency (ADR-0032 §1/§6) --------------------------------
 
 
-def has_participation(
-    session: Session, *, object_type: ObjectType, object_id: uuid.UUID, person_id: uuid.UUID
-) -> bool:
-    if object_type == "event":
-        return bool(
-            session.execute(
-                sa.select(
-                    sa.exists(
-                        sa.select(EventParticipation.id).where(
-                            EventParticipation.event_id == object_id,
-                            EventParticipation.person_id == person_id,
-                        )
-                    )
-                )
-            ).scalar()
-        )
+def has_participation(session: Session, *, occurrence_id: uuid.UUID, person_id: uuid.UUID) -> bool:
     return bool(
         session.execute(
             sa.select(
                 sa.exists(
                     sa.select(EventOccurrenceParticipant.id).where(
-                        EventOccurrenceParticipant.occurrence_id == object_id,
+                        EventOccurrenceParticipant.occurrence_id == occurrence_id,
                         EventOccurrenceParticipant.person_id == person_id,
                         _active_interval(
                             EventOccurrenceParticipant.valid_from,
@@ -238,22 +252,16 @@ def validate_attendance_fields(
         )
 
 
-def _target_column(object_type: ObjectType) -> Any:
-    return Attendance.event_id if object_type == "event" else Attendance.occurrence_id
-
-
 def _new_attendance(
     *,
-    object_type: ObjectType,
-    object_id: uuid.UUID,
+    occurrence_id: uuid.UUID,
     person_id: uuid.UUID,
     status: str,
     absence_reason: Optional[str],
     comment: Optional[str],
 ) -> Attendance:
     return Attendance(
-        event_id=object_id if object_type == "event" else None,
-        occurrence_id=object_id if object_type == "occurrence" else None,
+        occurrence_id=occurrence_id,
         person_id=person_id,
         status=status,
         absence_reason=absence_reason,
@@ -267,8 +275,7 @@ def _new_attendance(
 def upsert_attendance(
     session: Session,
     *,
-    object_type: ObjectType,
-    object_id: uuid.UUID,
+    occurrence_id: uuid.UUID,
     club_id: uuid.UUID,
     person_id: uuid.UUID,
     status: str,
@@ -288,7 +295,7 @@ def upsert_attendance(
 
     existing = session.execute(
         sa.select(Attendance)
-        .where(_target_column(object_type) == object_id, Attendance.person_id == person_id)
+        .where(Attendance.occurrence_id == occurrence_id, Attendance.person_id == person_id)
         .with_for_update()
     ).scalar_one_or_none()
     previous_status = existing.status if existing is not None else None
@@ -296,8 +303,7 @@ def upsert_attendance(
     try:
         if existing is None:
             row = _new_attendance(
-                object_type=object_type,
-                object_id=object_id,
+                occurrence_id=occurrence_id,
                 person_id=person_id,
                 status=status,
                 absence_reason=absence_reason,
@@ -352,8 +358,7 @@ class AttendanceBulkItemInput:
 def bulk_upsert_attendance(
     session: Session,
     *,
-    object_type: ObjectType,
-    object_id: uuid.UUID,
+    occurrence_id: uuid.UUID,
     club_id: uuid.UUID,
     items: list[AttendanceBulkItemInput],
     actor_user_id: uuid.UUID,
@@ -375,26 +380,25 @@ def bulk_upsert_attendance(
         validate_attendance_fields(
             status=item.status, absence_reason=item.absence_reason, comment=item.comment
         )
-        if not has_participation(
-            session, object_type=object_type, object_id=object_id, person_id=item.person_id
-        ):
+        if not has_participation(session, occurrence_id=occurrence_id, person_id=item.person_id):
             raise AttendanceParticipationMissingError(person_id=item.person_id)
 
-    target_column = _target_column(object_type)
     results: list[tuple[Attendance, bool]] = []
     change_summaries: list[dict[str, Any]] = []
     try:
         for item in items:
             existing = session.execute(
                 sa.select(Attendance)
-                .where(target_column == object_id, Attendance.person_id == item.person_id)
+                .where(
+                    Attendance.occurrence_id == occurrence_id,
+                    Attendance.person_id == item.person_id,
+                )
                 .with_for_update()
             ).scalar_one_or_none()
             previous_status = existing.status if existing is not None else None
             if existing is None:
                 row = _new_attendance(
-                    object_type=object_type,
-                    object_id=object_id,
+                    occurrence_id=occurrence_id,
                     person_id=item.person_id,
                     status=item.status,
                     absence_reason=item.absence_reason,
@@ -424,19 +428,19 @@ def bulk_upsert_attendance(
             actor_user_id=actor_user_id,
             club_id=club_id,
             # One bulk operation touches several Attendance rows, so the
-            # audited "resource" is the Event/Occurrence it was bulk-
-            # updated for, not any single created/changed row (ADR-0024 §2
-            # requires resource_type/resource_id to both be set or both be
-            # None; the per-row detail lives in `details.changes` below).
-            # "event_occurrence" matches the resource_type spelling already
-            # used for EventOccurrence elsewhere (app.events.series_service).
-            resource_type="event" if object_type == "event" else "event_occurrence",
-            resource_id=object_id,
+            # audited "resource" is the Occurrence it was bulk-updated
+            # for, not any single created/changed row (ADR-0024 §2
+            # requires resource_type/resource_id to both be set or both
+            # be None; the per-row detail lives in `details.changes`
+            # below). "event_occurrence" matches the resource_type
+            # spelling already used for EventOccurrence elsewhere
+            # (app.events.series_service).
+            resource_type="event_occurrence",
+            resource_id=occurrence_id,
             outcome="success",
             request_id=request_id,
             details={
-                "object_type": object_type,
-                "object_id": str(object_id),
+                "occurrence_id": str(occurrence_id),
                 "count": len(results),
                 "changes": change_summaries,
             },
@@ -454,8 +458,7 @@ def bulk_upsert_attendance(
 def correct_attendance(
     session: Session,
     *,
-    object_type: ObjectType,
-    object_id: uuid.UUID,
+    occurrence_id: uuid.UUID,
     club_id: uuid.UUID,
     person_id: uuid.UUID,
     status: str,
@@ -465,44 +468,34 @@ def correct_attendance(
     actor_user_id: uuid.UUID,
     request_id: Optional[str] = None,
 ) -> tuple[Attendance, Optional[str]]:
-    """Correct (or, if none exists yet, create) the Attendance record for
-    one Person after the normal window has closed. Requires
-    `attendance.update` only (no `attendance.correct` permission exists —
-    ADR-0032 §8) and a mandatory `reason`, checked by the caller's
-    permission dependency and here respectively. Returns `(row,
+    """Correct an *existing* Attendance record for one Person after the
+    normal window has closed. Never creates a first record (a correction
+    is "previous value -> corrected value"; with no previous value there
+    is nothing to correct — raises `AttendanceNotFoundError` instead).
+    Requires `attendance.update` only (no `attendance.correct` permission
+    exists — ADR-0032 §8) and a mandatory `reason`, checked by the
+    caller's permission dependency and here respectively. Returns `(row,
     previous_status)`.
     """
     if not reason or not reason.strip():
         raise AttendanceCorrectionReasonRequiredError("A correction reason is required")
     validate_attendance_fields(status=status, absence_reason=absence_reason, comment=comment)
-    if not has_participation(
-        session, object_type=object_type, object_id=object_id, person_id=person_id
-    ):
+    if not has_participation(session, occurrence_id=occurrence_id, person_id=person_id):
         raise AttendanceParticipationMissingError(person_id=person_id)
 
     existing = session.execute(
         sa.select(Attendance)
-        .where(_target_column(object_type) == object_id, Attendance.person_id == person_id)
+        .where(Attendance.occurrence_id == occurrence_id, Attendance.person_id == person_id)
         .with_for_update()
     ).scalar_one_or_none()
-    previous_status = existing.status if existing is not None else None
+    if existing is None:
+        raise AttendanceNotFoundError(person_id=person_id)
+    previous_status = existing.status
 
     try:
-        if existing is None:
-            row = _new_attendance(
-                object_type=object_type,
-                object_id=object_id,
-                person_id=person_id,
-                status=status,
-                absence_reason=absence_reason,
-                comment=comment,
-            )
-            session.add(row)
-        else:
-            row = existing
-            row.status = status
-            row.absence_reason = absence_reason
-            row.comment = comment
+        existing.status = status
+        existing.absence_reason = absence_reason
+        existing.comment = comment
         session.flush()
         record_audit_event(
             session,
@@ -511,7 +504,7 @@ def correct_attendance(
             actor_user_id=actor_user_id,
             club_id=club_id,
             resource_type="attendance",
-            resource_id=row.id,
+            resource_id=existing.id,
             outcome="success",
             request_id=request_id,
             details={
@@ -525,7 +518,7 @@ def correct_attendance(
     except Exception:
         session.rollback()
         raise
-    return row, previous_status
+    return existing, previous_status
 
 
 # --- GET: full participant projection + derived summary (ADR-0032 §8/§9) ---
@@ -554,10 +547,10 @@ class AttendanceSummary:
 def _child_visibility_predicate(
     *, club_id: uuid.UUID, guardian_person_id: uuid.UUID, participant_person_id_column: Any
 ) -> sa.ColumnElement[bool]:
-    """Mirrors app.events.authorization._child_condition's shape, but as
-    a per-row predicate against `participant_person_id_column` (a real
-    column of the enclosing participant query) rather than one fixed,
-    already-known child id — see module docstring "Participant
+    """Mirrors app.events.series_authorization._child_condition's shape,
+    but as a per-row predicate against `participant_person_id_column` (a
+    real column of the enclosing participant query) rather than one
+    fixed, already-known child id — see module docstring "Participant
     visibility on GET"."""
     guardian_has_membership = sa.exists(
         sa.select(ClubMembership.id).where(
@@ -600,11 +593,11 @@ def _attendance_row_visibility(
     participant_person_id_column: Any,
 ) -> sa.ColumnElement[bool]:
     """See module docstring "Participant visibility on GET": which
-    Person rows, within one already object-level-authorized Event/
-    Occurrence, the requester may see. `all`/`own_events`/`own_groups`
-    (already true at the object level, per `resource_context`) grant the
-    full set; `self`/`children` restrict to the requester's own/their
-    children's rows; `none` contributes nothing."""
+    Person rows, within one already object-level-authorized Occurrence,
+    the requester may see. `all`/`own_events`/`own_groups` (already true
+    at the object level, per `resource_context`) grant the full set;
+    `self`/`children` restrict to the requester's own/their children's
+    rows; `none` contributes nothing."""
     assignments = applicable_assignments(session, user_id, permission_code)
     clauses: list[sa.ColumnElement[bool]] = []
     self_person_id: Optional[uuid.UUID] = None
@@ -641,8 +634,7 @@ def _attendance_row_visibility(
 def list_attendance(
     session: Session,
     *,
-    object_type: ObjectType,
-    object_id: uuid.UUID,
+    occurrence_id: uuid.UUID,
     club_id: uuid.UUID,
     resource_context: ResourceContext,
     user_id: uuid.UUID,
@@ -650,34 +642,25 @@ def list_attendance(
     page: int,
     page_size: int,
 ) -> tuple[list[AttendanceEntry], AttendanceSummary, int]:
-    """The full EventParticipation-backed participant set visible to the
-    requester (ADR-0032 §9), including participants without an
-    Attendance record (`status=None`, "unmarked"). Authorization
-    (`_attendance_row_visibility`) is applied inside the SQL query
-    itself, before any count/summary/pagination/serialization — never
-    fetch-then-filter, per ADR-0032 §8's explicit "no leak" requirement.
+    """The full active-`EventOccurrenceParticipant`-backed participant
+    set visible to the requester (ADR-0032 §9), including participants
+    without an Attendance record (`status=None`, "unmarked").
+    Authorization (`_attendance_row_visibility`) is applied inside the
+    SQL query itself, before any count/summary/pagination/serialization
+    — never fetch-then-filter, per ADR-0032 §8's explicit "no leak"
+    requirement.
     """
-    if object_type == "event":
-        participants = (
-            sa.select(EventParticipation.person_id.label("person_id"))
-            .where(EventParticipation.event_id == object_id)
-            .distinct()
-            .subquery("participants")
+    participants = (
+        sa.select(EventOccurrenceParticipant.person_id.label("person_id"))
+        .where(
+            EventOccurrenceParticipant.occurrence_id == occurrence_id,
+            _active_interval(
+                EventOccurrenceParticipant.valid_from, EventOccurrenceParticipant.valid_to
+            ),
         )
-        attendance_target_col = Attendance.event_id
-    else:
-        participants = (
-            sa.select(EventOccurrenceParticipant.person_id.label("person_id"))
-            .where(
-                EventOccurrenceParticipant.occurrence_id == object_id,
-                _active_interval(
-                    EventOccurrenceParticipant.valid_from, EventOccurrenceParticipant.valid_to
-                ),
-            )
-            .distinct()
-            .subquery("participants")
-        )
-        attendance_target_col = Attendance.occurrence_id
+        .distinct()
+        .subquery("participants")
+    )
 
     visibility = _attendance_row_visibility(
         session,
@@ -704,7 +687,7 @@ def list_attendance(
             Attendance,
             sa.and_(
                 Attendance.person_id == participants.c.person_id,
-                attendance_target_col == object_id,
+                Attendance.occurrence_id == occurrence_id,
             ),
         )
         .where(visibility)
@@ -754,7 +737,6 @@ def list_attendance(
 
 
 __all__ = [
-    "ATTENDANCE_ELIGIBLE_EVENT_STATUSES",
     "ATTENDANCE_ELIGIBLE_OCCURRENCE_STATUSES",
     "AttendanceError",
     "AttendanceLifecycleClosedError",
@@ -764,6 +746,7 @@ __all__ = [
     "AttendanceInvalidDataError",
     "AttendanceDuplicatePersonError",
     "AttendanceCorrectionReasonRequiredError",
+    "AttendanceNotFoundError",
     "AttendanceBulkItemInput",
     "AttendanceEntry",
     "AttendanceSummary",

@@ -1,11 +1,20 @@
 """HTTP-level integration tests for Event Attendance (Issue #94 / TH-0087,
-per ADR-0032): persistence/constraints, field validation invariants,
-lifecycle gating (Event and EventOccurrence), single upsert idempotency
-and order-of-checks, partial/atomic bulk upsert, correction, the full
-GET participant projection (including unmarked participants) and its
-derived summary, canonical scope authorization (all/own_events/
-own_groups/self/children/none), cross-Club IDOR/existence-hiding, audit
-codes, and last-write-wins concurrency (no version field).
+per ADR-0032): persistence/constraints (occurrence-only identity),
+field validation invariants, lifecycle gating, single upsert idempotency
+and order-of-checks, partial/atomic bulk upsert, correction (never
+creates a first record), the full GET participant projection (including
+unmarked participants) and its derived summary, canonical scope
+authorization (all/own_events/own_groups/self/children/none), cross-Club
+IDOR/existence-hiding, audit codes, and last-write-wins concurrency (no
+version field).
+
+Attendance is occurrence-only (ADR-0032 §1: canonical identity is
+`(occurrence_id, person_id)`, a real `NOT NULL` FK to
+`event_occurrences.id`) — there is no `Attendance.event_id` and an
+ordinary, non-recurring `Event` id is never resolved by these endpoints
+(see app.events.attendance module docstring "Object resolution" for why:
+no canonical source defines a concrete-occurrence mapping for ordinary
+Events).
 
 Against the REAL shipped app (app.main.app) and a real PostgreSQL
 database, matching tests/integration/test_event_conflicts_api.py's own
@@ -31,7 +40,7 @@ from app.db.audit import AuditLog
 from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
 from app.db.event_recurrence import EventOccurrence, EventSeries
 from app.db.event_recurrence_relationships import EventOccurrenceParticipant
-from app.db.events import Event, EventParticipation
+from app.db.events import Event
 from app.db.identity import Club, ClubMembership, GuardianRelationship, Person, User
 from app.db.session import session_scope
 from app.main import app
@@ -90,6 +99,8 @@ def _make_club_membership(club: Club, person: Person, **overrides: object) -> Cl
 
 
 def _make_event(club: Club, **overrides: object) -> Event:
+    """Only used by tests proving an ordinary Event id is never resolved
+    by the Attendance endpoints (see module docstring)."""
     start_at = overrides.pop("start_at", _START)
     end_at = overrides.pop("end_at", start_at + datetime.timedelta(hours=1))  # type: ignore[operator]
     defaults: dict[str, object] = {
@@ -103,18 +114,6 @@ def _make_event(club: Club, **overrides: object) -> Event:
     }
     defaults.update(overrides)
     return Event(**defaults)  # type: ignore[arg-type]
-
-
-def _make_event_participation(
-    event: Event, person: Person, **overrides: object
-) -> EventParticipation:
-    defaults: dict[str, object] = {
-        "event_id": event.id,
-        "person_id": person.id,
-        "registration_status": "registered",
-    }
-    defaults.update(overrides)
-    return EventParticipation(**defaults)  # type: ignore[arg-type]
 
 
 def _make_guardian_relationship(
@@ -225,50 +224,78 @@ def _csrf_headers(client: TestClient) -> dict:
     return {"X-CSRF-Token": "test-csrf-token"}
 
 
-def _mark(client: TestClient, object_id: uuid.UUID, person_id: uuid.UUID, **payload: object):
+def _mark(client: TestClient, occurrence_id: uuid.UUID, person_id: uuid.UUID, **payload: object):
     return client.put(
-        f"/api/v1/events/{object_id}/attendance/{person_id}",
+        f"/api/v1/events/{occurrence_id}/attendance/{person_id}",
         json=payload,
         headers=_csrf_headers(client),
     )
 
 
-def _bulk_mark(client: TestClient, object_id: uuid.UUID, items: list[dict]):
+def _bulk_mark(client: TestClient, occurrence_id: uuid.UUID, items: list[dict]):
     return client.put(
-        f"/api/v1/events/{object_id}/attendance",
+        f"/api/v1/events/{occurrence_id}/attendance",
         json={"items": items},
         headers=_csrf_headers(client),
     )
 
 
-def _correct(client: TestClient, object_id: uuid.UUID, person_id: uuid.UUID, **payload: object):
+def _correct(client: TestClient, occurrence_id: uuid.UUID, person_id: uuid.UUID, **payload: object):
     return client.post(
-        f"/api/v1/events/{object_id}/attendance/{person_id}/corrections",
+        f"/api/v1/events/{occurrence_id}/attendance/{person_id}/corrections",
         json=payload,
         headers=_csrf_headers(client),
     )
 
 
-def _get_attendance(client: TestClient, object_id: uuid.UUID, **params: object):
-    return client.get(f"/api/v1/events/{object_id}/attendance", params=params)
+def _get_attendance(client: TestClient, occurrence_id: uuid.UUID, **params: object):
+    return client.get(f"/api/v1/events/{occurrence_id}/attendance", params=params)
 
 
-# --- Persistence / DB constraints -------------------------------------------
-
-
-@requires_postgres
-def test_unique_constraint_event_person(client: TestClient) -> None:
+def _setup_occurrence_with_participant(
+    status: str = "scheduled",
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+    """Returns (club_id, occurrence_id, person_id, actor_user_id) with an
+    active EventOccurrenceParticipant for person on occurrence."""
     with session_scope() as session:
         club = _make_club()
         person = _make_person()
-        session.add_all([club, person])
+        actor_person = _make_person()
+        actor_user = _make_user(actor_person)
+        session.add_all([club, person, actor_person, actor_user])
         session.commit()
-        event = _make_event(club)
-        session.add(event)
+        series = _make_series(session, club_id=club.id)
+        occurrence = _make_occurrence(series=series, club_id=club.id, status=status)
+        session.add(occurrence)
         session.commit()
-        session.add(Attendance(event_id=event.id, person_id=person.id, status="present"))
+        session.add(_make_occurrence_participant(occurrence, person))
         session.commit()
-        session.add(Attendance(event_id=event.id, person_id=person.id, status="present"))
+        return club.id, occurrence.id, person.id, actor_user.id
+
+
+# --- Persistence / DB constraints (occurrence-only identity) ---------------
+
+
+@requires_postgres
+def test_no_event_id_column_exists() -> None:
+    columns = {column.name for column in Attendance.__table__.columns}
+    assert "event_id" not in columns
+    assert "occurrence_id" in columns
+
+
+@requires_postgres
+def test_occurrence_id_is_not_nullable() -> None:
+    column = Attendance.__table__.columns["occurrence_id"]
+    assert column.nullable is False
+
+
+@requires_postgres
+def test_occurrence_id_is_a_real_fk_to_event_occurrences(client: TestClient) -> None:
+    with session_scope() as session:
+        person = _make_person()
+        session.add(person)
+        session.commit()
+        session.add(Attendance(occurrence_id=uuid.uuid4(), person_id=person.id, status="present"))
         with pytest.raises(IntegrityError):
             session.commit()
 
@@ -292,51 +319,17 @@ def test_unique_constraint_occurrence_person(client: TestClient) -> None:
 
 
 @requires_postgres
-def test_exactly_one_target_check_rejects_both_null(client: TestClient) -> None:
-    with session_scope() as session:
-        person = _make_person()
-        session.add(person)
-        session.commit()
-        session.add(Attendance(person_id=person.id, status="present"))
-        with pytest.raises(IntegrityError):
-            session.commit()
-
-
-@requires_postgres
-def test_exactly_one_target_check_rejects_both_set(client: TestClient) -> None:
-    with session_scope() as session:
-        club = _make_club()
-        person = _make_person()
-        session.add_all([club, person])
-        session.commit()
-        event = _make_event(club)
-        series = _make_series(session, club_id=club.id)
-        occurrence = _make_occurrence(series=series, club_id=club.id)
-        session.add_all([event, occurrence])
-        session.commit()
-        session.add(
-            Attendance(
-                event_id=event.id,
-                occurrence_id=occurrence.id,
-                person_id=person.id,
-                status="present",
-            )
-        )
-        with pytest.raises(IntegrityError):
-            session.commit()
-
-
-@requires_postgres
 def test_status_check_constraint(client: TestClient) -> None:
     with session_scope() as session:
         club = _make_club()
         person = _make_person()
         session.add_all([club, person])
         session.commit()
-        event = _make_event(club)
-        session.add(event)
+        series = _make_series(session, club_id=club.id)
+        occurrence = _make_occurrence(series=series, club_id=club.id)
+        session.add(occurrence)
         session.commit()
-        session.add(Attendance(event_id=event.id, person_id=person.id, status="late"))
+        session.add(Attendance(occurrence_id=occurrence.id, person_id=person.id, status="late"))
         with pytest.raises(IntegrityError):
             session.commit()
 
@@ -348,12 +341,16 @@ def test_absence_reason_check_constraint(client: TestClient) -> None:
         person = _make_person()
         session.add_all([club, person])
         session.commit()
-        event = _make_event(club)
-        session.add(event)
+        series = _make_series(session, club_id=club.id)
+        occurrence = _make_occurrence(series=series, club_id=club.id)
+        session.add(occurrence)
         session.commit()
         session.add(
             Attendance(
-                event_id=event.id, person_id=person.id, status="absent", absence_reason="bogus"
+                occurrence_id=occurrence.id,
+                person_id=person.id,
+                status="absent",
+                absence_reason="bogus",
             )
         )
         with pytest.raises(IntegrityError):
@@ -367,58 +364,20 @@ def test_present_with_reason_check_constraint(client: TestClient) -> None:
         person = _make_person()
         session.add_all([club, person])
         session.commit()
-        event = _make_event(club)
-        session.add(event)
+        series = _make_series(session, club_id=club.id)
+        occurrence = _make_occurrence(series=series, club_id=club.id)
+        session.add(occurrence)
         session.commit()
         session.add(
             Attendance(
-                event_id=event.id, person_id=person.id, status="present", absence_reason="sick"
+                occurrence_id=occurrence.id,
+                person_id=person.id,
+                status="present",
+                absence_reason="sick",
             )
         )
         with pytest.raises(IntegrityError):
             session.commit()
-
-
-# --- Setup helper for API-level scenarios -----------------------------------
-
-
-def _setup_event_with_participant(
-    status: str = "published",
-) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
-    """Returns (club_id, event_id, person_id, user_id) with an active
-    EventParticipation for person on event."""
-    with session_scope() as session:
-        club = _make_club()
-        person = _make_person()
-        actor_person = _make_person()
-        actor_user = _make_user(actor_person)
-        session.add_all([club, person, actor_person, actor_user])
-        session.commit()
-        event = _make_event(club, status=status)
-        session.add(event)
-        session.commit()
-        session.add(_make_event_participation(event, person))
-        session.commit()
-        return club.id, event.id, person.id, actor_user.id
-
-
-def _setup_occurrence_with_participant(
-    status: str = "scheduled",
-) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
-    with session_scope() as session:
-        club = _make_club()
-        person = _make_person()
-        actor_person = _make_person()
-        actor_user = _make_user(actor_person)
-        session.add_all([club, person, actor_person, actor_user])
-        session.commit()
-        series = _make_series(session, club_id=club.id)
-        occurrence = _make_occurrence(series=series, club_id=club.id, status=status)
-        session.add(occurrence)
-        session.commit()
-        session.add(_make_occurrence_participant(occurrence, person))
-        session.commit()
-        return club.id, occurrence.id, person.id, actor_user.id
 
 
 # --- Field validation (ADR-0032 §2-4) ---------------------------------------
@@ -426,41 +385,41 @@ def _setup_occurrence_with_participant(
 
 @requires_postgres
 def test_present_with_absence_reason_is_rejected(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant()
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    response = _mark(client, event_id, person_id, status="present", absence_reason="sick")
+    response = _mark(client, occurrence_id, person_id, status="present", absence_reason="sick")
     assert response.status_code == 422
 
 
 @requires_postgres
 def test_present_with_comment_is_rejected(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant()
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    response = _mark(client, event_id, person_id, status="present", comment="note")
+    response = _mark(client, occurrence_id, person_id, status="present", comment="note")
     assert response.status_code == 422
 
 
 @requires_postgres
 def test_absent_with_invalid_reason_is_rejected(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant()
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    response = _mark(client, event_id, person_id, status="absent", absence_reason="bogus")
+    response = _mark(client, occurrence_id, person_id, status="absent", absence_reason="bogus")
     assert response.status_code == 422
 
 
 @requires_postgres
 def test_absent_without_reason_is_allowed(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant()
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    response = _mark(client, event_id, person_id, status="absent")
+    response = _mark(client, occurrence_id, person_id, status="absent")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "absent"
@@ -469,37 +428,26 @@ def test_absent_without_reason_is_allowed(client: TestClient) -> None:
 
 @requires_postgres
 def test_absent_with_comment_but_no_reason_is_allowed(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant()
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    response = _mark(client, event_id, person_id, status="absent", comment="forgot to notify")
+    response = _mark(client, occurrence_id, person_id, status="absent", comment="forgot to notify")
     assert response.status_code == 200
     assert response.json()["comment"] == "forgot to notify"
 
 
 @requires_postgres
 def test_invalid_status_value_is_rejected(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant()
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    response = _mark(client, event_id, person_id, status="late")
+    response = _mark(client, occurrence_id, person_id, status="late")
     assert response.status_code == 422
 
 
 # --- Lifecycle (ADR-0032 §5) -------------------------------------------------
-
-
-@pytest.mark.parametrize("status", ["published", "in_progress"])
-@requires_postgres
-def test_mark_attendance_allowed_for_eligible_event_status(client: TestClient, status: str) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant(status=status)
-    _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
-    _authenticate_as(user_id)
-
-    response = _mark(client, event_id, person_id, status="present")
-    assert response.status_code == 200
 
 
 @pytest.mark.parametrize("status", ["scheduled", "in_progress"])
@@ -516,36 +464,16 @@ def test_mark_attendance_allowed_for_eligible_occurrence_status(
 
 
 @requires_postgres
-def test_mark_attendance_closed_for_completed_event(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant(status="completed")
+def test_mark_attendance_closed_for_completed_occurrence(client: TestClient) -> None:
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant(
+        status="completed"
+    )
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    response = _mark(client, event_id, person_id, status="present")
+    response = _mark(client, occurrence_id, person_id, status="present")
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "attendance_normal_window_closed"
-
-
-@pytest.mark.parametrize("status", ["cancelled", "draft", "archived"])
-@requires_postgres
-def test_mark_attendance_closed_for_non_operational_event_status(
-    client: TestClient, status: str
-) -> None:
-    overrides: dict[str, object] = {"status": status}
-    if status == "cancelled":
-        overrides["cancellation_reason"] = "weather"
-    club_id, event_id, person_id, user_id = _setup_event_with_participant(status="published")
-    with session_scope() as session:
-        event = session.get(Event, event_id)
-        for key, value in overrides.items():
-            setattr(event, key, value)
-        session.commit()
-    _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
-    _authenticate_as(user_id)
-
-    response = _mark(client, event_id, person_id, status="present")
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "attendance_lifecycle_closed"
 
 
 @requires_postgres
@@ -568,53 +496,140 @@ def test_mark_attendance_closed_for_cancelled_occurrence(client: TestClient) -> 
 
 @requires_postgres
 def test_correction_rejected_while_normal_window_is_open(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant(status="published")
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant(
+        status="scheduled"
+    )
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    response = _correct(client, event_id, person_id, status="present", reason="fix")
+    response = _correct(client, occurrence_id, person_id, status="present", reason="fix")
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "use_normal_attendance_endpoint"
 
 
 @requires_postgres
-def test_correction_allowed_after_completed(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant(status="completed")
-    _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
-    _authenticate_as(user_id)
-
-    response = _correct(client, event_id, person_id, status="present", reason="forgot to mark")
-    assert response.status_code == 200
-    body = response.json()
-    assert body["previous_status"] is None
-    assert body["new_status"] == "present"
-    assert body["reason"] == "forgot to mark"
-
-
-@requires_postgres
-def test_correction_rejected_for_cancelled_event(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant(status="published")
+def test_correction_rejected_for_cancelled_occurrence(client: TestClient) -> None:
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant(
+        status="scheduled"
+    )
     with session_scope() as session:
-        event = session.get(Event, event_id)
-        event.status = "cancelled"
-        event.cancellation_reason = "weather"
+        occurrence = session.get(EventOccurrence, occurrence_id)
+        occurrence.status = "cancelled"
+        occurrence.cancellation_reason = "weather"
         session.commit()
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    response = _correct(client, event_id, person_id, status="present", reason="fix")
+    response = _correct(client, occurrence_id, person_id, status="present", reason="fix")
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "attendance_lifecycle_closed"
 
 
+# --- Correction never creates a first record (ADR-0032 §5) ------------------
+
+
 @requires_postgres
-def test_correction_requires_reason(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant(status="completed")
+def test_correction_cannot_create_missing_attendance(client: TestClient) -> None:
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant(
+        status="scheduled"
+    )
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
+    # No attendance ever marked. Close the normal window.
+    with session_scope() as session:
+        occurrence = session.get(EventOccurrence, occurrence_id)
+        occurrence.status = "completed"
+        session.commit()
 
-    response = _correct(client, event_id, person_id, status="present", reason="")
+    response = _correct(client, occurrence_id, person_id, status="present", reason="forgot to mark")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "attendance_not_found"
+
+    with session_scope() as session:
+        rows = (
+            session.execute(select(Attendance).where(Attendance.occurrence_id == occurrence_id))
+            .scalars()
+            .all()
+        )
+        assert rows == [], "correction must never create a first Attendance record"
+
+
+@requires_postgres
+def test_correction_of_existing_attendance_succeeds(client: TestClient) -> None:
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant(
+        status="scheduled"
+    )
+    _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
+    _authenticate_as(user_id)
+    _mark(client, occurrence_id, person_id, status="present")
+
+    with session_scope() as session:
+        occurrence = session.get(EventOccurrence, occurrence_id)
+        occurrence.status = "completed"
+        session.commit()
+
+    response = _correct(
+        client,
+        occurrence_id,
+        person_id,
+        status="absent",
+        absence_reason="sick",
+        reason="was actually sick",
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["previous_status"] == "present"
+    assert body["new_status"] == "absent"
+
+
+@requires_postgres
+def test_correction_requires_reason(client: TestClient) -> None:
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant(
+        status="scheduled"
+    )
+    _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
+    _authenticate_as(user_id)
+    _mark(client, occurrence_id, person_id, status="present")
+    with session_scope() as session:
+        occurrence = session.get(EventOccurrence, occurrence_id)
+        occurrence.status = "completed"
+        session.commit()
+
+    response = _correct(client, occurrence_id, person_id, status="present", reason="")
     assert response.status_code in (409, 422)
+
+
+@requires_postgres
+def test_correction_records_previous_and_new_status_with_audit(client: TestClient) -> None:
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant(
+        status="scheduled"
+    )
+    _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
+    _authenticate_as(user_id)
+    _mark(client, occurrence_id, person_id, status="present")
+
+    with session_scope() as session:
+        occurrence = session.get(EventOccurrence, occurrence_id)
+        occurrence.status = "completed"
+        session.commit()
+
+    response = _correct(
+        client,
+        occurrence_id,
+        person_id,
+        status="absent",
+        absence_reason="sick",
+        reason="was actually sick",
+    )
+    assert response.status_code == 200
+
+    with session_scope() as session:
+        audit_row = session.execute(
+            select(AuditLog).where(AuditLog.action == "attendance.corrected")
+        ).scalar_one()
+        assert audit_row.details["previous_status"] == "present"
+        assert audit_row.details["new_status"] == "absent"
+        assert audit_row.details["reason"] == "was actually sick"
 
 
 # --- Single upsert: participation dependency, idempotency, order of checks -
@@ -629,41 +644,47 @@ def test_mark_attendance_without_participation_is_rejected(client: TestClient) -
         actor_user = _make_user(actor_person)
         session.add_all([club, person, actor_person, actor_user])
         session.commit()
-        event = _make_event(club)
-        session.add(event)
+        series = _make_series(session, club_id=club.id)
+        occurrence = _make_occurrence(series=series, club_id=club.id)
+        session.add(occurrence)
         session.commit()
-        club_id, event_id, person_id, user_id = club.id, event.id, person.id, actor_user.id
+        club_id, occurrence_id, person_id, user_id = (
+            club.id,
+            occurrence.id,
+            person.id,
+            actor_user.id,
+        )
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    response = _mark(client, event_id, person_id, status="present")
+    response = _mark(client, occurrence_id, person_id, status="present")
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "participation_missing"
 
     with session_scope() as session:
-        count = (
-            session.execute(select(Attendance).where(Attendance.event_id == event_id))
+        rows = (
+            session.execute(select(Attendance).where(Attendance.occurrence_id == occurrence_id))
             .scalars()
             .all()
         )
-        assert count == []
+        assert rows == []
 
 
 @requires_postgres
 def test_mark_attendance_is_idempotent(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant()
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    first = _mark(client, event_id, person_id, status="absent", absence_reason="sick")
+    first = _mark(client, occurrence_id, person_id, status="absent", absence_reason="sick")
     assert first.status_code == 200
-    second = _mark(client, event_id, person_id, status="absent", absence_reason="sick")
+    second = _mark(client, occurrence_id, person_id, status="absent", absence_reason="sick")
     assert second.status_code == 200
     assert first.json()["person_id"] == second.json()["person_id"]
 
     with session_scope() as session:
         rows = (
-            session.execute(select(Attendance).where(Attendance.event_id == event_id))
+            session.execute(select(Attendance).where(Attendance.occurrence_id == occurrence_id))
             .scalars()
             .all()
         )
@@ -672,20 +693,20 @@ def test_mark_attendance_is_idempotent(client: TestClient) -> None:
 
 @requires_postgres
 def test_mark_attendance_update_changes_status(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant()
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    first = _mark(client, event_id, person_id, status="present")
+    first = _mark(client, occurrence_id, person_id, status="present")
     assert first.status_code == 200
-    second = _mark(client, event_id, person_id, status="absent", absence_reason="injury")
+    second = _mark(client, occurrence_id, person_id, status="absent", absence_reason="injury")
     assert second.status_code == 200
     assert second.json()["status"] == "absent"
     assert second.json()["absence_reason"] == "injury"
 
 
 @requires_postgres
-def test_mark_attendance_nonexistent_object_is_404(client: TestClient) -> None:
+def test_mark_attendance_nonexistent_occurrence_is_404(client: TestClient) -> None:
     with session_scope() as session:
         person = _make_person()
         actor_person = _make_person()
@@ -702,7 +723,7 @@ def test_mark_attendance_nonexistent_object_is_404(client: TestClient) -> None:
 
 @requires_postgres
 def test_mark_attendance_unauthorized_is_404_not_403(client: TestClient) -> None:
-    club_id, event_id, person_id, _owner_user_id = _setup_event_with_participant()
+    club_id, occurrence_id, person_id, _owner_user_id = _setup_occurrence_with_participant()
     with session_scope() as session:
         other_person = _make_person()
         other_user = _make_user(other_person)
@@ -712,24 +733,63 @@ def test_mark_attendance_unauthorized_is_404_not_403(client: TestClient) -> None
     # No permission granted at all.
     _authenticate_as(other_user_id)
 
-    response = _mark(client, event_id, person_id, status="present")
+    response = _mark(client, occurrence_id, person_id, status="present")
     assert response.status_code == 404
 
 
+# --- Ambiguous resolution is impossible: ordinary Event id is never resolved
+
+
 @requires_postgres
-def test_mark_attendance_for_recurring_occurrence(client: TestClient) -> None:
-    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
+def test_ordinary_event_id_is_not_resolved_by_attendance_endpoints(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        actor_person = _make_person()
+        actor_user = _make_user(actor_person)
+        session.add_all([club, person, actor_person, actor_user])
+        session.commit()
+        event = _make_event(club)
+        session.add(event)
+        session.commit()
+        club_id, event_id, person_id, user_id = club.id, event.id, person.id, actor_user.id
+    _grant_permission(user_id, "attendance.read", scope_type="all", club_id=club_id)
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    response = _mark(client, occurrence_id, person_id, status="present")
-    assert response.status_code == 200
+    # An ordinary Event's own id must never be resolved as an Attendance
+    # target — no probing across both tables, no polymorphic fallback.
+    assert _get_attendance(client, event_id).status_code == 404
+    assert _mark(client, event_id, person_id, status="present").status_code == 404
+
+
+# --- Historical preservation (ADR-0032 §1/§6) -------------------------------
+
+
+@requires_postgres
+def test_attendance_survives_participation_ending(client: TestClient) -> None:
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
+    _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
+    _authenticate_as(user_id)
+    _mark(client, occurrence_id, person_id, status="present")
+
     with session_scope() as session:
-        row = session.execute(
-            select(Attendance).where(Attendance.occurrence_id == occurrence_id)
+        participant = session.execute(
+            select(EventOccurrenceParticipant).where(
+                EventOccurrenceParticipant.occurrence_id == occurrence_id,
+                EventOccurrenceParticipant.person_id == person_id,
+            )
         ).scalar_one()
-        assert row.person_id == person_id
-        assert row.event_id is None
+        participant.valid_to = datetime.datetime.now(datetime.timezone.utc)
+        session.commit()
+
+        row = session.execute(
+            select(Attendance).where(
+                Attendance.occurrence_id == occurrence_id, Attendance.person_id == person_id
+            )
+        ).scalar_one_or_none()
+        assert row is not None
+        assert row.status == "present"
 
 
 # --- Bulk upsert (ADR-0032 §7) -----------------------------------------------
@@ -744,28 +804,29 @@ def test_bulk_upsert_partial_creates_and_leaves_others_unchanged(client: TestCli
         actor_user = _make_user(actor_person)
         session.add_all([club, p1, p2, p3, actor_person, actor_user])
         session.commit()
-        event = _make_event(club)
-        session.add(event)
+        series = _make_series(session, club_id=club.id)
+        occurrence = _make_occurrence(series=series, club_id=club.id)
+        session.add(occurrence)
         session.commit()
         session.add_all(
             [
-                _make_event_participation(event, p1),
-                _make_event_participation(event, p2),
-                _make_event_participation(event, p3),
+                _make_occurrence_participant(occurrence, p1),
+                _make_occurrence_participant(occurrence, p2),
+                _make_occurrence_participant(occurrence, p3),
             ]
         )
         session.commit()
-        club_id, event_id, user_id = club.id, event.id, actor_user.id
+        club_id, occurrence_id, user_id = club.id, occurrence.id, actor_user.id
         p1_id, p2_id, p3_id = p1.id, p2.id, p3.id
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
     # Mark p3 first via single upsert; bulk should leave it untouched.
-    _mark(client, event_id, p3_id, status="present")
+    _mark(client, occurrence_id, p3_id, status="present")
 
     response = _bulk_mark(
         client,
-        event_id,
+        occurrence_id,
         [
             {"person_id": str(p1_id), "status": "present"},
             {"person_id": str(p2_id), "status": "absent", "absence_reason": "sick"},
@@ -778,20 +839,22 @@ def test_bulk_upsert_partial_creates_and_leaves_others_unchanged(client: TestCli
 
     with session_scope() as session:
         row_p3 = session.execute(
-            select(Attendance).where(Attendance.event_id == event_id, Attendance.person_id == p3_id)
+            select(Attendance).where(
+                Attendance.occurrence_id == occurrence_id, Attendance.person_id == p3_id
+            )
         ).scalar_one()
         assert row_p3.status == "present"
 
 
 @requires_postgres
 def test_bulk_upsert_duplicate_person_id_rejected_atomically(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant()
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
     response = _bulk_mark(
         client,
-        event_id,
+        occurrence_id,
         [
             {"person_id": str(person_id), "status": "present"},
             {"person_id": str(person_id), "status": "absent"},
@@ -802,7 +865,7 @@ def test_bulk_upsert_duplicate_person_id_rejected_atomically(client: TestClient)
 
     with session_scope() as session:
         rows = (
-            session.execute(select(Attendance).where(Attendance.event_id == event_id))
+            session.execute(select(Attendance).where(Attendance.occurrence_id == occurrence_id))
             .scalars()
             .all()
         )
@@ -814,24 +877,25 @@ def test_bulk_upsert_invalid_item_rejects_whole_operation(client: TestClient) ->
     with session_scope() as session:
         club = _make_club()
         eligible_person = _make_person()
-        ineligible_person = _make_person()  # no EventParticipation
+        ineligible_person = _make_person()  # no EventOccurrenceParticipant
         actor_person = _make_person()
         actor_user = _make_user(actor_person)
         session.add_all([club, eligible_person, ineligible_person, actor_person, actor_user])
         session.commit()
-        event = _make_event(club)
-        session.add(event)
+        series = _make_series(session, club_id=club.id)
+        occurrence = _make_occurrence(series=series, club_id=club.id)
+        session.add(occurrence)
         session.commit()
-        session.add(_make_event_participation(event, eligible_person))
+        session.add(_make_occurrence_participant(occurrence, eligible_person))
         session.commit()
-        club_id, event_id, user_id = club.id, event.id, actor_user.id
+        club_id, occurrence_id, user_id = club.id, occurrence.id, actor_user.id
         eligible_id, ineligible_id = eligible_person.id, ineligible_person.id
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
     response = _bulk_mark(
         client,
-        event_id,
+        occurrence_id,
         [
             {"person_id": str(eligible_id), "status": "present"},
             {"person_id": str(ineligible_id), "status": "present"},
@@ -842,11 +906,32 @@ def test_bulk_upsert_invalid_item_rejects_whole_operation(client: TestClient) ->
 
     with session_scope() as session:
         rows = (
-            session.execute(select(Attendance).where(Attendance.event_id == event_id))
+            session.execute(select(Attendance).where(Attendance.occurrence_id == occurrence_id))
             .scalars()
             .all()
         )
         assert rows == [], "no partial persistence on bulk failure"
+
+
+@requires_postgres
+def test_bulk_upsert_is_idempotent(client: TestClient) -> None:
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
+    _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
+    _authenticate_as(user_id)
+
+    payload = [{"person_id": str(person_id), "status": "present"}]
+    first = _bulk_mark(client, occurrence_id, payload)
+    second = _bulk_mark(client, occurrence_id, payload)
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    with session_scope() as session:
+        rows = (
+            session.execute(select(Attendance).where(Attendance.occurrence_id == occurrence_id))
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
 
 
 @requires_postgres
@@ -858,21 +943,25 @@ def test_bulk_upsert_produces_exactly_one_audit_event(client: TestClient) -> Non
         actor_user = _make_user(actor_person)
         session.add_all([club, p1, p2, actor_person, actor_user])
         session.commit()
-        event = _make_event(club)
-        session.add(event)
+        series = _make_series(session, club_id=club.id)
+        occurrence = _make_occurrence(series=series, club_id=club.id)
+        session.add(occurrence)
         session.commit()
         session.add_all(
-            [_make_event_participation(event, p1), _make_event_participation(event, p2)]
+            [
+                _make_occurrence_participant(occurrence, p1),
+                _make_occurrence_participant(occurrence, p2),
+            ]
         )
         session.commit()
-        club_id, event_id, user_id = club.id, event.id, actor_user.id
+        club_id, occurrence_id, user_id = club.id, occurrence.id, actor_user.id
         p1_id, p2_id = p1.id, p2.id
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
     response = _bulk_mark(
         client,
-        event_id,
+        occurrence_id,
         [
             {"person_id": str(p1_id), "status": "present"},
             {"person_id": str(p2_id), "status": "absent"},
@@ -896,43 +985,6 @@ def test_bulk_upsert_produces_exactly_one_audit_event(client: TestClient) -> Non
         assert created_events == [], "bulk must not also emit per-item attendance.created events"
 
 
-# --- Correction audit --------------------------------------------------------
-
-
-@requires_postgres
-def test_correction_records_previous_and_new_status_with_audit(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant(status="published")
-    _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
-    _authenticate_as(user_id)
-    _mark(client, event_id, person_id, status="present")
-
-    with session_scope() as session:
-        event = session.get(Event, event_id)
-        event.status = "completed"
-        session.commit()
-
-    response = _correct(
-        client,
-        event_id,
-        person_id,
-        status="absent",
-        absence_reason="sick",
-        reason="was actually sick",
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["previous_status"] == "present"
-    assert body["new_status"] == "absent"
-
-    with session_scope() as session:
-        audit_row = session.execute(
-            select(AuditLog).where(AuditLog.action == "attendance.corrected")
-        ).scalar_one()
-        assert audit_row.details["previous_status"] == "present"
-        assert audit_row.details["new_status"] == "absent"
-        assert audit_row.details["reason"] == "was actually sick"
-
-
 # --- GET: full participant projection + summary (ADR-0032 §8/§9) -----------
 
 
@@ -947,28 +999,29 @@ def test_get_attendance_includes_unmarked_participants_and_summary(client: TestC
         actor_user = _make_user(actor_person)
         session.add_all([club, ivanov, petrov, sidorov, actor_person, actor_user])
         session.commit()
-        event = _make_event(club)
-        session.add(event)
+        series = _make_series(session, club_id=club.id)
+        occurrence = _make_occurrence(series=series, club_id=club.id)
+        session.add(occurrence)
         session.commit()
         session.add_all(
             [
-                _make_event_participation(event, ivanov),
-                _make_event_participation(event, petrov),
-                _make_event_participation(event, sidorov),
+                _make_occurrence_participant(occurrence, ivanov),
+                _make_occurrence_participant(occurrence, petrov),
+                _make_occurrence_participant(occurrence, sidorov),
             ]
         )
         session.commit()
-        club_id, event_id, user_id = club.id, event.id, actor_user.id
+        club_id, occurrence_id, user_id = club.id, occurrence.id, actor_user.id
         ivanov_id, petrov_id, sidorov_id = ivanov.id, petrov.id, sidorov.id
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _grant_permission(user_id, "attendance.read", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    _mark(client, event_id, ivanov_id, status="present")
-    _mark(client, event_id, petrov_id, status="absent", absence_reason="sick")
+    _mark(client, occurrence_id, ivanov_id, status="present")
+    _mark(client, occurrence_id, petrov_id, status="absent", absence_reason="sick")
     # sidorov is never marked.
 
-    response = _get_attendance(client, event_id)
+    response = _get_attendance(client, occurrence_id)
     assert response.status_code == 200
     body = response.json()
     assert body["summary"] == {
@@ -994,22 +1047,23 @@ def test_get_attendance_self_scope_sees_only_own_row(client: TestClient) -> None
         self_user = _make_user(self_person)
         session.add_all([club, self_person, other_person, self_user])
         session.commit()
-        event = _make_event(club)
-        session.add(event)
+        series = _make_series(session, club_id=club.id)
+        occurrence = _make_occurrence(series=series, club_id=club.id)
+        session.add(occurrence)
         session.commit()
         session.add_all(
             [
-                _make_event_participation(event, self_person),
-                _make_event_participation(event, other_person),
+                _make_occurrence_participant(occurrence, self_person),
+                _make_occurrence_participant(occurrence, other_person),
             ]
         )
         session.commit()
-        club_id, event_id, self_user_id = club.id, event.id, self_user.id
+        club_id, occurrence_id, self_user_id = club.id, occurrence.id, self_user.id
         self_person_id, other_person_id = self_person.id, other_person.id
     _grant_permission(self_user_id, "attendance.read", scope_type="self", club_id=club_id)
     _authenticate_as(self_user_id)
 
-    response = _get_attendance(client, event_id)
+    response = _get_attendance(client, occurrence_id)
     assert response.status_code == 200
     body = response.json()
     person_ids = {item["person"]["id"] for item in body["items"]}
@@ -1036,22 +1090,23 @@ def test_get_attendance_children_scope_sees_only_child_row(client: TestClient) -
         )
         session.add(_make_guardian_relationship(guardian_person, child_person))
         session.commit()
-        event = _make_event(club)
-        session.add(event)
+        series = _make_series(session, club_id=club.id)
+        occurrence = _make_occurrence(series=series, club_id=club.id)
+        session.add(occurrence)
         session.commit()
         session.add_all(
             [
-                _make_event_participation(event, child_person),
-                _make_event_participation(event, unrelated_person),
+                _make_occurrence_participant(occurrence, child_person),
+                _make_occurrence_participant(occurrence, unrelated_person),
             ]
         )
         session.commit()
-        club_id, event_id, guardian_user_id = club.id, event.id, guardian_user.id
+        club_id, occurrence_id, guardian_user_id = club.id, occurrence.id, guardian_user.id
         child_person_id = child_person.id
     _grant_permission(guardian_user_id, "attendance.read", scope_type="children", club_id=club_id)
     _authenticate_as(guardian_user_id)
 
-    response = _get_attendance(client, event_id)
+    response = _get_attendance(client, occurrence_id)
     assert response.status_code == 200
     body = response.json()
     person_ids = {item["person"]["id"] for item in body["items"]}
@@ -1068,25 +1123,29 @@ def test_get_attendance_all_scope_sees_full_set(client: TestClient) -> None:
         actor_user = _make_user(actor_person)
         session.add_all([club, p1, p2, actor_person, actor_user])
         session.commit()
-        event = _make_event(club)
-        session.add(event)
+        series = _make_series(session, club_id=club.id)
+        occurrence = _make_occurrence(series=series, club_id=club.id)
+        session.add(occurrence)
         session.commit()
         session.add_all(
-            [_make_event_participation(event, p1), _make_event_participation(event, p2)]
+            [
+                _make_occurrence_participant(occurrence, p1),
+                _make_occurrence_participant(occurrence, p2),
+            ]
         )
         session.commit()
-        club_id, event_id, user_id = club.id, event.id, actor_user.id
+        club_id, occurrence_id, user_id = club.id, occurrence.id, actor_user.id
     _grant_permission(user_id, "attendance.read", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    response = _get_attendance(client, event_id)
+    response = _get_attendance(client, occurrence_id)
     assert response.status_code == 200
     assert response.json()["summary"]["total"] == 2
 
 
 @requires_postgres
-def test_get_attendance_none_scope_and_no_permission_is_404(client: TestClient) -> None:
-    club_id, event_id, _person_id, _owner_id = _setup_event_with_participant()
+def test_get_attendance_no_permission_is_404(client: TestClient) -> None:
+    club_id, occurrence_id, _person_id, _owner_id = _setup_occurrence_with_participant()
     with session_scope() as session:
         other_person = _make_person()
         other_user = _make_user(other_person)
@@ -1095,7 +1154,7 @@ def test_get_attendance_none_scope_and_no_permission_is_404(client: TestClient) 
         other_user_id = other_user.id
     _authenticate_as(other_user_id)
 
-    response = _get_attendance(client, event_id)
+    response = _get_attendance(client, occurrence_id)
     assert response.status_code == 404
 
 
@@ -1104,7 +1163,7 @@ def test_get_attendance_none_scope_and_no_permission_is_404(client: TestClient) 
 
 @requires_postgres
 def test_cross_club_scope_does_not_grant_access(client: TestClient) -> None:
-    club_id, event_id, person_id, _owner_id = _setup_event_with_participant()
+    club_id, occurrence_id, person_id, _owner_id = _setup_occurrence_with_participant()
     with session_scope() as session:
         other_club = _make_club()
         other_person = _make_person()
@@ -1116,10 +1175,10 @@ def test_cross_club_scope_does_not_grant_access(client: TestClient) -> None:
     _grant_permission(other_user_id, "attendance.read", scope_type="all", club_id=other_club_id)
     _authenticate_as(other_user_id)
 
-    response = _get_attendance(client, event_id)
+    response = _get_attendance(client, occurrence_id)
     assert response.status_code == 404
 
-    response = _mark(client, event_id, person_id, status="present")
+    response = _mark(client, occurrence_id, person_id, status="present")
     assert response.status_code == 404
 
 
@@ -1135,20 +1194,20 @@ def test_no_version_or_concurrency_token_field_exists() -> None:
 
 @requires_postgres
 def test_last_write_wins_sequential_updates(client: TestClient) -> None:
-    club_id, event_id, person_id, user_id = _setup_event_with_participant()
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
-    _mark(client, event_id, person_id, status="present")
-    _mark(client, event_id, person_id, status="absent", absence_reason="work")
-    final = _mark(client, event_id, person_id, status="present")
+    _mark(client, occurrence_id, person_id, status="present")
+    _mark(client, occurrence_id, person_id, status="absent", absence_reason="work")
+    final = _mark(client, occurrence_id, person_id, status="present")
     assert final.status_code == 200
     assert final.json()["status"] == "present"
 
     with session_scope() as session:
         row = session.execute(
             select(Attendance).where(
-                Attendance.event_id == event_id, Attendance.person_id == person_id
+                Attendance.occurrence_id == occurrence_id, Attendance.person_id == person_id
             )
         ).scalar_one()
         assert row.status == "present"
