@@ -2,6 +2,12 @@
 
 Human-readable registry for the TourCRM visual asset hand-off. This file answers: what exists, where it lives, what it is for, and where the application will consume it later.
 
+## Product visual direction
+
+TourCRM is a calm, friendly product for tourist clubs. The primary audience includes school-age users from grades 5–10; club leaders, instructors and parents are also first-class users.
+
+The visual language should feel welcoming, warm and approachable. Cute/lightly playful artwork is encouraged where it improves the experience, especially for empty states, onboarding and supportive feedback. It must not compromise semantic clarity, readability or confidence in operational actions.
+
 ## Source-of-truth and integration
 
 - Documentation/design-system source: `docs/06-ui/assets/`
@@ -16,7 +22,9 @@ Human-readable registry for the TourCRM visual asset hand-off. This file answers
 - Icon sizes: `16`, `20`, `24`, `32`, `48`, `64` px.
 - Illustrations: PNG/WebP; responsive `desktop`, `tablet`, `mobile` compositions where required.
 - Concept sheets are reference material, not application assets.
-- Approved custom artwork must not be replaced by generic icon-library equivalents without an explicit design decision.
+- **All production UI icons must be bespoke TourCRM artwork.** Generic icon-library assets, stock icon packs or ad-hoc replacements are not allowed without an explicit design decision.
+- Existing approved custom artwork is the visual source of truth for new assets in the same family.
+- An icon may be stylistically distinctive, but its semantic meaning must remain immediately understandable. Do not sacrifice meaning for novelty.
 - Hover/active/disabled are normally UI-layer states; do not create duplicate bitmap files unless artwork itself changes.
 
 ## Current registry
@@ -124,6 +132,8 @@ docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyState
 ```
 
 `empty-groups`, `empty-people`, `empty-events`, `empty-achievements`, `empty-search`, `no-results`.
+
+These states are deliberately allowed to be friendly/cute. `empty-search` and `no-results` are distinct semantic states and must not collapse into a generic error illustration.
 
 System:
 
