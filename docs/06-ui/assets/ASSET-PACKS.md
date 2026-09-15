@@ -1,172 +1,170 @@
-# TourCRM Asset Packages
+# TourCRM UI Asset Packages
 
-## Purpose
+Human-readable registry for the TourCRM visual asset hand-off. This file answers: what exists, where it lives, what it is for, and where the application will consume it later.
 
-This document is the index for binary asset packages delivered through the TourCRM UI asset handoff.
+## Source-of-truth and integration
 
-The package layer is intentionally separate from application integration:
+- Documentation/design-system source: `docs/06-ui/assets/`
+- Reviewed binary hand-off packages: `docs/06-ui/assets/packages/`
+- Future application integration: `assets/ui/`
+- PR #75 is the hand-off PR. **Do not merge this branch as part of asset production.**
 
-- `docs/06-ui/assets/` — documentation and design-system source of truth;
-- `docs/06-ui/assets/packages/` — reviewed binary handoff archives;
-- `assets/ui/` — application integration path, populated only during the implementation stage.
+## Production rules
 
-The complete production scope is defined by `TourCRM_Asset_Catalog_v1.0`. This registry does not invent additional assets or product semantics.
+- UI icons: raster **WebP** only.
+- SVG is not used for TourCRM production UI assets.
+- Icon sizes: `16`, `20`, `24`, `32`, `48`, `64` px.
+- Illustrations: PNG/WebP; responsive `desktop`, `tablet`, `mobile` compositions where required.
+- Concept sheets are reference material, not application assets.
+- Approved custom artwork must not be replaced by generic icon-library equivalents without an explicit design decision.
+- Hover/active/disabled are normally UI-layer states; do not create duplicate bitmap files unless artwork itself changes.
 
-## Package naming
+## Current registry
 
-```text
-TourCRM_Assets_<category>_<priority>.zip
-```
-
-## Package registry
-
-| Package | Scope | Catalog IDs | Current state | Target repository location |
+| Area | Scope | State | Repository package/path | Future integration root |
 |---|---|---|---|---|
-| `TourCRM_Assets_Brand_P0-P1.zip` | Brand derivatives | BR-001…BR-008 (8) | Planned | `docs/06-ui/assets/packages/brand/` |
-| `TourCRM_Visual_Assets_v1.0_FINAL.zip` | Approved P0 navigation visual asset set | NAV-001…NAV-007 (7) | **Approved / uploaded** | `docs/06-ui/assets/packages/navigation/` |
-| `TourCRM_Assets_Actions_P0.zip` | Core action icons | ACT-001…ACT-017 (17) | **Approved / uploaded** | `docs/06-ui/assets/packages/actions/` |
-| `TourCRM_Assets_Status_P0.zip` | Product and semantic status icons | STA-001…STA-009 (9) | **Uploaded / pending final package review** | `docs/06-ui/assets/packages/status/` |
-| `TourCRM_Assets_Domain_P0-P1.zip` | Person, membership, role, Group and Event icons | DOM-001…DOM-022 (22) | Planned | `docs/06-ui/assets/packages/domain/` |
-| `TourCRM_Assets_Achievements_P0-P1.zip` | Achievement frames, states and initial artwork | ACH-001…ACH-018 (18) | Planned | `docs/06-ui/assets/packages/achievements/` |
-| `TourCRM_Assets_Illustrations_P0-P1.zip` | Empty, system and onboarding illustrations | ILL-001…ILL-015 (15) | Planned | `docs/06-ui/assets/packages/illustrations/` |
-| `TourCRM_Assets_Decorative_P2.zip` | Optional decorative system | DEC-001…DEC-009 (9) | Deferred | `docs/06-ui/assets/packages/decorative/` |
+| Brand | BR-001…BR-008 (8) | Planned | `docs/06-ui/assets/packages/brand/` | `assets/ui/brand/` |
+| Navigation | NAV-001…NAV-007 (7) | **Approved / uploaded** | `docs/06-ui/assets/packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` | `assets/ui/icons/navigation/` |
+| Actions | ACT-001…ACT-017 (17) | **Approved / uploaded** | `docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` | `assets/ui/icons/actions/` |
+| Status | STA-001…STA-009 (9) | **Approved / uploaded** | `docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0_FINAL.zip` | `assets/ui/icons/status/` |
+| Domain | DOM-001…DOM-022 (22) | Working/concept; **not production-approved** | `docs/06-ui/assets/packages/domain/` | `assets/ui/icons/domain/` |
+| Achievements P0 | rarity + state (8) | **Approved / uploaded** | `docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` | `assets/ui/achievements/` |
+| Achievements P1 | artwork (10) | **Approved / uploaded** | `docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` | `assets/ui/achievements/` |
+| Illustrations — Empty | 6 | **Approved / uploaded** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` | `assets/ui/illustrations/` |
+| Illustrations — System | 5 | **Approved / uploaded** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip` | `assets/ui/illustrations/` |
+| Illustrations — Onboarding | 4 | **Approved / uploaded** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip` | `assets/ui/illustrations/` |
+| Decorative | DEC-001…DEC-009 (9) | Deferred / P2 | `docs/06-ui/assets/packages/decorative/` | `assets/ui/decorative/` |
 
-## Production order
+## Catalog and usage
 
-The catalog defines this order:
+### Navigation — 7 icons / 42 WebP exports
 
-1. Brand derivatives
-2. Navigation icons
-3. Action icons
-4. Status icons
-5. Person / membership / roles
-6. Group
-7. Event / role relationship symbols
-8. Achievement frames and states
-9. Achievement artwork
-10. Illustrations
-11. P2 Decorative assets
+`NAV-001 Home`, `NAV-002 People`, `NAV-003 Groups`, `NAV-004 Events`, `NAV-005 Achievements`, `NAV-006 Reports`, `NAV-007 Settings`.
 
-Navigation and Actions P0 are approved. Status P0 is uploaded and awaits final package review. The next production block after Status is **Domain P0/P1**.
-
-## Navigation package
-
-The approved P0 Navigation set contains:
-
-- Home
-- People
-- Groups
-- Events
-- Achievements
-- Reports
-- Settings
-
-The approved production handoff for Navigation uses transparent WebP at 16, 20, 24, 32, 48 and 64 px. The current package also includes high-resolution PNG raster masters and the approved navigation sheet for reference. No SVG assets are included.
-
-Archive filename:
-
-```text
-TourCRM_Visual_Assets_v1.0_FINAL.zip
-```
-
-Repository path:
+Archive:
 
 ```text
 docs/06-ui/assets/packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip
 ```
 
-The superseded `TourCRM_Assets_Navigation_P0.zip` archive has been removed and must not be used.
-
-The archive is a documentation/design-system handoff package. It is not the application integration source under `assets/ui/` until the implementation stage.
-
-## Actions P0 package
-
-The P0 Actions package contains these 17 core actions from the source catalog:
+Integration directories:
 
 ```text
-add
-edit
-delete
-archive
-restore
-search
-filter
-sort
-save
-cancel
-confirm
-close
-back
-forward
-more
-download
-upload
+assets/ui/icons/navigation/home/
+assets/ui/icons/navigation/people/
+assets/ui/icons/navigation/groups/
+assets/ui/icons/navigation/events/
+assets/ui/icons/navigation/achievements/
+assets/ui/icons/navigation/reports/
+assets/ui/icons/navigation/settings/
 ```
 
-Each action is delivered at 16, 20, 24, 32, 48 and 64 px as transparent WebP, plus a package manifest.
+`Settings` is the approved compass + wrench artwork. The superseded `TourCRM_Assets_Navigation_P0.zip` must not be used.
 
-Archive filename:
+### Actions — 17 icons / 102 WebP exports
+
+Catalog: `add`, `edit`, `delete`, `archive`, `restore`, `search`, `filter`, `sort`, `save`, `cancel`, `confirm`, `close`, `back`, `forward`, `more`, `download`, `upload`.
+
+Archive:
 
 ```text
-TourCRM_Assets_Actions_P0.zip
+docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip
 ```
 
-Repository path:
+Integration root:
 
 ```text
-docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0.zip
+assets/ui/icons/actions/
 ```
 
-## Status P0 package
+### Status — 9 icons / 54 WebP exports
 
-The P0 Status package contains 9 semantic status assets from the source catalog. The package has been uploaded to its designated repository directory and is pending final package integrity/manifest review.
+Catalog: `planned`, `ongoing`, `completed`, `ended`, `archived`, `success`, `warning`, `error`, `info`.
 
-Archive filename:
+Archive:
 
 ```text
-TourCRM_Assets_Status_P0.zip
+docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0_FINAL.zip
 ```
 
-Repository path:
+Integration root:
 
 ```text
-docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0.zip
+assets/ui/icons/status/
 ```
 
-Package checksum:
+`ended` is the approved extinguished-campfire metaphor. Do not add extra statuses unless the catalog is explicitly changed.
+
+### Achievements
+
+P0 archive:
 
 ```text
-SHA-256: e333128bb0e320c3d55f5b1c396b0836602bb0c98bec85b73efa6303f040e396
+docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip
 ```
 
-## Package completion rule
+P0: `common`, `uncommon`, `rare`, `epic`, `legendary`, `earned`, `locked`, `progress`.
 
-A package is marked `Approved / uploaded` only when:
-
-1. all assets in its scope have production files;
-2. the visual quality gate has passed;
-3. naming and format requirements are satisfied;
-4. the package is uploaded to its designated directory;
-5. the corresponding catalog/manifest/status documentation is updated.
-
-Do not create placeholder files merely to make a package appear complete.
-
-## Upload rule
-
-Archives must be uploaded into their corresponding package directory on branch `feat/ui-assets-production-v7`, never into the repository root.
-
-Correct:
+P1 archive:
 
 ```text
-docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0.zip
+docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip
 ```
 
-Incorrect:
+P1: `explorer`, `peak-reacher`, `veteran-tourist`, `team-player`, `camp-master`, `navigator`, `first-expedition`, `trail-walker`, `community-hero`, `adventure-leader`.
+
+Integration root: `assets/ui/achievements/`.
+
+### Illustrations
+
+Empty states:
 
 ```text
-TourCRM_Assets_Status_P0.zip
+docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip
 ```
 
-## Integrity
+`empty-groups`, `empty-people`, `empty-events`, `empty-achievements`, `empty-search`, `no-results`.
 
-Checksums are recorded only for packages whose local source artifact has been hashed. After manual upload, the repository copy is treated as the handoff artifact and must remain unchanged unless the package is explicitly versioned.
+System:
+
+```text
+docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip
+```
+
+`success`, `error`, `404`, `403`, `maintenance`.
+
+Onboarding:
+
+```text
+docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip
+```
+
+`welcome`, `first-group`, `first-event`, `first-achievement`.
+
+Integration root: `assets/ui/illustrations/`.
+
+Use the illustration matching the semantic screen state. Do not use an illustration as a replacement for an icon.
+
+## Domain — explicitly not final
+
+Working archives currently present:
+
+```text
+docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P0.zip
+docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P1A.zip
+docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P1B_CLEAN.zip
+```
+
+These are not production-approved. In particular, `Group` must not become a duplicate of the already-approved Navigation `Groups` metaphor.
+
+## Not yet handed off
+
+Brand and Decorative have no approved production archive. Do not create placeholders merely to make the registry appear complete.
+
+## Production order
+
+Brand → Navigation → Actions → Status → Domain → Achievements → Illustrations → Decorative P2.
+
+A package may be called **Approved / uploaded** only after visual approval, production export, naming/format validation, upload and documentation update are complete.
+
+If a package is replaced, update this registry, `ASSET-STATUS.md`, `asset-manifest.json` and the PR description together. Superseded filenames must not be referenced by new code or documentation.
