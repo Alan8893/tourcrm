@@ -136,11 +136,25 @@ The canonical recurrence resource paths are aligned with `docs/05-api/event-recu
 
 Dedicated occurrence `/cancel` and `/reschedule` endpoints are not canonical. Occurrence-level reschedule, cancellation and allow-listed property overrides use the Series `/exceptions` endpoint.
 
+### Series relationship definitions
+
+Each immutable EventSeries version owns its own relationship-definition snapshot:
+
+- `SeriesStaffAssignment`;
+- `SeriesGroupTarget`;
+- `SeriesParticipant`.
+
+The detailed CRUD/list/change/end contract for these resources is defined in `docs/05-api/event-recurrence-api.md`. Exact route naming is intentionally not duplicated in this inventory until reconciled with the existing Event relationship API surface; implementation must not create competing endpoints for the same relationship semantics.
+
+Relationship definitions are owned by a concrete Series version, not by the logical root. `this_and_following` snapshot-copies predecessor definitions into the successor version. Future occurrence materialization copies applicable definitions into direct occurrence-level relationship records atomically.
+
 Series/occurrence mutation semantics:
 
 - recurrence changes must declare an explicit update scope;
 - `this occurrence` changes only the selected occurrence through an occurrence exception/override;
 - `this and following` creates a new EventSeries version beginning at a selected future `scheduled` occurrence;
+- `this and following` snapshot-copies Series relationship definitions into the successor before successor-specific changes;
+- occurrence-level relationship overrides are protected from later Series propagation;
 - `entire series` changes the current series version according to the explicit recurrence policy, without rewriting immutable past occurrences;
 - the selected occurrence retains its stable ID when rebound to a new series version;
 - a cancelled occurrence cannot be the boundary for a new version;
@@ -149,7 +163,8 @@ Series/occurrence mutation semantics:
 - occurrence lifecycle is `scheduled → in_progress → completed` or `scheduled → cancelled`;
 - reschedule is an exception, not a lifecycle status;
 - exceptions are auditable and do not delete occurrences;
-- each occurrence `ends_at` is derived as `starts_at + duration_minutes` from its governing Series version.
+- each occurrence `ends_at` is derived as `starts_at + duration_minutes` from its governing Series version;
+- recurring occurrence authorization uses direct occurrence-level relationships; `occurrence.club_id` alone never grants non-`all` access and no nullable `event_id` bridge is allowed.
 
 ## 10. Attendance
 
