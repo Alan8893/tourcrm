@@ -7,14 +7,24 @@ strategy), ADR-0028 (recurrence persistence/versioning), ADR-0029
 relationship source), docs/03-architecture/database-schema-recurrence.md
 §5 (occurrence authorization relationship persistence).
 
-Merges ordinary `Event` rows and recurring `EventOccurrence` rows into one
-sorted, paginated calendar projection using a single `UNION ALL` SQL
+Merges ordinary `Event` items and recurring `EventOccurrence` items into
+one sorted, paginated calendar projection using a single `UNION ALL` SQL
 statement — authorization (app.events.authorization.event_visibility_filter
 / app.events.series_authorization.occurrence_visibility_filter), the
 documented narrowing filters, and pagination/ordering are all applied
 inside that one query, never fetched-then-filtered/paginated in Python
 (events-api.md §16 / api-conventions.md §10 whitelist-filtering
 requirement).
+
+Since ADR-0033, every `Event` has exactly one linked `EventOccurrence`
+(app.events.crud), so **both** branches of the union select from
+`event_occurrences` — the "event" branch joins to `events` via `event_id`
+and reads its identity/status from `Event` (never the mirrored occurrence
+status, which cannot represent `draft`/`archived`), the "occurrence"
+branch joins to `event_series` via `series_id` exactly as before. Selecting
+the "event" branch directly from `events` instead would produce a second,
+duplicate calendar row for the same real-world event once its own linked
+occurrence also happened to satisfy the occurrence branch's conditions.
 
 ## Recurring occurrence authorization (ADR-0030 / TH-0082 / PR #86)
 
@@ -204,21 +214,39 @@ def list_calendar_items_page(
             )
         )
 
-    event_branch = sa.select(
-        Event.id.label("id"),
-        sa.literal("event").label("kind"),
-        Event.club_id.label("club_id"),
-        Event.event_type.label("event_type"),
-        Event.title.label("title"),
-        Event.description.label("description"),
-        Event.start_at.label("start_at"),
-        Event.end_at.label("end_at"),
-        Event.timezone.label("timezone"),
-        Event.status.label("status"),
-        Event.cancellation_reason.label("cancellation_reason"),
-        sa.cast(sa.null(), PG_UUID(as_uuid=True)).label("series_id"),
-        sa.cast(sa.null(), sa.Integer).label("series_version"),
-    ).where(*event_conditions)
+    # ADR-0033 §6: every Event now has exactly one linked EventOccurrence,
+    # so this branch selects FROM event_occurrences (joined to events) —
+    # EventOccurrence is the sole operational row source for both
+    # branches. The public identity/fields are still Event's own
+    # (`kind="event"`, `id=Event.id`, so existing "kind=event, id=X"
+    # consumers still navigate to `/events/{id}` unchanged), and
+    # eligibility still reads `Event.status`, never the mirrored
+    # occurrence status — the occurrence vocabulary has no `draft`/
+    # `archived` equivalent (see app.events.crud module docstring
+    # "Occurrence sync"). Selecting from `Event` directly here as well
+    # would produce a second, duplicate row for the same real-world
+    # event once its occurrence also satisfies the occurrence branch's
+    # own (unrelated) conditions.
+    event_branch = (
+        sa.select(
+            Event.id.label("id"),
+            sa.literal("event").label("kind"),
+            Event.club_id.label("club_id"),
+            Event.event_type.label("event_type"),
+            Event.title.label("title"),
+            Event.description.label("description"),
+            Event.start_at.label("start_at"),
+            Event.end_at.label("end_at"),
+            Event.timezone.label("timezone"),
+            Event.status.label("status"),
+            Event.cancellation_reason.label("cancellation_reason"),
+            sa.cast(sa.null(), PG_UUID(as_uuid=True)).label("series_id"),
+            sa.cast(sa.null(), sa.Integer).label("series_version"),
+        )
+        .select_from(EventOccurrence)
+        .join(Event, Event.id == EventOccurrence.event_id)
+        .where(*event_conditions)
+    )
 
     branches = [event_branch]
 

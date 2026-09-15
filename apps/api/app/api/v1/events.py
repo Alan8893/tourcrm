@@ -544,7 +544,20 @@ def _get_authorized_attendance_target_or_404(
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
 
-    context = build_occurrence_resource_context(db, occurrence=target, user_id=user_id)
+    # ADR-0033 §5: the occurrence backing an ordinary Event is authorized
+    # through *that Event's* own relationships (EventStaffAssignment/
+    # EventGroupTarget/EventParticipation via build_event_resource_context)
+    # — never the occurrence-level relationship tables, which are never
+    # populated for a non-recurring occurrence (those are exclusively
+    # materialized from a governing EventSeries, ADR-0029/ADR-0030). A
+    # genuinely recurring occurrence keeps using
+    # build_occurrence_resource_context exactly as before.
+    if target.event_id is not None:
+        event = db.get(Event, target.event_id)
+        assert event is not None  # ADR-0033 §1: the FK guarantees this.
+        context = build_event_resource_context(db, event=event, user_id=user_id)
+    else:
+        context = build_occurrence_resource_context(db, occurrence=target, user_id=user_id)
 
     authorizer = Authorizer(session=db, user_id=user_id, permission_code=permission_code)
     if not authorizer.is_allowed(context):
@@ -586,7 +599,7 @@ def get_attendance(
     )
     entries, summary, total = attendance.list_attendance(
         db,
-        occurrence_id=target.id,
+        occurrence=target,
         club_id=target.club_id,
         resource_context=context,
         user_id=principal.user_id,
@@ -638,17 +651,17 @@ def mark_attendance(
     except attendance.AttendanceError as exc:
         _raise_for_normal_lifecycle_error(exc)
 
-    if not attendance.has_participation(db, occurrence_id=target.id, person_id=person_id):
+    if not attendance.has_participation(db, occurrence=target, person_id=person_id):
         raise APIError(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "participation_missing",
-            "Person has no active EventOccurrenceParticipant for this occurrence",
+            "Person has no participation for this object",
         )
 
     try:
         row, _created = attendance.upsert_attendance(
             db,
-            occurrence_id=target.id,
+            occurrence=target,
             club_id=target.club_id,
             person_id=person_id,
             status=payload.status,
@@ -691,7 +704,7 @@ def bulk_mark_attendance(
     try:
         results = attendance.bulk_upsert_attendance(
             db,
-            occurrence_id=target.id,
+            occurrence=target,
             club_id=target.club_id,
             items=items,
             actor_user_id=principal.user_id,
@@ -737,7 +750,7 @@ def correct_attendance(
     try:
         row, previous_status = attendance.correct_attendance(
             db,
-            occurrence_id=target.id,
+            occurrence=target,
             club_id=target.club_id,
             person_id=person_id,
             status=payload.status,

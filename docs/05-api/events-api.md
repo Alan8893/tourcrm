@@ -16,7 +16,7 @@
 
 Посещаемость хранится относительно occurrence, а не только series/event.
 
-**Открытый gap:** ADR-0032 §1 предполагает, что attendance для обычного, не повторяющегося `Event` также должна существовать, но ни один canonical source (ADR-0015, ADR-0028 §13, ADR-0029, ADR-0030) не определяет, как обычный `Event` соотносится с конкретным `EventOccurrence`. Текущая реализация (Issue #94 / TH-0087) поддерживает attendance только для `EventOccurrence` — `{event_id}` в §22-25 ниже разрешается исключительно как `EventOccurrence.id`; id обычного `Event` не резолвится и возвращает 404. Это ожидает PO decision, а не решено самостоятельно реализацией.
+Resolved by ADR-0033 (PO decision): каждый обычный, не повторяющийся `Event` имеет ровно один concrete `EventOccurrence` (создаётся и синхронизируется вместе с Event), поэтому `{event_id}` в §22-25 ниже разрешается детерминированно — либо как Event → его единственный linked occurrence, либо (для recurring) напрямую как `EventOccurrence.id`. Attendance identity остаётся occurrence-only (`(occurrence_id, person_id)`, без `Attendance.event_id`) — см. ADR-0033.
 
 ## 3. Общий префикс
 

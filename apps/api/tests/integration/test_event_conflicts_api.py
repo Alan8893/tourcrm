@@ -131,7 +131,21 @@ def _make_group_instructor_assignment(
     return GroupInstructorAssignment(**defaults)  # type: ignore[arg-type]
 
 
-def _make_event(club: Club, **overrides: object) -> Event:
+_EVENT_TO_OCCURRENCE_STATUS = {
+    "draft": "scheduled",
+    "published": "scheduled",
+    "in_progress": "in_progress",
+    "completed": "completed",
+    "cancelled": "cancelled",
+}
+
+
+def _make_event(session, club: Club, **overrides: object) -> Event:
+    """ADR-0033: every Event has exactly one linked EventOccurrence — so
+    this helper creates both, adding them to `session` itself (the
+    caller's own subsequent `session.add(event)`/`add_all([...])` is
+    then a harmless no-op) rather than returning a bare, unlinked Event.
+    """
     start_at = overrides.pop("start_at", _START)
     end_at = overrides.pop("end_at", start_at + datetime.timedelta(hours=1))  # type: ignore[operator]
     defaults: dict[str, object] = {
@@ -144,7 +158,26 @@ def _make_event(club: Club, **overrides: object) -> Event:
         "status": "published",
     }
     defaults.update(overrides)
-    return Event(**defaults)  # type: ignore[arg-type]
+    event = Event(id=uuid.uuid4(), **defaults)  # type: ignore[arg-type]
+    session.add(event)
+    session.flush()
+    session.add(
+        EventOccurrence(
+            event_id=event.id,
+            series_id=None,
+            club_id=event.club_id,
+            name=event.title,
+            description=event.description,
+            event_type=event.event_type,
+            recurrence_anchor_at=event.start_at,
+            starts_at=event.start_at,
+            ends_at=event.end_at,
+            timezone=event.timezone,
+            status=_EVENT_TO_OCCURRENCE_STATUS.get(event.status, "scheduled"),
+            cancellation_reason=event.cancellation_reason,
+        )
+    )
+    return event
 
 
 def _make_event_staff_assignment(
@@ -346,8 +379,11 @@ def test_overlapping_intervals_conflict(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        e1 = _make_event(club, start_at=_START, end_at=_START + datetime.timedelta(hours=1))
+        e1 = _make_event(
+            session, club, start_at=_START, end_at=_START + datetime.timedelta(hours=1)
+        )
         e2 = _make_event(
+            session,
             club,
             start_at=_START + datetime.timedelta(minutes=30),
             end_at=_START + datetime.timedelta(hours=2),
@@ -383,9 +419,12 @@ def test_touching_boundary_does_not_conflict(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        e1 = _make_event(club, start_at=_START, end_at=_START + datetime.timedelta(hours=1))
+        e1 = _make_event(
+            session, club, start_at=_START, end_at=_START + datetime.timedelta(hours=1)
+        )
         # e2 starts exactly when e1 ends.
         e2 = _make_event(
+            session,
             club,
             start_at=_START + datetime.timedelta(hours=1),
             end_at=_START + datetime.timedelta(hours=2),
@@ -412,8 +451,12 @@ def test_exact_same_interval_conflicts(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        e1 = _make_event(club, start_at=_START, end_at=_START + datetime.timedelta(hours=1))
-        e2 = _make_event(club, start_at=_START, end_at=_START + datetime.timedelta(hours=1))
+        e1 = _make_event(
+            session, club, start_at=_START, end_at=_START + datetime.timedelta(hours=1)
+        )
+        e2 = _make_event(
+            session, club, start_at=_START, end_at=_START + datetime.timedelta(hours=1)
+        )
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_staff_assignment(e1, user))
@@ -436,8 +479,11 @@ def test_contained_interval_conflicts(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        outer = _make_event(club, start_at=_START, end_at=_START + datetime.timedelta(hours=4))
+        outer = _make_event(
+            session, club, start_at=_START, end_at=_START + datetime.timedelta(hours=4)
+        )
         inner = _make_event(
+            session,
             club,
             start_at=_START + datetime.timedelta(hours=1),
             end_at=_START + datetime.timedelta(hours=2),
@@ -467,8 +513,11 @@ def test_no_overlap_no_conflict(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        e1 = _make_event(club, start_at=_START, end_at=_START + datetime.timedelta(hours=1))
+        e1 = _make_event(
+            session, club, start_at=_START, end_at=_START + datetime.timedelta(hours=1)
+        )
         e2 = _make_event(
+            session,
             club,
             start_at=_START + datetime.timedelta(hours=5),
             end_at=_START + datetime.timedelta(hours=6),
@@ -498,8 +547,8 @@ def test_event_event_conflict(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_staff_assignment(e1, user))
@@ -527,7 +576,7 @@ def test_event_occurrence_conflict(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        event = _make_event(club)
+        event = _make_event(session, club)
         session.add(event)
         session.commit()
         session.add(_make_event_staff_assignment(event, user))
@@ -599,8 +648,8 @@ def test_instructor_domain_positive(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_staff_assignment(e1, user))
@@ -626,8 +675,8 @@ def test_instructor_domain_different_instructors_no_conflict(client: TestClient)
         user_b = _make_user(person_b)
         session.add_all([club, person_a, user_a, person_b, user_b])
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_staff_assignment(e1, user_a))
@@ -651,8 +700,10 @@ def test_instructor_domain_unauthorized_opposing_event_is_hidden(client: TestCli
         user = _make_user(person)
         session.add_all([club, other_club, person, user])
         session.commit()
-        visible_event = _make_event(club)
-        hidden_event = _make_event(other_club, start_at=_START + datetime.timedelta(minutes=30))
+        visible_event = _make_event(session, club)
+        hidden_event = _make_event(
+            session, other_club, start_at=_START + datetime.timedelta(minutes=30)
+        )
         session.add_all([visible_event, hidden_event])
         session.commit()
         session.add(_make_event_staff_assignment(visible_event, user))
@@ -686,8 +737,8 @@ def test_group_domain_positive(client: TestClient) -> None:
         group = _make_group(club)
         session.add(group)
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_group_target(e1, group))
@@ -715,8 +766,8 @@ def test_group_domain_different_groups_no_conflict(client: TestClient) -> None:
         group_b = _make_group(club)
         session.add_all([group_a, group_b])
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_group_target(e1, group_a))
@@ -746,8 +797,8 @@ def test_group_membership_alone_does_not_create_group_conflict(client: TestClien
         session.add(group)
         session.commit()
         session.add(_make_group_membership(group, club_membership))
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         # Neither event has an EventGroupTarget for `group` -- membership
@@ -772,8 +823,8 @@ def test_participant_domain_positive(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_participation(e1, person))
@@ -798,8 +849,8 @@ def test_participant_domain_different_participants_no_conflict(client: TestClien
         person_b = _make_person()
         session.add_all([club, person_a, user_a, person_b])
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_participation(e1, person_a))
@@ -829,8 +880,8 @@ def test_participant_group_membership_alone_does_not_conflict(client: TestClient
         session.add(group)
         session.commit()
         session.add(_make_group_membership(group, club_membership))
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         # No EventParticipation anywhere -- GroupMembership alone must not
@@ -855,8 +906,8 @@ def test_participant_guardian_relationship_alone_does_not_conflict(client: TestC
         session.commit()
         session.add(_make_guardian_relationship(guardian_person, child_person))
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         # No EventParticipation for the child anywhere.
@@ -881,9 +932,9 @@ def test_event_operational_statuses_included(client: TestClient, status_value: s
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        e1 = _make_event(club, status=status_value)
+        e1 = _make_event(session, club, status=status_value)
         e2 = _make_event(
-            club, start_at=_START + datetime.timedelta(minutes=30), status=status_value
+            session, club, start_at=_START + datetime.timedelta(minutes=30), status=status_value
         )
         session.add_all([e1, e2])
         session.commit()
@@ -911,9 +962,13 @@ def test_event_non_operational_statuses_excluded(client: TestClient, status_valu
         extra: dict[str, object] = (
             {"cancellation_reason": "test"} if status_value == "cancelled" else {}
         )
-        e1 = _make_event(club, status=status_value, **extra)
+        e1 = _make_event(session, club, status=status_value, **extra)
         e2 = _make_event(
-            club, start_at=_START + datetime.timedelta(minutes=30), status=status_value, **extra
+            session,
+            club,
+            start_at=_START + datetime.timedelta(minutes=30),
+            status=status_value,
+            **extra,
         )
         session.add_all([e1, e2])
         session.commit()
@@ -1017,7 +1072,7 @@ def test_rescheduled_occurrence_uses_effective_time(client: TestClient) -> None:
         session.add(occ)
         session.commit()
         session.add(_make_occurrence_staff_assignment(occ, user))
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add(e2)
         session.commit()
         session.add(_make_event_staff_assignment(e2, user))
@@ -1068,7 +1123,7 @@ def test_materialization_extends_beyond_default_horizon_and_still_conflicts(
             actor_user_id=user.id,
             request_id="test-request",
         )
-        e2 = _make_event(club, start_at=far_future_start + datetime.timedelta(minutes=30))
+        e2 = _make_event(session, club, start_at=far_future_start + datetime.timedelta(minutes=30))
         session.add(e2)
         session.commit()
         session.add(_make_event_staff_assignment(e2, user))
@@ -1124,8 +1179,8 @@ def test_own_events_scope_allows_conflict_between_staffed_events(client: TestCli
         group = _make_group(club)
         session.add(group)
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_staff_assignment(e1, user))
@@ -1159,8 +1214,8 @@ def test_own_events_scope_denies_when_opposing_event_not_staffed(client: TestCli
         group = _make_group(club)
         session.add(group)
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         # Only e1 is staffed by the caller -- e2 stays invisible under
@@ -1187,8 +1242,8 @@ def test_assigned_events_alias_behaves_identically_to_own_events(client: TestCli
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_staff_assignment(e1, user))
@@ -1223,8 +1278,8 @@ def test_own_groups_scope_allows_visible_pair_via_independent_domain(client: Tes
         session.commit()
         session.add(_make_group_instructor_assignment(group_a, user))
         session.add(_make_group_instructor_assignment(group_b, user))
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_group_target(e1, group_a))
@@ -1255,8 +1310,8 @@ def test_own_groups_scope_denies_when_opposing_event_not_group_targeted(client: 
         session.add(group)
         session.commit()
         session.add(_make_group_instructor_assignment(group, user))
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_group_target(e1, group))
@@ -1281,8 +1336,8 @@ def test_self_scope_allows_own_participation_conflict(client: TestClient) -> Non
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_participation(e1, person))
@@ -1308,8 +1363,8 @@ def test_self_scope_denies_when_not_a_participant(client: TestClient) -> None:
         other_person = _make_person()
         session.add_all([club, person, user, other_person])
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_participation(e1, other_person))
@@ -1340,8 +1395,8 @@ def test_children_scope_allows_eligible_child_participation_conflict(client: Tes
             ]
         )
         session.add(_make_guardian_relationship(guardian_person, child_person))
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_participation(e1, child_person))
@@ -1376,8 +1431,8 @@ def test_children_scope_denies_unrelated_child(client: TestClient) -> None:
         session.commit()
         # No GuardianRelationship at all -- this is the one condition
         # under test; ClubMembership for both is otherwise satisfied.
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_participation(e1, unrelated_child))
@@ -1400,8 +1455,8 @@ def test_none_scope_denies_everything(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_staff_assignment(e1, user))
@@ -1431,8 +1486,10 @@ def test_cross_club_group_domain_is_rejected(client: TestClient) -> None:
         group = _make_group(other_club)
         session.add(group)
         session.commit()
-        visible_event = _make_event(club)
-        hidden_event = _make_event(other_club, start_at=_START + datetime.timedelta(minutes=30))
+        visible_event = _make_event(session, club)
+        hidden_event = _make_event(
+            session, other_club, start_at=_START + datetime.timedelta(minutes=30)
+        )
         session.add_all([visible_event, hidden_event])
         session.commit()
         session.add(_make_event_group_target(visible_event, group))
@@ -1463,8 +1520,10 @@ def test_no_leakage_through_count_or_pagination(client: TestClient) -> None:
         # Two authorized conflicting pairs in `club`.
         accessible_ids = []
         for i in range(2):
-            e1 = _make_event(club, start_at=_START + datetime.timedelta(hours=i * 3))
-            e2 = _make_event(club, start_at=_START + datetime.timedelta(hours=i * 3, minutes=30))
+            e1 = _make_event(session, club, start_at=_START + datetime.timedelta(hours=i * 3))
+            e2 = _make_event(
+                session, club, start_at=_START + datetime.timedelta(hours=i * 3, minutes=30)
+            )
             session.add_all([e1, e2])
             session.commit()
             session.add(_make_event_staff_assignment(e1, user))
@@ -1472,8 +1531,10 @@ def test_no_leakage_through_count_or_pagination(client: TestClient) -> None:
             session.commit()
             accessible_ids += [str(e1.id), str(e2.id)]
         # One inaccessible pair in `other_club` -- must never be counted.
-        h1 = _make_event(other_club, start_at=_START + datetime.timedelta(hours=20))
-        h2 = _make_event(other_club, start_at=_START + datetime.timedelta(hours=20, minutes=30))
+        h1 = _make_event(session, other_club, start_at=_START + datetime.timedelta(hours=20))
+        h2 = _make_event(
+            session, other_club, start_at=_START + datetime.timedelta(hours=20, minutes=30)
+        )
         session.add_all([h1, h2])
         session.commit()
         session.add(_make_event_staff_assignment(h1, user))
@@ -1510,10 +1571,10 @@ def test_user_id_filter_narrows_to_instructor_domain_for_that_user(client: TestC
         user_b = _make_user(person_b)
         session.add_all([club, person_a, user_a, person_b, user_b])
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
-        e3 = _make_event(club, start_at=_START + datetime.timedelta(hours=5))
-        e4 = _make_event(club, start_at=_START + datetime.timedelta(hours=5, minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
+        e3 = _make_event(session, club, start_at=_START + datetime.timedelta(hours=5))
+        e4 = _make_event(session, club, start_at=_START + datetime.timedelta(hours=5, minutes=30))
         session.add_all([e1, e2, e3, e4])
         session.commit()
         session.add(_make_event_staff_assignment(e1, user_a))
@@ -1546,10 +1607,10 @@ def test_group_id_filter_narrows_to_group_domain_for_that_group(client: TestClie
         group_b = _make_group(club)
         session.add_all([group_a, group_b])
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
-        e3 = _make_event(club, start_at=_START + datetime.timedelta(hours=5))
-        e4 = _make_event(club, start_at=_START + datetime.timedelta(hours=5, minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
+        e3 = _make_event(session, club, start_at=_START + datetime.timedelta(hours=5))
+        e4 = _make_event(session, club, start_at=_START + datetime.timedelta(hours=5, minutes=30))
         session.add_all([e1, e2, e3, e4])
         session.commit()
         session.add(_make_event_group_target(e1, group_a))
@@ -1579,8 +1640,8 @@ def test_filter_cannot_bypass_authorization(client: TestClient) -> None:
         other_user = _make_user(other_person)
         session.add_all([club, other_club, person, user, other_person, other_user])
         session.commit()
-        h1 = _make_event(other_club)
-        h2 = _make_event(other_club, start_at=_START + datetime.timedelta(minutes=30))
+        h1 = _make_event(session, other_club)
+        h2 = _make_event(session, other_club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([h1, h2])
         session.commit()
         session.add(_make_event_staff_assignment(h1, other_user))
@@ -1609,8 +1670,8 @@ def test_conflict_id_is_deterministic_across_repeated_queries(client: TestClient
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_staff_assignment(e1, user))
@@ -1637,8 +1698,8 @@ def test_object_pair_order_does_not_change_the_id(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_staff_assignment(e1, user))
@@ -1665,11 +1726,11 @@ def test_deterministic_ordering_by_overlap_start_then_id(client: TestClient) -> 
         session.add_all([club, person, user])
         session.commit()
         # Pair 1: overlap starts later.
-        a1 = _make_event(club, start_at=_START + datetime.timedelta(hours=5))
-        a2 = _make_event(club, start_at=_START + datetime.timedelta(hours=5, minutes=30))
+        a1 = _make_event(session, club, start_at=_START + datetime.timedelta(hours=5))
+        a2 = _make_event(session, club, start_at=_START + datetime.timedelta(hours=5, minutes=30))
         # Pair 2: overlap starts earlier.
-        b1 = _make_event(club, start_at=_START)
-        b2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        b1 = _make_event(session, club, start_at=_START)
+        b2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([a1, a2, b1, b2])
         session.commit()
         session.add(_make_event_staff_assignment(a1, user))
@@ -1760,8 +1821,8 @@ def test_pagination_envelope_shape(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        e1 = _make_event(club)
-        e2 = _make_event(club, start_at=_START + datetime.timedelta(minutes=30))
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
         session.add_all([e1, e2])
         session.commit()
         session.add(_make_event_staff_assignment(e1, user))

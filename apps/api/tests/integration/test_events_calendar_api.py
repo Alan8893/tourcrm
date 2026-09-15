@@ -95,7 +95,21 @@ def _make_club_membership(club: Club, person: Person, **overrides: object) -> Cl
     return ClubMembership(**defaults)  # type: ignore[arg-type]
 
 
-def _make_event(club: Club, **overrides: object) -> Event:
+_EVENT_TO_OCCURRENCE_STATUS = {
+    "draft": "scheduled",
+    "published": "scheduled",
+    "in_progress": "in_progress",
+    "completed": "completed",
+    "cancelled": "cancelled",
+}
+
+
+def _make_event(session, club: Club, **overrides: object) -> Event:
+    """ADR-0033: every Event has exactly one linked EventOccurrence — so
+    this helper creates both, adding them to `session` itself (the
+    caller's own subsequent `session.add(event)`/`add_all([...])` is
+    then a harmless no-op) rather than returning a bare, unlinked Event.
+    """
     defaults: dict[str, object] = {
         "club_id": club.id,
         "event_type": "lesson",
@@ -106,7 +120,26 @@ def _make_event(club: Club, **overrides: object) -> Event:
         "status": "published",
     }
     defaults.update(overrides)
-    return Event(**defaults)  # type: ignore[arg-type]
+    event = Event(id=uuid.uuid4(), **defaults)  # type: ignore[arg-type]
+    session.add(event)
+    session.flush()
+    session.add(
+        EventOccurrence(
+            event_id=event.id,
+            series_id=None,
+            club_id=event.club_id,
+            name=event.title,
+            description=event.description,
+            event_type=event.event_type,
+            recurrence_anchor_at=event.start_at,
+            starts_at=event.start_at,
+            ends_at=event.end_at,
+            timezone=event.timezone,
+            status=_EVENT_TO_OCCURRENCE_STATUS.get(event.status, "scheduled"),
+            cancellation_reason=event.cancellation_reason,
+        )
+    )
+    return event
 
 
 def _make_group(club: Club, **overrides: object) -> Group:
@@ -365,7 +398,9 @@ def test_from_bound_is_inclusive(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        event = _make_event(club, start_at=_START, end_at=_START + datetime.timedelta(hours=1))
+        event = _make_event(
+            session, club, start_at=_START, end_at=_START + datetime.timedelta(hours=1)
+        )
         session.add(event)
         session.commit()
         club_id, user_id, event_id = club.id, user.id, event.id
@@ -389,6 +424,7 @@ def test_to_bound_is_exclusive(client: TestClient) -> None:
         session.add_all([club, person, user])
         session.commit()
         event = _make_event(
+            session,
             club,
             start_at=_START + datetime.timedelta(days=1),
             end_at=_START + datetime.timedelta(days=1, hours=1),
@@ -477,6 +513,7 @@ def test_timezone_aware_input_is_normalized_to_utc_for_selection(client: TestCli
         session.commit()
         # 21:00 Moscow (+03:00) == 18:00 UTC.
         event = _make_event(
+            session,
             club,
             start_at=_utc(2026, 9, 15, 18, 0),
             end_at=_utc(2026, 9, 15, 19, 0),
@@ -532,18 +569,21 @@ def test_results_are_sorted_by_start_at_ascending(client: TestClient) -> None:
         session.add_all([club, person, user])
         session.commit()
         e1 = _make_event(
+            session,
             club,
             title="third",
             start_at=_START + datetime.timedelta(hours=3),
             end_at=_START + datetime.timedelta(hours=4),
         )
         e2 = _make_event(
+            session,
             club,
             title="first",
             start_at=_START + datetime.timedelta(hours=1),
             end_at=_START + datetime.timedelta(hours=2),
         )
         e3 = _make_event(
+            session,
             club,
             title="second",
             start_at=_START + datetime.timedelta(hours=2),
@@ -570,8 +610,12 @@ def test_same_start_at_is_tie_broken_by_id_ascending(client: TestClient) -> None
         session.add_all([club, person, user])
         session.commit()
         same_start = _START + datetime.timedelta(hours=1)
-        e1 = _make_event(club, start_at=same_start, end_at=same_start + datetime.timedelta(hours=1))
-        e2 = _make_event(club, start_at=same_start, end_at=same_start + datetime.timedelta(hours=1))
+        e1 = _make_event(
+            session, club, start_at=same_start, end_at=same_start + datetime.timedelta(hours=1)
+        )
+        e2 = _make_event(
+            session, club, start_at=same_start, end_at=same_start + datetime.timedelta(hours=1)
+        )
         session.add_all([e1, e2])
         session.commit()
         club_id, user_id = club.id, user.id
@@ -594,8 +638,8 @@ def test_total_only_counts_authorized_rows(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club_visible, club_hidden, person, user])
         session.commit()
-        visible_event = _make_event(club_visible)
-        hidden_event = _make_event(club_hidden)
+        visible_event = _make_event(session, club_visible)
+        hidden_event = _make_event(session, club_hidden)
         session.add_all([visible_event, hidden_event])
         session.commit()
         visible_club_id, user_id = club_visible.id, user.id
@@ -629,7 +673,7 @@ def test_calendar_visible_event_statuses_are_included(
         overrides: dict[str, object] = {"status": status_value}
         if status_value == "cancelled":
             overrides["cancellation_reason"] = "weather"
-        event = _make_event(club, **overrides)
+        event = _make_event(session, club, **overrides)
         session.add(event)
         session.commit()
         club_id, user_id, event_id = club.id, user.id, event.id
@@ -653,7 +697,7 @@ def test_calendar_excluded_event_statuses_are_excluded(
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        event = _make_event(club, status=status_value)
+        event = _make_event(session, club, status=status_value)
         session.add(event)
         session.commit()
         club_id, user_id, event_id = club.id, user.id, event.id
@@ -713,7 +757,7 @@ def test_all_scope_sees_every_eligible_club_event(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        event = _make_event(club)
+        event = _make_event(session, club)
         session.add(event)
         session.commit()
         club_id, user_id, event_id = club.id, user.id, event.id
@@ -732,8 +776,8 @@ def test_own_events_scope_sees_only_assigned_events(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        assigned = _make_event(club, title="assigned")
-        other = _make_event(club, title="other")
+        assigned = _make_event(session, club, title="assigned")
+        other = _make_event(session, club, title="other")
         session.add_all([assigned, other])
         session.commit()
         staff = _make_event_staff_assignment(assigned, user)
@@ -763,8 +807,8 @@ def test_own_groups_scope_sees_only_targeted_group_events(client: TestClient) ->
         session.commit()
         session.add(_make_group_instructor_assignment(group, user))
         session.commit()
-        targeted = _make_event(club, title="targeted")
-        untargeted = _make_event(club, title="untargeted")
+        targeted = _make_event(session, club, title="targeted")
+        untargeted = _make_event(session, club, title="untargeted")
         session.add_all([targeted, untargeted])
         session.commit()
         session.add(_make_event_group_target(targeted, group))
@@ -788,8 +832,8 @@ def test_self_scope_sees_only_own_participation(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        mine = _make_event(club, title="mine")
-        other = _make_event(club, title="other")
+        mine = _make_event(session, club, title="mine")
+        other = _make_event(session, club, title="other")
         session.add_all([mine, other])
         session.commit()
         session.add(_make_event_participation(mine, person))
@@ -823,8 +867,8 @@ def test_children_scope_sees_only_related_childs_events(client: TestClient) -> N
         session.commit()
         session.add(_make_guardian_relationship(guardian_person, child_person))
         session.commit()
-        childs_event = _make_event(club, title="childs")
-        other = _make_event(club, title="other")
+        childs_event = _make_event(session, club, title="childs")
+        other = _make_event(session, club, title="other")
         session.add_all([childs_event, other])
         session.commit()
         session.add(_make_event_participation(childs_event, child_person))
@@ -848,7 +892,7 @@ def test_none_scope_sees_nothing(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        event = _make_event(club)
+        event = _make_event(session, club)
         session.add(event)
         session.commit()
         club_id, user_id, event_id = club.id, user.id, event.id
@@ -884,7 +928,7 @@ def test_inactive_guardian_relationship_denies_access(client: TestClient) -> Non
         session.commit()
         session.add(_make_guardian_relationship(guardian_person, child_person, status="inactive"))
         session.commit()
-        childs_event = _make_event(club)
+        childs_event = _make_event(session, club)
         session.add(childs_event)
         session.commit()
         session.add(_make_event_participation(childs_event, child_person))
@@ -915,7 +959,7 @@ def test_unrelated_child_is_denied(client: TestClient) -> None:
         )
         session.commit()
         # No GuardianRelationship at all between guardian and this child.
-        unrelated_event = _make_event(club)
+        unrelated_event = _make_event(session, club)
         session.add(unrelated_event)
         session.commit()
         session.add(_make_event_participation(unrelated_event, unrelated_child))
@@ -955,7 +999,7 @@ def test_guardian_club_boundary_is_respected(client: TestClient) -> None:
         session.commit()
         session.add(_make_guardian_relationship(guardian_person, child_person))
         session.commit()
-        event_in_club_a = _make_event(club_a)
+        event_in_club_a = _make_event(session, club_a)
         session.add(event_in_club_a)
         session.commit()
         session.add(_make_event_participation(event_in_club_a, child_person))
@@ -1319,7 +1363,7 @@ def test_foreign_group_id_filter_does_not_leak_or_expand_access(client: TestClie
         foreign_group = _make_group(other_club)
         session.add(foreign_group)
         session.commit()
-        foreign_event = _make_event(other_club)
+        foreign_event = _make_event(session, other_club)
         session.add(foreign_event)
         session.commit()
         session.add(_make_event_group_target(foreign_event, foreign_group))
@@ -1349,7 +1393,7 @@ def test_foreign_user_id_filter_does_not_leak_or_expand_access(client: TestClien
         other_user = _make_user(other_person)
         session.add_all([club, other_club, person, user, other_person, other_user])
         session.commit()
-        foreign_event = _make_event(other_club)
+        foreign_event = _make_event(session, other_club)
         session.add(foreign_event)
         session.commit()
         session.add(_make_event_staff_assignment(foreign_event, other_user))
@@ -1409,7 +1453,7 @@ def test_unauthorized_event_returns_no_data_and_zero_total(client: TestClient) -
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        event = _make_event(club)
+        event = _make_event(session, club)
         session.add(event)
         session.commit()
         user_id, event_id = user.id, event.id
@@ -1433,9 +1477,9 @@ def test_unauthorized_resource_never_inflates_total(client: TestClient) -> None:
         user = _make_user(person)
         session.add_all([visible_club, hidden_club, person, user])
         session.commit()
-        visible_event = _make_event(visible_club)
+        visible_event = _make_event(session, visible_club)
         for _ in range(5):
-            session.add(_make_event(hidden_club))
+            session.add(_make_event(session, hidden_club))
         session.add(visible_event)
         session.commit()
         visible_club_id, user_id, visible_event_id = (
@@ -1464,6 +1508,7 @@ def test_ordinary_event_and_recurring_occurrence_coexist(client: TestClient) -> 
         session.add_all([club, person, user])
         session.commit()
         event = _make_event(
+            session,
             club,
             start_at=_START + datetime.timedelta(hours=1),
             end_at=_START + datetime.timedelta(hours=2),
@@ -1771,7 +1816,7 @@ def test_response_matches_the_explicit_calendar_schema(client: TestClient) -> No
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        event = _make_event(club)
+        event = _make_event(session, club)
         session.add(event)
         session.commit()
         club_id, user_id = club.id, user.id
