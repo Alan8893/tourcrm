@@ -31,7 +31,7 @@ The visual language should feel welcoming, warm and approachable. Cute/lightly p
 
 | Area | Scope | State | Repository package/path | Future integration root |
 |---|---|---|---|---|
-| Brand | BR-001…BR-008 (8) | Planned | `docs/06-ui/assets/packages/brand/` | `assets/ui/brand/` |
+| Brand | Official logo master (1) | **Master uploaded** | `docs/06-ui/assets/packages/brand/logo.png` | `assets/ui/brand/` |
 | Navigation | NAV-001…NAV-007 (7) | **Approved / uploaded** | `docs/06-ui/assets/packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` | `assets/ui/icons/navigation/` |
 | Actions | ACT-001…ACT-017 (17) | **Approved / uploaded** | `docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` | `assets/ui/icons/actions/` |
 | Status | STA-001…STA-009 (9) | **Approved / uploaded** | `docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0_FINAL.zip` | `assets/ui/icons/status/` |
@@ -42,6 +42,25 @@ The visual language should feel welcoming, warm and approachable. Cute/lightly p
 | Illustrations — System | 5 | **Approved / uploaded** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip` | `assets/ui/illustrations/` |
 | Illustrations — Onboarding | 4 | **Approved / uploaded** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip` | `assets/ui/illustrations/` |
 | Decorative | DEC-001…DEC-009 (9) | Deferred / P2 | `docs/06-ui/assets/packages/decorative/` | `assets/ui/decorative/` |
+
+## Brand — official master
+
+The Brand hand-off intentionally starts with **one master**, not a generated variant archive.
+
+```text
+docs/06-ui/assets/packages/brand/logo.png
+```
+
+Rules for this stage:
+
+- the PNG is the official «Вектор» / TourCRM logo master;
+- it is the single source of truth for the brand mark;
+- no SVG is created;
+- no ZIP archive is required;
+- no artificial light/dark/compact/horizontal/monochrome/favicon/app-icon variants are created;
+- any future technical derivative must be created only for a concrete approved product need and must be derived from this master.
+
+The application integration root remains `assets/ui/brand/` and must not be populated during this documentation hand-off.
 
 ## Catalog and usage
 
@@ -189,12 +208,12 @@ It must not be populated as part of this hand-off.
 
 ## Not yet handed off
 
-Brand and Decorative have no approved production archive. Do not create placeholders merely to make the registry appear complete.
+Decorative remains deferred to P2. Brand now has its official master uploaded; no Brand variant archive is planned at this stage.
 
 ## Production order
 
 Brand → Navigation → Actions → Status → Domain → Achievements → Illustrations → Decorative P2.
 
-A package may be called **Approved / uploaded** only after visual approval, production export, naming/format validation, upload and documentation update.
+A package may be called **Approved / uploaded** only after visual approval, production export, naming/format validation, upload and documentation update. For the Brand package, the production deliverable is intentionally the approved master itself rather than a derivative archive.
 
 If a package is replaced, update this registry, `ASSET-STATUS.md`, `asset-manifest.json` and the PR description together. Superseded filenames must not be referenced by new code or documentation.
