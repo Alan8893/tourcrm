@@ -1,5 +1,6 @@
-"""Request/response models for /api/v1/events (Issue #40) and the
-calendar projection (Issue #82 / TH-0080).
+"""Request/response models for /api/v1/events (Issue #40), the calendar
+projection (Issue #82 / TH-0080), and conflict detection (Issue #91 /
+TH-0085).
 
 Single-resource responses are returned directly per ADR-0014 (no `data`
 wrapper). Field list matches ADR-0019 field-for-field: no separate
@@ -103,3 +104,31 @@ class CalendarItemOut(BaseModel):
     cancellation_reason: Optional[str]
     series_id: Optional[UUID]
     series_version: Optional[int]
+
+
+class ConflictObjectRefOut(BaseModel):
+    """One side of a derived conflict (events-api.md §28): the concrete
+    Event/EventOccurrence object, identified by its own stable opaque
+    ID — no second identity. `series_id`/`series_version` are populated
+    only for `object_type="occurrence"`, reusing the same governing-
+    series exposure already public on `CalendarItemOut`."""
+
+    object_type: Literal["event", "occurrence"]
+    object_id: UUID
+    series_id: Optional[UUID]
+    series_version: Optional[int]
+
+
+class ConflictOut(BaseModel):
+    """One `GET /events/conflicts` row — a derived relationship between
+    two concrete objects, never a persisted entity (ADR-0031 §10). `id`
+    is deterministically derived from the unordered pair of object
+    identities plus `domain`; the same underlying conflict always
+    produces the same `id`."""
+
+    id: str
+    first_object: ConflictObjectRefOut
+    second_object: ConflictObjectRefOut
+    domain: Literal["instructor", "group", "participant"]
+    overlap_start_at: datetime
+    overlap_end_at: datetime
