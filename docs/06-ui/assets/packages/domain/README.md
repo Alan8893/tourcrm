@@ -14,7 +14,7 @@ docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip
 
 This P2 package contains 7 newly approved Domain masters and 42 WebP production exports (16/20/24/32/48/64 px), for 49 files total. DOM-009 remains excluded because its semantic definition is not confirmed.
 
-The previous archives remain historical working material and must not be used as production assets.
+The previous P0/P1A/P1B archives are retained in this directory as **historical working material only**. They document earlier iterations and may contain artwork or variants considered during production, but they are not production source-of-truth packages and must not be consumed by application integration or referenced as final assets.
 
 ### Catalog scope
 
@@ -45,17 +45,16 @@ The selected artwork was reviewed for semantic clarity and small-size readabilit
 
 ### Production contract
 
-The package contains:
+The P2 production package contains:
 
 - 7 standalone PNG masters;
 - 42 transparent WebP exports;
 - sizes `16`, `20`, `24`, `32`, `48`, `64` px for each approved P2 asset;
 - no SVG;
 - no candidate/composite sheets;
-- no superseded Domain archives;
 - no DOM-009.
 
-The package was technically validated before repository hand-off: file count, dimensions, WebP format, RGBA/alpha transparency, filename-to-DOM mapping and absence of SVG/candidate assets. The repository package is physically present at the designated path.
+The historical P0/P1A/P1B archives are not part of this production contract. They are retained only as historical working material.
 
 ### Visual direction
 
@@ -75,6 +74,18 @@ Domain artwork follows the same TourCRM visual language as the approved Navigati
 **Status semantics:** Domain lifecycle values must not be mapped mechanically to asset names. Domain status → UI semantic meaning → visual asset remains the required mapping. `cancelled` is not automatically `error`.
 
 **Illustrations vs icons:** Domain assets are semantic UI icons, not illustrations. More expressive character artwork belongs to the Illustration family and must not be mixed into Domain production assets without an explicit design decision.
+
+### Historical archive policy
+
+The following files are retained for design history:
+
+```text
+TourCRM_Assets_Domain_P0.zip
+TourCRM_Assets_Domain_P1A.zip
+TourCRM_Assets_Domain_P1B_CLEAN.zip
+```
+
+They must not be used by application integration, copied into `assets/ui/`, or treated as approved production packages. If an asset from a historical archive is needed again, that is a new Product Owner decision and must be explicitly reviewed against the current Domain system.
 
 ### Future application integration
 
