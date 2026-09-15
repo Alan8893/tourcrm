@@ -27,6 +27,7 @@ hide) uses the generic 403 AuthorizationDenied contract.
 import logging
 import uuid
 from datetime import datetime
+from datetime import timezone as dt_timezone
 from typing import NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -41,6 +42,7 @@ from app.api.deps import (
 from app.api.errors import APIError
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.events_schemas import (
+    CalendarItemOut,
     EventCreateRequest,
     EventOut,
     EventStatusTransitionRequest,
@@ -53,10 +55,18 @@ from app.db.identity import Club
 from app.db.session import get_db
 from app.events import crud as events_crud
 from app.events.authorization import build_event_resource_context
+from app.events.calendar import (
+    CALENDAR_STATUS_FILTER_VALUES,
+    CalendarItem,
+    list_calendar_items_page,
+)
 from app.events.lifecycle import (
     CancellationReasonRequiredError,
     EventDomainError,
     InvalidEventStatusTransitionError,
+    InvalidTimeRangeError,
+    validate_event_type,
+    validate_time_range,
 )
 from app.events.queries import DEFAULT_SORT, InvalidSortError, list_events_page
 
@@ -183,6 +193,100 @@ def list_events(
     pages = (total + page_size - 1) // page_size if total else 0
     return CollectionResponse(
         items=[_event_out(event) for event in rows],
+        pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
+    )
+
+
+def _calendar_item_out(item: CalendarItem) -> CalendarItemOut:
+    return CalendarItemOut(
+        id=item.id,
+        kind=item.kind,  # type: ignore[arg-type]
+        club_id=item.club_id,
+        event_type=item.event_type,
+        title=item.title,
+        description=item.description,
+        start_at=item.start_at,
+        end_at=item.end_at,
+        timezone=item.timezone,
+        status=item.status,
+        cancellation_reason=item.cancellation_reason,
+        series_id=item.series_id,
+        series_version=item.series_version,
+    )
+
+
+# events-api.md §16: a literal path, so it MUST be registered before
+# "/{event_id}" below — Starlette matches routes in registration order,
+# and "/{event_id}" would otherwise swallow "/calendar" as a (then
+# UUID-unparseable) event_id, returning a generic 422 instead of ever
+# reaching this handler.
+@router.get("/calendar", response_model=CollectionResponse[CalendarItemOut])
+def get_calendar(
+    from_: datetime | None = Query(default=None, alias="from"),
+    to: datetime | None = Query(default=None, alias="to"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    user_id: uuid.UUID | None = Query(default=None),
+    group_id: uuid.UUID | None = Query(default=None),
+    event_type: str | None = Query(default=None),
+    status_: str | None = Query(default=None, alias="status"),
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+) -> CollectionResponse[CalendarItemOut]:
+    if from_ is None:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "missing_from",
+            "'from' query parameter is required",
+        )
+    if to is None:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "missing_to", "'to' query parameter is required"
+        )
+    if from_.tzinfo is None or to.tzinfo is None:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "naive_timestamp",
+            "'from' and 'to' must be timezone-aware RFC 3339 timestamps",
+        )
+    try:
+        validate_time_range(from_, to)
+    except InvalidTimeRangeError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "invalid_range",
+            "'from' must be strictly before 'to'",
+        ) from exc
+    if event_type is not None:
+        try:
+            validate_event_type(event_type)
+        except EventDomainError as exc:
+            raise APIError(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_event_type", str(exc)
+            ) from exc
+    if status_ is not None and status_ not in CALENDAR_STATUS_FILTER_VALUES:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "invalid_status",
+            f"{status_!r} is not a calendar-visible status",
+        )
+
+    items, total = list_calendar_items_page(
+        db,
+        user_id=principal.user_id,
+        permission_code="event.read",
+        from_at=from_.astimezone(dt_timezone.utc),
+        to_at=to.astimezone(dt_timezone.utc),
+        page=page,
+        page_size=page_size,
+        user_id_filter=user_id,
+        group_id_filter=group_id,
+        event_type=event_type,
+        status=status_,
+    )
+    pages = (total + page_size - 1) // page_size if total else 0
+    return CollectionResponse(
+        items=[_calendar_item_out(item) for item in items],
         pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
     )
 

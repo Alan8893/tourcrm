@@ -138,11 +138,27 @@ def _child_condition(event_id, event_club_id, guardian_person_id) -> sa.ColumnEl
     group_membership = aliased(GroupMembership)
     group_target = aliased(EventGroupTarget)
 
+    # Explicit `.correlate(...)` below (rather than relying on
+    # SQLAlchemy's automatic correlation) because these two EXISTS
+    # subqueries are nested *two* levels deep inside `eligible_child_exists`
+    # (itself an EXISTS wrapping the guardian/child-membership join): left
+    # to automatic correlation, SQLAlchemy only correlates one enclosing
+    # SELECT out and re-includes the true outer `events`/middle-level `gr`
+    # table in *this* subquery's own FROM clause instead — turning it into
+    # an unrestricted cross join that is satisfied by any row and defeats
+    # the whole per-Event check (list-level `event_visibility_filter`
+    # embeds `event_id`/`event_club_id` as real correlated columns of the
+    # outer Event being tested, unlike the single-object call path in
+    # `build_event_resource_context`, where they are literal values and no
+    # correlation is needed at all — this explicit `.correlate()` is a
+    # no-op there, but load-bearing here).
     child_via_participation = sa.exists(
-        sa.select(participation.id).where(
+        sa.select(participation.id)
+        .where(
             participation.event_id == event_id,
             participation.person_id == gr.child_person_id,
         )
+        .correlate(Event, gr)
     )
     child_via_group_target = sa.exists(
         sa.select(group_membership.id)
@@ -154,6 +170,7 @@ def _child_condition(event_id, event_club_id, guardian_person_id) -> sa.ColumnEl
             group_target.event_id == event_id,
             _active_interval(group_target.valid_from, group_target.valid_to),
         )
+        .correlate(Event, child_membership)
     )
 
     eligible_child_exists = sa.exists(

@@ -1,4 +1,5 @@
-"""Request/response models for /api/v1/events (Issue #40).
+"""Request/response models for /api/v1/events (Issue #40) and the
+calendar projection (Issue #82 / TH-0080).
 
 Single-resource responses are returned directly per ADR-0014 (no `data`
 wrapper). Field list matches ADR-0019 field-for-field: no separate
@@ -6,7 +7,7 @@ wrapper). Field list matches ADR-0019 field-for-field: no separate
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -73,3 +74,32 @@ class EventOut(BaseModel):
     updated_by: Optional[UUID]
     created_at: datetime
     updated_at: datetime
+
+
+class CalendarItemOut(BaseModel):
+    """One `GET /events/calendar` row — either an ordinary Event or a
+    materialized recurring EventOccurrence (events-api.md §16: "The
+    response must identify whether the item is an ordinary Event or
+    EventOccurrence"). `id` is the stable, opaque id of that originating
+    entity itself — no second calendar-only identity is introduced.
+
+    `series_id`/`series_version` are populated only for `kind="occurrence"`
+    and reuse the already-public EventSeries identity fields
+    (`app.api.v1.events_series_schemas.EventSeriesOut.id`/`.version`) —
+    events-api.md §16: "expose the governing series identifier/version
+    where that information is part of the public contract."
+    """
+
+    id: UUID
+    kind: Literal["event", "occurrence"]
+    club_id: UUID
+    event_type: str
+    title: str
+    description: Optional[str]
+    start_at: datetime
+    end_at: datetime
+    timezone: str
+    status: str
+    cancellation_reason: Optional[str]
+    series_id: Optional[UUID]
+    series_version: Optional[int]
