@@ -36,12 +36,12 @@ The visual language should feel welcoming, warm and approachable. Cute/lightly p
 | Actions | ACT-001…ACT-017 (17) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` | `assets/ui/icons/actions/` |
 | Status | STA-001…STA-009 (9) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0_FINAL.zip` | `assets/ui/icons/status/` |
 | Domain | DOM-001…DOM-022 (22) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` | `assets/ui/icons/domain/` |
-| Achievements P0 | rarity + state (8) | **Approved / uploaded** | `docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` | `assets/ui/achievements/` |
-| Achievements P1 | artwork (10) | **Approved / uploaded** | `docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` | `assets/ui/achievements/` |
-| Illustrations — Empty | 6 | **Approved / uploaded** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` | `assets/ui/illustrations/` |
-| Illustrations — System | 5 | **Approved / uploaded** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip` | `assets/ui/illustrations/` |
-| Illustrations — Onboarding | 4 | **Approved / uploaded** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip` | `assets/ui/illustrations/` |
-| Decorative | DEC-001…DEC-009 (9) | Deferred / P2 | `docs/06-ui/assets/packages/decorative/` | `assets/ui/decorative/` |
+| Achievements P0 | rarity + state (8) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` | `assets/ui/achievements/` |
+| Achievements P1 | artwork (10) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` | `assets/ui/achievements/` |
+| Illustrations — Empty | 6 | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` | `assets/ui/illustrations/` |
+| Illustrations — System | 5 | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip` | `assets/ui/illustrations/` |
+| Illustrations — Onboarding | 4 | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip` | `assets/ui/illustrations/` |
+| Decorative | DEC-001…DEC-009 (9) | **DEFERRED / P2** | `docs/06-ui/assets/packages/decorative/` | `assets/ui/decorative/` |
 
 ## Brand — official master
 
@@ -208,9 +208,21 @@ assets/ui/icons/domain/
 
 It must not be populated as part of this hand-off.
 
-## Not yet handed off
+## Decorative — DEFERRED / P2
 
-Decorative remains deferred to P2. Brand now has its official master uploaded; no Brand variant archive is planned at this stage.
+Decorative assets are intentionally outside the current production hand-off. No binary production package is approved or handed off for this category.
+
+Reserved catalog:
+
+```text
+DEC-001 … DEC-009
+```
+
+This is future P2 scope only. It must not be interpreted as an approved production-artwork set.
+
+No decorative asset should be generated, uploaded or integrated into `assets/ui/` as part of the current hand-off. Decorative artwork must not replace semantic Navigation, Action, Status, Domain or Achievement assets.
+
+When P2 work is explicitly started, the visual direction must remain consistent with the approved TourCRM visual foundation and existing custom artwork. Any new or changed decorative catalog item requires an explicit Product Owner decision before production creation.
 
 ## Production order
 
