@@ -7,9 +7,11 @@ ADR-0018 (lifecycle), ADR-0019 (field model), ADR-0022 (cross-Club
 ownership), ADR-0023 (relationship persistence semantics).
 
 Endpoints intentionally NOT implemented here (explicit Issue #40
-non-goals): EventSeries/recurrence, EventOccurrence, calendar/iCalendar,
+non-goals): EventSeries/recurrence, EventOccurrence, iCalendar,
 EventParticipation API, self-registration, participant status
-transitions, attendance API, conflict detection, notifications.
+transitions, attendance API, notifications. Calendar projection
+(`/calendar`, Issue #82 / TH-0080) and conflict detection (`/conflicts`,
+Issue #91 / TH-0085) were added to this router by their own later Issues.
 
 Existence-hiding: for the single-Event endpoints (detail/update/status/
 archive), an Event that does not exist and an Event that exists but the
@@ -43,11 +45,14 @@ from app.api.errors import APIError
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.events_schemas import (
     CalendarItemOut,
+    ConflictObjectRefOut,
+    ConflictOut,
     EventCreateRequest,
     EventOut,
     EventStatusTransitionRequest,
     EventUpdateRequest,
 )
+from app.api.v1.schedule_params import parse_schedule_range
 from app.authorization.context import ResourceContext
 from app.authorization.service import Authorizer
 from app.db.events import Event
@@ -60,6 +65,7 @@ from app.events.calendar import (
     CalendarItem,
     list_calendar_items_page,
 )
+from app.events.conflicts import ConflictItem, list_conflicts_page
 from app.events.lifecycle import (
     CancellationReasonRequiredError,
     EventDomainError,
@@ -291,6 +297,60 @@ def get_calendar(
     )
 
 
+def _conflict_out(item: ConflictItem) -> ConflictOut:
+    return ConflictOut(
+        id=item.id,
+        first_object=ConflictObjectRefOut(
+            object_type=item.first_object_type,  # type: ignore[arg-type]
+            object_id=item.first_object_id,
+            series_id=item.first_series_id,
+            series_version=item.first_series_version,
+        ),
+        second_object=ConflictObjectRefOut(
+            object_type=item.second_object_type,  # type: ignore[arg-type]
+            object_id=item.second_object_id,
+            series_id=item.second_series_id,
+            series_version=item.second_series_version,
+        ),
+        domain=item.domain,  # type: ignore[arg-type]
+        overlap_start_at=item.overlap_start_at,
+        overlap_end_at=item.overlap_end_at,
+    )
+
+
+# events-api.md §28: also a literal path, so it MUST be registered before
+# "/{event_id}" below — same routing-order reason as "/calendar" above.
+@router.get("/conflicts", response_model=CollectionResponse[ConflictOut])
+def get_conflicts(
+    from_: datetime | None = Query(default=None, alias="from"),
+    to: datetime | None = Query(default=None, alias="to"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    user_id: uuid.UUID | None = Query(default=None),
+    group_id: uuid.UUID | None = Query(default=None),
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+) -> CollectionResponse[ConflictOut]:
+    from_at, to_at = parse_schedule_range(from_, to)
+
+    items, total = list_conflicts_page(
+        db,
+        user_id=principal.user_id,
+        permission_code="event.read",
+        from_at=from_at,
+        to_at=to_at,
+        page=page,
+        page_size=page_size,
+        user_id_filter=user_id,
+        group_id_filter=group_id,
+    )
+    pages = (total + page_size - 1) // page_size if total else 0
+    return CollectionResponse(
+        items=[_conflict_out(item) for item in items],
+        pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
+    )
+
+
 @router.get("/{event_id}", response_model=EventOut)
 def get_event(
     event_id: uuid.UUID,
@@ -375,9 +435,7 @@ def update_event(
             )
 
     try:
-        event = events_crud.update_event(
-            db, event=event, updated_by=principal.user_id, **fields
-        )
+        event = events_crud.update_event(db, event=event, updated_by=principal.user_id, **fields)
     except EventDomainError as exc:
         _raise_for_domain_error(exc)
     logger.info("events.update.success event_id=%s user_id=%s", event.id, principal.user_id)
