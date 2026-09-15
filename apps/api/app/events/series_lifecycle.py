@@ -80,6 +80,24 @@ class CancelledOccurrenceCannotBeBoundaryError(EventSeriesDomainError):
     boundary; the caller must select the next scheduled occurrence."""
 
 
+class InvalidBoundaryOccurrenceStatusError(EventSeriesDomainError):
+    """ADR-0028 §3: a "this and following" boundary must be a future
+    `scheduled` occurrence — `scheduled` is the *only* eligible status.
+    `cancelled` is rejected via the more specific
+    CancelledOccurrenceCannotBeBoundaryError above; this covers every
+    other non-`scheduled` status (`in_progress`/`completed`), which are
+    equally ineligible even though they are not terminal-by-cancellation:
+    an occurrence that has already started or finished can no longer be
+    the first occurrence of a new, still-`scheduled` version chain."""
+
+    def __init__(self, *, status: str) -> None:
+        super().__init__(
+            f"{status!r} occurrence cannot be the boundary for a new Series version — "
+            "only a 'scheduled' occurrence is eligible"
+        )
+        self.status = status
+
+
 class OccurrenceNotEligibleForRescheduleError(EventSeriesDomainError):
     """ADR-0028 §5/§7: a reschedule exception may only be applied to a
     `scheduled` occurrence. `completed` and `cancelled` are terminal
@@ -152,12 +170,15 @@ def validate_occurrence_status_transition(
 
 def validate_boundary_occurrence_status(status: str) -> None:
     """ADR-0028 §3: only a `scheduled` occurrence may be selected as a
-    "this and following" boundary."""
+    "this and following" boundary — `in_progress` and `completed` are
+    rejected exactly like `cancelled`, not merely "not cancelled"."""
+    validate_occurrence_status(status)
     if status == "cancelled":
         raise CancelledOccurrenceCannotBeBoundaryError(
             "A cancelled occurrence cannot be the boundary for a new Series version"
         )
-    validate_occurrence_status(status)
+    if status != "scheduled":
+        raise InvalidBoundaryOccurrenceStatusError(status=status)
 
 
 def validate_occurrence_reschedule_eligibility(status: str) -> None:
@@ -211,6 +232,7 @@ __all__ = [
     "InvalidOccurrenceStatusTransitionError",
     "OccurrenceCancellationReasonRequiredError",
     "CancelledOccurrenceCannotBeBoundaryError",
+    "InvalidBoundaryOccurrenceStatusError",
     "OccurrenceNotEligibleForRescheduleError",
     "InvalidExceptionTypeError",
     "UnknownOverrideFieldError",

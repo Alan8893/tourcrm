@@ -44,6 +44,7 @@ from app.events.series_authorization import (
 )
 from app.events.series_lifecycle import (
     CancelledOccurrenceCannotBeBoundaryError,
+    InvalidBoundaryOccurrenceStatusError,
     InvalidOccurrenceStatusTransitionError,
     InvalidSeriesStatusTransitionError,
     OccurrenceCancellationReasonRequiredError,
@@ -338,6 +339,173 @@ def test_cancelled_boundary_is_rejected() -> None:
                 timezone="Europe/Moscow",
                 actor_user_id=user_id,
             )
+
+
+@requires_postgres
+def test_in_progress_boundary_is_rejected_with_no_mutation() -> None:
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id)
+        occ = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START, status="in_progress"
+        )
+        occ_id, v1_id = occ.id, v1.id
+        series_count_before = len(s.execute(select(EventSeries)).scalars().all())
+
+        with pytest.raises(InvalidBoundaryOccurrenceStatusError):
+            create_successor_version(
+                s,
+                source_series_id=v1_id,
+                boundary_occurrence_id=occ_id,
+                name="v2",
+                description=None,
+                event_type="lesson",
+                series_start_at=_START,
+                series_end_at=None,
+                occurrence_limit=None,
+                duration_minutes=90,
+                recurrence_rule="FREQ=WEEKLY",
+                timezone="Europe/Moscow",
+                actor_user_id=user_id,
+            )
+        # In-memory object must not carry a rejected rebind either.
+        assert occ.series_id == v1_id
+        assert len(s.execute(select(EventSeries)).scalars().all()) == series_count_before
+
+    # Fresh read after the transaction ended: the rollback actually
+    # reached the database — no successor row, boundary not rebound.
+    with session_scope() as verify:
+        successors = (
+            verify.execute(select(EventSeries).where(EventSeries.supersedes_series_id == v1_id))
+            .scalars()
+            .all()
+        )
+        assert successors == []
+        fresh_occ = verify.get(EventOccurrence, occ_id)
+        assert fresh_occ is not None
+        assert fresh_occ.series_id == v1_id
+        assert fresh_occ.status == "in_progress"
+
+
+@requires_postgres
+def test_completed_boundary_is_rejected_with_no_mutation() -> None:
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id)
+        occ = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START, status="completed"
+        )
+        occ_id, v1_id = occ.id, v1.id
+        series_count_before = len(s.execute(select(EventSeries)).scalars().all())
+
+        with pytest.raises(InvalidBoundaryOccurrenceStatusError):
+            create_successor_version(
+                s,
+                source_series_id=v1_id,
+                boundary_occurrence_id=occ_id,
+                name="v2",
+                description=None,
+                event_type="lesson",
+                series_start_at=_START,
+                series_end_at=None,
+                occurrence_limit=None,
+                duration_minutes=90,
+                recurrence_rule="FREQ=WEEKLY",
+                timezone="Europe/Moscow",
+                actor_user_id=user_id,
+            )
+        assert occ.series_id == v1_id
+        assert len(s.execute(select(EventSeries)).scalars().all()) == series_count_before
+
+    with session_scope() as verify:
+        successors = (
+            verify.execute(select(EventSeries).where(EventSeries.supersedes_series_id == v1_id))
+            .scalars()
+            .all()
+        )
+        assert successors == []
+        fresh_occ = verify.get(EventOccurrence, occ_id)
+        assert fresh_occ is not None
+        assert fresh_occ.series_id == v1_id
+        assert fresh_occ.status == "completed"
+
+
+@requires_postgres
+def test_cancelled_boundary_is_rejected_with_no_mutation() -> None:
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id)
+        occ = _make_occurrence(
+            s,
+            series_id=v1.id,
+            club_id=club_id,
+            anchor=_START,
+            status="cancelled",
+            cancellation_reason="weather",
+        )
+        occ_id, v1_id = occ.id, v1.id
+        series_count_before = len(s.execute(select(EventSeries)).scalars().all())
+
+        with pytest.raises(CancelledOccurrenceCannotBeBoundaryError):
+            create_successor_version(
+                s,
+                source_series_id=v1_id,
+                boundary_occurrence_id=occ_id,
+                name="v2",
+                description=None,
+                event_type="lesson",
+                series_start_at=_START,
+                series_end_at=None,
+                occurrence_limit=None,
+                duration_minutes=90,
+                recurrence_rule="FREQ=WEEKLY",
+                timezone="Europe/Moscow",
+                actor_user_id=user_id,
+            )
+        assert occ.series_id == v1_id
+        assert len(s.execute(select(EventSeries)).scalars().all()) == series_count_before
+
+    with session_scope() as verify:
+        successors = (
+            verify.execute(select(EventSeries).where(EventSeries.supersedes_series_id == v1_id))
+            .scalars()
+            .all()
+        )
+        assert successors == []
+        fresh_occ = verify.get(EventOccurrence, occ_id)
+        assert fresh_occ is not None
+        assert fresh_occ.series_id == v1_id
+        assert fresh_occ.status == "cancelled"
+
+
+@requires_postgres
+def test_scheduled_boundary_is_accepted() -> None:
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id)
+        occ = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START, status="scheduled"
+        )
+        v1_id, occ_id = v1.id, occ.id
+
+        successor, rebound = create_successor_version(
+            s,
+            source_series_id=v1_id,
+            boundary_occurrence_id=occ_id,
+            name="v2",
+            description=None,
+            event_type="lesson",
+            series_start_at=_START,
+            series_end_at=None,
+            occurrence_limit=None,
+            duration_minutes=90,
+            recurrence_rule="FREQ=WEEKLY",
+            timezone="Europe/Moscow",
+            actor_user_id=user_id,
+        )
+        assert successor.version == 2
+        assert rebound.id == occ_id
+        assert rebound.series_id == successor.id
 
 
 @requires_postgres

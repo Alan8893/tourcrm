@@ -11,6 +11,7 @@ from app.events.series_lifecycle import (
     ALLOWED_OCCURRENCE_STATUS_TRANSITIONS,
     ALLOWED_SERIES_STATUS_TRANSITIONS,
     CancelledOccurrenceCannotBeBoundaryError,
+    InvalidBoundaryOccurrenceStatusError,
     InvalidExceptionTypeError,
     InvalidOccurrenceStatusError,
     InvalidOccurrenceStatusTransitionError,
@@ -136,6 +137,29 @@ def test_scheduled_occurrence_can_be_a_boundary() -> None:
 def test_cancelled_occurrence_cannot_be_a_boundary() -> None:
     with pytest.raises(CancelledOccurrenceCannotBeBoundaryError):
         validate_boundary_occurrence_status("cancelled")
+
+
+def test_in_progress_occurrence_cannot_be_a_boundary() -> None:
+    with pytest.raises(InvalidBoundaryOccurrenceStatusError):
+        validate_boundary_occurrence_status("in_progress")
+
+
+def test_completed_occurrence_cannot_be_a_boundary() -> None:
+    with pytest.raises(InvalidBoundaryOccurrenceStatusError):
+        validate_boundary_occurrence_status("completed")
+
+
+def test_scheduled_is_the_only_status_accepted_as_a_boundary() -> None:
+    for status in CANONICAL_OCCURRENCE_STATUSES:
+        if status == "scheduled":
+            validate_boundary_occurrence_status(status)  # must not raise
+        else:
+            expected = (
+                CancelledOccurrenceCannotBeBoundaryError,
+                InvalidBoundaryOccurrenceStatusError,
+            )
+            with pytest.raises(expected):
+                validate_boundary_occurrence_status(status)
 
 
 # --- Exceptions (ADR-0028 §5) -----------------------------------------------

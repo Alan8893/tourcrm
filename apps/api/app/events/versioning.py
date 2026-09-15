@@ -141,9 +141,13 @@ def create_successor_version(
     StaleSeriesVersionError if `source_series_id` is no longer current
     (409 at the API boundary), BoundaryOccurrenceNotInCurrentVersionError
     if the occurrence does not belong to the now-locked current version,
-    or app.events.series_lifecycle.CancelledOccurrenceCannotBeBoundaryError
-    if it is `cancelled` — persisting nothing in every failure case. Does
-    not commit, rollback, or record audit — see module docstring.
+    app.events.series_lifecycle.CancelledOccurrenceCannotBeBoundaryError
+    if it is `cancelled`, or
+    app.events.series_lifecycle.InvalidBoundaryOccurrenceStatusError if it
+    is any other non-`scheduled` status (`in_progress`/`completed`) —
+    `scheduled` is the only eligible boundary status (ADR-0028 §3) —
+    persisting nothing in every failure case. Does not commit, rollback,
+    or record audit — see module docstring.
     """
     # Lock the row this whole decision depends on before reading anything
     # else it implies (ADR-0028 §10 step 1).
