@@ -32,6 +32,7 @@ Each physical `EventSeries` version contains:
 - `supersedes_series_id` — nullable FK to the immediately preceding version;
 - `club_id`;
 - recurrence and event snapshot fields;
+- `duration_minutes` — required positive integer duration of each occurrence in this Series version;
 - lifecycle/status fields;
 - audit timestamps and actor fields where applicable.
 
@@ -69,6 +70,12 @@ Each occurrence contains:
 - lifecycle status;
 - cancellation reason where applicable;
 - audit timestamps and actor fields where applicable.
+
+For normal materialization, `ends_at` is derived deterministically from the governing Series version:
+
+`ends_at = starts_at + duration_minutes`
+
+where `duration_minutes` is the required positive integer stored on that Series version. There is no undocumented/default occurrence duration.
 
 A uniqueness rule must make materialization idempotent for a series version and its canonical recurrence occurrence key. The exact generated recurrence key is an implementation detail, but it must be deterministic and persisted or derivable without relying on wall-clock execution time.
 
@@ -204,7 +211,22 @@ The canonical physical recurrence model is defined by `docs/03-architecture/data
 
 `event_occurrence_exceptions` has a unique `occurrence_id` and stores the current exception state. Historical exception actions are represented by the immutable audit stream.
 
-### 14. Implementation boundary
+### 14. Canonical API surface
+
+Series lifecycle uses dedicated endpoints:
+
+- `POST /api/v1/events/series/{series_id}/pause`;
+- `POST /api/v1/events/series/{series_id}/resume`;
+- `POST /api/v1/events/series/{series_id}/cancel`;
+- `POST /api/v1/events/series/{series_id}/archive`.
+
+Occurrence-level reschedule, cancellation and allow-listed property overrides use one canonical endpoint:
+
+`POST /api/v1/events/series/{series_id}/exceptions`
+
+Dedicated occurrence `/cancel` and `/reschedule` endpoints are not canonical.
+
+### 15. Implementation boundary
 
 The following remain implementation details and must not become undocumented business rules:
 
@@ -225,6 +247,7 @@ The following remain implementation details and must not become undocumented bus
 - Series edits cannot silently rewrite past events.
 - Materialization is retry-safe and concurrency-safe.
 - Current state and immutable audit history remain separate concerns.
+- Occurrence end times are deterministic and versioned through the Series duration.
 
 ### Negative
 
@@ -232,6 +255,7 @@ The following remain implementation details and must not become undocumented bus
 - Version creation and materialization require transactional concurrency handling.
 - The API must expose or internally carry source-version information for conflict detection.
 - Recurrence audit vocabulary grows beyond the existing single-Event vocabulary.
+- Duration changes that affect future occurrences participate in Series versioning semantics.
 
 ## Rejected alternatives
 
@@ -250,3 +274,11 @@ Rejected because the system cannot safely infer the user's intended merge semant
 ### Full copy of occurrence history on every version
 
 Rejected because occurrence identity and operational history must remain stable rather than being duplicated.
+
+### Undocumented/default occurrence duration
+
+Rejected because materialized `ends_at` must be deterministic and cannot depend on an implicit duration chosen by implementation.
+
+### Separate occurrence lifecycle endpoints for recurrence exceptions
+
+Rejected because occurrence reschedule/cancel/override operations have one canonical exception endpoint, while Series lifecycle has dedicated lifecycle endpoints.
