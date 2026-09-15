@@ -34,7 +34,7 @@
     {"category":"illustrations-empty-states","status":"approved-production","archive":"docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip","integrationPath":"assets/ui/illustrations/","assetCount":24,"catalogCount":6},
     {"category":"illustrations-system","status":"approved-production","archive":"docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip","integrationPath":"assets/ui/illustrations/","assetCount":20,"catalogCount":5},
     {"category":"illustrations-onboarding","status":"approved-production","archive":"docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip","integrationPath":"assets/ui/illustrations/","assetCount":16,"catalogCount":4},
-    {"category":"domain","status":"approved-production","archive":"docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip","integrationPath":"assets/ui/icons/domain/","assetCount":49,"catalogCount":22},
+    {"category":"domain","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip","integrationPath":"assets/ui/icons/domain/","assetCount":49,"catalogCount":22},
     {"category":"brand","status":"master-uploaded","master":"docs/06-ui/assets/packages/brand/logo.png","integrationPath":"assets/ui/brand/","assetCount":1,"catalogCount":1},
     {"category":"decorative","status":"deferred-p2","archiveDirectory":"docs/06-ui/assets/packages/decorative/","integrationPath":"assets/ui/decorative/","catalogCount":9}
   ],
