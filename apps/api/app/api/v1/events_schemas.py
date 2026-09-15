@@ -1,6 +1,6 @@
 """Request/response models for /api/v1/events (Issue #40), the calendar
-projection (Issue #82 / TH-0080), and conflict detection (Issue #91 /
-TH-0085).
+projection (Issue #82 / TH-0080), conflict detection (Issue #91 /
+TH-0085), and Attendance (Issue #94 / TH-0087).
 
 Single-resource responses are returned directly per ADR-0014 (no `data`
 wrapper). Field list matches ADR-0019 field-for-field: no separate
@@ -12,6 +12,8 @@ from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+from app.api.schemas import Pagination
 
 
 class EventCreateRequest(BaseModel):
@@ -132,3 +134,103 @@ class ConflictOut(BaseModel):
     domain: Literal["instructor", "group", "participant"]
     overlap_start_at: datetime
     overlap_end_at: datetime
+
+
+# --- Attendance (Issue #94 / TH-0087, ADR-0032) -----------------------------
+
+
+class AttendanceMarkRequest(BaseModel):
+    """PUT .../attendance/{person_id}. Field-invariant validation
+    (`present` <=> no `absence_reason`/`comment`, closed vocabularies) is
+    deliberately not duplicated here — it is enforced once, by
+    app.events.attendance.validate_attendance_fields, exactly like
+    EventCreateRequest defers its own cross-field/vocabulary checks to
+    the domain layer rather than the schema layer."""
+
+    status: str
+    absence_reason: Optional[str] = None
+    comment: Optional[str] = None
+
+
+class AttendanceBulkItemRequest(BaseModel):
+    person_id: UUID
+    status: str
+    absence_reason: Optional[str] = None
+    comment: Optional[str] = None
+
+
+class AttendanceBulkMarkRequest(BaseModel):
+    items: list[AttendanceBulkItemRequest] = Field(min_length=1)
+
+
+class AttendanceCorrectionRequest(BaseModel):
+    status: str
+    absence_reason: Optional[str] = None
+    comment: Optional[str] = None
+    reason: str = Field(min_length=1)
+
+
+class AttendancePersonOut(BaseModel):
+    """A minimal Person projection (ADR-0032 §9's "person identity/
+    projection") — deliberately as narrow as `PersonOut`'s own withheld-
+    PII precedent (no phone/email/address/photo)."""
+
+    id: UUID
+    first_name: str
+    last_name: str
+    middle_name: Optional[str]
+
+
+class AttendanceMarkOut(BaseModel):
+    """Response for the single-mark PUT and each item of the bulk PUT."""
+
+    person_id: UUID
+    status: Literal["present", "absent"]
+    absence_reason: Optional[str]
+    comment: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class AttendanceBulkMarkOut(BaseModel):
+    items: list[AttendanceMarkOut]
+
+
+class AttendanceCorrectionOut(BaseModel):
+    """ADR-0032 §9: "previous status, new status, mandatory reason,
+    actor and timestamp"."""
+
+    person_id: UUID
+    previous_status: Optional[Literal["present", "absent"]]
+    new_status: Literal["present", "absent"]
+    absence_reason: Optional[str]
+    comment: Optional[str]
+    reason: str
+    actor_user_id: UUID
+    corrected_at: datetime
+
+
+class AttendanceEntryOut(BaseModel):
+    """One `GET .../attendance` row. `status=None` means "unmarked" — it
+    is never treated as `absent` (ADR-0032 §9)."""
+
+    person: AttendancePersonOut
+    status: Optional[Literal["present", "absent"]]
+    absence_reason: Optional[str]
+    comment: Optional[str]
+
+
+class AttendanceSummaryOut(BaseModel):
+    """Derived, not persisted (ADR-0032 §9)."""
+
+    total: int
+    marked: int
+    present: int
+    absent: int
+    unmarked: int
+
+
+class AttendanceListOut(BaseModel):
+    items: list[AttendanceEntryOut]
+    pagination: Pagination
+    summary: AttendanceSummaryOut

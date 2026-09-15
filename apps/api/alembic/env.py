@@ -11,6 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.core.config import get_settings  # noqa: E402
 from app.db import (
+    attendance,  # noqa: E402,F401  (registers model on Base.metadata)
     audit,  # noqa: E402,F401  (registers model on Base.metadata)
     authentication,  # noqa: E402,F401  (registers models on Base.metadata)
     authorization,  # noqa: E402,F401  (registers models on Base.metadata)

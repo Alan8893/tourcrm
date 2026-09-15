@@ -168,14 +168,19 @@ Series/occurrence mutation semantics:
 
 ## 10. Attendance
 
-- `GET /events/{id}/attendance`
-- `GET /events/{id}/attendance-summary`
-- `PATCH /attendance/{id}`
-- `POST /attendance/bulk-mark`
-- `POST /attendance/{id}/correct`
-- `GET /persons/{id}/attendance`
+Synced to ADR-0032 (Issue #94 / TH-0087) — occurrence-level identity,
+nested under the Event/Occurrence prefix, no separate summary endpoint
+(the summary is inline in the GET response) and no Person attendance
+history endpoint (explicitly deferred, ADR-0032 §10):
 
-Attendance correction must respect audit policy.
+- `GET /events/{event_id}/attendance`
+- `PUT /events/{event_id}/attendance/{person_id}`
+- `PUT /events/{event_id}/attendance` (partial bulk upsert)
+- `POST /events/{event_id}/attendance/{person_id}/corrections`
+
+Attendance correction requires `attendance.update` (no separate
+`attendance.correct` permission) plus a mandatory reason, and must
+respect audit policy (ADR-0024/ADR-0032 §11).
 
 ## 11. Trips
 

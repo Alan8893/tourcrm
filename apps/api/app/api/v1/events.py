@@ -9,9 +9,17 @@ ownership), ADR-0023 (relationship persistence semantics).
 Endpoints intentionally NOT implemented here (explicit Issue #40
 non-goals): EventSeries/recurrence, EventOccurrence, iCalendar,
 EventParticipation API, self-registration, participant status
-transitions, attendance API, notifications. Calendar projection
-(`/calendar`, Issue #82 / TH-0080) and conflict detection (`/conflicts`,
-Issue #91 / TH-0085) were added to this router by their own later Issues.
+transitions, notifications. Calendar projection (`/calendar`, Issue #82 /
+TH-0080), conflict detection (`/conflicts`, Issue #91 / TH-0085) and
+Attendance (`/attendance...`, Issue #94 / TH-0087, ADR-0032) were added
+to this router by their own later Issues.
+
+Attendance's `{event_id}` path parameter names either an ordinary `Event`
+or a recurring `EventOccurrence` (see app.events.attendance module
+docstring "Object resolution") — `_get_authorized_attendance_target_or_404`
+below is the attendance-specific counterpart of
+`_get_authorized_event_or_404`, resolving to whichever object type the id
+belongs to before applying the same existence-hiding authorization gate.
 
 Existence-hiding: for the single-Event endpoints (detail/update/status/
 archive), an Event that does not exist and an Event that exists but the
@@ -30,7 +38,7 @@ import logging
 import uuid
 from datetime import datetime
 from datetime import timezone as dt_timezone
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -44,6 +52,16 @@ from app.api.deps import (
 from app.api.errors import APIError
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.events_schemas import (
+    AttendanceBulkMarkOut,
+    AttendanceBulkMarkRequest,
+    AttendanceCorrectionOut,
+    AttendanceCorrectionRequest,
+    AttendanceEntryOut,
+    AttendanceListOut,
+    AttendanceMarkOut,
+    AttendanceMarkRequest,
+    AttendancePersonOut,
+    AttendanceSummaryOut,
     CalendarItemOut,
     ConflictObjectRefOut,
     ConflictOut,
@@ -55,9 +73,12 @@ from app.api.v1.events_schemas import (
 from app.api.v1.schedule_params import parse_schedule_range
 from app.authorization.context import ResourceContext
 from app.authorization.service import Authorizer
+from app.db.attendance import Attendance
+from app.db.event_recurrence import EventOccurrence
 from app.db.events import Event
 from app.db.identity import Club
 from app.db.session import get_db
+from app.events import attendance
 from app.events import crud as events_crud
 from app.events.authorization import build_event_resource_context
 from app.events.calendar import (
@@ -75,6 +96,7 @@ from app.events.lifecycle import (
     validate_time_range,
 )
 from app.events.queries import DEFAULT_SORT, InvalidSortError, list_events_page
+from app.events.series_authorization import build_occurrence_resource_context
 
 logger = logging.getLogger("tourcrm.api")
 
@@ -506,3 +528,252 @@ def archive_event(
         _raise_for_domain_error(exc)
     logger.info("events.archive.success event_id=%s user_id=%s", event.id, principal.user_id)
     return _event_out(event)
+
+
+# --- Attendance (Issue #94 / TH-0087, ADR-0032) -----------------------------
+
+
+def _get_authorized_attendance_target_or_404(
+    db: Session, *, event_id: uuid.UUID, user_id: uuid.UUID, permission_code: str
+) -> tuple[attendance.ObjectType, Any, ResourceContext]:
+    resolved = attendance.resolve_attendance_target(db, event_id)
+    if resolved is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+    object_type, target = resolved
+
+    if object_type == "event":
+        assert isinstance(target, Event)
+        context = build_event_resource_context(db, event=target, user_id=user_id)
+    else:
+        assert isinstance(target, EventOccurrence)
+        context = build_occurrence_resource_context(db, occurrence=target, user_id=user_id)
+
+    authorizer = Authorizer(session=db, user_id=user_id, permission_code=permission_code)
+    if not authorizer.is_allowed(context):
+        # Deliberately the same detail/status as "does not exist" above —
+        # see module docstring / _get_authorized_event_or_404.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+    return object_type, target, context
+
+
+def _attendance_mark_out(row: Attendance) -> AttendanceMarkOut:
+    return AttendanceMarkOut(
+        person_id=row.person_id,
+        status=row.status,  # type: ignore[arg-type]
+        absence_reason=row.absence_reason,
+        comment=row.comment,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _raise_for_normal_lifecycle_error(exc: attendance.AttendanceError) -> NoReturn:
+    if isinstance(exc, attendance.AttendanceNormalWindowClosedError):
+        raise APIError(
+            status.HTTP_409_CONFLICT, "attendance_normal_window_closed", str(exc)
+        ) from exc
+    raise APIError(status.HTTP_409_CONFLICT, "attendance_lifecycle_closed", str(exc)) from exc
+
+
+@router.get("/{event_id}/attendance", response_model=AttendanceListOut)
+def get_attendance(
+    event_id: uuid.UUID,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+) -> AttendanceListOut:
+    object_type, target, context = _get_authorized_attendance_target_or_404(
+        db, event_id=event_id, user_id=principal.user_id, permission_code="attendance.read"
+    )
+    entries, summary, total = attendance.list_attendance(
+        db,
+        object_type=object_type,
+        object_id=target.id,
+        club_id=target.club_id,
+        resource_context=context,
+        user_id=principal.user_id,
+        permission_code="attendance.read",
+        page=page,
+        page_size=page_size,
+    )
+    pages = (total + page_size - 1) // page_size if total else 0
+    return AttendanceListOut(
+        items=[
+            AttendanceEntryOut(
+                person=AttendancePersonOut(
+                    id=entry.person_id,
+                    first_name=entry.first_name,
+                    last_name=entry.last_name,
+                    middle_name=entry.middle_name,
+                ),
+                status=entry.status,  # type: ignore[arg-type]
+                absence_reason=entry.absence_reason,
+                comment=entry.comment,
+            )
+            for entry in entries
+        ],
+        pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
+        summary=AttendanceSummaryOut(
+            total=summary.total,
+            marked=summary.marked,
+            present=summary.present,
+            absent=summary.absent,
+            unmarked=summary.unmarked,
+        ),
+    )
+
+
+@router.put("/{event_id}/attendance/{person_id}", response_model=AttendanceMarkOut)
+def mark_attendance(
+    event_id: uuid.UUID,
+    person_id: uuid.UUID,
+    payload: AttendanceMarkRequest,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> AttendanceMarkOut:
+    object_type, target, _context = _get_authorized_attendance_target_or_404(
+        db, event_id=event_id, user_id=principal.user_id, permission_code="attendance.update"
+    )
+    try:
+        attendance.check_lifecycle_for_normal_change(object_type, target.status)
+    except attendance.AttendanceError as exc:
+        _raise_for_normal_lifecycle_error(exc)
+
+    if not attendance.has_participation(
+        db, object_type=object_type, object_id=target.id, person_id=person_id
+    ):
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "participation_missing",
+            "Person has no EventParticipation for this object",
+        )
+
+    try:
+        row, _created = attendance.upsert_attendance(
+            db,
+            object_type=object_type,
+            object_id=target.id,
+            club_id=target.club_id,
+            person_id=person_id,
+            status=payload.status,
+            absence_reason=payload.absence_reason,
+            comment=payload.comment,
+            actor_user_id=principal.user_id,
+        )
+    except attendance.AttendanceInvalidDataError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_attendance_data", str(exc)
+        ) from exc
+    return _attendance_mark_out(row)
+
+
+@router.put("/{event_id}/attendance", response_model=AttendanceBulkMarkOut)
+def bulk_mark_attendance(
+    event_id: uuid.UUID,
+    payload: AttendanceBulkMarkRequest,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> AttendanceBulkMarkOut:
+    object_type, target, _context = _get_authorized_attendance_target_or_404(
+        db, event_id=event_id, user_id=principal.user_id, permission_code="attendance.update"
+    )
+    try:
+        attendance.check_lifecycle_for_normal_change(object_type, target.status)
+    except attendance.AttendanceError as exc:
+        _raise_for_normal_lifecycle_error(exc)
+
+    items = [
+        attendance.AttendanceBulkItemInput(
+            person_id=item.person_id,
+            status=item.status,
+            absence_reason=item.absence_reason,
+            comment=item.comment,
+        )
+        for item in payload.items
+    ]
+    try:
+        results = attendance.bulk_upsert_attendance(
+            db,
+            object_type=object_type,
+            object_id=target.id,
+            club_id=target.club_id,
+            items=items,
+            actor_user_id=principal.user_id,
+        )
+    except attendance.AttendanceDuplicatePersonError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "duplicate_person_id", str(exc)
+        ) from exc
+    except attendance.AttendanceParticipationMissingError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "participation_missing", str(exc)
+        ) from exc
+    except attendance.AttendanceInvalidDataError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_attendance_data", str(exc)
+        ) from exc
+    return AttendanceBulkMarkOut(items=[_attendance_mark_out(row) for row, _created in results])
+
+
+@router.post(
+    "/{event_id}/attendance/{person_id}/corrections", response_model=AttendanceCorrectionOut
+)
+def correct_attendance(
+    event_id: uuid.UUID,
+    person_id: uuid.UUID,
+    payload: AttendanceCorrectionRequest,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> AttendanceCorrectionOut:
+    object_type, target, _context = _get_authorized_attendance_target_or_404(
+        db, event_id=event_id, user_id=principal.user_id, permission_code="attendance.update"
+    )
+    try:
+        attendance.check_lifecycle_for_correction(object_type, target.status)
+    except attendance.AttendanceUseNormalEndpointError as exc:
+        raise APIError(
+            status.HTTP_409_CONFLICT, "use_normal_attendance_endpoint", str(exc)
+        ) from exc
+    except attendance.AttendanceLifecycleClosedError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "attendance_lifecycle_closed", str(exc)) from exc
+
+    try:
+        row, previous_status = attendance.correct_attendance(
+            db,
+            object_type=object_type,
+            object_id=target.id,
+            club_id=target.club_id,
+            person_id=person_id,
+            status=payload.status,
+            absence_reason=payload.absence_reason,
+            comment=payload.comment,
+            reason=payload.reason,
+            actor_user_id=principal.user_id,
+        )
+    except attendance.AttendanceCorrectionReasonRequiredError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "correction_reason_required", str(exc)
+        ) from exc
+    except attendance.AttendanceParticipationMissingError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "participation_missing", str(exc)
+        ) from exc
+    except attendance.AttendanceInvalidDataError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_attendance_data", str(exc)
+        ) from exc
+
+    return AttendanceCorrectionOut(
+        person_id=person_id,
+        previous_status=previous_status,  # type: ignore[arg-type]
+        new_status=row.status,  # type: ignore[arg-type]
+        absence_reason=row.absence_reason,
+        comment=row.comment,
+        reason=payload.reason,
+        actor_user_id=principal.user_id,
+        corrected_at=row.updated_at,
+    )

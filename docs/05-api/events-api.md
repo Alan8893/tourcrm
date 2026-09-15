@@ -20,9 +20,9 @@
 
 `/api/v1/events`
 
-Attendance:
-
-`/api/v1/attendance`
+Attendance endpoints (§22-25) are nested under this same prefix
+(`/api/v1/events/{event_id}/attendance...`) — there is no separate
+top-level `/api/v1/attendance` route family.
 
 ## 4. Event list
 
@@ -338,7 +338,7 @@ Request concept:
 {
   "status": "present",
   "absence_reason": null,
-  "note": null
+  "comment": null
 }
 ```
 

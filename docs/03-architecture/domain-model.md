@@ -329,9 +329,11 @@ Event может быть адресован нескольким Groups; Group 
 
 ## 11. Attendance
 
-Возможно отдельное представление поверх EventParticipation либо отдельная таблица, если требований объёма и аудита будет недостаточно для общей сущности.
+Resolved by ADR-0032 (Issue #94 / TH-0087): a separate `Attendance` entity, not a representation layered over `EventParticipation`. Attendance identity is `(occurrence_id, person_id)` for a recurring `EventOccurrence`, or the equivalent `(event_id, person_id)` for an ordinary non-recurring `Event` — there is no direct Event-level Attendance entity distinct from this single table, and no polymorphic bridge between `Event` and `EventOccurrence` themselves (that separation, established by ADR-0028 §13, is unchanged).
 
-Канонические статусы должны быть определены отдельно и использоваться единообразно.
+Attendance requires an existing `EventParticipation` (or active `EventOccurrenceParticipant`) for the same object/Person — it never creates participation and is never deleted when participation ends or the object completes/cancels/archives.
+
+Canonical statuses: exactly `present`/`absent` (used uniformly for both ordinary Events and recurring Occurrences). Absence reasons are a closed MVP vocabulary (`sick`, `family_reason`, `injury`, `education`, `work`, `other`), not club-configurable and not a CRUD entity.
 
 ## 12. Trip
 

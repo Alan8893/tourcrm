@@ -346,7 +346,28 @@ Constraints (implemented):
 
 #### Deferred (not implemented) concepts
 
-`attendance_status`, `participant_role`, `registered_at`, `attendance_marked_at`, `absence_reason`, `result`, `notes` are possible future attributes and are **not** part of the currently implemented model. Attendance is treated as a dependency separate from EventParticipation (ADR-0023 §4; see also `domain-model.md` §11 "Attendance") and requires its own separate architectural/business decision before any of these are introduced.
+`participant_role`, `registered_at`, `result`, `notes` remain possible future `event_participations` attributes and are **not** part of the currently implemented model; the full `registration_status` transition graph and registration policy also remain a separate deferred business decision. `attendance_status`/`attendance_marked_at`/`absence_reason` are no longer deferred: ADR-0032 (Issue #94 / TH-0087) resolved Attendance as its own separate table (`attendance`, not an `event_participations` column) — see `### attendance` below and `domain-model.md` §11 "Attendance".
+
+### `attendance`
+
+Canonical model per ADR-0032 (Issue #94 / TH-0087):
+
+- `id` PK
+- `event_id` FK, nullable — set only for an ordinary, non-recurring `Event`
+- `occurrence_id` FK, nullable — set only for a recurring `EventOccurrence`
+- `person_id` FK
+- `status` — exactly `present`/`absent`
+- `absence_reason` — nullable, closed vocabulary (`sick`, `family_reason`, `injury`, `education`, `work`, `other`), not club-configurable
+- `comment` — nullable, allowed only for `absent`
+- timestamps
+
+Constraints (implemented):
+
+- exactly one of `event_id`/`occurrence_id` is set (CHECK);
+- `UNIQUE(event_id, person_id)` and `UNIQUE(occurrence_id, person_id)`, each as a partial index scoped to the non-null column — together the DB-enforced "at most one Attendance row per concrete object/Person pair" ADR-0032 §1 requires;
+- `present` requires both `absence_reason` and `comment` to be `NULL` (CHECK).
+
+No `valid_from`/`valid_to`: unlike `EventGroupTarget`/`EventStaffAssignment`/`EventParticipation`, Attendance is a single current mark per object/Person pair, corrected in place (last-write-wins, ADR-0032 §12) rather than a historical relationship timeline.
 
 ## 10. Trips
 

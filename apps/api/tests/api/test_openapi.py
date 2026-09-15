@@ -62,6 +62,10 @@ _EVENT_PATHS = {
     "/api/v1/events/{event_id}",
     "/api/v1/events/{event_id}/status",
     "/api/v1/events/{event_id}/archive",
+    # Issue #94 / TH-0087: Attendance.
+    "/api/v1/events/{event_id}/attendance",
+    "/api/v1/events/{event_id}/attendance/{person_id}",
+    "/api/v1/events/{event_id}/attendance/{person_id}/corrections",
 }
 
 _PERSON_PATHS = {
