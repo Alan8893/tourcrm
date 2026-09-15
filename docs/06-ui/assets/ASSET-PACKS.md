@@ -35,7 +35,7 @@ The visual language should feel welcoming, warm and approachable. Cute/lightly p
 | Navigation | NAV-001…NAV-007 (7) | **Approved / uploaded** | `docs/06-ui/assets/packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` | `assets/ui/icons/navigation/` |
 | Actions | ACT-001…ACT-017 (17) | **Approved / uploaded** | `docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` | `assets/ui/icons/actions/` |
 | Status | STA-001…STA-009 (9) | **Approved / uploaded** | `docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0_FINAL.zip` | `assets/ui/icons/status/` |
-| Domain | DOM-001…DOM-022 (22) | Working/concept; **not production-approved** | `docs/06-ui/assets/packages/domain/` | `assets/ui/icons/domain/` |
+| Domain | DOM-001…DOM-022 (22) | **Production artwork approved; binary upload pending** | `docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` | `assets/ui/icons/domain/` |
 | Achievements P0 | rarity + state (8) | **Approved / uploaded** | `docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` | `assets/ui/achievements/` |
 | Achievements P1 | artwork (10) | **Approved / uploaded** | `docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` | `assets/ui/achievements/` |
 | Illustrations — Empty | 6 | **Approved / uploaded** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` | `assets/ui/illustrations/` |
@@ -155,17 +155,37 @@ Integration root: `assets/ui/illustrations/`.
 
 Use the illustration matching the semantic screen state. Do not use an illustration as a replacement for an icon.
 
-## Domain — explicitly not final
+## Domain — P2 production hand-off
 
-Working archives currently present:
+Approved P2 artwork:
 
 ```text
-docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P0.zip
-docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P1A.zip
-docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P1B_CLEAN.zip
+DOM-006 Membership
+DOM-007 Relationship
+DOM-008 Instructor assignment
+DOM-010 Group members
+DOM-011 Group instructor
+DOM-012 Primary instructor
+DOM-021 Trip / journey / route
 ```
 
-These are not production-approved. In particular, `Group` must not become a duplicate of the already-approved Navigation `Groups` metaphor.
+Production package:
+
+```text
+docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip
+```
+
+Package contract: **7 standalone masters + 42 transparent WebP exports = 49 files**. Each approved asset has WebP sizes `16/20/24/32/48/64` px. DOM-009 is excluded pending semantic definition.
+
+The P2 artwork is production-approved and has passed standalone-artwork, semantic, small-size and technical validation. The ZIP itself is the remaining repository upload step; until it is physically present in the repository, this registry deliberately does not claim `Approved / uploaded`.
+
+The application integration root remains:
+
+```text
+assets/ui/icons/domain/
+```
+
+It must not be populated as part of this hand-off.
 
 ## Not yet handed off
 
@@ -175,6 +195,6 @@ Brand and Decorative have no approved production archive. Do not create placehol
 
 Brand → Navigation → Actions → Status → Domain → Achievements → Illustrations → Decorative P2.
 
-A package may be called **Approved / uploaded** only after visual approval, production export, naming/format validation, upload and documentation update are complete.
+A package may be called **Approved / uploaded** only after visual approval, production export, naming/format validation, upload and documentation update.
 
 If a package is replaced, update this registry, `ASSET-STATUS.md`, `asset-manifest.json` and the PR description together. Superseded filenames must not be referenced by new code or documentation.
