@@ -25,8 +25,18 @@ correct way to create a successor is `create_successor_version()`, which:
    `uq_event_series_one_successor_per_predecessor` UNIQUE constraint is a
    second, independent guarantee against a duplicate successor even if
    the row lock were somehow bypassed;
-5. rebinds the boundary occurrence's `series_id` to the successor (same
-   `id`, same `recurrence_anchor_at` — never recreated);
+5. rebinds every already-materialized occurrence at or after the boundary
+   (by `recurrence_anchor_at`, on the current version) to the successor —
+   same `id`, same `recurrence_anchor_at`, never recreated (ADR-0028 §3:
+   "Following occurrences belong to the new version" is not limited to the
+   single selected boundary row). An occurrence without its own protected
+   `EventOccurrenceException` also has its operational snapshot
+   (`name`/`description`/`event_type`) and `ends_at` resynced to the
+   successor version's own fields, so it reflects the new version exactly
+   like a freshly materialized one would; an occurrence that already
+   carries an exception keeps its own customized schedule/snapshot
+   untouched — only `series_id` changes for it. Occurrences before the
+   boundary are never touched and remain on the historical version;
 6. audit + commit are the caller's responsibility, matching every other
    service module in this codebase (app.role_assignments.service,
    app.groups.service): this module never calls
@@ -36,13 +46,13 @@ correct way to create a successor is `create_successor_version()`, which:
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.event_recurrence import EventOccurrence, EventSeries
+from app.db.event_recurrence import EventOccurrence, EventOccurrenceException, EventSeries
 from app.events.series_lifecycle import validate_boundary_occurrence_status
 
 
@@ -133,13 +143,28 @@ def create_successor_version(
     recurrence_rule: str,
     timezone: str,
     updated_by: uuid.UUID,
-) -> tuple[EventSeries, EventOccurrence]:
+) -> tuple[EventSeries, list[EventOccurrence]]:
     """ADR-0028 §3/§10 "this and following": create a new EventSeries
-    version and rebind `boundary_occurrence_id` to it.
+    version and rebind `boundary_occurrence_id`, and every other
+    already-materialized occurrence chronologically at or after it, to
+    the new version.
 
-    Returns `(successor, rebound_occurrence)`. Raises
-    StaleSeriesVersionError if `source_series_id` is no longer current
-    (409 at the API boundary), BoundaryOccurrenceNotInCurrentVersionError
+    Returns `(successor, rebound_occurrences)` — `rebound_occurrences`
+    always includes the boundary occurrence itself (first, since it is
+    the earliest `recurrence_anchor_at` in the set) plus every later
+    already-materialized occurrence that belonged to the source version.
+    Each rebound row keeps its own `id` and `recurrence_anchor_at` — none
+    is recreated. A rebound occurrence with no protected
+    `EventOccurrenceException` has its `name`/`description`/`event_type`
+    snapshot and `ends_at` resynced to the successor version's own values
+    (`ends_at = starts_at + successor.duration_minutes`); a rebound
+    occurrence that already carries an exception keeps its customized
+    schedule/snapshot exactly as-is — only `series_id` changes for it.
+    Occurrences before the boundary are left untouched on the historical
+    version.
+
+    Raises StaleSeriesVersionError if `source_series_id` is no longer
+    current (409 at the API boundary), BoundaryOccurrenceNotInCurrentVersionError
     if the occurrence does not belong to the now-locked current version,
     app.events.series_lifecycle.CancelledOccurrenceCannotBeBoundaryError
     if it is `cancelled`, or
@@ -173,6 +198,37 @@ def create_successor_version(
         )
     validate_boundary_occurrence_status(boundary.status)
 
+    # ADR-0028 §3: "Following occurrences belong to the new version" is
+    # not limited to the single selected boundary row — every
+    # already-materialized occurrence on the current version at or after
+    # the boundary's recurrence position must rebind too. Locked here
+    # (before the successor even exists) so a concurrent
+    # set_occurrence_exception on one of these rows can't race the rebind.
+    following_occurrences: list[EventOccurrence] = list(
+        session.execute(
+            select(EventOccurrence)
+            .where(
+                EventOccurrence.series_id == current.id,
+                EventOccurrence.recurrence_anchor_at >= boundary.recurrence_anchor_at,
+            )
+            .order_by(EventOccurrence.recurrence_anchor_at)
+            .with_for_update()
+        )
+        .scalars()
+        .all()
+    )
+    protected_occurrence_ids = set(
+        session.execute(
+            select(EventOccurrenceException.occurrence_id).where(
+                EventOccurrenceException.occurrence_id.in_(
+                    [occurrence.id for occurrence in following_occurrences]
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
     successor = EventSeries(
         root_series_id=current.root_series_id,
         supersedes_series_id=current.id,
@@ -195,12 +251,29 @@ def create_successor_version(
     session.flush()
 
     # ADR-0028 §3: same id, no new occurrence created — only the
-    # governing series version changes.
-    boundary.series_id = successor.id
-    boundary.updated_by = updated_by
+    # governing series version changes, for the boundary and every
+    # already-materialized occurrence chronologically at/after it.
+    duration = timedelta(minutes=duration_minutes)
+    for occurrence in following_occurrences:
+        occurrence.series_id = successor.id
+        occurrence.updated_by = updated_by
+        if occurrence.id not in protected_occurrence_ids:
+            # No protected exception: resync the operational snapshot and
+            # duration to the successor version, exactly as a fresh
+            # materialization under this version would. `starts_at`
+            # (== recurrence_anchor_at for an unprotected occurrence) is
+            # never repositioned — only its governing-version-derived
+            # fields change.
+            occurrence.name = name
+            occurrence.description = description
+            occurrence.event_type = event_type
+            occurrence.ends_at = occurrence.starts_at + duration
+        # A protected occurrence (its own EventOccurrenceException) keeps
+        # its customized schedule/snapshot untouched — only series_id
+        # rebinds, per this round's ADR-0028 §3 clarification.
     session.flush()
 
-    return successor, boundary
+    return successor, following_occurrences
 
 
 __all__ = [

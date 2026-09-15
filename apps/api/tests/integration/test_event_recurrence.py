@@ -38,6 +38,7 @@ from app.db.authorization import Permission, Role, RolePermission, UserRoleAssig
 from app.db.event_recurrence import EventOccurrence, EventOccurrenceException, EventSeries
 from app.db.identity import Club, Person, User
 from app.db.session import session_scope
+from app.events.materialization import materialize_occurrences
 from app.events.series_authorization import (
     build_occurrence_resource_context,
     build_series_resource_context,
@@ -278,7 +279,8 @@ def test_past_occurrence_remains_on_its_historical_version_and_is_immutable_in_s
         )
         s.refresh(past_occ)
         assert past_occ.series_id == v1.id  # untouched
-        assert rebound.series_id == v2.id
+        assert [r.id for r in rebound] == [boundary_occ.id]
+        assert rebound[0].series_id == v2.id
 
 
 @requires_postgres
@@ -306,7 +308,7 @@ def test_boundary_occurrence_rebinding_keeps_the_same_id_and_creates_no_new_row(
             actor_user_id=user_id,
         )
         after_count = s.execute(select(EventOccurrence)).scalars().all()
-        assert rebound.id == occ_id
+        assert [r.id for r in rebound] == [occ_id]
         assert len(after_count) == len(before_count)  # no new occurrence created
 
 
@@ -504,8 +506,8 @@ def test_scheduled_boundary_is_accepted() -> None:
             actor_user_id=user_id,
         )
         assert successor.version == 2
-        assert rebound.id == occ_id
-        assert rebound.series_id == successor.id
+        assert [r.id for r in rebound] == [occ_id]
+        assert rebound[0].series_id == successor.id
 
 
 @requires_postgres
@@ -1228,7 +1230,7 @@ def test_this_and_following_emits_both_version_created_and_series_rebound() -> N
             row.action
             for row in s.execute(
                 select(AuditLog).where(
-                    AuditLog.resource_id.in_([v2.id, rebound.id]),
+                    AuditLog.resource_id.in_([v2.id, *[r.id for r in rebound]]),
                 )
             ).scalars()
         }
@@ -1347,6 +1349,418 @@ def test_override_name_does_not_leak_into_audit_details() -> None:
             )
         ).scalar_one()
         assert sentinel not in str(row.details)
+
+
+# --- "This and following" following-occurrence rebind fan-out --------------
+#
+# Regression coverage for the defect where create_successor_version() only
+# rebound the single selected boundary occurrence and left every other
+# already-materialized occurrence chronologically at/after it stranded on
+# the historical (source) version — contradicting ADR-0028 §3's "Following
+# occurrences belong to the new version". Scenario numbers below match the
+# checklist this round of tests was requested against:
+#   1. boundary without exception
+#   2. following materialized occurrences without exception
+#   3. following occurrence with reschedule/override (protected)
+#   4. past occurrence
+#   5. occurrence_limit
+#   6. COUNT/series_end_at
+#   7. repeated materialization call after versioning — no duplicates
+#   8. duration change in successor
+#   9. occurrence IDs remain stable
+
+
+@requires_postgres
+def test_this_and_following_rebinds_boundary_without_exception_and_syncs_snapshot() -> None:
+    """Scenarios 1 + 8: the boundary occurrence itself (no protected
+    exception) has its snapshot and duration resynced to the successor."""
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id, duration_minutes=60)
+        boundary = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START, name="v1 name", event_type="lesson"
+        )
+        boundary_id = boundary.id
+
+        successor, rebound = create_successor_version(
+            s,
+            source_series_id=v1.id,
+            boundary_occurrence_id=boundary_id,
+            name="v2 name",
+            description="v2 description",
+            event_type="training",
+            series_start_at=_START,
+            series_end_at=None,
+            occurrence_limit=None,
+            duration_minutes=120,
+            recurrence_rule="FREQ=WEEKLY",
+            timezone="Europe/Moscow",
+            actor_user_id=user_id,
+        )
+
+        assert [r.id for r in rebound] == [boundary_id]
+        rebound_boundary = rebound[0]
+        assert rebound_boundary.series_id == successor.id
+        assert rebound_boundary.name == "v2 name"
+        assert rebound_boundary.description == "v2 description"
+        assert rebound_boundary.event_type == "training"
+        assert rebound_boundary.ends_at == _START + timedelta(minutes=120)  # duration resynced
+
+
+@requires_postgres
+def test_this_and_following_rebinds_every_following_materialized_occurrence() -> None:
+    """Scenario 2: not just the boundary — every already-materialized
+    occurrence chronologically at/after it also rebinds and resyncs."""
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id, duration_minutes=60)
+        past = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START, status="completed"
+        )
+        boundary = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START + timedelta(days=7)
+        )
+        follower1 = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START + timedelta(days=14)
+        )
+        follower2 = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START + timedelta(days=21)
+        )
+
+        successor, rebound = create_successor_version(
+            s,
+            source_series_id=v1.id,
+            boundary_occurrence_id=boundary.id,
+            name="v2",
+            description=None,
+            event_type="lesson",
+            series_start_at=_START + timedelta(days=7),
+            series_end_at=None,
+            occurrence_limit=None,
+            duration_minutes=90,
+            recurrence_rule="FREQ=WEEKLY",
+            timezone="Europe/Moscow",
+            actor_user_id=user_id,
+        )
+
+        rebound_ids = {r.id for r in rebound}
+        assert rebound_ids == {boundary.id, follower1.id, follower2.id}
+        assert all(r.series_id == successor.id for r in rebound)
+        assert all(r.name == "v2" for r in rebound)  # snapshot resynced
+
+        s.refresh(past)
+        assert past.series_id == v1.id  # untouched
+
+
+@requires_postgres
+def test_this_and_following_preserves_a_protected_following_occurrences_exception() -> None:
+    """Scenario 3: a following occurrence that already carries its own
+    reschedule exception rebinds (series_id changes) but keeps its
+    customized schedule/snapshot untouched — never resynced to the
+    successor's duration/snapshot."""
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id, duration_minutes=60)
+        boundary = _make_occurrence(s, series_id=v1.id, club_id=club_id, anchor=_START)
+        protected = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START + timedelta(days=7)
+        )
+        set_occurrence_exception(
+            s,
+            occurrence=protected,
+            exception_type="rescheduled",
+            effective_start_at=_START + timedelta(days=7, hours=3),
+            effective_end_at=_START + timedelta(days=7, hours=5),
+            overrides={"name": "Custom name"},
+            actor_user_id=user_id,
+        )
+        protected_starts_at, protected_ends_at = protected.starts_at, protected.ends_at
+        protected_id = protected.id
+
+        successor, rebound = create_successor_version(
+            s,
+            source_series_id=v1.id,
+            boundary_occurrence_id=boundary.id,
+            name="v2",
+            description=None,
+            event_type="lesson",
+            series_start_at=_START,
+            series_end_at=None,
+            occurrence_limit=None,
+            duration_minutes=180,  # deliberately different — must not apply to the protected row
+            recurrence_rule="FREQ=WEEKLY",
+            timezone="Europe/Moscow",
+            actor_user_id=user_id,
+        )
+
+        rebound_by_id = {r.id: r for r in rebound}
+        assert set(rebound_by_id) == {boundary.id, protected_id}
+        rebound_protected = rebound_by_id[protected_id]
+        assert rebound_protected.series_id == successor.id  # rebinds
+        assert rebound_protected.starts_at == protected_starts_at  # untouched
+        assert rebound_protected.ends_at == protected_ends_at  # untouched, not resynced
+        assert rebound_protected.name == "Custom name"  # override preserved
+
+
+@requires_postgres
+def test_this_and_following_never_touches_a_still_scheduled_past_occurrence() -> None:
+    """Scenario 4: exclusion from the rebind is by chronological position
+    (recurrence_anchor_at) relative to the boundary, not by status — a
+    still-`scheduled` occurrence before the boundary is equally untouched."""
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id, duration_minutes=60)
+        past = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START, name="v1", status="scheduled"
+        )
+        boundary = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START + timedelta(days=7)
+        )
+        past_id, past_ends_at = past.id, past.ends_at
+
+        successor, rebound = create_successor_version(
+            s,
+            source_series_id=v1.id,
+            boundary_occurrence_id=boundary.id,
+            name="v2",
+            description=None,
+            event_type="lesson",
+            series_start_at=_START + timedelta(days=7),
+            series_end_at=None,
+            occurrence_limit=None,
+            duration_minutes=999,
+            recurrence_rule="FREQ=WEEKLY",
+            timezone="Europe/Moscow",
+            actor_user_id=user_id,
+        )
+
+        assert past_id not in {r.id for r in rebound}
+        s.refresh(past)
+        assert past.series_id == v1.id
+        assert past.name == "v1"
+        assert past.ends_at == past_ends_at  # not resynced to the 999-minute duration
+
+
+@requires_postgres
+def test_this_and_following_respects_occurrence_limit_across_rebound_and_materialization() -> None:
+    """Scenario 5: `already_generated_count` for the successor's own
+    materialization must count the rebound rows too, so occurrence_limit
+    is enforced across the version boundary, not reset by it."""
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id, duration_minutes=60)
+        materialize_occurrences(s, series=v1, horizon_end=_START + timedelta(weeks=4))
+        v1_occurrences = (
+            s.execute(
+                select(EventOccurrence)
+                .where(EventOccurrence.series_id == v1.id)
+                .order_by(EventOccurrence.recurrence_anchor_at)
+            )
+            .scalars()
+            .all()
+        )
+        assert len(v1_occurrences) == 5  # weeks 0..4 inclusive
+        boundary = v1_occurrences[2]  # week 2 -> 3 already-materialized rows at/after it
+
+        successor, rebound = create_successor_version(
+            s,
+            source_series_id=v1.id,
+            boundary_occurrence_id=boundary.id,
+            name="v2",
+            description=None,
+            event_type="lesson",
+            series_start_at=boundary.recurrence_anchor_at,
+            series_end_at=None,
+            occurrence_limit=4,
+            duration_minutes=60,
+            recurrence_rule="FREQ=WEEKLY",
+            timezone="Europe/Moscow",
+            actor_user_id=user_id,
+        )
+        assert len(rebound) == 3
+
+        newly_created = materialize_occurrences(
+            s, series=successor, horizon_end=boundary.recurrence_anchor_at + timedelta(weeks=50)
+        )
+        assert len(newly_created) == 1  # only 1 more needed to reach occurrence_limit=4
+
+        total_under_successor = (
+            s.execute(select(EventOccurrence).where(EventOccurrence.series_id == successor.id))
+            .scalars()
+            .all()
+        )
+        assert len(total_under_successor) == 4
+
+        far_horizon = boundary.recurrence_anchor_at + timedelta(weeks=100)
+        assert materialize_occurrences(s, series=successor, horizon_end=far_horizon) == []
+
+
+@requires_postgres
+def test_this_and_following_respects_recurrence_count_across_rebound_and_materialization() -> None:
+    """Scenario 6: a successor whose own RRULE carries COUNT must also
+    honor the rebound rows already materialized under it."""
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id, duration_minutes=60)
+        materialize_occurrences(s, series=v1, horizon_end=_START + timedelta(weeks=4))
+        v1_occurrences = (
+            s.execute(
+                select(EventOccurrence)
+                .where(EventOccurrence.series_id == v1.id)
+                .order_by(EventOccurrence.recurrence_anchor_at)
+            )
+            .scalars()
+            .all()
+        )
+        boundary = v1_occurrences[2]
+
+        successor, rebound = create_successor_version(
+            s,
+            source_series_id=v1.id,
+            boundary_occurrence_id=boundary.id,
+            name="v2",
+            description=None,
+            event_type="lesson",
+            series_start_at=boundary.recurrence_anchor_at,
+            series_end_at=None,
+            occurrence_limit=None,
+            duration_minutes=60,
+            recurrence_rule="FREQ=WEEKLY;COUNT=4",
+            timezone="Europe/Moscow",
+            actor_user_id=user_id,
+        )
+        assert len(rebound) == 3
+
+        materialize_occurrences(
+            s, series=successor, horizon_end=boundary.recurrence_anchor_at + timedelta(weeks=50)
+        )
+        total = (
+            s.execute(select(EventOccurrence).where(EventOccurrence.series_id == successor.id))
+            .scalars()
+            .all()
+        )
+        assert len(total) == 4  # COUNT=4 honored even though 3 were already materialized
+
+        far_horizon = boundary.recurrence_anchor_at + timedelta(weeks=200)
+        assert materialize_occurrences(s, series=successor, horizon_end=far_horizon) == []
+
+
+@requires_postgres
+def test_materialize_after_this_and_following_creates_no_duplicate_anchors() -> None:
+    """Scenario 7: repeated materialization of the successor after a
+    rebind never re-creates the already-rebound anchors and is idempotent."""
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id, duration_minutes=60)
+        materialize_occurrences(s, series=v1, horizon_end=_START + timedelta(weeks=4))
+        v1_occurrences = (
+            s.execute(
+                select(EventOccurrence)
+                .where(EventOccurrence.series_id == v1.id)
+                .order_by(EventOccurrence.recurrence_anchor_at)
+            )
+            .scalars()
+            .all()
+        )
+        boundary = v1_occurrences[2]
+
+        successor, rebound = create_successor_version(
+            s,
+            source_series_id=v1.id,
+            boundary_occurrence_id=boundary.id,
+            name="v2",
+            description=None,
+            event_type="lesson",
+            series_start_at=boundary.recurrence_anchor_at,
+            series_end_at=None,
+            occurrence_limit=None,
+            duration_minutes=60,
+            recurrence_rule="FREQ=WEEKLY",
+            timezone="Europe/Moscow",
+            actor_user_id=user_id,
+        )
+        rebound_anchors = {r.recurrence_anchor_at for r in rebound}
+
+        first_call = materialize_occurrences(
+            s, series=successor, horizon_end=boundary.recurrence_anchor_at + timedelta(weeks=10)
+        )
+        assert first_call
+        assert rebound_anchors.isdisjoint({o.recurrence_anchor_at for o in first_call})
+
+        second_call = materialize_occurrences(
+            s, series=successor, horizon_end=boundary.recurrence_anchor_at + timedelta(weeks=10)
+        )
+        assert second_call == []  # idempotent — no duplicates on repeat
+
+        all_anchors = [
+            o.recurrence_anchor_at
+            for o in s.execute(
+                select(EventOccurrence).where(EventOccurrence.series_id == successor.id)
+            ).scalars()
+        ]
+        assert len(all_anchors) == len(set(all_anchors))  # uq_..._series_id_recurrence_anchor_at
+
+
+@requires_postgres
+def test_this_and_following_keeps_occurrence_ids_stable_and_creates_no_new_rows() -> None:
+    """Scenario 9: across a mix of past/boundary/follower/protected
+    occurrences, the rebind never creates a new EventOccurrence row and
+    every rebound row keeps exactly its pre-existing id — verified via a
+    fresh session read, not just in-memory state."""
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id, duration_minutes=60)
+        past = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START, status="completed"
+        )
+        boundary = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START + timedelta(days=7)
+        )
+        follower = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START + timedelta(days=14)
+        )
+        protected = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START + timedelta(days=21)
+        )
+        set_occurrence_exception(
+            s,
+            occurrence=protected,
+            exception_type="rescheduled",
+            effective_start_at=_START + timedelta(days=21, hours=1),
+            actor_user_id=user_id,
+        )
+        all_ids_before = {o.id for o in (past, boundary, follower, protected)}
+        occurrence_count_before = len(s.execute(select(EventOccurrence)).scalars().all())
+
+        successor, rebound = create_successor_version(
+            s,
+            source_series_id=v1.id,
+            boundary_occurrence_id=boundary.id,
+            name="v2",
+            description=None,
+            event_type="lesson",
+            series_start_at=_START + timedelta(days=7),
+            series_end_at=None,
+            occurrence_limit=None,
+            duration_minutes=90,
+            recurrence_rule="FREQ=WEEKLY",
+            timezone="Europe/Moscow",
+            actor_user_id=user_id,
+        )
+        occurrence_count_after = len(s.execute(select(EventOccurrence)).scalars().all())
+        assert occurrence_count_after == occurrence_count_before  # no new rows anywhere
+
+        assert {r.id for r in rebound} == {boundary.id, follower.id, protected.id}
+        assert {r.id for r in rebound} <= all_ids_before
+
+    with session_scope() as verify:
+        stored_ids = {
+            o.id
+            for o in verify.execute(
+                select(EventOccurrence).where(EventOccurrence.club_id == club_id)
+            ).scalars()
+        }
+        assert stored_ids == all_ids_before
 
 
 # --- Authorization ----------------------------------------------------

@@ -12,9 +12,14 @@ never a recurrence-specific permission) before invoking anything here —
 see app.events.series_authorization.
 
 `create_successor_version` ("this and following") is the one operation
-that legitimately emits two audit records for one caller action
-(`event_series.version_created` + `event_occurrence.series_rebound`) —
-ADR-0028 §12 explicitly anticipates this.
+that legitimately emits more than one audit record for one caller action:
+exactly one `event_series.version_created`, plus one
+`event_occurrence.series_rebound` per already-materialized occurrence
+rebound to the successor (the boundary occurrence and every later
+already-materialized occurrence on the source version — ADR-0028 §3:
+"Following occurrences belong to the new version") — ADR-0028 §12
+explicitly anticipates one caller action producing more than one audit
+record.
 
 Occurrence cancellation is exclusively reachable through
 `set_occurrence_exception` (`exception_type="cancelled"`), never through
@@ -230,19 +235,24 @@ def create_successor_version(
     timezone: str,
     actor_user_id: uuid.UUID,
     request_id: Optional[str] = None,
-) -> tuple[EventSeries, EventOccurrence]:
+) -> tuple[EventSeries, list[EventOccurrence]]:
     """"This and following" — see app.events.versioning for the
     transactional locking/stale-version/boundary-validation algorithm.
-    Records `event_series.version_created` and
-    `event_occurrence.series_rebound` in the same transaction (ADR-0028
-    §12 explicitly anticipates one caller action producing both).
+    Records `event_series.version_created` plus one
+    `event_occurrence.series_rebound` per already-materialized occurrence
+    rebound to the successor — the boundary occurrence and every later
+    one on the source version. ADR-0028 §12 defines
+    `event_occurrence.series_rebound` generally ("already-materialized
+    occurrence rebound to a new EventSeries version at a version
+    boundary"), not as a single-row action, and separately anticipates
+    one caller action producing more than one audit record.
     """
     validate_event_type(event_type)
     if duration_minutes <= 0:
         raise EventSeriesDomainError("duration_minutes must be a positive integer")
 
     try:
-        successor, rebound = _create_successor_version(
+        successor, rebound_occurrences = _create_successor_version(
             session,
             source_series_id=source_series_id,
             boundary_occurrence_id=boundary_occurrence_id,
@@ -269,23 +279,24 @@ def create_successor_version(
             request_id=request_id,
             details={"supersedes_series_id": str(successor.supersedes_series_id)},
         )
-        record_audit_event(
-            session,
-            action="event_occurrence.series_rebound",
-            actor_type="user",
-            actor_user_id=actor_user_id,
-            club_id=rebound.club_id,
-            resource_type="event_occurrence",
-            resource_id=rebound.id,
-            outcome="success",
-            request_id=request_id,
-            details={"new_series_id": str(successor.id)},
-        )
+        for rebound in rebound_occurrences:
+            record_audit_event(
+                session,
+                action="event_occurrence.series_rebound",
+                actor_type="user",
+                actor_user_id=actor_user_id,
+                club_id=rebound.club_id,
+                resource_type="event_occurrence",
+                resource_id=rebound.id,
+                outcome="success",
+                request_id=request_id,
+                details={"new_series_id": str(successor.id)},
+            )
         session.commit()
     except Exception:
         session.rollback()
         raise
-    return successor, rebound
+    return successor, rebound_occurrences
 
 
 def transition_occurrence_status(
