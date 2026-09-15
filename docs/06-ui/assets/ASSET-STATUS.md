@@ -43,7 +43,7 @@ Empty states, onboarding and supportive system feedback may be especially friend
 | Navigation | **Approved / uploaded** | `packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` |
 | Actions | **Approved / uploaded** | `packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` |
 | Status | **Approved / uploaded** | `packages/status/TourCRM_Assets_Status_P0_FINAL.zip` |
-| Domain | **Production artwork approved; binary upload pending** | `packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` |
+| Domain | **Approved / uploaded** | `packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` |
 | Achievements P0 | **Approved / uploaded** | `packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` |
 | Achievements P1 | **Approved / uploaded** | `packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` |
 | Illustrations — Empty States | **Approved / uploaded** | `packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` |
@@ -159,7 +159,7 @@ The Domain package path is:
 docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip
 ```
 
-The binary ZIP is the remaining repository hand-off step. Until it is physically uploaded to that path, Domain must not be labeled **Approved / uploaded**.
+The binary ZIP is physically present in the repository and the package is now **Approved / uploaded**.
 
 ### Domain semantic rules
 
@@ -184,7 +184,7 @@ A package becomes **Approved / uploaded** only after:
 5. upload to the designated package directory;
 6. documentation and manifest update.
 
-For Domain P2, steps 1–4 are complete. The repository binary upload is still pending.
+For Domain P2, all six steps are complete.
 
 Concept sheets and crops are never the application source.
 
