@@ -10,15 +10,7 @@ docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip
 
 It contains 7 newly approved Domain masters and 42 WebP production exports (16/20/24/32/48/64 px), for 49 files total. DOM-009 remains excluded because its semantic definition is not confirmed.
 
-The previous archives remain historical working material:
-
-```text
-docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P0.zip
-docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P1A.zip
-docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P1B_CLEAN.zip
-```
-
-They must not be used as production assets.
+The previous archives remain historical working material and must not be used as production assets.
 
 Catalog scope: DOM-001…DOM-022 (22). Current production-approved Domain artwork covers DOM-001…005, DOM-006…008, DOM-010…012 and DOM-013…022. DOM-009 is a documented GAP.
 
@@ -41,8 +33,6 @@ Domain artwork follows the same TourCRM visual language as the approved Navigati
 
 ## P2 production scope
 
-The following seven Domain assets were redesigned as standalone master artwork and approved for production:
-
 | ID | Meaning | Production state |
 |---|---|---|
 | DOM-006 | Membership | Approved |
@@ -57,11 +47,7 @@ The selected artwork was reviewed for semantic clarity and small-size readabilit
 
 ## Production package
 
-```text
-docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip
-```
-
-Expected contents:
+The package contains:
 
 - 7 standalone PNG masters;
 - 42 transparent WebP exports;
@@ -89,14 +75,7 @@ These Domain assets are semantic UI icons, not illustrations. More expressive ch
 
 ## Production gate
 
-The Domain artwork has passed:
-
-1. semantic review;
-2. visual-family review;
-3. standalone master creation;
-4. small-size review at 16/20/24 px;
-5. production export validation;
-6. physical repository package upload.
+The Domain artwork has passed semantic review, visual-family review, standalone master creation, small-size review at 16/20/24 px, production export validation and physical repository package upload.
 
 Domain P2 is now **Approved / uploaded**. Application integration remains a separate stage and must not populate `assets/ui/` as part of this hand-off.
 
