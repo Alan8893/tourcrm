@@ -21,6 +21,7 @@ Fields:
 - `series_start_at` — required, timezone-aware timestamp;
 - `series_end_at` — nullable, timezone-aware timestamp;
 - `occurrence_limit` — nullable positive integer;
+- `duration_minutes` — required positive integer; duration of each occurrence in this Series version;
 - `recurrence_rule` — required canonical RRULE representation;
 - `timezone` — required IANA timezone;
 - `status` — required;
@@ -48,6 +49,8 @@ Constraints and invariants:
 
 `UNTIL` is not stored as a second canonical termination field in `recurrence_rule`; an incoming RRULE `UNTIL` is normalized into `series_end_at`.
 
+`duration_minutes` is part of the Series version snapshot. A duration change affecting future occurrences is represented by the applicable Series update/versioning operation; no undocumented default duration exists.
+
 ## 2. `event_occurrences`
 
 `EventOccurrence` is the concrete materialized scheduled instance of a Series version. It is an operational entity and is not represented by a separate required `Event` row.
@@ -73,6 +76,7 @@ Fields:
 Constraints and invariants:
 
 - `ends_at > starts_at`;
+- for a normally materialized occurrence, `ends_at = starts_at + duration_minutes` from its governing Series version;
 - lifecycle is exactly `scheduled → in_progress → completed` or `scheduled → cancelled`;
 - `completed` and `cancelled` are terminal;
 - cancellation requires a reason;
@@ -84,7 +88,7 @@ Constraints and invariants:
 
 ### Materialization idempotency key
 
-The database must provide a uniqueness boundary that prevents duplicate materialization of the same logical occurrence. The implementation must use a stable recurrence identity derived from the Series version and the canonical recurrence position/slot. The exact physical key/index expression is an implementation detail of the migration and must preserve idempotency under concurrent materializers.
+The database must provide a uniqueness boundary that prevents duplicate materialization of the same logical occurrence. The implementation must use a stable recurrence identity derived from the Series version and the canonical recurrence position/slot. The exact physical key/index implementation is an implementation detail of the migration and must preserve idempotency under concurrent materializers.
 
 ## 3. `event_occurrence_exceptions`
 
