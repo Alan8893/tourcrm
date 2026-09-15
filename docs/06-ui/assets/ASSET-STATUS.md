@@ -28,6 +28,16 @@ Empty states, onboarding and supportive system feedback may be especially friend
 - Existing approved custom artwork is the visual reference for new artwork in the same family.
 - Visual uniqueness must never make the semantic meaning ambiguous.
 
+### Brand master
+
+The official TourCRM / «Вектор» logo is handed off as **one PNG master**:
+
+```text
+docs/06-ui/assets/packages/brand/logo.png
+```
+
+This is the single source of truth for the brand mark. No SVG, ZIP archive or generated logo-variant set is part of this stage. Future technical derivatives, if needed, must be created only for a concrete approved product need and derived from this master.
+
 ### Illustrations
 
 - Format: PNG/WebP
@@ -39,7 +49,7 @@ Empty states, onboarding and supportive system feedback may be especially friend
 
 | Area | Status | Production package |
 |---|---|---|
-| Brand | Planned | — |
+| Brand | **Master uploaded** | `packages/brand/logo.png` |
 | Navigation | **Approved / uploaded** | `packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` |
 | Actions | **Approved / uploaded** | `packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` |
 | Status | **Approved / uploaded** | `packages/status/TourCRM_Assets_Status_P0_FINAL.zip` |
@@ -156,7 +166,7 @@ The package contains 7 masters and 42 WebP exports, 49 files total. DOM-009 rema
 The Domain package path is:
 
 ```text
-docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip
+packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip
 ```
 
 The binary ZIP is physically present in the repository and the package is now **Approved / uploaded**.
@@ -184,7 +194,7 @@ A package becomes **Approved / uploaded** only after:
 5. upload to the designated package directory;
 6. documentation and manifest update.
 
-For Domain P2, all six steps are complete.
+For Domain P2, all six steps are complete. For Brand P1, the deliverable is the approved official master itself; derivative exports are intentionally deferred.
 
 Concept sheets and crops are never the application source.
 
