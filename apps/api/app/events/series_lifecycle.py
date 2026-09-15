@@ -80,6 +80,24 @@ class CancelledOccurrenceCannotBeBoundaryError(EventSeriesDomainError):
     boundary; the caller must select the next scheduled occurrence."""
 
 
+class OccurrenceNotEligibleForRescheduleError(EventSeriesDomainError):
+    """ADR-0028 §5/§7: a reschedule exception may only be applied to a
+    `scheduled` occurrence. `completed` and `cancelled` are terminal
+    (ADR-0018-style terminal-state protection, carried over to the
+    occurrence lifecycle) — rescheduling one would either resurrect a
+    terminal occurrence's schedule with no corresponding status change,
+    or silently overwrite a `cancelled` occurrence's own exception
+    record while leaving `status="cancelled"`, neither of which is a
+    valid state."""
+
+    def __init__(self, *, current_status: str) -> None:
+        super().__init__(
+            f"{current_status!r} occurrence cannot be rescheduled — only a "
+            "'scheduled' occurrence is eligible"
+        )
+        self.current_status = current_status
+
+
 class InvalidExceptionTypeError(EventSeriesDomainError):
     def __init__(self, value: str) -> None:
         super().__init__(f"{value!r} is not a canonical exception_type")
@@ -142,6 +160,18 @@ def validate_boundary_occurrence_status(status: str) -> None:
     validate_occurrence_status(status)
 
 
+def validate_occurrence_reschedule_eligibility(status: str) -> None:
+    """ADR-0028 §5/§7: only a `scheduled` occurrence may receive a
+    `rescheduled` exception. Raises OccurrenceNotEligibleForRescheduleError
+    (persisting nothing) for `completed`/`cancelled` — including an
+    occurrence that already carries a `cancelled` exception, since that
+    always implies `status == "cancelled"` here (the two are kept in
+    sync by app.events.series_service.set_occurrence_exception)."""
+    validate_occurrence_status(status)
+    if status != "scheduled":
+        raise OccurrenceNotEligibleForRescheduleError(current_status=status)
+
+
 def validate_exception_type(value: str) -> None:
     if value not in CANONICAL_EXCEPTION_TYPES:
         raise InvalidExceptionTypeError(value)
@@ -181,6 +211,7 @@ __all__ = [
     "InvalidOccurrenceStatusTransitionError",
     "OccurrenceCancellationReasonRequiredError",
     "CancelledOccurrenceCannotBeBoundaryError",
+    "OccurrenceNotEligibleForRescheduleError",
     "InvalidExceptionTypeError",
     "UnknownOverrideFieldError",
     "validate_series_status",
@@ -188,6 +219,7 @@ __all__ = [
     "validate_occurrence_status",
     "validate_occurrence_status_transition",
     "validate_boundary_occurrence_status",
+    "validate_occurrence_reschedule_eligibility",
     "validate_exception_type",
     "validate_exception_cancellation_reason",
     "validate_occurrence_overrides",

@@ -28,6 +28,7 @@ occurrence lifecycle transitions use their dedicated codes."
 """
 
 import uuid
+from datetime import timedelta
 from typing import Optional
 
 from sqlalchemy import select
@@ -35,12 +36,13 @@ from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit_event
 from app.db.event_recurrence import EventOccurrence, EventOccurrenceException, EventSeries
-from app.events.lifecycle import validate_event_type
+from app.events.lifecycle import validate_event_type, validate_time_range
 from app.events.series_lifecycle import (
     EventSeriesDomainError,
     validate_exception_cancellation_reason,
     validate_exception_type,
     validate_occurrence_overrides,
+    validate_occurrence_reschedule_eligibility,
     validate_occurrence_status_transition,
     validate_series_status_transition,
 )
@@ -357,6 +359,18 @@ def set_occurrence_exception(
     requires `cancellation_reason`. The occurrence's `id` is never
     changed and no replacement occurrence is ever created.
 
+    A `rescheduled` exception is only accepted for an occurrence whose
+    `status == "scheduled"` — raises
+    app.events.series_lifecycle.OccurrenceNotEligibleForRescheduleError,
+    persisting nothing, for a `completed`/`cancelled` occurrence
+    (terminal-state protection, ADR-0028 §7) or one that already carries
+    a `cancelled` exception (implies `status == "cancelled"`, so this is
+    the same check). `effective_end_at`, if omitted while
+    `effective_start_at` is given, is derived as `effective_start_at +
+    governing_series.duration_minutes` — the occurrence's duration is
+    never silently left stale at its old value, and never an
+    undocumented default (ADR-0028 §2 duration amendment).
+
     `overrides` is validated against the allow-list (ADR-0028 §5) and,
     for each present key, the same domain rules as an ordinary Event
     update. Records `event_occurrence.exception_created` (no prior
@@ -368,28 +382,52 @@ def set_occurrence_exception(
     validate_occurrence_overrides(overrides)
     _validate_overrides_values(overrides)
 
-    existing = session.execute(
-        select(EventOccurrenceException).where(
-            EventOccurrenceException.occurrence_id == occurrence.id
-        )
-    ).scalar_one_or_none()
-    is_new = existing is None
+    try:
+        if exception_type == "rescheduled":
+            # Terminal-state protection (ADR-0028 §7): a completed/
+            # cancelled occurrence, or one that already carries a
+            # cancelled exception (implies status="cancelled"), can
+            # never be rescheduled.
+            validate_occurrence_reschedule_eligibility(occurrence.status)
 
-    if exception_type == "cancelled":
-        validate_occurrence_status_transition(
-            occurrence.status, "cancelled", cancellation_reason=cancellation_reason
-        )
-        occurrence.status = "cancelled"
-        occurrence.cancellation_reason = cancellation_reason
-    else:
-        if effective_start_at is not None:
-            occurrence.starts_at = effective_start_at
-        if effective_end_at is not None:
-            occurrence.ends_at = effective_end_at
-    if overrides:
-        for field_name, value in overrides.items():
-            setattr(occurrence, field_name, value)
-    occurrence.updated_by = actor_user_id
+        existing = session.execute(
+            select(EventOccurrenceException).where(
+                EventOccurrenceException.occurrence_id == occurrence.id
+            )
+        ).scalar_one_or_none()
+        is_new = existing is None
+
+        if exception_type == "cancelled":
+            validate_occurrence_status_transition(
+                occurrence.status, "cancelled", cancellation_reason=cancellation_reason
+            )
+            occurrence.status = "cancelled"
+            occurrence.cancellation_reason = cancellation_reason
+        else:
+            if effective_start_at is not None:
+                if effective_end_at is None:
+                    # ADR-0028 §2 duration amendment: never leave the old
+                    # ends_at stale, and never an undocumented default —
+                    # derive it from the governing Series version's own
+                    # duration_minutes.
+                    governing_series = session.get(EventSeries, occurrence.series_id)
+                    assert governing_series is not None
+                    effective_end_at = effective_start_at + timedelta(
+                        minutes=governing_series.duration_minutes
+                    )
+                validate_time_range(effective_start_at, effective_end_at)
+                occurrence.starts_at = effective_start_at
+                occurrence.ends_at = effective_end_at
+            elif effective_end_at is not None:
+                validate_time_range(occurrence.starts_at, effective_end_at)
+                occurrence.ends_at = effective_end_at
+        if overrides:
+            for field_name, value in overrides.items():
+                setattr(occurrence, field_name, value)
+        occurrence.updated_by = actor_user_id
+    except Exception:
+        session.rollback()
+        raise
 
     if existing is None:
         exception = EventOccurrenceException(

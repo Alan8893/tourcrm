@@ -281,6 +281,94 @@ def test_reschedule_and_cancel_via_exceptions_endpoint(client: TestClient) -> No
 
 
 @requires_postgres
+def test_reschedule_without_effective_end_at_derives_duration_over_http(
+    client: TestClient,
+) -> None:
+    """duration_minutes=90, old start=18:00/end=19:30; reschedule with
+    effective_start_at=20:00 and no effective_end_at must yield
+    starts_at=20:00, ends_at=21:30 — never the stale old ends_at."""
+    club_id = _make_club()
+    user_id = _setup_authorized_caller(club_id=club_id, permission_code="event.create")
+    for perm in ("event.read", "event.update"):
+        _setup_authorized_caller_extra(user_id, club_id=club_id, permission_code=perm)
+    _authenticate_as(user_id)
+
+    series = client.post(
+        "/api/v1/events/series",
+        json=_series_payload(club_id=str(club_id)),
+        headers=_csrf_headers(client),
+    ).json()
+    assert series["duration_minutes"] == 90
+    series_id = series["id"]
+    occurrence = client.get(f"/api/v1/events/series/{series_id}/occurrences").json()["items"][0]
+    assert occurrence["starts_at"] == "2026-01-05T18:00:00Z"
+    assert occurrence["ends_at"] == "2026-01-05T19:30:00Z"
+
+    new_start = "2026-01-05T20:00:00+00:00"
+    resp = client.post(
+        f"/api/v1/events/series/{series_id}/exceptions",
+        json={
+            "occurrence_id": occurrence["id"],
+            "exception_type": "rescheduled",
+            "effective_start_at": new_start,
+        },
+        headers=_csrf_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["starts_at"] == "2026-01-05T20:00:00Z"
+    assert body["ends_at"] == "2026-01-05T21:30:00Z"
+    assert body["ends_at"] != occurrence["ends_at"]  # old ends_at not carried over
+
+
+@requires_postgres
+def test_reschedule_of_terminal_occurrence_is_422_over_http(client: TestClient) -> None:
+    club_id = _make_club()
+    user_id = _setup_authorized_caller(club_id=club_id, permission_code="event.create")
+    for perm in ("event.read", "event.update", "event.cancel"):
+        _setup_authorized_caller_extra(user_id, club_id=club_id, permission_code=perm)
+    _authenticate_as(user_id)
+
+    series = client.post(
+        "/api/v1/events/series",
+        json=_series_payload(club_id=str(club_id)),
+        headers=_csrf_headers(client),
+    ).json()
+    series_id = series["id"]
+    occurrence_id = client.get(
+        f"/api/v1/events/series/{series_id}/occurrences"
+    ).json()["items"][0]["id"]
+
+    cancel_resp = client.post(
+        f"/api/v1/events/series/{series_id}/exceptions",
+        json={
+            "occurrence_id": occurrence_id,
+            "exception_type": "cancelled",
+            "cancellation_reason": "weather",
+        },
+        headers=_csrf_headers(client),
+    )
+    assert cancel_resp.status_code == 200
+    assert cancel_resp.json()["status"] == "cancelled"
+
+    reschedule_resp = client.post(
+        f"/api/v1/events/series/{series_id}/exceptions",
+        json={
+            "occurrence_id": occurrence_id,
+            "exception_type": "rescheduled",
+            "effective_start_at": "2026-01-05T22:00:00+00:00",
+        },
+        headers=_csrf_headers(client),
+    )
+    assert reschedule_resp.status_code == 422, reschedule_resp.text
+
+    # State must be unchanged after the rejected request.
+    still_cancelled = client.get(f"/api/v1/events/occurrences/{occurrence_id}")
+    assert still_cancelled.json()["status"] == "cancelled"
+    assert still_cancelled.json()["exception"]["exception_type"] == "cancelled"
+
+
+@requires_postgres
 def test_dedicated_occurrence_cancel_and_reschedule_endpoints_do_not_exist(
     client: TestClient,
 ) -> None:

@@ -9,14 +9,17 @@ tests/integration/test_role_assignments_service.py:
     export TEST_DATABASE_URL=postgresql+psycopg://tourcrm:***@localhost:5432/tourcrm_test
     pytest tests/integration -v
 
-Materialization (app.events.rrule.expand_occurrences -> EventOccurrence
-rows) is deliberately NOT exercised here: EventOccurrence.ends_at has no
-documented derivation (neither database-schema-recurrence.md's EventSeries
-field list nor event-recurrence-api.md's series-creation request defines
-an occurrence duration/end-time input) — a real, reported blocker, not an
-oversight. Every test below constructs EventOccurrence rows directly with
-explicit starts_at/ends_at, exercising every other invariant against a
-real database without depending on that missing piece.
+Materialization itself (app.events.rrule.expand_occurrences ->
+EventOccurrence rows via app.events.materialization) is covered
+separately in tests/integration/test_event_recurrence_materialization.py.
+`EventSeries.duration_minutes` is a required, positive-integer field of
+the Series version snapshot; materialization derives each occurrence's
+`ends_at = starts_at + duration_minutes` from the governing Series
+version (ADR-0028 §2 duration amendment). Every test below still
+constructs EventOccurrence rows directly with explicit starts_at/ends_at
+(rather than via materialization) since this file's own focus is
+versioning/lifecycle/exception/audit/authorization invariants that don't
+depend on how an occurrence's timestamps were produced.
 """
 
 import threading
@@ -44,6 +47,7 @@ from app.events.series_lifecycle import (
     InvalidOccurrenceStatusTransitionError,
     InvalidSeriesStatusTransitionError,
     OccurrenceCancellationReasonRequiredError,
+    OccurrenceNotEligibleForRescheduleError,
     UnknownOverrideFieldError,
 )
 from app.events.series_service import (
@@ -793,6 +797,211 @@ def test_occurrence_id_remains_stable_through_reschedule_and_cancel() -> None:
             actor_user_id=user_id,
         )
         assert occ.id == original_id
+
+
+# --- Terminal-state protection for reschedule (review blocker #1) ---------
+
+
+@requires_postgres
+def test_reschedule_of_a_completed_occurrence_is_rejected() -> None:
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id)
+        occ = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START, status="completed"
+        )
+        original_starts_at = occ.starts_at
+        original_ends_at = occ.ends_at
+
+        with pytest.raises(OccurrenceNotEligibleForRescheduleError):
+            set_occurrence_exception(
+                s,
+                occurrence=occ,
+                exception_type="rescheduled",
+                effective_start_at=_START + timedelta(hours=3),
+                actor_user_id=user_id,
+            )
+
+        # In-memory object must not carry the rejected mutation either.
+        assert occ.status == "completed"
+        assert occ.starts_at == original_starts_at
+        assert occ.ends_at == original_ends_at
+
+    # And nothing was persisted: a fresh read after the transaction ended
+    # confirms the rollback actually reached the database.
+    with session_scope() as verify:
+        fresh = verify.get(EventOccurrence, occ.id)
+        assert fresh is not None
+        assert fresh.status == "completed"
+        assert fresh.starts_at == original_starts_at
+        assert fresh.ends_at == original_ends_at
+        exceptions = (
+            verify.execute(
+                select(EventOccurrenceException).where(
+                    EventOccurrenceException.occurrence_id == occ.id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert exceptions == []
+
+
+@requires_postgres
+def test_reschedule_of_a_cancelled_occurrence_is_rejected() -> None:
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id)
+        occ = _make_occurrence(
+            s,
+            series_id=v1.id,
+            club_id=club_id,
+            anchor=_START,
+            status="cancelled",
+            cancellation_reason="weather",
+        )
+        original_starts_at = occ.starts_at
+
+        with pytest.raises(OccurrenceNotEligibleForRescheduleError):
+            set_occurrence_exception(
+                s,
+                occurrence=occ,
+                exception_type="rescheduled",
+                effective_start_at=_START + timedelta(hours=3),
+                actor_user_id=user_id,
+            )
+
+        assert occ.status == "cancelled"
+        assert occ.starts_at == original_starts_at
+
+    with session_scope() as verify:
+        fresh = verify.get(EventOccurrence, occ.id)
+        assert fresh is not None
+        assert fresh.status == "cancelled"
+        assert fresh.starts_at == original_starts_at
+
+
+@requires_postgres
+def test_occurrence_with_existing_cancelled_exception_cannot_be_rescheduled() -> None:
+    """scheduled -> cancelled exception -> attempted reschedule must be
+    rejected, and the occurrence must never end up
+    status="cancelled"/exception_type="rescheduled" (the exact
+    inconsistent state this guard exists to prevent)."""
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id)
+        occ = _make_occurrence(s, series_id=v1.id, club_id=club_id, anchor=_START)
+
+        set_occurrence_exception(
+            s,
+            occurrence=occ,
+            exception_type="cancelled",
+            cancellation_reason="Instructor unavailable",
+            actor_user_id=user_id,
+        )
+        assert occ.status == "cancelled"
+
+        with pytest.raises(OccurrenceNotEligibleForRescheduleError):
+            set_occurrence_exception(
+                s,
+                occurrence=occ,
+                exception_type="rescheduled",
+                effective_start_at=_START + timedelta(hours=3),
+                actor_user_id=user_id,
+            )
+
+        # Never status="cancelled" with a "rescheduled" exception on top.
+        assert occ.status == "cancelled"
+
+    with session_scope() as verify:
+        fresh = verify.get(EventOccurrence, occ.id)
+        assert fresh is not None
+        assert fresh.status == "cancelled"
+        exception = verify.execute(
+            select(EventOccurrenceException).where(
+                EventOccurrenceException.occurrence_id == occ.id
+            )
+        ).scalar_one()
+        assert exception.exception_type == "cancelled"
+
+
+# --- Reschedule duration derivation (review blocker #2) --------------------
+
+
+@requires_postgres
+def test_reschedule_without_effective_end_at_derives_it_from_series_duration() -> None:
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id, duration_minutes=90)
+        old_start = _START  # 18:00
+        old_end = old_start + timedelta(minutes=90)  # 19:30
+        occ = _make_occurrence(
+            s, series_id=v1.id, club_id=club_id, anchor=_START, starts_at=old_start, ends_at=old_end
+        )
+
+        new_start = old_start.replace(hour=20, minute=0)  # 20:00, same day
+        exc = set_occurrence_exception(
+            s,
+            occurrence=occ,
+            exception_type="rescheduled",
+            effective_start_at=new_start,
+            actor_user_id=user_id,
+        )
+
+        expected_end = new_start + timedelta(minutes=90)  # 21:30
+        assert occ.starts_at == new_start
+        assert occ.ends_at == expected_end
+        assert occ.ends_at != old_end  # the stale old ends_at must not survive
+        assert exc.effective_start_at == new_start
+        assert exc.effective_end_at == expected_end
+
+    with session_scope() as verify:
+        fresh = verify.get(EventOccurrence, occ.id)
+        assert fresh is not None
+        assert fresh.starts_at == new_start
+        assert fresh.ends_at == expected_end
+
+
+@requires_postgres
+def test_reschedule_with_explicit_effective_end_at_is_used_as_is() -> None:
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id, duration_minutes=90)
+        occ = _make_occurrence(s, series_id=v1.id, club_id=club_id, anchor=_START)
+
+        new_start = _START + timedelta(hours=3)
+        explicit_end = new_start + timedelta(hours=5)  # deliberately NOT +90min
+        set_occurrence_exception(
+            s,
+            occurrence=occ,
+            exception_type="rescheduled",
+            effective_start_at=new_start,
+            effective_end_at=explicit_end,
+            actor_user_id=user_id,
+        )
+        assert occ.ends_at == explicit_end
+
+
+@requires_postgres
+def test_reschedule_with_effective_end_at_before_start_is_rejected() -> None:
+    with session_scope() as s:
+        club_id, user_id = _make_club_and_user(s)
+        v1 = _make_series_v1(s, club_id=club_id, user_id=user_id, duration_minutes=90)
+        occ = _make_occurrence(s, series_id=v1.id, club_id=club_id, anchor=_START)
+        original_ends_at = occ.ends_at
+
+        new_start = _START + timedelta(hours=3)
+        invalid_end = new_start - timedelta(minutes=10)
+        with pytest.raises(Exception):  # InvalidTimeRangeError (app.events.lifecycle)
+            set_occurrence_exception(
+                s,
+                occurrence=occ,
+                exception_type="rescheduled",
+                effective_start_at=new_start,
+                effective_end_at=invalid_end,
+                actor_user_id=user_id,
+            )
+        assert occ.ends_at == original_ends_at
 
 
 # --- Audit ------------------------------------------------------------
