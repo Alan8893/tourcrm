@@ -56,6 +56,7 @@ _AUTH_PATHS = {
 
 _EVENT_PATHS = {
     "/api/v1/events",
+    "/api/v1/events/calendar",
     "/api/v1/events/{event_id}",
     "/api/v1/events/{event_id}/status",
     "/api/v1/events/{event_id}/archive",

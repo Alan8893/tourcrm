@@ -834,6 +834,60 @@ def test_list_events_own_events_scope_filters_to_assigned_events_only(
 
 
 @requires_postgres
+def test_list_events_children_scope_filters_to_related_childs_events_only(
+    client: TestClient,
+) -> None:
+    """Regression for a list-level correlation defect in `_child_condition`
+    (app.events.authorization): the two EXISTS subqueries nested two levels
+    deep inside `eligible_child_exists` (`child_via_participation`/
+    `child_via_group_target`) were not correlated to the outer `Event`
+    being tested when embedded in `event_visibility_filter`'s per-row
+    query (unlike the already-covered single-Event `GET /events/{id}`
+    path, where `event_id`/`event_club_id` are literal values and no
+    correlation is needed at all) — SQLAlchemy's automatic correlation
+    only reaches one enclosing SELECT by default. Uncorrelated, both
+    subqueries degenerated into an unrestricted cross join satisfied by
+    any Event in the same Club, so a guardian's `children` scope silently
+    became unrestricted `all` for the list endpoint — exactly what
+    ADR-0020 §"Consequences" prohibits ("Guardian children scope never
+    becomes unrestricted all"). Fixed with explicit `.correlate(...)` on
+    both subqueries.
+    """
+    with session_scope() as session:
+        club = _make_club()
+        guardian_person = _make_person()
+        guardian_user = _make_user(guardian_person)
+        child_person = _make_person()
+        session.add_all([club, guardian_person, guardian_user, child_person])
+        session.commit()
+        session.add_all(
+            [
+                _make_club_membership(club, guardian_person),
+                _make_club_membership(club, child_person),
+            ]
+        )
+        session.commit()
+        session.add(_make_guardian_relationship(guardian_person, child_person))
+        session.commit()
+        childs_event = _make_event(club, title="childs")
+        unrelated_event = _make_event(club, title="unrelated")
+        session.add_all([childs_event, unrelated_event])
+        session.commit()
+        session.add(_make_event_participation(childs_event, child_person))
+        session.commit()
+        guardian_user_id = guardian_user.id
+        childs_event_id, unrelated_event_id = childs_event.id, unrelated_event.id
+    _grant_permission(guardian_user_id, "event.read", scope_type="children")
+    _authenticate_as(guardian_user_id)
+
+    response = client.get("/api/v1/events")
+    body = response.json()
+    assert body["pagination"]["total"] == 1
+    assert [item["id"] for item in body["items"]] == [str(childs_event_id)]
+    assert str(unrelated_event_id) not in {item["id"] for item in body["items"]}
+
+
+@requires_postgres
 def test_list_events_cross_club_assignment_does_not_leak_other_club_events(
     client: TestClient,
 ) -> None:
