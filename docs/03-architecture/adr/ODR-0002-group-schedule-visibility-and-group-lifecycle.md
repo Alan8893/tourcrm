@@ -1,83 +1,61 @@
 # ODR-0002 — Group Schedule Visibility and Group Lifecycle
 
-- **Status:** Open — blocks TH-0083 implementation readiness
-- **Date:** 2026-09-15
-- **Decision owner:** Product Owner
+- **Status:** Resolved — 2026-09-15
+- **Resolution:** Product Owner decision
 - **Scope:** `GET /api/v1/groups/{group_id}/schedule`
 
-## Context
+## Decision
 
-TH-0083 requires a deterministic authorization contract for the Group Schedule projection. Existing canonical sources establish that:
+The Group Schedule is a contextual projection of Events/EventOccurrences explicitly targeted to the requested Group. Group membership is an access relationship for `self`/`children`, but it is never treated as an Event GroupTarget.
 
-- `event.read` is the permission for Event read and calendar projections;
-- `own_groups` is based on an explicit active `GroupInstructorAssignment`;
-- `GroupMembership` is a separate membership fact and is not an Event authorization relationship;
-- Event authorization for recurring occurrences uses direct occurrence-level GroupTarget relationships under ADR-0029;
-- `children` access requires GuardianRelationship and the existing membership/object policy;
-- `occurrence.club_id` alone never grants non-`all` access.
+### Access policy
 
-However, the canonical sources do not define whether a member's active GroupMembership, a guardian's active child membership, or another limited Group read relationship is sufficient to view the schedule of a Group, nor do they define whether an archived Group's schedule remains readable for historical events.
+| Scope | Group Schedule access |
+|---|---|
+| `all` | Groups within the caller's allowed Club boundary |
+| `own_groups` | Groups where the caller has an active `GroupInstructorAssignment` |
+| `own_events` | **No standalone Group Schedule access** |
+| `self` | Groups where the requester's Person has an active GroupMembership |
+| `children` | Groups where an eligible child has an active GroupMembership |
+| `none` | No access |
 
-Inferring these rules from role names, UI assumptions, GroupMembership, or `club_id` would create a new authorization policy implicitly.
+`self` and `children` access is intentionally limited to **future** schedule items. A schedule item is future when its effective Event/EventOccurrence `start_at`/`starts_at` is greater than or equal to the current server UTC instant at authorization/query evaluation time.
 
-## Confirmed non-blocking contract
+`all` and `own_groups` are not subject to this future-only restriction; they may read historical items that fall inside the explicitly requested range, subject to normal Event status visibility and object policy.
 
-The endpoint is a contextual projection, not a new event identity model. It must:
+`own_events` does not grant access to the Group Schedule as a contextual collection. A caller with `own_events` can still access an individually authorized Event/EventOccurrence through the canonical Event/calendar APIs.
 
-- use `GET /api/v1/groups/{group_id}/schedule`;
-- require `event.read`;
-- use `[from, to)` timezone-aware RFC 3339 range semantics normalized to UTC;
-- return only Event/EventOccurrence records explicitly targeted to the requested Group;
-- never treat GroupMembership as an Event GroupTarget;
-- use occurrence-level GroupTarget records for recurring occurrences;
-- reuse canonical calendar response identity, effective occurrence times, status visibility, pagination envelope, deterministic `start_at ASC, id ASC` ordering, error envelope and authorization-before-pagination behavior;
-- extend recurring materialization as required by the requested range, without computing RRULE in the endpoint;
-- hide an unauthorized/non-existent Group consistently with existing object existence-hiding policy;
-- never authorize from `Group.club_id` or `EventOccurrence.club_id` alone;
-- exclude conflict detection, notifications, frontend behavior and new permissions/scopes.
+### Membership versus event targeting
 
-## Blocking decisions required from Product Owner
+GroupMembership answers whether a Person is a member of a Group. EventGroupTarget answers whether an Event/EventOccurrence belongs to that Group's schedule.
 
-### 1. Who may read a Group Schedule?
+Therefore `self`/`children` authorization requires both:
 
-Choose and document the canonical object relationship for each access class:
+1. an applicable active GroupMembership relationship for the requester/eligible child; and
+2. an explicit EventGroupTarget (ordinary Event) or occurrence-level GroupTarget (recurring EventOccurrence) for the requested Group.
 
-- `all` — may read schedules of Groups within the caller's allowed Club boundary;
-- `own_groups` — may read schedules only for Groups with an active `GroupInstructorAssignment` for the caller;
-- `self` — whether an active GroupMembership for the caller's Person is sufficient to read that Group's schedule;
-- `children` — whether an active GroupMembership for a related child is sufficient to read that Group's schedule;
-- `own_events` — whether direct Event/EventOccurrence staff assignment alone permits the Group Schedule projection when the caller is not an instructor of the Group;
-- `none` — no access.
+Membership never exposes an unrelated Event.
 
-### 2. Membership versus event targeting
+### Membership effectivity
 
-If `self`/`children` access is granted through GroupMembership, explicitly confirm that the returned schedule still contains only events/occurrences whose authoritative relationship targets the requested Group. Membership must not expose unrelated events merely because the person belongs to the Group.
+For `self`/`children`, membership is evaluated at request time as an **active** GroupMembership. Because access is future-only, a currently ended membership does not authorize the Group Schedule even if the user was a member when a historical event occurred. Historical schedule access for `self`/`children` is intentionally unavailable.
 
-### 3. Archived Groups
+### Archived Groups
 
-Define whether an archived Group:
+An archived Group remains readable for historical schedule queries by callers otherwise authorized through `all` or `own_groups` and normal object policy. Archiving the Group does not delete or rewrite historical Event/EventOccurrence records.
 
-- remains readable for historical schedule queries;
-- rejects schedule access entirely;
-- or follows another explicit policy.
+An archived Group is not a valid basis for new GroupMembership or new Event targeting operations under the Group lifecycle rules. Existing future Events/EventOccurrences are not automatically deleted or cancelled solely because the Group is archived; their visibility follows the Event authorization and status rules, with `self`/`children` still restricted to future items.
 
-Also define whether future scheduled events targeting an archived Group remain visible if the Group itself is archived.
+### Recurring events
 
-### 4. Ended membership
+Ordinary Events qualify through their explicit EventGroupTarget. Recurring EventOccurrences qualify through direct occurrence-level GroupTarget relationships under ADR-0029. Future materialization takes SeriesGroupTarget definitions from the governing EventSeries version under ADR-0030 and copies applicable relationships atomically.
 
-If `self`/`children` access is based on GroupMembership, define whether access is evaluated at request time or against membership effectivity at the event/occurrence start instant. The canonical GroupMembership interval is `[valid_from, valid_to)`.
+### Security
 
-## Rejected inference
+`Group.club_id` and `EventOccurrence.club_id` are never sufficient to authorize non-`all` access. IDOR/existence-hiding and cross-Club integrity remain governed by the existing authorization model.
 
-Until the Product Owner decision is accepted, implementation must not:
+No new permission or scope is introduced.
 
-- grant schedule access to every member of a Club;
-- equate GroupMembership with EventGroupTarget;
-- grant access because `created_by` matches the requester;
-- use `club_id` as a substitute for an Event/Occurrence relationship;
-- introduce a new `group.schedule.read` permission or a new scope;
-- infer archived-group behavior from the Group lifecycle alone.
+## Consequence for TH-0083
 
-## Resolution
-
-Once the Product Owner selects the policy, this ODR should be updated to **Resolved**, the canonical schedule API specification and authorization documentation should be synchronized, and only then should TH-0083 create its implementation Issue.
+The Group Schedule authorization blocker is resolved. The canonical API specification can be marked implementation-ready and a separate implementation Issue may now be created for TH-0083.
