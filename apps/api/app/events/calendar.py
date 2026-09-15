@@ -3,9 +3,9 @@
 Canonical sources: docs/05-api/events-api.md §16 (query contract, status
 visibility, materialization, response identity), ADR-0015 (materialization
 strategy), ADR-0028 (recurrence persistence/versioning), ADR-0029
-(EventOccurrence authorization relationships), docs/03-architecture/
-database-schema-recurrence.md §5 (occurrence authorization relationship
-persistence).
+(EventOccurrence authorization relationships), ADR-0030 (EventSeries
+relationship source), docs/03-architecture/database-schema-recurrence.md
+§5 (occurrence authorization relationship persistence).
 
 Merges ordinary `Event` rows and recurring `EventOccurrence` rows into one
 sorted, paginated calendar projection using a single `UNION ALL` SQL
@@ -16,55 +16,45 @@ inside that one query, never fetched-then-filtered/paginated in Python
 (events-api.md §16 / api-conventions.md §10 whitelist-filtering
 requirement).
 
-## GAP/ODR — recurring occurrence relationship materialization (ADR-0029)
+## Recurring occurrence authorization (ADR-0030 / TH-0082 / PR #86)
 
-ADR-0029 ("Consequence for TH-0079") directs this calendar implementation
-Issue to include occurrence-level staff/group-target/participation
-relationship persistence, materialized from "the governing Series
-version['s] source relationship definition" so that `own_events`/
-`own_groups`/`self`/`children` can be evaluated for recurring
-`EventOccurrence` rows exactly as `app.events.authorization` already does
-for ordinary `Event` rows.
+`app.events.series_authorization.occurrence_visibility_filter` now
+resolves every canonical scope (`all`, `own_events`, `own_groups`, `self`,
+`children`, `none`; `assigned_events` aliases `own_events`) against real,
+direct-FK occurrence-level relationship rows (`EventOccurrenceStaff
+Assignment`/`GroupTarget`/`Participant`), materialized atomically from the
+governing `EventSeries` version's own relationship source
+(`SeriesStaffAssignment`/`SeriesGroupTarget`/`SeriesParticipant`) at
+occurrence-creation time. This module calls that filter with the exact
+same signature it always has (`session, *, user_id, permission_code`), so
+no code change was needed here to pick up the fix — recurring occurrences
+are now visible under `own_events`/`own_groups`/`self`/`children` exactly
+when the acting user holds the corresponding occurrence-level
+relationship, never from `occurrence.club_id` alone. `all`/`none` are
+unchanged. See `app.events.series_authorization`'s own module docstring
+and ADR-0030 for the full relationship-source/materialization model.
 
-That Series-version-level *source* does not exist anywhere in this
-codebase or in any canonical document: `EventSeries` has no staff/group/
-participant fields or child tables, `docs/05-api/event-recurrence-api.md`
-and `app.api.v1.events_series_schemas.EventSeriesCreateRequest` define no
-such input, and no API anywhere can create one. `docs/03-architecture/
-database-schema-recurrence.md` §5 explicitly leaves "exact physical table
-names for occurrence relationship records" as an implementation detail,
-but never specifies the Series-level source's own field list — and
-`app.events.series_authorization`'s existing (already-reviewed, already-
-shipped) module docstring independently confirms this exact gap for
-Series/Occurrence permission checks in general.
+One residual, narrower limitation (not a security gap — it only affects
+result completeness, never over-authorization): `_extend_recurring_
+materialization` below only proactively extends the materialization
+horizon for series the requester holds `all` scope on. A user who only
+holds `own_events`/`own_groups`/`self`/`children` on a series has no
+existing path (here or via the per-series `GET /series/{id}/occurrences`
+endpoint, which is itself `all`-scope-only per
+`app.events.series_authorization`'s deliberate, documented decision to
+scope Series-resource access to `all` only) to proactively extend that
+series' horizon beyond the default 180-day window from the calendar
+endpoint. Occurrences within the already-materialized range are fully,
+correctly authorized for every scope; only on-demand extension beyond that
+range remains bounded to `all`-scope series, matching the existing,
+unchanged scoping of Series-resource access itself.
 
-Per this task's own instruction ("если occurrence-level authorization
-relationships ещё не существуют физически и без них невозможно корректно
-реализовать calendar authorization: не придумывай структуру сам,
-остановись и сообщи GAP/ODR"), this module does not invent that Series-
-level source schema or a corresponding occurrence-relationship persistence
-layer. Instead it reuses the existing, already-accepted
-`app.events.series_authorization.occurrence_visibility_filter` exactly as
-shipped: `all`/`none` resolve correctly and safely; `own_events`/
-`own_groups`/`self`/`children` correctly and safely resolve to "no
-access" for every recurring occurrence, identical to that module's
-already-reviewed behavior for the Series/Occurrence `event.update`/
-`event.manage` endpoints — this is not a regression introduced by the
-calendar endpoint. Ordinary (non-recurring) `Event` calendar entries get
-the full, already-correct `own_events`/`own_groups`/`self`/`children`
-support via `app.events.authorization.event_visibility_filter`. A
-follow-up ODR is required to define the EventSeries-level relationship
-source persistence (and its write API) before recurring-occurrence
-`own_events`/`own_groups`/`self`/`children` can ever return true. See the
-final implementation report for the same note.
-
-A structural consequence of this same gap: the `user_id`/`group_id`
-narrowing filters (resolved against `EventStaffAssignment`/
-`EventGroupTarget`, the only relationship tables that exist) can never
-match a recurring occurrence, so supplying either filter correctly
-excludes every occurrence from the result — never a leak (it excludes,
-never includes), and never a guess at a relationship that cannot be
-verified.
+The `user_id`/`group_id` narrowing filters are still resolved only against
+`EventStaffAssignment`/`EventGroupTarget` (ordinary `Event` relationships),
+so they still only ever narrow the `Event` branch, never the `Occurrence`
+branch — matching the documented "a filter only narrows, never expands,
+already-authorized access" contract; this is a deliberate scope-limit
+carried over unchanged from the original implementation, not a new gap.
 """
 
 import uuid
@@ -136,11 +126,11 @@ def _extend_recurring_materialization(
     every active, terminal EventSeries the requester could possibly see.
 
     Bounded to Clubs the requester has a `scope_type="all"` assignment for
-    `permission_code` — per this module's GAP/ODR note, that is the *only*
-    scope under which any recurring occurrence can currently become
-    calendar-visible, so extending materialization for any other Club
-    would be pure wasted work, never a security boundary (materialization
-    itself returns no data and leaks nothing).
+    `permission_code` — see the module docstring's "residual, narrower
+    limitation" note: this mirrors the existing, unchanged, all-scope-only
+    Series-resource access scoping, so extending materialization for any
+    other Club would be pure wasted work, never a security boundary
+    (materialization itself returns no data and leaks nothing).
     """
     assignments = applicable_assignments(session, user_id, permission_code)
     all_scope_club_ids = [a.club_id for a in assignments if a.scope_type == "all"]
@@ -232,10 +222,12 @@ def list_calendar_items_page(
 
     branches = [event_branch]
 
-    # See module GAP/ODR note: no occurrence-level staff/group-target
-    # relationship exists yet, so an occurrence can never satisfy a
-    # user_id/group_id filter — the occurrence branch is simply omitted
-    # (equivalent to, but cheaper than, adding a permanently-false clause).
+    # See module docstring's final paragraph: user_id/group_id filters only
+    # ever resolve against the ordinary EventStaffAssignment/EventGroupTarget
+    # tables, never the separate occurrence-level relationship tables, so an
+    # occurrence can never satisfy either filter — the occurrence branch is
+    # simply omitted (equivalent to, but cheaper than, a permanently-false
+    # clause).
     if user_id_filter is None and group_id_filter is None:
         occurrence_conditions: list[sa.ColumnElement[bool]] = [
             occurrence_visibility_filter(

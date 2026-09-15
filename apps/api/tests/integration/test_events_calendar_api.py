@@ -23,8 +23,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.api.deps import CurrentPrincipal, get_current_principal
+from app.authorization.context import normalize_scope_type
 from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
 from app.db.event_recurrence import EventOccurrence, EventSeries
+from app.db.event_recurrence_relationships import (
+    EventOccurrenceGroupTarget,
+    EventOccurrenceParticipant,
+    EventOccurrenceStaffAssignment,
+)
 from app.db.events import Event, EventGroupTarget, EventParticipation, EventStaffAssignment
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 from app.db.identity import Club, ClubMembership, GuardianRelationship, Person, User
@@ -153,9 +159,7 @@ def _make_event_staff_assignment(
     return EventStaffAssignment(**defaults)  # type: ignore[arg-type]
 
 
-def _make_event_group_target(
-    event: Event, group: Group, **overrides: object
-) -> EventGroupTarget:
+def _make_event_group_target(event: Event, group: Group, **overrides: object) -> EventGroupTarget:
     defaults: dict[str, object] = {
         "event_id": event.id,
         "group_id": group.id,
@@ -212,6 +216,67 @@ def _make_series(session, *, club_id: uuid.UUID, **overrides: object) -> EventSe
     session.add(series)
     session.commit()
     return series
+
+
+def _make_occurrence(
+    *, series: EventSeries, club_id: uuid.UUID, **overrides: object
+) -> EventOccurrence:
+    starts_at = overrides.pop("starts_at", _START + datetime.timedelta(hours=1))
+    defaults: dict[str, object] = dict(
+        series_id=series.id,
+        club_id=club_id,
+        name="Lesson",
+        event_type="lesson",
+        recurrence_anchor_at=starts_at,
+        starts_at=starts_at,
+        ends_at=starts_at + datetime.timedelta(hours=1),  # type: ignore[operator]
+        timezone="UTC",
+        status="scheduled",
+    )
+    defaults.update(overrides)
+    return EventOccurrence(**defaults)  # type: ignore[arg-type]
+
+
+def _make_occurrence_staff_assignment(
+    occurrence: EventOccurrence, user: User, **overrides: object
+) -> EventOccurrenceStaffAssignment:
+    defaults: dict[str, object] = {
+        "occurrence_id": occurrence.id,
+        "user_id": user.id,
+        "role_in_event": "instructor",
+        "is_primary": True,
+        "valid_from": _utc(2020, 1, 1),
+        "is_override": False,
+    }
+    defaults.update(overrides)
+    return EventOccurrenceStaffAssignment(**defaults)  # type: ignore[arg-type]
+
+
+def _make_occurrence_group_target(
+    occurrence: EventOccurrence, group: Group, **overrides: object
+) -> EventOccurrenceGroupTarget:
+    defaults: dict[str, object] = {
+        "occurrence_id": occurrence.id,
+        "group_id": group.id,
+        "valid_from": _utc(2020, 1, 1),
+        "is_override": False,
+    }
+    defaults.update(overrides)
+    return EventOccurrenceGroupTarget(**defaults)  # type: ignore[arg-type]
+
+
+def _make_occurrence_participant(
+    occurrence: EventOccurrence, person: Person, **overrides: object
+) -> EventOccurrenceParticipant:
+    defaults: dict[str, object] = {
+        "occurrence_id": occurrence.id,
+        "person_id": person.id,
+        "registration_status": "registered",
+        "valid_from": _utc(2020, 1, 1),
+        "is_override": False,
+    }
+    defaults.update(overrides)
+    return EventOccurrenceParticipant(**defaults)  # type: ignore[arg-type]
 
 
 def _grant_permission(
@@ -902,6 +967,341 @@ def test_guardian_club_boundary_is_respected(client: TestClient) -> None:
     response = client.get("/api/v1/events/calendar", params=_DEFAULT_RANGE)
     ids = {item["id"] for item in response.json()["items"]}
     assert str(event_id) not in ids
+
+
+# --- Recurring occurrence authorization scopes (TH-0082 / PR #86) ----------
+#
+# `own_events`/`own_groups`/`self`/`children` for ordinary Events are
+# already covered above (19-24). PR #86 replaced the previous fail-closed
+# occurrence_visibility_filter with real occurrence-level relationship
+# resolution (SeriesStaffAssignment/SeriesGroupTarget/SeriesParticipant
+# materialized onto EventOccurrenceStaffAssignment/GroupTarget/Participant).
+# These tests exercise that resolution end-to-end through the calendar
+# endpoint itself — the same contract, applied to the Occurrence branch of
+# the UNION ALL, not a re-test of TH-0082's own unit-level authorization
+# suite (tests/integration/test_event_occurrence_authorization.py).
+
+
+@requires_postgres
+def test_own_events_scope_sees_only_occurrence_with_active_staff_assignment(
+    client: TestClient,
+) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        other_person = _make_person()
+        other_user = _make_user(other_person)
+        session.add_all([club, person, user, other_person, other_user])
+        session.commit()
+        series = _make_series(session, club_id=club.id)
+        assigned = _make_occurrence(series=series, club_id=club.id)
+        unrelated = _make_occurrence(
+            series=series, club_id=club.id, starts_at=_START + datetime.timedelta(hours=3)
+        )
+        session.add_all([assigned, unrelated])
+        session.commit()
+        session.add(_make_occurrence_staff_assignment(assigned, user))
+        session.commit()
+        club_id, user_id = club.id, user.id
+        assigned_id, unrelated_id = assigned.id, unrelated.id
+    _grant_permission(user_id, "event.read", scope_type="own_events", club_id=club_id)
+    _authenticate_as(user_id)
+
+    response = client.get("/api/v1/events/calendar", params=_DEFAULT_RANGE)
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(assigned_id) in ids
+    assert str(unrelated_id) not in ids
+
+
+@requires_postgres
+def test_assigned_events_alias_sees_the_same_occurrence_as_own_events(client: TestClient) -> None:
+    assert normalize_scope_type("assigned_events") == "own_events"
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        series = _make_series(session, club_id=club.id)
+        occ = _make_occurrence(series=series, club_id=club.id)
+        session.add(occ)
+        session.commit()
+        session.add(_make_occurrence_staff_assignment(occ, user))
+        session.commit()
+        club_id, user_id, occ_id = club.id, user.id, occ.id
+    # Persist using the canonical, normalized scope_type — `assigned_events`
+    # is never written to the DB literally (app.authorization.context.
+    # normalize_scope_type resolves it to `own_events` at the write
+    # boundary; the DB CHECK constraint only accepts canonical values).
+    _grant_permission(
+        user_id, "event.read", scope_type=normalize_scope_type("assigned_events"), club_id=club_id
+    )
+    _authenticate_as(user_id)
+
+    response = client.get("/api/v1/events/calendar", params=_DEFAULT_RANGE)
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(occ_id) in ids
+
+
+@requires_postgres
+def test_own_groups_scope_sees_only_occurrence_with_active_group_target(
+    client: TestClient,
+) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        group = _make_group(club)
+        session.add(group)
+        session.commit()
+        session.add(_make_group_instructor_assignment(group, user))
+        session.commit()
+        series = _make_series(session, club_id=club.id)
+        targeted = _make_occurrence(series=series, club_id=club.id)
+        untargeted = _make_occurrence(
+            series=series, club_id=club.id, starts_at=_START + datetime.timedelta(hours=3)
+        )
+        session.add_all([targeted, untargeted])
+        session.commit()
+        session.add(_make_occurrence_group_target(targeted, group))
+        session.commit()
+        club_id, user_id = club.id, user.id
+        targeted_id, untargeted_id = targeted.id, untargeted.id
+    _grant_permission(user_id, "event.read", scope_type="own_groups", club_id=club_id)
+    _authenticate_as(user_id)
+
+    response = client.get("/api/v1/events/calendar", params=_DEFAULT_RANGE)
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(targeted_id) in ids
+    assert str(untargeted_id) not in ids
+
+
+@requires_postgres
+def test_own_groups_scope_denies_unrelated_instructor(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        group = _make_group(club)
+        other_group = _make_group(club)
+        session.add_all([group, other_group])
+        session.commit()
+        # `user` instructs `group`, never `other_group`.
+        session.add(_make_group_instructor_assignment(group, user))
+        session.commit()
+        series = _make_series(session, club_id=club.id)
+        occ = _make_occurrence(series=series, club_id=club.id)
+        session.add(occ)
+        session.commit()
+        session.add(_make_occurrence_group_target(occ, other_group))
+        session.commit()
+        club_id, user_id, occ_id = club.id, user.id, occ.id
+    _grant_permission(user_id, "event.read", scope_type="own_groups", club_id=club_id)
+    _authenticate_as(user_id)
+
+    response = client.get("/api/v1/events/calendar", params=_DEFAULT_RANGE)
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(occ_id) not in ids
+
+
+@requires_postgres
+def test_self_scope_sees_only_occurrence_with_own_active_participation(
+    client: TestClient,
+) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        series = _make_series(session, club_id=club.id)
+        mine = _make_occurrence(series=series, club_id=club.id)
+        other = _make_occurrence(
+            series=series, club_id=club.id, starts_at=_START + datetime.timedelta(hours=3)
+        )
+        session.add_all([mine, other])
+        session.commit()
+        session.add(_make_occurrence_participant(mine, person))
+        session.commit()
+        club_id, user_id = club.id, user.id
+        mine_id, other_id = mine.id, other.id
+    _grant_permission(user_id, "event.read", scope_type="self", club_id=club_id)
+    _authenticate_as(user_id)
+
+    response = client.get("/api/v1/events/calendar", params=_DEFAULT_RANGE)
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(mine_id) in ids
+    assert str(other_id) not in ids
+
+
+@requires_postgres
+def test_children_scope_sees_only_occurrence_related_to_guardians_child(
+    client: TestClient,
+) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        guardian_person = _make_person()
+        guardian_user = _make_user(guardian_person)
+        child_person = _make_person()
+        session.add_all([club, guardian_person, guardian_user, child_person])
+        session.commit()
+        session.add_all(
+            [
+                _make_club_membership(club, guardian_person),
+                _make_club_membership(club, child_person),
+            ]
+        )
+        session.commit()
+        session.add(_make_guardian_relationship(guardian_person, child_person))
+        session.commit()
+        series = _make_series(session, club_id=club.id)
+        childs_occ = _make_occurrence(series=series, club_id=club.id)
+        other_occ = _make_occurrence(
+            series=series, club_id=club.id, starts_at=_START + datetime.timedelta(hours=3)
+        )
+        session.add_all([childs_occ, other_occ])
+        session.commit()
+        session.add(_make_occurrence_participant(childs_occ, child_person))
+        session.commit()
+        club_id, guardian_user_id = club.id, guardian_user.id
+        childs_occ_id, other_occ_id = childs_occ.id, other_occ.id
+    _grant_permission(guardian_user_id, "event.read", scope_type="children", club_id=club_id)
+    _authenticate_as(guardian_user_id)
+
+    response = client.get("/api/v1/events/calendar", params=_DEFAULT_RANGE)
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(childs_occ_id) in ids
+    assert str(other_occ_id) not in ids
+
+
+@requires_postgres
+def test_children_scope_denies_inactive_guardian_relationship_for_occurrence(
+    client: TestClient,
+) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        guardian_person = _make_person()
+        guardian_user = _make_user(guardian_person)
+        child_person = _make_person()
+        session.add_all([club, guardian_person, guardian_user, child_person])
+        session.commit()
+        session.add_all(
+            [
+                _make_club_membership(club, guardian_person),
+                _make_club_membership(club, child_person),
+            ]
+        )
+        session.commit()
+        session.add(_make_guardian_relationship(guardian_person, child_person, status="inactive"))
+        session.commit()
+        series = _make_series(session, club_id=club.id)
+        occ = _make_occurrence(series=series, club_id=club.id)
+        session.add(occ)
+        session.commit()
+        session.add(_make_occurrence_participant(occ, child_person))
+        session.commit()
+        club_id, guardian_user_id, occ_id = club.id, guardian_user.id, occ.id
+    _grant_permission(guardian_user_id, "event.read", scope_type="children", club_id=club_id)
+    _authenticate_as(guardian_user_id)
+
+    response = client.get("/api/v1/events/calendar", params=_DEFAULT_RANGE)
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(occ_id) not in ids
+
+
+@requires_postgres
+def test_children_scope_denies_unrelated_child_for_occurrence(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        guardian_person = _make_person()
+        guardian_user = _make_user(guardian_person)
+        unrelated_child = _make_person()
+        session.add_all([club, guardian_person, guardian_user, unrelated_child])
+        session.commit()
+        session.add_all(
+            [
+                _make_club_membership(club, guardian_person),
+                _make_club_membership(club, unrelated_child),
+            ]
+        )
+        session.commit()
+        # No GuardianRelationship at all between guardian and this child.
+        series = _make_series(session, club_id=club.id)
+        occ = _make_occurrence(series=series, club_id=club.id)
+        session.add(occ)
+        session.commit()
+        session.add(_make_occurrence_participant(occ, unrelated_child))
+        session.commit()
+        club_id, guardian_user_id, occ_id = club.id, guardian_user.id, occ.id
+    _grant_permission(guardian_user_id, "event.read", scope_type="children", club_id=club_id)
+    _authenticate_as(guardian_user_id)
+
+    response = client.get("/api/v1/events/calendar", params=_DEFAULT_RANGE)
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(occ_id) not in ids
+
+
+@requires_postgres
+def test_none_scope_sees_no_occurrence(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        series = _make_series(session, club_id=club.id)
+        occ = _make_occurrence(series=series, club_id=club.id)
+        session.add(occ)
+        session.commit()
+        session.add(_make_occurrence_staff_assignment(occ, user))
+        session.commit()
+        club_id, user_id, occ_id = club.id, user.id, occ.id
+    _grant_permission(user_id, "event.read", scope_type="none", club_id=club_id)
+    _authenticate_as(user_id)
+
+    response = client.get("/api/v1/events/calendar", params=_DEFAULT_RANGE)
+    body = response.json()
+    assert str(occ_id) not in {item["id"] for item in body["items"]}
+    assert body["pagination"]["total"] == 0
+
+
+@requires_postgres
+def test_own_events_scope_denies_occurrence_relationship_in_a_different_club(
+    client: TestClient,
+) -> None:
+    """IDOR / cross-Club: a staff assignment on an occurrence in a Club the
+    user has no `own_events` grant for must never leak through, even though
+    the relationship row itself is genuinely active."""
+    with session_scope() as session:
+        club = _make_club()
+        other_club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, other_club, person, user])
+        session.commit()
+        series = _make_series(session, club_id=other_club.id)
+        occ = _make_occurrence(series=series, club_id=other_club.id)
+        session.add(occ)
+        session.commit()
+        session.add(_make_occurrence_staff_assignment(occ, user))
+        session.commit()
+        club_id, user_id, occ_id = club.id, user.id, occ.id
+    # Grant is for `club`, but the occurrence + staff assignment are in
+    # `other_club` — existence must be hidden exactly like every other
+    # unauthorized row in this file (never a 403, never a leaked total).
+    _grant_permission(user_id, "event.read", scope_type="own_events", club_id=club_id)
+    _authenticate_as(user_id)
+
+    response = client.get("/api/v1/events/calendar", params=_DEFAULT_RANGE)
+    assert response.status_code == 200
+    body = response.json()
+    assert str(occ_id) not in {item["id"] for item in body["items"]}
+    assert body["pagination"]["total"] == 0
 
 
 # --- IDOR (29-33) ------------------------------------------------------------
