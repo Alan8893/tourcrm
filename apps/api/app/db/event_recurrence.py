@@ -87,6 +87,14 @@ class EventSeries(Base):
         sa.DateTime(timezone=True), nullable=True
     )
     occurrence_limit: Mapped[Optional[int]] = mapped_column(sa.Integer, nullable=True)
+    # ADR-0028 §2 (duration amendment) / database-schema-recurrence.md §1:
+    # required, part of the Series version snapshot. Materialization
+    # computes `ends_at = starts_at + duration_minutes` deterministically
+    # from the governing Series version — never an undocumented default
+    # duration. A duration change affecting future occurrences goes
+    # through the ordinary Series update/versioning operations, not a
+    # separate mechanism.
+    duration_minutes: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     # ADR-0028 §8: canonical persisted RRULE, never containing UNTIL.
     recurrence_rule: Mapped[str] = mapped_column(sa.Text, nullable=False)
     timezone: Mapped[str] = mapped_column(sa.String(64), nullable=False)
@@ -118,6 +126,9 @@ class EventSeries(Base):
         sa.CheckConstraint(
             "occurrence_limit IS NULL OR occurrence_limit > 0",
             name="ck_event_series_occurrence_limit_positive",
+        ),
+        sa.CheckConstraint(
+            "duration_minutes > 0", name="ck_event_series_duration_minutes_positive"
         ),
         sa.CheckConstraint(
             "series_end_at IS NULL OR series_end_at > series_start_at",

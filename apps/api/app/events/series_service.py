@@ -69,6 +69,7 @@ def create_series(
     series_start_at,
     series_end_at,
     occurrence_limit: Optional[int],
+    duration_minutes: int,
     recurrence_rule: str,
     timezone: str,
     actor_user_id: uuid.UUID,
@@ -79,6 +80,8 @@ def create_series(
     starting `active`. Records `event_series.created`.
     """
     validate_event_type(event_type)
+    if duration_minutes <= 0:
+        raise EventSeriesDomainError("duration_minutes must be a positive integer")
 
     series_id = uuid.uuid4()
     series = EventSeries(
@@ -93,6 +96,7 @@ def create_series(
         series_start_at=series_start_at,
         series_end_at=series_end_at,
         occurrence_limit=occurrence_limit,
+        duration_minutes=duration_minutes,
         recurrence_rule=recurrence_rule,
         timezone=timezone,
         status="active",
@@ -219,6 +223,7 @@ def create_successor_version(
     series_start_at,
     series_end_at,
     occurrence_limit: Optional[int],
+    duration_minutes: int,
     recurrence_rule: str,
     timezone: str,
     actor_user_id: uuid.UUID,
@@ -231,6 +236,8 @@ def create_successor_version(
     §12 explicitly anticipates one caller action producing both).
     """
     validate_event_type(event_type)
+    if duration_minutes <= 0:
+        raise EventSeriesDomainError("duration_minutes must be a positive integer")
 
     try:
         successor, rebound = _create_successor_version(
@@ -243,6 +250,7 @@ def create_successor_version(
             series_start_at=series_start_at,
             series_end_at=series_end_at,
             occurrence_limit=occurrence_limit,
+            duration_minutes=duration_minutes,
             recurrence_rule=recurrence_rule,
             timezone=timezone,
             updated_by=actor_user_id,
