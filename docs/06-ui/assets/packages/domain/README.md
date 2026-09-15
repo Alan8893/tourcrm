@@ -1,6 +1,10 @@
 # Domain package
 
-**Status: approved / uploaded.**
+## Status: CLOSED / APPROVED
+
+The TourCRM Domain visual system is fully agreed for the current asset-production stage and must be treated as **closed**. Do not reopen, redesign, replace or regenerate the approved Domain artwork unless the Product Owner explicitly requests a Domain change.
+
+### Production package
 
 The reviewed Domain production package is:
 
@@ -8,30 +12,24 @@ The reviewed Domain production package is:
 docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip
 ```
 
-It contains 7 newly approved Domain masters and 42 WebP production exports (16/20/24/32/48/64 px), for 49 files total. DOM-009 remains excluded because its semantic definition is not confirmed.
+This P2 package contains 7 newly approved Domain masters and 42 WebP production exports (16/20/24/32/48/64 px), for 49 files total. DOM-009 remains excluded because its semantic definition is not confirmed.
 
 The previous archives remain historical working material and must not be used as production assets.
 
-Catalog scope: DOM-001…DOM-022 (22). Current production-approved Domain artwork covers DOM-001…005, DOM-006…008, DOM-010…012 and DOM-013…022. DOM-009 is a documented GAP.
+### Catalog scope
 
-Future application integration root, after the asset hand-off is complete:
+The Domain catalog is `DOM-001…DOM-022` (22 semantic IDs). Current production-approved artwork covers:
 
 ```text
-assets/ui/icons/domain/
+DOM-001…005
+DOM-006…008
+DOM-010…012
+DOM-013…022
 ```
 
-## Visual direction
+`DOM-009` is the documented GAP and has no production artwork.
 
-Domain artwork follows the same TourCRM visual language as the approved Navigation, Actions and Status families:
-
-- bespoke TourCRM artwork only;
-- warm, friendly outdoor/tourism character without turning operational UI into decoration;
-- semantic meaning must remain immediately understandable;
-- approved artwork from an existing family is the visual reference when a Domain concept is closely related to it;
-- generic icon-library, stock or default UI glyph substitutions are not acceptable without an explicit design decision;
-- cute/lightly playful treatment is allowed only where it supports the meaning and does not reduce clarity.
-
-## P2 production scope
+### P2 newly approved artwork
 
 | ID | Meaning | Production state |
 |---|---|---|
@@ -45,38 +43,49 @@ Domain artwork follows the same TourCRM visual language as the approved Navigati
 
 The selected artwork was reviewed for semantic clarity and small-size readability. DOM-011 keeps the instructor visually dominant; DOM-012 uses the approved star marker; DOM-010 remains distinct from Navigation `Groups`.
 
-## Production package
+### Production contract
 
 The package contains:
 
 - 7 standalone PNG masters;
 - 42 transparent WebP exports;
-- sizes `16`, `20`, `24`, `32`, `48`, `64` px for each approved asset;
+- sizes `16`, `20`, `24`, `32`, `48`, `64` px for each approved P2 asset;
 - no SVG;
 - no candidate/composite sheets;
 - no superseded Domain archives;
 - no DOM-009.
 
-The package was technically validated before repository hand-off: file count, dimensions, WebP format, RGBA/alpha transparency, filename-to-DOM mapping and absence of SVG/candidate assets. The repository package is now physically present at the designated path.
+The package was technically validated before repository hand-off: file count, dimensions, WebP format, RGBA/alpha transparency, filename-to-DOM mapping and absence of SVG/candidate assets. The repository package is physically present at the designated path.
 
-## Known semantic rules
+### Visual direction
 
-### Group collision
+Domain artwork follows the same TourCRM visual language as the approved Navigation, Actions and Status families:
 
-Domain group-related artwork must **not** duplicate or visually compete with the already-approved Navigation `Groups` metaphor. `DOM-010` communicates members/participants rather than the navigation destination itself.
+- bespoke TourCRM artwork only;
+- warm, friendly outdoor/tourism character without turning operational UI into decoration;
+- semantic meaning must remain immediately understandable;
+- approved artwork from an existing family is the visual reference when a Domain concept is closely related to it;
+- generic icon-library, stock or default UI glyph substitutions are not acceptable without an explicit design decision;
+- cute/lightly playful treatment is allowed only where it supports the meaning and does not reduce clarity.
 
-### Status semantics
+### Semantic rules
 
-Domain lifecycle values must not be mapped mechanically to asset names. Domain status → UI semantic meaning → visual asset remains the required mapping. In particular, `cancelled` is not automatically `error`.
+**Group collision:** Domain group-related artwork must not duplicate or visually compete with Navigation `Groups`. `DOM-010` communicates members/participants rather than the navigation destination itself.
 
-### Illustrations vs icons
+**Status semantics:** Domain lifecycle values must not be mapped mechanically to asset names. Domain status → UI semantic meaning → visual asset remains the required mapping. `cancelled` is not automatically `error`.
 
-These Domain assets are semantic UI icons, not illustrations. More expressive character artwork belongs to the Illustration family and must not be mixed into Domain production assets without an explicit design decision.
+**Illustrations vs icons:** Domain assets are semantic UI icons, not illustrations. More expressive character artwork belongs to the Illustration family and must not be mixed into Domain production assets without an explicit design decision.
 
-## Production gate
+### Future application integration
 
-The Domain artwork has passed semantic review, visual-family review, standalone master creation, small-size review at 16/20/24 px, production export validation and physical repository package upload.
+```text
+assets/ui/icons/domain/
+```
 
-Domain P2 is now **Approved / uploaded**. Application integration remains a separate stage and must not populate `assets/ui/` as part of this hand-off.
+The application integration root must not be populated during this documentation hand-off.
+
+### Change control
+
+Domain P2 is considered complete for this asset-production stage. Any future change to the Domain catalog, semantics or artwork requires an explicit Product Owner decision and a separate documented change. DOM-009 must remain a GAP until its semantic definition is explicitly confirmed.
 
 See `../../ASSET-PACKS.md`, `../../ASSET-STATUS.md` and `../../asset-manifest.json` for the complete contract.
