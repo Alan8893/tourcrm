@@ -1,6 +1,6 @@
 # Domain package
 
-**Status: production artwork approved; binary package upload pending.**
+**Status: approved / uploaded.**
 
 The reviewed Domain production package is:
 
@@ -71,9 +71,7 @@ Expected contents:
 - no superseded Domain archives;
 - no DOM-009.
 
-The package has been technically validated before repository hand-off: file count, dimensions, WebP format, RGBA/alpha transparency, filename-to-DOM mapping and absence of SVG/candidate assets.
-
-**Repository upload is the remaining hand-off step.** Until the ZIP is physically present under the path above, this package must not be described as fully uploaded/handed off.
+The package was technically validated before repository hand-off: file count, dimensions, WebP format, RGBA/alpha transparency, filename-to-DOM mapping and absence of SVG/candidate assets. The repository package is now physically present at the designated path.
 
 ## Known semantic rules
 
@@ -97,8 +95,9 @@ The Domain artwork has passed:
 2. visual-family review;
 3. standalone master creation;
 4. small-size review at 16/20/24 px;
-5. production export validation.
+5. production export validation;
+6. physical repository package upload.
 
-The remaining gate is physical repository upload of the reviewed binary package, followed by synchronization of the package registry, production status and manifest.
+Domain P2 is now **Approved / uploaded**. Application integration remains a separate stage and must not populate `assets/ui/` as part of this hand-off.
 
 See `../../ASSET-PACKS.md`, `../../ASSET-STATUS.md` and `../../asset-manifest.json` for the complete contract.
