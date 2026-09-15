@@ -2,7 +2,7 @@
 
 ## Status
 
-**Specification gate — Group Schedule has an open authorization ODR. Instructor Schedule is contract-ready subject to the shared calendar contract. No application implementation is implied by this document until TH-0083 is closed.**
+**Specification gate — implementation-ready.** Group Schedule authorization is resolved by ODR-0002. No application implementation is implied by this document until the separate TH-0083 implementation Issue is accepted.
 
 Canonical references:
 
@@ -44,7 +44,7 @@ Use the same visibility as the canonical internal calendar:
 - Event: `published`, `in_progress`, `completed`, `cancelled`;
 - EventOccurrence: canonical occurrence statuses (`scheduled`, `in_progress`, `completed`, `cancelled`).
 
-`draft` and `archived` ordinary Events are excluded. Historical completed/cancelled items are included when they fall inside the explicitly requested range.
+`draft` and `archived` ordinary Events are excluded. Historical completed/cancelled items are included when they fall inside the explicitly requested range and the caller's scope allows historical access.
 
 ### Pagination and ordering
 
@@ -82,21 +82,36 @@ Only explicit Group targeting qualifies an item:
 - recurring `EventOccurrence` → direct occurrence-level GroupTarget under ADR-0029;
 - future recurring materialization → Series-level GroupTarget from the governing EventSeries version under ADR-0030, copied atomically to the occurrence.
 
-`GroupMembership` is not an EventGroupTarget and must not by itself make an unrelated Event visible.
+`GroupMembership` is an access relationship for `self`/`children`, not an EventGroupTarget. Membership never exposes an unrelated Event.
 
 ### Authorization
 
-The endpoint requires `event.read` plus the canonical scope/object relationship. The exact `self`, `children`, `own_events`, archived-Group and membership-effectivity policy is blocked by ODR-0002 and must not be guessed by implementation.
+The endpoint requires `event.read` plus the canonical scope/object relationship:
 
-`own_groups` remains the explicit active `GroupInstructorAssignment` relationship defined by ADR-0021. `occurrence.club_id`/`Group.club_id` alone is not sufficient for a non-`all` Event authorization decision.
+- `all` → Groups within the caller's allowed Club boundary; historical and future schedule items allowed by normal Event status/object policy;
+- `own_groups` → Groups where the caller has an active GroupInstructorAssignment; historical and future schedule items allowed by normal Event status/object policy;
+- `own_events` → no standalone Group Schedule access;
+- `self` → Groups where the requester's Person has an active GroupMembership; **future schedule items only**;
+- `children` → Groups where an eligible child has an active GroupMembership and the existing GuardianRelationship/membership policy permits access; **future schedule items only**;
+- `none` → no access.
+
+For `self`/`children`, GroupMembership is evaluated at request time and must currently be active. Because access is future-only, an ended membership does not authorize the Group Schedule.
+
+The effective schedule item must also have an explicit EventGroupTarget or occurrence-level GroupTarget for the requested Group.
+
+`occurrence.club_id`/`Group.club_id` alone is not sufficient for a non-`all` Event authorization decision.
 
 ### Filters
 
-No filter may broaden access. If additional narrowing filters are introduced later, they must follow the same whitelist/narrowing-only rules as the canonical calendar projection.
+No filter may broaden access. The first implementation slice requires only `from`, `to`, pagination and the Group path selector.
 
 ### Group lifecycle
 
-Archived-Group schedule behavior is not yet canonical. See ODR-0002. The implementation must not invent a restore-like or historical-read rule.
+An archived Group remains readable for historical schedule queries by callers otherwise authorized through `all` or `own_groups`. Archiving does not delete or rewrite historical Event/EventOccurrence records.
+
+An archived Group is not a valid basis for new GroupMembership or new Event targeting operations. Existing future Events/EventOccurrences are not automatically deleted or cancelled solely because the Group is archived.
+
+`self`/`children` remain future-only regardless of Group lifecycle.
 
 ## 3. Instructor Schedule
 
@@ -129,9 +144,9 @@ Historical assignments do not retroactively authorize unrelated historical event
 
 ### Scope behavior
 
-The instructor schedule is relationship-based and must not become a club-wide calendar merely because the authenticated User holds an `all` RoleAssignment. `all` may authorize the ordinary calendar, but this contextual endpoint is still limited to the authenticated User's explicit instructor relationships.
+The instructor schedule is relationship-based. An `all` RoleAssignment does not by itself turn this contextual endpoint into a club-wide instructor schedule.
 
-`assigned_events` is treated as the canonical alias of `own_events`.
+`assigned_events` is the canonical alias of `own_events`.
 
 ### Clubs
 
@@ -139,7 +154,7 @@ A User may have applicable assignments in multiple Clubs. Each returned item ret
 
 ### Filters
 
-The first implementation slice requires only the shared `from`/`to` range and standard pagination. Any future filters must narrow the already relationship-authorized set and must not broaden it.
+The first implementation slice requires only `from`, `to` and standard pagination. Any future filters must narrow the already relationship-authorized set and must not broaden it.
 
 ## 4. Explicit non-goals
 
@@ -152,10 +167,8 @@ The first implementation slice requires only the shared `from`/`to` range and st
 - self-registration;
 - new permissions/scopes;
 - a second recurrence/materialization engine;
-- implicit authorization from Club ID, GroupMembership, role name or `created_by`.
+- implicit authorization from Club ID, role name or `created_by`.
 
-## 5. Readiness
+## 5. Implementation readiness
 
-Instructor Schedule is implementation-ready against this shared contract.
-
-Group Schedule remains blocked by ODR-0002. TH-0083 must remain open until the Product Owner resolves that ODR and the canonical authorization/API documents are synchronized.
+The specification gate is complete. A separate implementation Issue may be created for both endpoints. The implementation Issue must include tests for authorization, future-only `self`/`children`, GroupTarget qualification, archived Group behavior, recurring occurrences, multi-Club boundaries, IDOR/existence-hiding, pagination and deterministic ordering.
