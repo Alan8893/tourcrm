@@ -52,7 +52,7 @@ This is the single source of truth for the brand mark. No SVG, ZIP archive or ge
 | Brand | **Master uploaded** | `packages/brand/logo.png` |
 | Navigation | **CLOSED / APPROVED** | `packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` |
 | Actions | **CLOSED / APPROVED** | `packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` |
-| Status | **Approved / uploaded** | `packages/status/TourCRM_Assets_Status_P0_FINAL.zip` |
+| Status | **CLOSED / APPROVED** | `packages/status/TourCRM_Assets_Status_P0_FINAL.zip` |
 | Domain | **Approved / uploaded** | `packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` |
 | Achievements P0 | **Approved / uploaded** | `packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` |
 | Achievements P1 | **Approved / uploaded** | `packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` |
@@ -61,7 +61,7 @@ This is the single source of truth for the brand mark. No SVG, ZIP archive or ge
 | Illustrations — Onboarding | **Approved / uploaded** | `packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip` |
 | Decorative | Deferred / P2 | — |
 
-## Approved Navigation
+## Approved Navigation — CLOSED
 
 Seven fixed navigation icons:
 
@@ -99,9 +99,11 @@ The approved action artwork is the source of truth. Do not substitute a library 
 
 Any change to the Actions catalog, artwork or semantics requires an explicit Product Owner decision and a separate documented change.
 
-## Approved Status
+## Approved Status — CLOSED
 
-9 statuses:
+The Status visual system is fully agreed and closed for this asset-production stage.
+
+Exactly 9 semantic status icons:
 
 ```text
 planned ongoing completed ended archived success warning error info
@@ -109,7 +111,11 @@ planned ongoing completed ended archived success warning error info
 
 Production output: 9 × 6 = **54 WebP assets**.
 
-`ended` uses the approved extinguished-campfire metaphor. Do not introduce additional status meanings in this batch.
+The approved status artwork is the source of truth. `ended` uses the approved extinguished-campfire metaphor.
+
+Status icons communicate semantic state and are not interchangeable with action icons. Do not introduce additional status meanings in this batch.
+
+Any change to the Status catalog, artwork or semantics requires an explicit Product Owner decision and a separate documented change.
 
 ## Approved Achievements
 
