@@ -56,9 +56,9 @@ This is the single source of truth for the brand mark. No SVG, ZIP archive or ge
 | Domain | **CLOSED / APPROVED** | `packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` |
 | Achievements P0 | **CLOSED / APPROVED** | `packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` |
 | Achievements P1 | **CLOSED / APPROVED** | `packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` |
-| Illustrations — Empty States | **Approved / uploaded** | `packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` |
-| Illustrations — System | **Approved / uploaded** | `packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip` |
-| Illustrations — Onboarding | **Approved / uploaded** | `packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip` |
+| Illustrations — Empty States | **CLOSED / APPROVED** | `packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` |
+| Illustrations — System | **CLOSED / APPROVED** | `packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip` |
+| Illustrations — Onboarding | **CLOSED / APPROVED** | `packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip` |
 | Decorative | Deferred / P2 | — |
 
 ## Approved Navigation — CLOSED
@@ -139,27 +139,37 @@ P0 rarity/state and P1 achievement artwork are separate semantic layers. Do not 
 
 Any change to the Achievements catalog, artwork or semantics requires an explicit Product Owner decision and a separate documented change.
 
-## Approved Illustrations
+## Approved Illustrations — CLOSED
 
-Empty states:
+The three current P0 illustration blocks are fully agreed and closed for this asset-production stage.
+
+### Empty states
 
 ```text
 empty-groups empty-people empty-events empty-achievements empty-search no-results
 ```
 
-System:
+`empty-search` and `no-results` are distinct semantic states and must not collapse into a generic error illustration.
+
+### System states
 
 ```text
 success error 404 403 maintenance
 ```
 
-Onboarding:
+System illustrations correspond to their actual system state and are not interchangeable with status icons.
+
+### Onboarding
 
 ```text
 welcome first-group first-event first-achievement
 ```
 
-Empty-state illustrations are an approved place for the product's friendly/cute character, but each illustration must correspond to its actual semantic state.
+Onboarding artwork may carry the friendly/lightly playful TourCRM character while remaining clear and consistent with the approved visual foundation.
+
+Illustrations are full artwork/scenes, not icons. Use the semantic illustration matching the screen state. Responsive compositions are separate assets where provided. Do not use illustrations as replacements for navigation, action, status or domain icons.
+
+Any change to the Illustrations catalog, artwork or semantics requires an explicit Product Owner decision and a separate documented change.
 
 ## Domain — CLOSED / APPROVED
 
