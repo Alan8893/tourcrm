@@ -2,7 +2,7 @@
 
 ## Status
 
-Canonical addendum to `docs/03-architecture/database-schema.md` for the recurrence domain. Where the older recurrence section of `database-schema.md` conflicts with this document, this addendum and ADR-0028 are authoritative.
+Canonical addendum to `docs/03-architecture/database-schema.md` for the recurrence domain. Where the older recurrence section of `database-schema.md` conflicts with this document, this addendum and ADR-0028 are authoritative. Occurrence authorization relationship persistence is additionally governed by ADR-0029.
 
 ## 1. `event_series`
 
@@ -125,7 +125,10 @@ Constraints and invariants:
 Club
  └── EventSeries (version 1..N)
       └── EventOccurrence (materialized)
-           └── EventOccurrenceException (0..1 current)
+           ├── EventOccurrenceException (0..1 current)
+           ├── occurrence staff/responsibility relationships
+           ├── occurrence group-target relationships
+           └── occurrence participation relationships
 ```
 
 A logical Series is represented by the `root_series_id` chain:
@@ -136,11 +139,25 @@ v1 → v2 → v3
 
 where each arrow is represented by `supersedes_series_id` on the newer version.
 
-## 5. Participation and operational ownership
+## 5. Occurrence authorization relationships
 
-`EventParticipation`, staffing, group targeting and future attendance are occurrence-level operational relationships. They must not depend on a nullable `event_id` bridge for the recurrence model.
+Per ADR-0029, recurring occurrence authorization relationships are materialized directly against `EventOccurrence` and are authoritative for authorization of the concrete occurrence.
 
-Existing non-recurrence Event persistence remains governed by ADR-0019/ADR-0023. The recurrence implementation must not silently introduce a second competing identity for the same occurrence.
+The implementation must provide occurrence-level persistence equivalent in semantics to the canonical Event relationships:
+
+- **staff/responsibility:** occurrence ↔ User, preserving `role_in_event`, `is_primary`, `valid_from`, `valid_to` semantics required for `own_events`;
+- **group targeting:** occurrence ↔ Group, preserving `valid_from`/`valid_to` semantics and the ADR-0022 same-Club invariant required for `own_groups`;
+- **participation:** occurrence ↔ Person, preserving the accepted participation persistence boundary and required Club/membership validation for `self` and `children`.
+
+These are occurrence-level relationship records, not fields copied into the occurrence JSON/snapshot. Their exact table names are an implementation detail, but each relationship must have a stable identity and direct FK to `event_occurrences`.
+
+When an occurrence is materialized, the applicable relationship definition from its governing Series version is materialized in the same transaction. A partially materialized occurrence must not be visible to authorization queries.
+
+For already-materialized occurrences, relationship history remains attached to the occurrence. A later Series version does not rewrite past occurrence relationships. Propagation to future materialized occurrences must follow the explicit version-change rules defined by the implementation contract; it must not be inferred from `created_by` or `club_id`.
+
+Materializing participation does not decide self-registration or attendance policy. Only explicitly associated participants are represented until those separate policies are specified.
+
+Existing non-recurrence Event persistence remains governed by ADR-0019/ADR-0023. Recurring occurrences must not introduce a competing nullable `event_id` identity bridge.
 
 ## 6. Transaction and concurrency requirements
 
@@ -151,18 +168,21 @@ Series version creation must run in one database transaction:
 3. validate the new version boundary and recurrence definition;
 4. create the successor version;
 5. rebind the selected already-materialized scheduled occurrence when required;
-6. commit atomically.
+6. apply any explicitly defined occurrence relationship propagation;
+7. commit atomically.
 
 If the base version is no longer current, the operation fails with `409 Conflict` and creates no successor.
 
-Materialization must rely on database-level uniqueness/idempotency so concurrent workers cannot create duplicate occurrences.
+Materialization must rely on database-level uniqueness/idempotency so concurrent workers cannot create duplicate occurrences or duplicate occurrence relationships.
 
 ## 7. Deferred implementation details
 
 The following are deliberately not invented by this addendum:
 
 - exact PostgreSQL index/exclusion expression for the materialization identity;
+- exact PostgreSQL constraints/indexes for the new occurrence relationship tables;
 - exact RRULE parser library;
+- exact physical table names for occurrence relationship records;
 - notification delivery implementation;
 - calendar/iCalendar projection storage;
 - attendance persistence.
