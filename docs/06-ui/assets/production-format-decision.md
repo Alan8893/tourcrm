@@ -4,24 +4,26 @@
 
 ## Decision
 
-Production format is selected by asset class and visual fidelity, not by a blanket rule that everything must be SVG.
+Production UI assets use raster formats. The production format is selected by asset class and visual fidelity, while preserving the approved TourCRM visual language.
 
 ### Icons
 
-- SVG is preferred for interface icons.
+- **WebP is the production format for UI icons.**
+- **SVG is not used for production UI assets.**
 - Approved custom artwork must retain its visual character, including gradients, layered fills, strokes, highlights, shadows and other details when they are part of the approved design.
-- PNG/WebP exports may coexist with SVG when raster output preserves the approved appearance better at a target size.
-- 16/20/24/32/48/64 px are icon-size variants; these are not desktop/tablet/mobile variants.
+- Production icon variants are provided at **16 / 20 / 24 / 32 / 48 / 64 px**.
+- These are icon-size variants; they are not desktop/tablet/mobile variants.
+- There is no SVG production fallback.
 
 ### Illustrations
 
 - Illustrations are full TourCRM artwork, not enlarged icons.
-- PNG/WebP is the preferred application format for complex illustration artwork.
-- Responsive variants are `desktop`, `tablet`, and `mobile`.
+- **WebP is preferred**, with PNG supported where required for production artwork.
+- Responsive variants are `desktop`, `tablet`, and `mobile` where the composition requires them.
 - Where composition changes materially between breakpoints, each responsive variant is a separate composition rather than a simple resize.
 
 ## Quality gate
 
 An asset is not production-ready merely because the file is technically valid. It must visually match the approved TourCRM style at its intended display size.
 
-The first validation experiment is the approved `Groups` navigation icon, comparing SVG and PNG at real UI sizes before this format policy is applied to the complete icon set.
+Validation is performed against the approved artwork at the intended UI sizes and across the required responsive variants. The gate does not include an SVG-vs-raster comparison because SVG is outside the TourCRM production format policy.
