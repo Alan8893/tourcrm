@@ -115,13 +115,17 @@ Invitation secrets are never returned after creation.
 
 ## 9. Recurring event series / occurrences
 
-The canonical recurrence resource paths are aligned with `docs/05-api/events-api.md` and ADR-0028. The older `/event-series` and `/event-occurrences` paths are not canonical.
+The canonical recurrence resource paths are aligned with `docs/05-api/event-recurrence-api.md` and ADR-0028. The older `/event-series` and `/event-occurrences` paths are not canonical.
 
 ### EventSeries
 
 - `POST /events/series`
 - `GET /events/series/{series_id}`
 - `PATCH /events/series/{series_id}`
+- `POST /events/series/{series_id}/pause`
+- `POST /events/series/{series_id}/resume`
+- `POST /events/series/{series_id}/cancel`
+- `POST /events/series/{series_id}/archive`
 - `POST /events/series/{series_id}/exceptions`
 - `GET /events/series/{series_id}/occurrences`
 
@@ -129,6 +133,8 @@ The canonical recurrence resource paths are aligned with `docs/05-api/events-api
 
 - `GET /events/occurrences/{occurrence_id}`
 - `PATCH /events/occurrences/{occurrence_id}`
+
+Dedicated occurrence `/cancel` and `/reschedule` endpoints are not canonical. Occurrence-level reschedule, cancellation and allow-listed property overrides use the Series `/exceptions` endpoint.
 
 Series/occurrence mutation semantics:
 
@@ -139,10 +145,11 @@ Series/occurrence mutation semantics:
 - the selected occurrence retains its stable ID when rebound to a new series version;
 - a cancelled occurrence cannot be the boundary for a new version;
 - concurrent version creation uses transactional DB locking and stale-source detection; stale operations fail with `409 Conflict` rather than being automatically rebased;
-- series lifecycle is `active ↔ paused →/active → cancelled → archived` with the exact allowed transitions defined by ADR-0028;
+- series lifecycle is `active ↔ paused`, `active → cancelled`, `cancelled → archived`;
 - occurrence lifecycle is `scheduled → in_progress → completed` or `scheduled → cancelled`;
 - reschedule is an exception, not a lifecycle status;
-- exceptions are auditable and do not delete occurrences.
+- exceptions are auditable and do not delete occurrences;
+- each occurrence `ends_at` is derived as `starts_at + duration_minutes` from its governing Series version.
 
 ## 10. Attendance
 
@@ -216,7 +223,6 @@ Derived statistics must be reproducible from source facts.
 - `GET /qualifications/{id}`
 - `PATCH /qualifications/{id}`
 - `POST /persons/{id}/qualifications`
-- `PATCH /person-qualifications/{id}`
 - `POST /person-qualifications/{id}/revoke`
 
 ## 16. Achievements
@@ -287,8 +293,6 @@ Published article version must remain historically identifiable.
 - `GET /financial-accounts`
 - `POST /financial-accounts`
 - `GET /financial-accounts/{id}`
-- `PATCH /financial-accounts/{id}`
-- `GET /payments`
 - `POST /payments`
 - `GET /payments/{id}`
 - `PATCH /payments/{id}` where correction policy allows
