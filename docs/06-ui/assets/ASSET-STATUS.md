@@ -54,8 +54,8 @@ This is the single source of truth for the brand mark. No SVG, ZIP archive or ge
 | Actions | **CLOSED / APPROVED** | `packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` |
 | Status | **CLOSED / APPROVED** | `packages/status/TourCRM_Assets_Status_P0_FINAL.zip` |
 | Domain | **CLOSED / APPROVED** | `packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` |
-| Achievements P0 | **Approved / uploaded** | `packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` |
-| Achievements P1 | **Approved / uploaded** | `packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` |
+| Achievements P0 | **CLOSED / APPROVED** | `packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` |
+| Achievements P1 | **CLOSED / APPROVED** | `packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` |
 | Illustrations — Empty States | **Approved / uploaded** | `packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` |
 | Illustrations — System | **Approved / uploaded** | `packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip` |
 | Illustrations — Onboarding | **Approved / uploaded** | `packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip` |
@@ -117,7 +117,9 @@ Status icons communicate semantic state and are not interchangeable with action 
 
 Any change to the Status catalog, artwork or semantics requires an explicit Product Owner decision and a separate documented change.
 
-## Approved Achievements
+## Approved Achievements — CLOSED
+
+The Achievements visual system is fully agreed and closed for this asset-production stage. P0 and P1 are approved as one coordinated visual system.
 
 P0 rarity/state set:
 
@@ -132,6 +134,10 @@ P1 artwork:
 explorer peak-reacher veteran-tourist team-player camp-master
 navigator first-expedition trail-walker community-hero adventure-leader
 ```
+
+P0 rarity/state and P1 achievement artwork are separate semantic layers. Do not silently repurpose P1 artwork names as rarity or status semantics.
+
+Any change to the Achievements catalog, artwork or semantics requires an explicit Product Owner decision and a separate documented change.
 
 ## Approved Illustrations
 
