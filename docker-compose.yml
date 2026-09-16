@@ -48,6 +48,11 @@ services:
       # Constructed here (not duplicated in .env) using the Compose service
       # name `db` as host — never `localhost`.
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      # Development Compose serves the frontend over plain HTTP, so Secure
+      # cookies would never be sent by the browser. Production/HTTPS
+      # deployments must explicitly set COOKIE_SECURE=true in their own
+      # deployment configuration.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
