@@ -14,6 +14,20 @@ const TONE_ICON: Record<NotificationItem["tone"], StatusIconId> = {
 
 const AUTO_DISMISS_MS = 6000;
 
+function createNotificationId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export function NotificationProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -26,7 +40,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
 
   const notify = useCallback<NotifyFn>(
     (tone, message) => {
-      const id = crypto.randomUUID();
+      const id = createNotificationId();
       setItems((current) => [...current, { id, tone, message }]);
       timers.current[id] = setTimeout(() => dismiss(id), AUTO_DISMISS_MS);
     },

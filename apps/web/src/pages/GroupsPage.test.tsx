@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { GroupsPage } from "./GroupsPage";
@@ -80,6 +80,41 @@ describe("GroupsPage", () => {
 
     expect(screen.queryByRole("link", { name: "Ориентирование" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Скалолазание" })).toBeInTheDocument();
+  });
+
+  it("closes the create dialog after a successful group creation", async () => {
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: ME_RESPONSE },
+      { match: "/groups", response: groupsResponse([]) },
+      {
+        match: "/groups",
+        response: {
+          id: "g1",
+          club_id: "club-1",
+          name: "Новая группа",
+          description: null,
+          status: "active",
+          valid_from: "2026-09-16T00:00:00Z",
+          valid_to: null,
+          created_at: "2026-09-16T00:00:00Z",
+          updated_at: "2026-09-16T00:00:00Z",
+        },
+      },
+    ]);
+
+    renderWithProviders(<GroupsPage />);
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Создать группу" }));
+    expect(screen.getByRole("dialog", { name: "Новая группа" })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Название"), "Новая группа");
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Новая группа" })).not.toBeInTheDocument();
+    });
+    expect(fetchMock).toHaveBeenCalled();
   });
 
   it("shows an error state when the groups request fails", async () => {
