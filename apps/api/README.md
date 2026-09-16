@@ -145,8 +145,8 @@ is; it grants no permission and touches no `Role`/`RolePermission`/
   (blocked by ODR-014 — `docs/03-architecture/adr/ADR-0008-open-decisions.md`
   — `auth-api.md` names a permission code, `membership.invitation.create`,
   that does not exist in the canonical permission catalog; no substitute
-  or new permission was invented); MFA/SSO/OAuth/WebAuthn; role
-  grants/bootstrap administrator; an admin-approval-of-registration
+  or new permission was invented); MFA/SSO/OAuth/WebAuthn; an
+  admin-approval-of-registration
   endpoint (`auth-api.md` requires the *capability* but never defines
   such an endpoint itself); real email/notification delivery (no such
   channel exists in this codebase yet — verification/reset challenges are
@@ -167,6 +167,64 @@ cookie over plain HTTP.
 
 Tests: `pytest tests/unit/test_authentication.py -v` (no database),
 `pytest tests/integration/test_authentication_service.py tests/integration/test_authentication_api.py -v`
+(real PostgreSQL).
+
+## Initial administrator bootstrap (Issue #99 / TH-0089, ADR-0027)
+
+A fresh installation has no user at all, and public self-registration
+(`POST /api/v1/auth/register`) always creates a `pending` User, so it
+cannot be the first-login path. This is the one, operator-run,
+non-HTTP way to create the first administrator:
+
+```bash
+cd apps/api
+python -m app.cli.bootstrap_admin
+```
+
+You will be prompted interactively for an email and a password (input
+hidden, via `getpass`), asked to confirm the password, shown a summary,
+and asked to confirm before anything is written. The password is never
+accepted as a command-line argument or read from an environment
+variable/`.env` file, and is never logged, printed, or stored anywhere
+but as its Argon2 hash.
+
+This creates a normal `Person` (`Admin`/`Admin` — a placeholder you can
+rename afterward through the ordinary account-management mechanism, not
+a mandatory profile-completion step) and a normal, already-`active`
+`User`, and assigns the existing canonical `admin` Role with the
+installation-wide `RoleAssignment` scope (`scope_type=all`,
+`club_id=NULL` — see ADR-0026's TH-0089 amendment). It refuses outright,
+without asking for a password, if a global administrator already
+exists, and is safe to run concurrently from multiple processes (a
+PostgreSQL advisory lock serializes the check-and-create) — at most one
+initial administrator is ever created.
+
+After bootstrap, log in exactly like any other user — there is no
+special bootstrap login path:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"identifier": "you@example.com", "password": "<your password>"}' \
+  -c cookies.txt
+curl http://localhost:8000/api/v1/auth/me -b cookies.txt
+```
+
+**Known limitation (documented GAP, not introduced by this Issue):**
+the canonical `admin` Role's `RolePermission` grants are not seeded
+anywhere in this codebase (Issue #19 §9 deliberately deferred mapping
+`docs/02-requirements/roles-and-permissions.md`'s matrix into concrete
+grants to a future issue, and this Issue's own non-goals forbid
+`RolePermission` administration) — so the bootstrapped administrator
+currently holds the `admin` Role but no permission grants are guaranteed
+to exist yet. This is a pre-existing, system-wide condition (no user of
+any kind can be an effective administrator until that future issue
+lands), not something bootstrap introduces or silently works around;
+bootstrap fails clearly (`AdminRoleInconsistentError`) if the `admin`
+Role itself is missing or is not the expected system role, but
+deliberately does not check — or invent — any `RolePermission` grant.
+
+Tests: `pytest tests/integration/test_authentication_bootstrap.py -v`
 (real PostgreSQL).
 
 ## Health endpoints (Issue #10)

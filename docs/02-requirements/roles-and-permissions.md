@@ -306,7 +306,7 @@ RoleAssignment имеет временной интервал `[valid_from, vali
 
 | Scope | `club_id` | `scope_ref_id` |
 |---|---|---|
-| `all` | обязателен | `NULL` |
+| `all` | опционален (см. ниже) | `NULL` |
 | `self` | обязателен | `NULL` |
 | `children` | обязателен | `NULL` |
 | `own_groups` | обязателен | `NULL` |
@@ -316,6 +316,8 @@ RoleAssignment имеет временной интервал `[valid_from, vali
 `scope_ref_id` в MVP не используется для этих scopes. В частности, `own_groups` определяется через доменную связь пользователя с Group, а `own_events` — через EventStaffAssignment, а не через ссылку на конкретный объект в RoleAssignment.
 
 `self`, `children`, `own_groups` и `own_events` всегда ограничены указанным Club. Global `self`/`children`/`own_groups`/`own_events` assignments в MVP не поддерживаются.
+
+**Amendment (TH-0089 / Issue #99, ADR-0026's own amendment section):** `all` — единственный scope, для которого `club_id` может быть либо конкретным Club (club-wide authority), либо `NULL` (installation-wide authority). Это устраняет ранее существовавшее внутреннее противоречие с §19.5 (`role.manage`), который уже описывал `all + club_id = NULL` как валидную комбинацию ("может управлять RoleAssignment в любом Club"), хотя эта таблица до амендмента этого не допускала. `all + club_id = NULL` используется, в частности, для initial administrator bootstrap (ADR-0027).
 
 ### 19.3 Role catalog mutability
 
