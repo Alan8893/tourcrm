@@ -3,6 +3,8 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 
 import { NotificationProvider } from "./components/ui/Notification";
 import { AppShell } from "./shell/AppShell";
+import { LoginPage } from "./pages/LoginPage";
+import { PasswordResetRequestPage } from "./pages/PasswordResetRequestPage";
 import { HomePage } from "./pages/HomePage";
 import { GroupsPage } from "./pages/GroupsPage";
 import { GroupDetailPage } from "./pages/GroupDetailPage";
@@ -26,6 +28,8 @@ export function App() {
           future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
         >
           <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/password-reset" element={<PasswordResetRequestPage />} />
             <Route element={<AppShell />}>
               <Route index element={<HomePage />} />
               <Route path="people" element={<PlaceholderPage title="Люди" />} />
