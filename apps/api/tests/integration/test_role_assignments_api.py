@@ -355,18 +355,24 @@ def test_create_role_assignment_role_name_alone_without_permission_grant_is_forb
     client: TestClient,
 ) -> None:
     """roles-and-permissions.md §2/business-rules.md §8: holding a role
-    (even 'admin') is not itself sufficient — RolePermission must
-    actually grant role.manage (Issue #19: no baseline role grants any
-    permission by default)."""
+    name alone is not itself sufficient — RolePermission must actually
+    grant role.manage. `instructor` is used as the role-under-test
+    because it is a baseline role left with zero RolePermission grants by
+    design (TH-0092/TH-0093 only define canonical grants for `admin`;
+    `instructor`/`member`/`guardian` remain intentionally ungranted) —
+    `admin` itself no longer fits this scenario now that TH-0093 seeds it
+    with every canonical permission, `role.manage` included."""
     with session_scope() as session:
         caller_person = _make_person(first_name="Caller")
         session.add(caller_person)
         session.commit()
         caller = _make_user(caller_person)
-        admin_role_id = _baseline_role_id("admin")
+        instructor_role_id = _baseline_role_id("instructor")
         session.add(caller)
         session.commit()
-        session.add(UserRoleAssignment(user_id=caller.id, role_id=admin_role_id, scope_type="all"))
+        session.add(
+            UserRoleAssignment(user_id=caller.id, role_id=instructor_role_id, scope_type="all")
+        )
         session.commit()
         caller_id = caller.id
         target_id, _ = _setup_target_with_membership(session, _make_club())

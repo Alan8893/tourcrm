@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted, amended by TH-0091.
+Accepted, amended by TH-0091. `RolePermission` boundary reaffirmed and the
+canonical admin grant gap it left open closed by TH-0092 / TH-0093 (see
+"Role and permissions" below).
 
 ## Context
 
@@ -90,6 +92,8 @@ The canonical `admin` Role is reused; it is not created dynamically.
 
 Bootstrap does not seed or modify `RolePermission` grants and does not introduce a new permission, role, scope, or authorization mechanism. Existing RolePermission state remains authoritative.
 
+`RolePermission` policy is system seed data, owned by Alembic migrations, not by bootstrap. TH-0092 / Issue #105 (Variant A) decided that, for the current MVP, the canonical `admin` role holds a grant for every permission in the canonical catalog; TH-0093 / Issue #106 implements that decision as an idempotent migration seed (`role_permissions` rows linking the system `admin` Role to every `Permission` row) applied independently of bootstrap. `instructor`/`member`/`guardian` grants remain undefined by either decision. This ADR's bootstrap operation is unchanged by TH-0093: it still only creates Club + Person + User + UserRoleAssignment, and continues to rely on whatever RolePermission state the seed migrations have already established.
+
 ### Normal login
 
 After successful bootstrap, authentication uses the normal application flow:
@@ -161,3 +165,5 @@ Failures do not disclose passwords, hashes, tokens, or other security-sensitive 
 - `docs/02-requirements/roles-and-permissions.md`
 - TH-0089 / Issue #99
 - TH-0091 / Issue #104
+- TH-0092 / Issue #105
+- TH-0093 / Issue #106
