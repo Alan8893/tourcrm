@@ -66,7 +66,7 @@ class BootstrapResult:
 
 
 def global_administrator_exists(session: Session) -> bool:
-    """Return whether the canonical global bootstrap administrator exists."""
+    """Return whether an effective canonical bootstrap administrator exists."""
     now = sa.func.statement_timestamp()
     stmt = (
         sa.select(UserRoleAssignment.id)
@@ -74,7 +74,6 @@ def global_administrator_exists(session: Session) -> bool:
         .where(
             Role.code == ADMIN_ROLE_CODE,
             UserRoleAssignment.scope_type == GLOBAL_ADMIN_SCOPE_TYPE,
-            UserRoleAssignment.club_id.is_(None),
             UserRoleAssignment.valid_from <= now,
             sa.or_(UserRoleAssignment.valid_to.is_(None), now < UserRoleAssignment.valid_to),
         )
@@ -127,7 +126,7 @@ def bootstrap_initial_administrator(
     try:
         if global_administrator_exists(session):
             raise AdministratorAlreadyExistsError(
-                "A global administrator already exists; bootstrap refuses to create another"
+                "An administrator already exists; bootstrap refuses to create another"
             )
 
         _assert_empty_installation(session)
