@@ -47,8 +47,10 @@ describe("GroupDetailPage", () => {
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("tab", { name: "Участники" }));
-
     expect(await screen.findByText("В группе пока нет участников")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Расписание" }));
+    expect(await screen.findByText("Пока нет мероприятий")).toBeInTheDocument();
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/groups/g1/schedule?from="))).toBe(true);
   });
 
