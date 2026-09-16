@@ -6,6 +6,7 @@ import { stubFetch } from "./test/renderWithProviders";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  window.history.pushState({}, "", "/");
 });
 
 describe("App", () => {
@@ -54,5 +55,21 @@ describe("App", () => {
 
     const homeLink = await screen.findByRole("link", { name: "Главная" });
     expect(homeLink).toHaveAttribute("aria-current", "page");
+  });
+
+  it("renders the real People Core screen at /people, not PlaceholderPage (TH-0094 regression)", async () => {
+    window.history.pushState({}, "", "/people");
+    stubFetch([
+      { match: "/auth/me", response: {}, status: 401 },
+      {
+        match: "/persons",
+        response: { items: [], pagination: { page: 1, page_size: 20, total: 0, pages: 0 } },
+      },
+    ]);
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Люди" })).toBeInTheDocument();
+    expect(screen.queryByText(/появится в одном из следующих этапов/)).not.toBeInTheDocument();
   });
 });

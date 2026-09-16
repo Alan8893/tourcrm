@@ -123,11 +123,11 @@ export const ICON_SOURCES: Record<IconId, (size: IconSize) => string> = {
   "domain.primary-instructor": domainPath("DOM-012_primary-instructor"),
 };
 
-/** Approved illustration families integrated for this stage: Empty states
- * (`empty-groups`, `no-results`) and System (`error`, `403`, `404`).
- * Onboarding illustrations are not wired into this Issue's three
- * reference screens and are left for a later feature slice. */
-export type IllustrationId = "empty-groups" | "no-results" | "error" | "403" | "404";
+/** Approved illustration families integrated so far: Empty states
+ * (`empty-groups`, `empty-people`, `no-results`) and System (`error`,
+ * `403`, `404`). Onboarding illustrations are not wired into any
+ * reference screen yet and are left for a later feature slice. */
+export type IllustrationId = "empty-groups" | "empty-people" | "no-results" | "error" | "403" | "404";
 export type IllustrationSize = 32 | 64 | 128 | 256;
 
 export function illustrationPath(id: IllustrationId, size: IllustrationSize): string {

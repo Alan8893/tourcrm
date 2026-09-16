@@ -74,3 +74,69 @@ export function eventStatusLabel(status: EventStatus): string {
       return "В архиве";
   }
 }
+
+/** business-rules.md §4: ClubMembership's status vocabulary. */
+export type MembershipStatus = "pending" | "active" | "suspended" | "inactive" | "archived";
+
+export function membershipStatusIcon(status: MembershipStatus): StatusIconId {
+  switch (status) {
+    case "pending":
+      return "status.planned";
+    case "active":
+      return "status.ongoing";
+    case "suspended":
+      // Not `error`: a suspension is a reviewable, non-terminal business
+      // state, not a system fault — `warning` carries that "needs
+      // attention" meaning without the fault connotation.
+      return "status.warning";
+    case "inactive":
+      return "status.ended";
+    case "archived":
+      return "status.archived";
+  }
+}
+
+export function membershipStatusLabel(status: MembershipStatus): string {
+  switch (status) {
+    case "pending":
+      return "Ожидает";
+    case "active":
+      return "Активно";
+    case "suspended":
+      return "Приостановлено";
+    case "inactive":
+      return "Неактивно";
+    case "archived":
+      return "В архиве";
+  }
+}
+
+/** people-api.md §18: GuardianRelationship's read-time effective status —
+ * already derived server-side (never `pending`; see
+ * app.people.guardian_lifecycle.effective_status). */
+export type GuardianRelationshipStatus = "active" | "inactive" | "revoked";
+
+export function guardianRelationshipStatusIcon(status: GuardianRelationshipStatus): StatusIconId {
+  switch (status) {
+    case "active":
+      return "status.ongoing";
+    case "inactive":
+      return "status.ended";
+    case "revoked":
+      // Not `error`: revocation is a deliberate business outcome, not a
+      // system fault — `archived` matches its terminal, non-fault nature
+      // (mirrors `cancelled -> ended` above, not `-> error`).
+      return "status.archived";
+  }
+}
+
+export function guardianRelationshipStatusLabel(status: GuardianRelationshipStatus): string {
+  switch (status) {
+    case "active":
+      return "Активна";
+    case "inactive":
+      return "Неактивна";
+    case "revoked":
+      return "Отозвана";
+  }
+}
