@@ -1,0 +1,18 @@
+.toolbar {
+  display: flex;
+  gap: var(--space-4);
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: var(--space-5);
+}
+
+.search {
+  flex: 1;
+  min-width: 220px;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}

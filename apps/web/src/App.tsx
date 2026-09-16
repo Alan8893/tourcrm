@@ -6,6 +6,8 @@ import { AppShell } from "./shell/AppShell";
 import { LoginPage } from "./pages/LoginPage";
 import { PasswordResetRequestPage } from "./pages/PasswordResetRequestPage";
 import { HomePage } from "./pages/HomePage";
+import { PeoplePage } from "./pages/PeoplePage";
+import { PersonDetailPage } from "./pages/PersonDetailPage";
 import { GroupsPage } from "./pages/GroupsPage";
 import { GroupDetailPage } from "./pages/GroupDetailPage";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
@@ -32,7 +34,8 @@ export function App() {
             <Route path="/password-reset" element={<PasswordResetRequestPage />} />
             <Route element={<AppShell />}>
               <Route index element={<HomePage />} />
-              <Route path="people" element={<PlaceholderPage title="Люди" />} />
+              <Route path="people" element={<PeoplePage />} />
+              <Route path="people/:personId" element={<PersonDetailPage />} />
               <Route path="groups" element={<GroupsPage />} />
               <Route path="groups/:groupId" element={<GroupDetailPage />} />
               <Route path="events" element={<PlaceholderPage title="События" />} />

@@ -9,7 +9,7 @@ export type EmptyStateProps = {
    * `no-results` is a distinct semantic state for "a search/filter
    * matched nothing" — the two must never collapse into one generic
    * illustration (ASSET-PACKS.md). */
-  illustration: Extract<IllustrationId, "empty-groups" | "no-results">;
+  illustration: Extract<IllustrationId, "empty-groups" | "empty-people" | "no-results">;
   title: string;
   description?: string;
   action?: ReactNode;

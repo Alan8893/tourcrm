@@ -1,0 +1,44 @@
+.metaRow {
+  display: flex;
+  gap: var(--space-6);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-5);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.metaLabel {
+  color: var(--color-text-muted);
+  display: block;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.rowMain {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.rowSecondary {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.primaryTag {
+  color: var(--color-accent-hover);
+  font-weight: 600;
+  font-size: var(--font-size-sm);
+}
