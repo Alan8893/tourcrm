@@ -114,7 +114,9 @@ def test_bootstrap_never_leaks_the_password_into_the_hash_or_audit_details() -> 
         audit_rows = (
             session.execute(
                 select(AuditLog).where(
-                    AuditLog.resource_id.in_([result.person_id, result.user_id, result.role_assignment_id])
+                    AuditLog.resource_id.in_(
+                        [result.person_id, result.user_id, result.role_assignment_id]
+                    )
                 )
             )
             .scalars()
@@ -141,7 +143,8 @@ def test_login_and_me_work_immediately_after_bootstrap_via_normal_endpoints(
     with session_scope() as session:
         result = _bootstrap(session, email)
     login_response = client.post(
-        "/api/v1/auth/login", json={"identifier": email, "password": _STRONG_PASSWORD}
+        "/api/v1/auth/login",
+        json={"identifier": email, "password": _STRONG_PASSWORD},
     )
     assert login_response.status_code == 200, login_response.text
     assert login_response.json()["user"]["id"] == str(result.user_id)
@@ -156,7 +159,9 @@ def test_second_bootstrap_attempt_is_rejected_without_mutation() -> None:
         _bootstrap(session, _unique_email())
     with session_scope() as session:
         before_users = sorted(session.execute(select(User.id)).scalars().all())
-        before_assignments = sorted(session.execute(select(UserRoleAssignment.id)).scalars().all())
+        before_assignments = sorted(
+            session.execute(select(UserRoleAssignment.id)).scalars().all()
+        )
     second_email = _unique_email()
     with session_scope() as session:
         with pytest.raises(AdministratorAlreadyExistsError):
@@ -168,7 +173,9 @@ def test_second_bootstrap_attempt_is_rejected_without_mutation() -> None:
             )
     with session_scope() as session:
         after_users = sorted(session.execute(select(User.id)).scalars().all())
-        after_assignments = sorted(session.execute(select(UserRoleAssignment.id)).scalars().all())
+        after_assignments = sorted(
+            session.execute(select(UserRoleAssignment.id)).scalars().all()
+        )
     assert before_users == after_users
     assert before_assignments == after_assignments
     assert _user_exists(second_email) is False
@@ -180,7 +187,10 @@ def test_invalid_password_is_rejected_and_creates_nothing() -> None:
     with session_scope() as session:
         with pytest.raises(WeakPasswordError):
             bootstrap_initial_administrator(
-                session, club_name=_CLUB_NAME, email=email, password="short"
+                session,
+                club_name=_CLUB_NAME,
+                email=email,
+                password="short",
             )
     assert _user_exists(email) is False
     with session_scope() as session:
@@ -309,7 +319,9 @@ def test_concurrent_bootstrap_attempts_produce_exactly_one_administrator() -> No
     successes = [r for r in results if isinstance(r, BootstrapResult)]
     conflicts = [r for r in results if isinstance(r, AdministratorAlreadyExistsError)]
     crashes = [
-        r for r in results if not isinstance(r, (BootstrapResult, AdministratorAlreadyExistsError))
+        r
+        for r in results
+        if not isinstance(r, (BootstrapResult, AdministratorAlreadyExistsError))
     ]
     assert crashes == []
     assert len(successes) == 1
@@ -337,7 +349,11 @@ def test_cli_password_mismatch_creates_nothing(monkeypatch: pytest.MonkeyPatch) 
     inputs = iter([_CLUB_NAME, email])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
     passwords = iter(["password-one-long-enough", "password-two-long-enough"])
-    monkeypatch.setattr(bootstrap_admin.getpass, "getpass", lambda prompt="": next(passwords))
+    monkeypatch.setattr(
+        bootstrap_admin.getpass,
+        "getpass",
+        lambda prompt="": next(passwords),
+    )
     exit_code = bootstrap_admin.main()
     assert exit_code == 1
     assert _user_exists(email) is False
@@ -348,7 +364,11 @@ def test_cli_user_cancellation_creates_nothing(monkeypatch: pytest.MonkeyPatch) 
     email = _unique_email()
     inputs = iter([_CLUB_NAME, email, "n"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
-    monkeypatch.setattr(bootstrap_admin.getpass, "getpass", lambda prompt="": _STRONG_PASSWORD)
+    monkeypatch.setattr(
+        bootstrap_admin.getpass,
+        "getpass",
+        lambda prompt="": _STRONG_PASSWORD,
+    )
     exit_code = bootstrap_admin.main()
     assert exit_code == 0
     assert _user_exists(email) is False
@@ -359,7 +379,11 @@ def test_cli_confirmed_run_creates_the_administrator(monkeypatch: pytest.MonkeyP
     email = _unique_email()
     inputs = iter([_CLUB_NAME, email, "y"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
-    monkeypatch.setattr(bootstrap_admin.getpass, "getpass", lambda prompt="": _STRONG_PASSWORD)
+    monkeypatch.setattr(
+        bootstrap_admin.getpass,
+        "getpass",
+        lambda prompt="": _STRONG_PASSWORD,
+    )
     exit_code = bootstrap_admin.main()
     assert exit_code == 0
     assert _user_exists(email) is True
@@ -373,7 +397,9 @@ def test_cli_refuses_a_second_run_before_asking_for_a_password(
         _bootstrap(session, _unique_email())
 
     def _fail_if_called(prompt: str = "") -> str:
-        raise AssertionError("input()/getpass() must not be called when an admin already exists")
+        raise AssertionError(
+            "input()/getpass() must not be called when an admin already exists"
+        )
 
     monkeypatch.setattr("builtins.input", _fail_if_called)
     monkeypatch.setattr(bootstrap_admin.getpass, "getpass", _fail_if_called)
