@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch, ApiError, type CollectionResponse } from "./client";
@@ -64,10 +65,21 @@ export function useGroupMembers(groupId: string | undefined) {
   });
 }
 
+const GROUP_SCHEDULE_HORIZON_DAYS = 180;
+
 export function useGroupSchedule(groupId: string | undefined) {
+  const range = useMemo(() => {
+    const from = new Date();
+    const to = new Date(from);
+    to.setUTCDate(to.getUTCDate() + GROUP_SCHEDULE_HORIZON_DAYS);
+    return { from: from.toISOString(), to: to.toISOString() };
+  }, []);
+
+  const query = new URLSearchParams(range).toString();
+
   return useQuery<CollectionResponse<CalendarItem>, ApiError>({
-    queryKey: ["groups", "schedule", groupId],
-    queryFn: () => apiFetch<CollectionResponse<CalendarItem>>(`/groups/${groupId}/schedule`),
+    queryKey: ["groups", "schedule", groupId, range.from, range.to],
+    queryFn: () => apiFetch<CollectionResponse<CalendarItem>>(`/groups/${groupId}/schedule?${query}`),
     enabled: Boolean(groupId),
   });
 }

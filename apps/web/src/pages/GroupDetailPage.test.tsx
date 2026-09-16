@@ -28,9 +28,9 @@ afterEach(() => {
 
 describe("GroupDetailPage", () => {
   it("shows identity, status and a back link, and switches tabs on click", async () => {
-    stubFetch([
+    const fetchMock = stubFetch([
       { match: "/groups/g1/members", response: emptyCollection() },
-      { match: "/groups/g1/schedule", response: emptyCollection() },
+      { match: "/groups/g1/schedule?from=", response: emptyCollection() },
       { match: "/groups/g1", response: GROUP },
     ]);
 
@@ -49,6 +49,7 @@ describe("GroupDetailPage", () => {
     await user.click(screen.getByRole("tab", { name: "Участники" }));
 
     expect(await screen.findByText("В группе пока нет участников")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/groups/g1/schedule?from="))).toBe(true);
   });
 
   it("shows a 404 error state for a group that does not exist", async () => {
