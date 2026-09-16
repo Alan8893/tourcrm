@@ -2,131 +2,162 @@
 
 ## Status
 
-Accepted.
+Accepted, amended by TH-0091.
 
 ## Context
 
-TourCRM uses application-managed authentication. The authentication API already provides registration, login, session management and recovery, but the normal registration flow creates a `pending` User and therefore cannot be used to create the first usable administrator account.
+TourCRM uses application-managed authentication. The normal registration flow creates a `pending` User and therefore cannot be used to create the first usable administrator account.
 
-The repository intentionally does not bootstrap an administrator inside the Identity foundation or Authentication implementation. This leaves a clean security boundary, but it also means a fresh installation currently has no defined path from an empty database to the first authenticated administrator.
+The application also has a Club-bound domain model, while the current MVP has no user-facing Club creation mechanism. A fresh installation therefore needs one deterministic initialization path that creates both the first usable Club context and the first administrator.
 
-The system must therefore define a deterministic first-install bootstrap path without introducing a permanent backdoor, default credentials, or an unauthenticated web endpoint.
+The domain remains multi-Club capable. This decision only defines the initial state of a fresh installation.
 
 ## Decision
 
-The first administrator is created through an **operator-controlled bootstrap operation outside the public HTTP authentication surface**.
+The first installation is initialized through an **operator-controlled bootstrap operation outside the public HTTP API**.
 
-The bootstrap operation is a deployment/administration concern and is not a normal `/api/v1/auth/*` endpoint.
+The bootstrap creates, in one transaction:
 
-### Bootstrap semantics
+1. one active primary `Club`;
+2. one normal `Person`;
+3. one active `User` linked to that Person;
+4. one `UserRoleAssignment` using the canonical `admin` role and Club-bound `all` scope;
+5. the existing canonical audit events for the supported resources.
 
-1. Bootstrap is allowed only when the installation has no existing active administrator account according to the canonical `admin` role and effective role-assignment model.
-2. The bootstrap operation creates a normal `User` linked to a normal `Person`.
-3. The new User is created directly as `active`; it does not pass through public self-registration approval because bootstrap is an installation-level administrative operation.
-4. The bootstrap operation assigns the canonical `admin` role using the existing RoleAssignment model and its canonical scope rules.
-5. The bootstrap operation must not create a new role, permission, scope, or alternative administrator identity.
-6. It must use the existing password hashing/session/authentication infrastructure. Plaintext passwords are never stored, logged, returned, or embedded in source/configuration committed to the repository.
-7. After a valid administrator exists, the bootstrap operation must refuse to create another initial administrator. It is not a general-purpose admin creation mechanism.
-8. The bootstrap operation must be safe to run more than once: a second execution must fail without modifying the existing administrator or creating a second bootstrap account.
-9. The bootstrap operation must be transactional: partial User/Person/RoleAssignment creation must not leave a usable half-created account.
-10. The bootstrap path must not bypass normal authorization for subsequent administrator/user/role management. After bootstrap, ordinary administrative operations use the existing authentication + authorization model.
+No public unauthenticated bootstrap endpoint is introduced.
 
-## Credential input
+### Primary Club
 
-The preferred interactive mode is an operator prompt that does not echo the password.
+For a fresh installation the bootstrap creates exactly one primary Club using the existing `Club` entity and its canonical fields.
 
-An environment/configuration-driven mode may be supported for automated deployments, but the password must not be accepted as a command-line argument, written to repository files, or emitted into logs.
+- `name` is supplied interactively by the operator;
+- `status` is `active`;
+- no additional Club metadata is invented;
+- no second Club is created by repeat bootstrap;
+- future authorized Club creation remains a separate feature and the domain remains multi-Club capable.
 
-Exact CLI command name and implementation library are implementation details and are to be documented by the implementation PR.
+The bootstrap administrator receives:
 
-## Administrator scope
+```text
+role        = admin
+scope_type  = all
+club_id     = <primary Club ID>
+scope_ref_id = NULL
+```
 
-The bootstrap administrator must receive the canonical administrator authority required for the club installation. The implementation must use the already-defined `admin` role and existing authorization semantics.
+This gives the initial administrator an explicit Club context required by current Club-bound application flows.
 
-The bootstrap operation must not invent a new global role code, permission, or scope. If the existing role/permission catalog or grants required to make the canonical `admin` role effective are missing or inconsistent, bootstrap must fail clearly rather than silently inventing policy.
+### Administrator identity
 
-## Relationship to normal registration
+The bootstrap creates a normal `Person` + `User` rather than a separate administrator entity.
 
-Public registration remains unchanged:
+The initial Person uses the existing bootstrap placeholder identity `Admin Admin`; it may later be changed through ordinary account-management functionality.
 
-`register -> pending -> approval/activation -> login`
+The existing `User.email`/login identifier is used. No additional username/login field is introduced.
 
-Bootstrap is a separate installation path:
+### Credential input
 
-`empty installation -> initial admin bootstrap -> active admin -> login`
+The preferred mode is an interactive operator prompt with password input hidden.
 
-Email verification is not a substitute for administrator bootstrap and must not implicitly elevate a registered user to `admin`.
+The password must not be:
 
-## Relationship to login UI
+- accepted as a command-line argument;
+- read from repository files;
+- stored in environment/configuration for this interactive mode;
+- written to logs or CLI output;
+- returned through an API;
+- embedded in source code or Docker images.
 
-The web application has two distinct states:
+### Repeat and concurrency
 
-### Unauthenticated with configured installation
+Bootstrap is allowed only for a fresh installation with no existing Club and no existing effective bootstrap administrator.
 
-Show the normal TourCRM login page.
+The existing PostgreSQL transaction advisory lock remains authoritative. Concurrent first-run attempts are serialized so at most one creates the primary Club and administrator.
 
-The login form submits the user's identifier and password to the existing `POST /api/v1/auth/login` contract. On successful authentication, the server-side session cookie becomes the authenticated browser session and the application loads the current principal from `GET /api/v1/auth/me`.
+A repeat bootstrap fails before mutation and never creates another Club or administrator.
 
-### Unconfigured installation
+If a Club already exists, bootstrap refuses with a clear safe error. Existing Club data is never deleted or modified by bootstrap.
 
-The web application must not expose a public "create administrator" form by default. An operator completes the bootstrap operation first; afterwards the ordinary login page is used.
+### Transactionality
 
-If the frontend needs to distinguish an unconfigured installation for deployment diagnostics, that state must be represented by a narrowly scoped, non-sensitive health/setup signal rather than by exposing whether particular users or credentials exist.
+Club + Person + User + UserRoleAssignment + their supported audit events are one transaction. Any failure rolls the entire operation back.
+
+No usable half-created bootstrap account or orphaned primary Club may remain.
+
+### Role and permissions
+
+The canonical `admin` Role is reused; it is not created dynamically.
+
+Bootstrap does not seed or modify `RolePermission` grants and does not introduce a new permission, role, scope, or authorization mechanism. Existing RolePermission state remains authoritative.
+
+### Normal login
+
+After successful bootstrap, authentication uses the normal application flow:
+
+```text
+POST /api/v1/auth/login
+        -> authenticated session
+GET  /api/v1/auth/me
+```
+
+There is no special bootstrap login path.
 
 ## Security properties
 
-- No default username/password exists.
-- No hardcoded administrator credentials exist.
-- No public unauthenticated endpoint creates an administrator.
+- No default credentials.
+- No hardcoded administrator credentials.
+- No public unauthenticated administrator-creation endpoint.
 - Bootstrap cannot be used to create arbitrary additional administrators.
-- Password hashing follows ADR-0009 and the existing authentication implementation.
-- Bootstrap secrets never enter audit logs or operational logs.
-- Existing session and authorization mechanisms remain authoritative after bootstrap.
-- A failed bootstrap must not partially create a usable account.
-- Concurrent bootstrap attempts must result in at most one successful initial administrator.
+- Password hashing remains delegated to the existing authentication infrastructure.
+- Bootstrap secrets never enter audit or operational logs.
+- Existing authentication and authorization remain authoritative after bootstrap.
+- Concurrent bootstrap attempts cannot create multiple primary Clubs or initial administrators.
+- Failed bootstrap rolls back completely.
 
 ## Failure behavior
 
-Bootstrap must fail if:
+Bootstrap fails if:
 
-- an active administrator already exists;
-- required canonical `admin` role data is missing;
-- required canonical role/permission state is inconsistent;
+- an effective initial administrator already exists;
+- a Club already exists;
+- the canonical `admin` role is missing or inconsistent;
 - supplied credentials fail the existing password policy;
+- the supplied administrator identifier is already registered;
 - the database transaction cannot be completed safely.
 
-Failure must not disclose passwords, hashes, tokens, or internal security data.
+Failures do not disclose passwords, hashes, tokens, or other security-sensitive data.
 
 ## Consequences
 
 ### Positive
 
-- A clean installation has a deterministic path to the first login.
-- There is no permanent bootstrap backdoor in the public API.
-- The first administrator becomes a normal TourCRM User and uses the same session/authentication system as every other user.
-- The architecture remains compatible with LAN and Internet deployment.
+- A clean installation immediately receives the Club context required by the current MVP domain.
+- The first administrator is a normal TourCRM User.
+- Normal login/session/authorization mechanisms are reused.
+- The multi-Club domain model is preserved for future expansion.
 
 ### Negative
 
-- Initial installation requires an operator/deployment step before the first web login.
-- Automated deployment needs a secure secret-injection mechanism if non-interactive bootstrap is used.
+- Initial installation requires an operator bootstrap step before first login.
+- The first Club currently has no public management flow; that remains a later feature.
 
 ## Non-goals
 
-- Admin UI for creating additional administrators.
-- Invitation implementation.
-- Self-registration policy changes.
-- Role/Permission CRUD.
-- New authentication providers, SSO, MFA or passkeys.
-- Changes to the canonical role/permission matrix.
+- Public Club CRUD API.
+- Club management UI.
+- Single-tenant refactor.
+- Additional administrator creation through bootstrap.
+- Role/Permission CRUD or RolePermission policy changes.
+- Login UX changes.
+- MFA/SSO/OAuth/WebAuthn.
 
 ## Traceability
 
 - `docs/03-architecture/adr/ADR-0009-authentication-mechanism.md`
+- `docs/03-architecture/adr/ADR-0013-scope-vocabulary.md`
+- `docs/03-architecture/adr/ADR-0026-role-assignment-api-decisions.md`
 - `docs/05-api/auth-api.md`
 - `docs/05-api/auth-and-authorization.md`
 - `docs/02-requirements/roles-and-permissions.md`
-- Issue #19 — Identity: Role, Permission и RoleAssignment foundation
-- Issue #29 — Authorization: RBAC + permission scope enforcement foundation
-- Issue #33 — Authentication: application-managed sessions, registration, login and recovery
-- Issue #74 — RoleAssignment API
+- TH-0089 / Issue #99
+- TH-0091 / Issue #104
