@@ -12,6 +12,15 @@ ADR-0033 — an ordinary, non-recurring `Event` resolving deterministically
 to its own one concrete `EventOccurrence` (never ambiguous UUID probing,
 never a second addressable identity for the same real-world event).
 
+Also covers the historical-roster fix from PR #97 review: a recurring
+occurrence's participant eligibility (for GET's roster/summary and for
+correction) is keyed off the occurrence's own `[starts_at, ends_at)`
+window, not "is the person an active participant right now" — so ending
+a participation after the occurrence happened neither hides an already-
+marked Attendance row nor blocks correcting it, and a participation that
+only starts after the occurrence's window has closed never enters that
+occurrence's historical denominator.
+
 Against the REAL shipped app (app.main.app) and a real PostgreSQL
 database, matching tests/integration/test_event_conflicts_api.py's own
 pattern.
@@ -954,6 +963,145 @@ def test_attendance_survives_participation_ending(client: TestClient) -> None:
         ).scalar_one_or_none()
         assert row is not None
         assert row.status == "present"
+
+
+@requires_postgres
+def test_completed_attendance_remains_visible_and_correctable_after_participation_ends(
+    client: TestClient,
+) -> None:
+    """Persisting the Attendance row alone (as the previous test proves)
+    is not the same guarantee as it remaining *visible and countable* on
+    GET, or *correctable*, once the participant's validity has since
+    ended (PR #97 review). Both the GET roster/summary and the
+    correction endpoint must key participation eligibility off the
+    occurrence's own time window, not "is the person an active
+    participant right now"."""
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
+    _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
+    _grant_permission(user_id, "attendance.read", scope_type="all", club_id=club_id)
+    _authenticate_as(user_id)
+    _mark(client, occurrence_id, person_id, status="present")
+
+    with session_scope() as session:
+        occurrence = session.get(EventOccurrence, occurrence_id)
+        occurrence.status = "completed"
+        participant = session.execute(
+            select(EventOccurrenceParticipant).where(
+                EventOccurrenceParticipant.occurrence_id == occurrence_id,
+                EventOccurrenceParticipant.person_id == person_id,
+            )
+        ).scalar_one()
+        # Ends after the occurrence itself took place, not "now" — the
+        # participation was valid throughout the occurrence and only
+        # later ended.
+        participant.valid_to = occurrence.ends_at + datetime.timedelta(hours=1)
+        session.commit()
+
+    get_response = _get_attendance(client, occurrence_id)
+    assert get_response.status_code == 200
+    body = get_response.json()
+    assert body["summary"] == {"total": 1, "marked": 1, "present": 1, "absent": 0, "unmarked": 0}
+    assert body["items"][0]["person"]["id"] == str(person_id)
+    assert body["items"][0]["status"] == "present"
+
+    correction_response = _correct(
+        client,
+        occurrence_id,
+        person_id,
+        status="absent",
+        absence_reason="sick",
+        reason="was actually sick",
+    )
+    assert correction_response.status_code == 200
+    correction_body = correction_response.json()
+    assert correction_body["previous_status"] == "present"
+    assert correction_body["new_status"] == "absent"
+
+    get_after_correction = _get_attendance(client, occurrence_id)
+    assert get_after_correction.json()["summary"] == {
+        "total": 1,
+        "marked": 1,
+        "present": 0,
+        "absent": 1,
+        "unmarked": 0,
+    }
+
+
+@requires_postgres
+def test_unmarked_participant_remains_in_historical_roster_after_participation_ends(
+    client: TestClient,
+) -> None:
+    """The historical roster/denominator must not shrink just because
+    nobody marked attendance before the participation validity ended —
+    "current roster" and "historical occurrence roster" are different
+    things (PR #97 review)."""
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
+    _grant_permission(user_id, "attendance.read", scope_type="all", club_id=club_id)
+    _authenticate_as(user_id)
+
+    with session_scope() as session:
+        occurrence = session.get(EventOccurrence, occurrence_id)
+        participant = session.execute(
+            select(EventOccurrenceParticipant).where(
+                EventOccurrenceParticipant.occurrence_id == occurrence_id,
+                EventOccurrenceParticipant.person_id == person_id,
+            )
+        ).scalar_one()
+        participant.valid_to = occurrence.ends_at + datetime.timedelta(hours=1)
+        occurrence.status = "completed"
+        session.commit()
+
+    # No attendance was ever marked for this person, and their
+    # participation has since ended — they must still surface as
+    # "unmarked", not disappear from the denominator entirely.
+    response = _get_attendance(client, occurrence_id)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"] == {"total": 1, "marked": 0, "present": 0, "absent": 0, "unmarked": 1}
+    assert body["items"][0]["person"]["id"] == str(person_id)
+    assert body["items"][0]["status"] is None
+
+
+@requires_postgres
+def test_participant_joining_after_occurrence_window_is_not_in_historical_roster(
+    client: TestClient,
+) -> None:
+    """The mirror image of the two tests above: a participation that
+    only starts after the occurrence's own window has already closed
+    must not silently enter that occurrence's historical denominator as
+    "unmarked" (PR #97 review)."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        actor_person = _make_person()
+        actor_user = _make_user(actor_person)
+        session.add_all([club, person, actor_person, actor_user])
+        session.commit()
+        series = _make_series(session, club_id=club.id)
+        occurrence = _make_occurrence(series=series, club_id=club.id, status="completed")
+        session.add(occurrence)
+        session.commit()
+        session.add(
+            _make_occurrence_participant(
+                occurrence,
+                person,
+                valid_from=occurrence.ends_at + datetime.timedelta(days=1),
+            )
+        )
+        session.commit()
+        club_id, occurrence_id, user_id = club.id, occurrence.id, actor_user.id
+    _grant_permission(user_id, "attendance.read", scope_type="all", club_id=club_id)
+    _authenticate_as(user_id)
+
+    response = _get_attendance(client, occurrence_id)
+    assert response.status_code == 200
+    assert response.json()["summary"] == {
+        "total": 0,
+        "marked": 0,
+        "present": 0,
+        "absent": 0,
+        "unmarked": 0,
+    }
 
 
 # --- Bulk upsert (ADR-0032 §7) -----------------------------------------------

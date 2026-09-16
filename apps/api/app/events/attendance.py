@@ -62,6 +62,16 @@ Neither branch is an invented parallel participation model — each reads
 the one participation table that was already canonical for that object
 kind before Attendance existed.
 
+For the recurring branch, "has/had participation" is evaluated against
+the occurrence's own `[starts_at, ends_at)` window
+(`_participant_overlaps_occurrence`), not against "right now" — a person
+who was a participant while the occurrence happened remains eligible for
+correction and remains counted in the historical GET roster/summary even
+after their `EventOccurrenceParticipant.valid_to` has since passed. See
+the review discussion on PR #97 (2026-09-15) that identified the
+`now()`-keyed version of this check as silently dropping accepted
+Attendance history for ended participants.
+
 ## Lifecycle (ADR-0032 §5)
 
 Eligible-for-normal-change statuses mirror app.events.conflicts'
@@ -183,6 +193,27 @@ def _active_interval(valid_from: Any, valid_to: Any) -> sa.ColumnElement[bool]:
     return sa.and_(valid_from <= now, sa.or_(valid_to.is_(None), now < valid_to))
 
 
+def _participant_overlaps_occurrence(
+    valid_from: Any, valid_to: Any, *, occurrence: EventOccurrence
+) -> sa.ColumnElement[bool]:
+    """Whether a `[valid_from, valid_to)` participation interval overlaps
+    the occurrence's own `[starts_at, ends_at)` window — i.e. whether the
+    person *was* a participant of this occurrence at some point, as
+    opposed to `_active_interval`'s "is a participant right now".
+
+    Correction and the historical GET roster/summary must key off this,
+    not `now()`: ending a participation after the occurrence happened
+    must not retroactively remove the person from the occurrence's
+    accepted attendance history, and a person whose participation only
+    starts after the occurrence's window has closed must not silently
+    enter that history as an "unmarked" participant. See PR #97 review
+    (Nakagawa-master, 2026-09-15)."""
+    return sa.and_(
+        valid_from < occurrence.ends_at,
+        sa.or_(valid_to.is_(None), valid_to > occurrence.starts_at),
+    )
+
+
 def _person_id_for_user(session: Session, user_id: uuid.UUID) -> uuid.UUID:
     return session.execute(sa.select(User.person_id).where(User.id == user_id)).scalar_one()
 
@@ -241,7 +272,15 @@ def has_participation(
     (`EventStaffAssignment`/`EventOccurrenceStaffAssignment`,
     `EventGroupTarget`/`EventOccurrenceGroupTarget`). For a genuinely
     recurring occurrence (`series_id` set), it remains
-    `EventOccurrenceParticipant`, unchanged."""
+    `EventOccurrenceParticipant`, but eligibility is `EventOccurrenceParticipant`'s
+    `[valid_from, valid_to)` *overlapping the occurrence's own
+    `[starts_at, ends_at)` window* (`_participant_overlaps_occurrence`),
+    not "is the person a participant right now". This is what
+    `correct_attendance` relies on to remain possible after a
+    participation has since ended — a correction is inherently about a
+    completed occurrence in the past, so "was a participant of this
+    occurrence" must be evaluated against the occurrence's own time, not
+    the current moment."""
     if occurrence.event_id is not None:
         return bool(
             session.execute(
@@ -262,9 +301,10 @@ def has_participation(
                     sa.select(EventOccurrenceParticipant.id).where(
                         EventOccurrenceParticipant.occurrence_id == occurrence.id,
                         EventOccurrenceParticipant.person_id == person_id,
-                        _active_interval(
+                        _participant_overlaps_occurrence(
                             EventOccurrenceParticipant.valid_from,
                             EventOccurrenceParticipant.valid_to,
+                            occurrence=occurrence,
                         ),
                     )
                 )
@@ -690,6 +730,18 @@ def list_attendance(
     duality as `has_participation` (ADR-0033 §5): `EventParticipation`
     for the occurrence backing an ordinary Event, `EventOccurrenceParticipant`
     for a genuinely recurring occurrence.
+
+    For the recurring branch, roster membership is `EventOccurrenceParticipant`'s
+    `[valid_from, valid_to)` *overlapping the occurrence's own
+    `[starts_at, ends_at)` window*, not "is currently an active
+    participant". Otherwise ending a participation after the occurrence
+    happened would retroactively drop that person — and their already-
+    persisted Attendance row — out of this occurrence's roster/summary,
+    even though the row itself is still in the table (the persisted row
+    surviving participation ending is not the same guarantee as it
+    remaining *visible and counted* here). Symmetrically, a person whose
+    participation only starts after the occurrence's window has already
+    closed does not enter the denominator as "unmarked".
     """
     if occurrence.event_id is not None:
         participants = (
@@ -703,8 +755,10 @@ def list_attendance(
             sa.select(EventOccurrenceParticipant.person_id.label("person_id"))
             .where(
                 EventOccurrenceParticipant.occurrence_id == occurrence.id,
-                _active_interval(
-                    EventOccurrenceParticipant.valid_from, EventOccurrenceParticipant.valid_to
+                _participant_overlaps_occurrence(
+                    EventOccurrenceParticipant.valid_from,
+                    EventOccurrenceParticipant.valid_to,
+                    occurrence=occurrence,
                 ),
             )
             .distinct()
