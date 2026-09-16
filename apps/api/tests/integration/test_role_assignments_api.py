@@ -366,9 +366,7 @@ def test_create_role_assignment_role_name_alone_without_permission_grant_is_forb
         admin_role_id = _baseline_role_id("admin")
         session.add(caller)
         session.commit()
-        session.add(
-            UserRoleAssignment(user_id=caller.id, role_id=admin_role_id, scope_type="all")
-        )
+        session.add(UserRoleAssignment(user_id=caller.id, role_id=admin_role_id, scope_type="all"))
         session.commit()
         caller_id = caller.id
         target_id, _ = _setup_target_with_membership(session, _make_club())
@@ -468,10 +466,41 @@ def test_create_role_assignment_none_scope_without_club_id_succeeds(client: Test
 
 
 @requires_postgres
+def test_create_role_assignment_all_scope_without_club_id_succeeds_as_global(
+    client: TestClient,
+) -> None:
+    """ADR-0026's TH-0089 amendment: `all` is the one scope whose
+    club_id may be either a specific Club or NULL (installation-wide) —
+    mirroring `none`'s own club_id=NULL success case above, unlike
+    `self`/`children`/`own_groups`/`own_events`, which still require one
+    (see the parametrized rejection test below)."""
+    with session_scope() as session:
+        caller_person = _make_person(first_name="Caller")
+        session.add(caller_person)
+        session.commit()
+        caller = _make_user(caller_person)
+        session.add(caller)
+        session.commit()
+        caller_id = caller.id
+        target_id, _ = _setup_target_with_membership(session, _make_club())
+    _grant_permission(caller_id, "role.manage", scope_type="all")
+    _authenticate_as(caller_id)
+    role_id = _baseline_role_id("member")
+
+    response = client.post(
+        "/api/v1/role-assignments",
+        json={"user_id": str(target_id), "role_id": str(role_id), "scope_type": "all"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["club_id"] is None
+    assert response.json()["scope_type"] == "all"
+
+
+@requires_postgres
 @pytest.mark.parametrize(
     "scope_type,include_club_id",
     [
-        ("all", False),
         ("self", False),
         ("children", False),
         ("own_groups", False),
@@ -506,9 +535,7 @@ def test_create_role_assignment_invalid_club_id_combinations_are_rejected(
     if include_club_id:
         payload["club_id"] = str(club_id)
 
-    response = client.post(
-        "/api/v1/role-assignments", json=payload, headers=_csrf_headers(client)
-    )
+    response = client.post("/api/v1/role-assignments", json=payload, headers=_csrf_headers(client))
     assert response.status_code == 422, response.text
     assert response.json()["error"]["code"] == "invalid_role_assignment_scope"
 
@@ -1298,8 +1325,12 @@ def test_full_role_assignment_lifecycle_produces_only_canonical_audit_actions(
     client.post(f"/api/v1/role-assignments/{assignment_id}/revoke", headers=headers)
 
     with session_scope() as session:
-        actions = session.execute(
-            select(AuditLog.action).where(AuditLog.resource_id == uuid.UUID(assignment_id))
-        ).scalars().all()
+        actions = (
+            session.execute(
+                select(AuditLog.action).where(AuditLog.resource_id == uuid.UUID(assignment_id))
+            )
+            .scalars()
+            .all()
+        )
 
     assert set(actions) == {"role_assignment.created", "role_assignment.revoked"}

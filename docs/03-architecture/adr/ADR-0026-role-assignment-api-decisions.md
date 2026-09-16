@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted; partially superseded by ADR-0027 for ClubMembership effectivity.
+Accepted; partially superseded by ADR-0027 for ClubMembership effectivity;
+amended by TH-0089 / Issue #99 for the `all` + `club_id = NULL`
+combination (see "Amendment (TH-0089 / Issue #99)" below).
 
 ## Context
 
@@ -95,6 +97,36 @@ Business mutation and audit insertion occur in the same transaction under ADR-00
 - Ending ClubMembership does not by itself revoke or invalidate an otherwise effective RoleAssignment; see ADR-0027.
 - `role.manage` cannot be used to delegate arbitrary object-scoped role administration or mutate the RBAC catalog.
 - The existing RoleAssignment persistence model requires temporal validity fields to implement this ADR if they are not already present.
+
+## Amendment (TH-0089 / Issue #99): `all` + `club_id = NULL` is canonical
+
+§2's original combination table marked `club_id` "required" for `all`,
+with no exception. §5 of this same ADR, however, already described
+`all + club_id = NULL` as a valid, meaningful combination — "the holder
+may manage RoleAssignments in any Club" — without ever being able to
+create one, since no API or operation in the codebase produced that
+combination (§2's own validator rejected it) until TH-0089 (Issue #99,
+"Initial administrator bootstrap") needed to create exactly this
+combination for the global installation administrator (ADR-0027) and
+surfaced the inconsistency.
+
+This amendment resolves it in favor of §5's own, already-accepted
+description: **`all` is the one scope_type whose `club_id` may be either
+a specific Club (unchanged club-wide meaning) or `NULL` (installation-
+wide — "all resources within the authorized ... system boundary", per
+ADR-0013's own original wording for `all`)**. Every other scope's rule
+is unchanged: `self`/`children`/`own_groups`/`own_events` still require
+a specific `club_id`; `none` still requires `club_id = NULL`.
+
+No new scope name, role, or permission is introduced. The read/
+authorization side needed no change at all —
+`app.authorization.service.scope_matches`/`club_boundary_matches` and
+`app.role_assignments.authorization.role_assignment_visibility_filter`
+already treated an `all + club_id = NULL` row (however it might be
+created) as installation-wide; only the creation-time validator
+(`app.role_assignments.lifecycle.validate_role_assignment_scope`) was
+out of step with the rest of this same ADR. This is a correction of that
+one validator, not a new architectural decision.
 
 ## Non-goals
 

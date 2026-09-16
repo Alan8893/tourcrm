@@ -166,16 +166,17 @@ def test_create_club_scoped_all_scope_assignment_succeeds_and_is_audited() -> No
 
 
 @requires_postgres
-def test_create_all_scope_assignment_without_club_id_is_rejected() -> None:
-    """ADR-0026 §2's canonical creatable-combination table requires
-    club_id even for scope `all` — a global (club_id=NULL) grant for any
-    permission, role.manage included, is never created through this API
-    (no API in this codebase creates global grants; see Issue #19 §9's
-    "no bootstrap administrator"). §5's "all + club_id=NULL manages any
-    Club" describes authorization semantics for an already-existing
-    global assignment (however it was created), not a claim that this
-    endpoint can produce one — see app.role_assignments.authorization's
-    module docstring for the same reasoning applied to the read side."""
+def test_create_all_scope_assignment_without_club_id_succeeds_as_global() -> None:
+    """ADR-0026 §2 originally required club_id even for scope `all`,
+    while §5 (`role.manage`, same ADR) already described `all +
+    club_id=NULL` as valid ("the holder may manage RoleAssignments in
+    any Club") — an internal inconsistency surfaced and resolved by the
+    TH-0089 / Issue #99 amendment (see ADR-0026's own amendment section
+    and app.role_assignments.lifecycle's module docstring): `all` is now
+    the one scope whose club_id may be either NULL (installation-wide)
+    or a specific Club. This is exactly the combination
+    app.authentication.bootstrap.bootstrap_initial_administrator uses
+    for the global installation administrator."""
     with session_scope() as session:
         person = _make_person()
         user = _make_user(person)
@@ -184,19 +185,22 @@ def test_create_all_scope_assignment_without_club_id_is_rejected() -> None:
         session.commit()
         user_id, role_id = user.id, role.id
 
-        with pytest.raises(InvalidRoleAssignmentScopeError):
-            create_role_assignment(
-                session,
-                user_id=user_id,
-                role_id=role_id,
-                scope_type="all",
-                actor_user_id=user_id,
-            )
+        assignment = create_role_assignment(
+            session,
+            user_id=user_id,
+            role_id=role_id,
+            scope_type="all",
+            actor_user_id=user_id,
+        )
+        assert assignment.club_id is None
+        assert assignment.scope_type == "all"
 
-        rows = session.execute(
-            select(UserRoleAssignment).where(UserRoleAssignment.user_id == user_id)
-        ).scalars().all()
-        assert rows == []
+        rows = (
+            session.execute(select(UserRoleAssignment).where(UserRoleAssignment.user_id == user_id))
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
 
 
 @requires_postgres
@@ -254,9 +258,13 @@ def test_create_club_scoped_assignment_without_active_membership_is_rejected() -
         assert exc_info.value.user_id == target_id
         assert exc_info.value.club_id == club_id
 
-        rows = session.execute(
-            select(UserRoleAssignment).where(UserRoleAssignment.user_id == target_id)
-        ).scalars().all()
+        rows = (
+            session.execute(
+                select(UserRoleAssignment).where(UserRoleAssignment.user_id == target_id)
+            )
+            .scalars()
+            .all()
+        )
         assert rows == []
 
 
@@ -285,9 +293,11 @@ def test_create_assignment_with_invalid_scope_combination_is_rejected() -> None:
                 actor_user_id=user_id,
             )
 
-        rows = session.execute(
-            select(UserRoleAssignment).where(UserRoleAssignment.user_id == user_id)
-        ).scalars().all()
+        rows = (
+            session.execute(select(UserRoleAssignment).where(UserRoleAssignment.user_id == user_id))
+            .scalars()
+            .all()
+        )
         assert rows == []
 
 
@@ -345,9 +355,11 @@ def test_create_assignment_rejects_duplicate_overlapping() -> None:
                 actor_user_id=user_id,
             )
 
-        rows = session.execute(
-            select(UserRoleAssignment).where(UserRoleAssignment.user_id == user_id)
-        ).scalars().all()
+        rows = (
+            session.execute(select(UserRoleAssignment).where(UserRoleAssignment.user_id == user_id))
+            .scalars()
+            .all()
+        )
         assert len(rows) == 1
 
 
@@ -387,9 +399,11 @@ def test_reassignment_after_revoke_creates_a_new_row_not_reopening_the_old_one()
         assert second.id != first_id
         assert second.valid_to is None
 
-        rows = session.execute(
-            select(UserRoleAssignment).where(UserRoleAssignment.user_id == user_id)
-        ).scalars().all()
+        rows = (
+            session.execute(select(UserRoleAssignment).where(UserRoleAssignment.user_id == user_id))
+            .scalars()
+            .all()
+        )
         assert len(rows) == 2
         # The original row is untouched (still ended, not reopened).
         original = session.get(UserRoleAssignment, first_id)
