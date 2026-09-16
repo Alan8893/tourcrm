@@ -172,15 +172,25 @@ def _candidate_items_subquery(
         Event.status.in_(CONFLICT_EVENT_STATUSES),
         event_visibility_filter(session, user_id=user_id, permission_code=permission_code),
     ]
-    event_items = sa.select(
-        Event.id.label("id"),
-        sa.literal("event").label("kind"),
-        Event.club_id.label("club_id"),
-        Event.start_at.label("start_at"),
-        Event.end_at.label("end_at"),
-        sa.cast(sa.null(), PG_UUID(as_uuid=True)).label("series_id"),
-        sa.cast(sa.null(), sa.Integer).label("series_version"),
-    ).where(*event_conditions)
+    # ADR-0033 §6: every Event now has exactly one linked EventOccurrence,
+    # so this branch selects FROM event_occurrences (joined to events) —
+    # see app.events.calendar's own identical change for the full
+    # rationale (duplicate-row avoidance; eligibility still reads
+    # `Event.status`, never the mirrored occurrence status).
+    event_items = (
+        sa.select(
+            Event.id.label("id"),
+            sa.literal("event").label("kind"),
+            Event.club_id.label("club_id"),
+            Event.start_at.label("start_at"),
+            Event.end_at.label("end_at"),
+            sa.cast(sa.null(), PG_UUID(as_uuid=True)).label("series_id"),
+            sa.cast(sa.null(), sa.Integer).label("series_version"),
+        )
+        .select_from(EventOccurrence)
+        .join(Event, Event.id == EventOccurrence.event_id)
+        .where(*event_conditions)
+    )
 
     occurrence_conditions: list[sa.ColumnElement[bool]] = [
         EventOccurrence.starts_at < to_at,

@@ -329,9 +329,13 @@ Event может быть адресован нескольким Groups; Group 
 
 ## 11. Attendance
 
-Возможно отдельное представление поверх EventParticipation либо отдельная таблица, если требований объёма и аудита будет недостаточно для общей сущности.
+Resolved by ADR-0032 (Issue #94 / TH-0087): a separate `Attendance` entity, not a representation layered over `EventParticipation`. Attendance identity is exactly `(occurrence_id, person_id)` for a concrete `EventOccurrence` (ADR-0032 §1) — `occurrence_id` is a real, `NOT NULL` FK to `event_occurrences.id`, not a nullable/polymorphic column on `Attendance` itself.
 
-Канонические статусы должны быть определены отдельно и использоваться единообразно.
+**Event → occurrence mapping (ADR-0033):** every ordinary, non-recurring `Event` now has exactly one linked `EventOccurrence` (`EventOccurrence.event_id`, nullable, set only for this case; `EventOccurrence.series_id` is correspondingly nullable too, set only for the recurring case) — created together with the Event and kept in sync with it (app.events.crud). This is a deliberate, narrow amendment to ADR-0028 §13's original "no bridge" stance for exactly this one case, not a general precedent; the recurring materialization/versioning/exception model is otherwise unchanged. See ADR-0033 for the full decision, including why Calendar/Conflict Detection's own Event/EventOccurrence candidate model needed a corresponding, narrow update.
+
+Attendance requires participation for the same occurrence/Person — `EventParticipation` for the occurrence backing an ordinary Event, `EventOccurrenceParticipant` for a genuinely recurring occurrence (the same duality already established for `EventStaffAssignment`/`EventOccurrenceStaffAssignment` and `EventGroupTarget`/`EventOccurrenceGroupTarget`) — it never creates participation and is never deleted when participation ends or the occurrence completes/cancels.
+
+Canonical statuses: exactly `present`/`absent`. Absence reasons are a closed MVP vocabulary (`sick`, `family_reason`, `injury`, `education`, `work`, `other`), not club-configurable and not a CRUD entity.
 
 ## 12. Trip
 

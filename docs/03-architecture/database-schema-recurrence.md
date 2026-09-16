@@ -53,12 +53,13 @@ Constraints and invariants:
 
 ## 2. `event_occurrences`
 
-`EventOccurrence` is the concrete materialized scheduled instance of a Series version. It is an operational entity and is not represented by a separate required `Event` row.
+`EventOccurrence` is the concrete operational scheduled instance — either the materialized instance of a Series version, or (ADR-0033, amending this section) the one instance created together with an ordinary, non-recurring `Event` and kept in sync with it. Either way it is an operational entity with its own snapshot fields, never a bare bridge row that only exists to point at something else.
 
 Fields:
 
 - `id` — PK, UUID;
-- `series_id` — FK to `event_series`;
+- `series_id` — FK to `event_series`, nullable — set only for the recurring case;
+- `event_id` — FK to `events`, nullable — set only for the non-recurring case (ADR-0033); exactly one of `series_id`/`event_id` is set (CHECK);
 - `club_id` — FK to `clubs`;
 - `name` — snapshot;
 - `description` — snapshot, nullable;
@@ -84,11 +85,12 @@ Constraints and invariants:
 - occurrence ID is stable for its entire lifetime;
 - an occurrence may be rebound from one Series version to the next only for the accepted `this and following` boundary operation; it is never recreated merely because a Series version changes;
 - cancelled occurrences cannot be used as the boundary for a new Series version;
-- operational relationships attach to the occurrence.
+- operational relationships attach to the occurrence;
+- for the non-recurring case (ADR-0033): `UNIQUE(event_id)` — at most one occurrence per Event, ever; the occurrence's own snapshot fields (`name`/`description`/`event_type`/`starts_at`/`ends_at`/`timezone`) are kept in sync with the Event's own fields on every Event update, in the same transaction, never recreated; `status` is mapped from the Event's own status vocabulary (`published`/`in_progress`/`completed`/`cancelled` map onto the identically-named or `scheduled`-paired occurrence status; `draft`/`archived` leave the occurrence's status unchanged, since the occurrence vocabulary has no equivalent for either).
 
 ### Materialization idempotency key
 
-The database must provide a uniqueness boundary that prevents duplicate materialization of the same logical occurrence. The implementation must use a stable recurrence identity derived from the Series version and the canonical recurrence position/slot. The exact physical key/index implementation is an implementation detail of the migration and must preserve idempotency under concurrent materializers.
+The database must provide a uniqueness boundary that prevents duplicate materialization of the same logical occurrence. The implementation must use a stable recurrence identity derived from the Series version and the canonical recurrence position/slot. The exact physical key/index implementation is an implementation detail of the migration and must preserve idempotency under concurrent materializers. This key (`UNIQUE(series_id, recurrence_anchor_at)`) applies only to the recurring case; the non-recurring case's own uniqueness boundary is `UNIQUE(event_id)` instead (see above) — `recurrence_anchor_at` carries no idempotency meaning there (no RRULE position exists to protect against re-materializing).
 
 ## 3. `event_occurrence_exceptions`
 

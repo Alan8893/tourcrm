@@ -134,7 +134,11 @@ class EventOccurrenceExceptionOut(BaseModel):
 
 class EventOccurrenceOut(BaseModel):
     id: UUID
-    series_id: UUID
+    # Nullable since ADR-0033: the occurrence backing a non-recurring
+    # Event has series_id=None (event_id set instead — not exposed on
+    # this recurrence-API schema, whose identity is the occurrence's own
+    # `id`).
+    series_id: Optional[UUID]
     club_id: UUID
     name: str
     description: Optional[str]

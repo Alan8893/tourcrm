@@ -316,18 +316,30 @@ For recurring schedules.
 
 ### `event_occurrences`
 
-Materialized occurrence records derived from a series.
+Materialized occurrence records — from a recurring series, or 1:1 with
+an ordinary, non-recurring Event (ADR-0033, resolving what this section
+used to leave open as "nullable/required according to implementation
+strategy"):
 
 - `id` PK
-- `series_id` FK
-- `event_id` FK nullable/required according to implementation strategy
-- `occurrence_start_at`
-- `occurrence_end_at`
+- `series_id` FK, nullable — set only for the recurring case
+- `event_id` FK, nullable — set only for the non-recurring case (created
+  together with the Event and kept in sync with it, app.events.crud)
+- CHECK: exactly one of `series_id`/`event_id` is set
+- `starts_at`/`ends_at` (current effective schedule)
+- `recurrence_anchor_at` (materialization idempotency key — recurring
+  case only; for the non-recurring case it carries no idempotency
+  meaning, see database-schema-recurrence.md §2)
 - `status`
-- `is_exception`
 - timestamps
 
-An occurrence is the unit to which attendance and operational changes attach.
+`UNIQUE(event_id)` (at most one occurrence per Event) and
+`UNIQUE(series_id, recurrence_anchor_at)` (the existing recurring
+materialization boundary) coexist without conflict — PostgreSQL treats
+every NULL as distinct, so neither constraint is triggered by rows
+belonging to the other case.
+
+An occurrence is the unit to which attendance and operational changes attach — for every Event, recurring or not (ADR-0033).
 
 ### `event_participations`
 
@@ -346,7 +358,39 @@ Constraints (implemented):
 
 #### Deferred (not implemented) concepts
 
-`attendance_status`, `participant_role`, `registered_at`, `attendance_marked_at`, `absence_reason`, `result`, `notes` are possible future attributes and are **not** part of the currently implemented model. Attendance is treated as a dependency separate from EventParticipation (ADR-0023 §4; see also `domain-model.md` §11 "Attendance") and requires its own separate architectural/business decision before any of these are introduced.
+`participant_role`, `registered_at`, `result`, `notes` remain possible future `event_participations` attributes and are **not** part of the currently implemented model; the full `registration_status` transition graph and registration policy also remain a separate deferred business decision. `attendance_status`/`attendance_marked_at`/`absence_reason` are no longer deferred: ADR-0032 (Issue #94 / TH-0087) resolved Attendance as its own separate table (`attendance`, not an `event_participations` column) — see `### attendance` below and `domain-model.md` §11 "Attendance".
+
+### `attendance`
+
+Canonical model per ADR-0032 §1 (Issue #94 / TH-0087) — occurrence-only identity, exactly as accepted:
+
+- `id` PK
+- `occurrence_id` FK to `event_occurrences.id`, `NOT NULL`
+- `person_id` FK
+- `status` — exactly `present`/`absent`
+- `absence_reason` — nullable, closed vocabulary (`sick`, `family_reason`, `injury`, `education`, `work`, `other`), not club-configurable
+- `comment` — nullable, allowed only for `absent`
+- timestamps
+
+Constraints (implemented):
+
+- `UNIQUE(occurrence_id, person_id)` — the single ordinary DB constraint ADR-0032 §1 requires;
+- `present` requires both `absence_reason` and `comment` to be `NULL` (CHECK).
+
+No `event_id` column on `attendance` itself and no per-object-type
+discriminator: an earlier draft of this implementation added a second
+nullable `event_id` FK directly on `Attendance` to also support
+ordinary, non-recurring `Event`s. That was reverted on review — it
+re-decided ADR-0032's canonical identity rather than resolving a
+technical detail. **Resolved instead by ADR-0033** at the
+`event_occurrences` level (see `### event_occurrences` above): every
+ordinary Event now has exactly one linked `EventOccurrence`
+(`event_occurrences.event_id`), so `attendance.occurrence_id` reaches an
+ordinary Event's attendance the same way it reaches a recurring one's —
+through that one FK column, unchanged, with no Attendance-level
+polymorphism at all.
+
+No `valid_from`/`valid_to`: unlike `EventGroupTarget`/`EventStaffAssignment`/`EventParticipation`, Attendance is a single current mark per occurrence/Person pair, corrected in place (last-write-wins, ADR-0032 §12) rather than a historical relationship timeline.
 
 ## 10. Trips
 
