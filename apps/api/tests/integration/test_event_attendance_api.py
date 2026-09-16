@@ -54,6 +54,17 @@ from .conftest import requires_postgres
 
 _START = datetime.datetime(2026, 9, 20, 0, 0, tzinfo=datetime.timezone.utc)
 
+# For the historical-roster regression tests below: an occurrence dated
+# safely in the past (unlike `_START`, which is in the future relative to
+# when this suite actually runs), so that a `valid_to`/`valid_from` set
+# relative to it is *also* safely in the past — making the old, now()-keyed
+# `_active_interval` predicate and the fixed `_participant_overlaps_occurrence`
+# predicate deterministically disagree, independent of the wall-clock date
+# the suite happens to run on (PR #101 review, Nakagawa-master: a
+# future-dated occurrence let the old and new predicates coincidentally
+# agree until the calendar caught up to the fixture date).
+_PAST_START = datetime.datetime(2020, 1, 10, 0, 0, tzinfo=datetime.timezone.utc)
+
 
 @pytest.fixture
 def client() -> TestClient:
@@ -301,10 +312,11 @@ def _get_attendance(client: TestClient, occurrence_id: uuid.UUID, **params: obje
 
 
 def _setup_occurrence_with_participant(
-    status: str = "scheduled",
+    status: str = "scheduled", **occurrence_overrides: object
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
     """Returns (club_id, occurrence_id, person_id, actor_user_id) with an
-    active EventOccurrenceParticipant for person on occurrence."""
+    active EventOccurrenceParticipant for person on occurrence.
+    `occurrence_overrides` (e.g. `starts_at`) is forwarded to `_make_occurrence`."""
     with session_scope() as session:
         club = _make_club()
         person = _make_person()
@@ -313,7 +325,9 @@ def _setup_occurrence_with_participant(
         session.add_all([club, person, actor_person, actor_user])
         session.commit()
         series = _make_series(session, club_id=club.id)
-        occurrence = _make_occurrence(series=series, club_id=club.id, status=status)
+        occurrence = _make_occurrence(
+            series=series, club_id=club.id, status=status, **occurrence_overrides
+        )
         session.add(occurrence)
         session.commit()
         session.add(_make_occurrence_participant(occurrence, person))
@@ -975,8 +989,20 @@ def test_completed_attendance_remains_visible_and_correctable_after_participatio
     ended (PR #97 review). Both the GET roster/summary and the
     correction endpoint must key participation eligibility off the
     occurrence's own time window, not "is the person an active
-    participant right now"."""
-    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
+    participant right now".
+
+    The occurrence is dated in the past (`_PAST_START`) and `valid_to`
+    is set shortly after it, i.e. still safely in the past relative to
+    whenever this suite actually runs — so the pre-fix, now()-keyed
+    `_active_interval` check would already exclude this participant
+    (`now() < valid_to` is false) while the fixed occurrence-window-
+    overlap check correctly still includes them. A future-dated
+    occurrence would let both checks coincidentally agree until the
+    calendar caught up to the fixture date (PR #101 review,
+    Nakagawa-master)."""
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant(
+        starts_at=_PAST_START
+    )
     _grant_permission(user_id, "attendance.update", scope_type="all", club_id=club_id)
     _grant_permission(user_id, "attendance.read", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
@@ -991,10 +1017,10 @@ def test_completed_attendance_remains_visible_and_correctable_after_participatio
                 EventOccurrenceParticipant.person_id == person_id,
             )
         ).scalar_one()
-        # Ends after the occurrence itself took place, not "now" — the
-        # participation was valid throughout the occurrence and only
-        # later ended.
-        participant.valid_to = occurrence.ends_at + datetime.timedelta(hours=1)
+        # Ends shortly after the occurrence itself took place, not "now"
+        # — the participation was valid throughout the occurrence and
+        # only later (but still, from today's perspective, long ago) ended.
+        participant.valid_to = occurrence.ends_at + datetime.timedelta(days=1)
         session.commit()
 
     get_response = _get_attendance(client, occurrence_id)
@@ -1034,8 +1060,16 @@ def test_unmarked_participant_remains_in_historical_roster_after_participation_e
     """The historical roster/denominator must not shrink just because
     nobody marked attendance before the participation validity ended —
     "current roster" and "historical occurrence roster" are different
-    things (PR #97 review)."""
-    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant()
+    things (PR #97 review).
+
+    As in the previous test, the occurrence is dated in the past
+    (`_PAST_START`) with `valid_to` set shortly after it — safely in the
+    past relative to whenever this suite runs — so the pre-fix check
+    would already exclude this participant, unlike the fixed one (PR
+    #101 review)."""
+    club_id, occurrence_id, person_id, user_id = _setup_occurrence_with_participant(
+        starts_at=_PAST_START
+    )
     _grant_permission(user_id, "attendance.read", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
@@ -1047,7 +1081,7 @@ def test_unmarked_participant_remains_in_historical_roster_after_participation_e
                 EventOccurrenceParticipant.person_id == person_id,
             )
         ).scalar_one()
-        participant.valid_to = occurrence.ends_at + datetime.timedelta(hours=1)
+        participant.valid_to = occurrence.ends_at + datetime.timedelta(days=1)
         occurrence.status = "completed"
         session.commit()
 
@@ -1069,7 +1103,16 @@ def test_participant_joining_after_occurrence_window_is_not_in_historical_roster
     """The mirror image of the two tests above: a participation that
     only starts after the occurrence's own window has already closed
     must not silently enter that occurrence's historical denominator as
-    "unmarked" (PR #97 review)."""
+    "unmarked" (PR #97 review).
+
+    The occurrence is dated in the past (`_PAST_START`) and `valid_from`
+    is set shortly after it, with no `valid_to` — i.e. this participation
+    is still "current" as of whenever this suite runs. The pre-fix,
+    now()-keyed `_active_interval` check would therefore *include* this
+    person (they're an active participant right now), while the fixed
+    occurrence-window-overlap check correctly excludes them, since their
+    participation never overlapped the occurrence's own window (PR #101
+    review, Nakagawa-master)."""
     with session_scope() as session:
         club = _make_club()
         person = _make_person()
@@ -1078,7 +1121,9 @@ def test_participant_joining_after_occurrence_window_is_not_in_historical_roster
         session.add_all([club, person, actor_person, actor_user])
         session.commit()
         series = _make_series(session, club_id=club.id)
-        occurrence = _make_occurrence(series=series, club_id=club.id, status="completed")
+        occurrence = _make_occurrence(
+            series=series, club_id=club.id, status="completed", starts_at=_PAST_START
+        )
         session.add(occurrence)
         session.commit()
         session.add(
@@ -1086,6 +1131,7 @@ def test_participant_joining_after_occurrence_window_is_not_in_historical_roster
                 occurrence,
                 person,
                 valid_from=occurrence.ends_at + datetime.timedelta(days=1),
+                valid_to=None,
             )
         )
         session.commit()
