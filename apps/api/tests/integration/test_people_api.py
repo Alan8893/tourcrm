@@ -1,8 +1,9 @@
 """HTTP-level integration tests for /api/v1/persons and
-/api/v1/memberships (Issue #62): deterministic backend authorization,
-canonical scope resolution (`all`/`own_groups`/`self`/`none`), IDOR
-regression coverage, sensitive-field withholding, audit recording, and
-transaction/fail-closed behavior.
+/api/v1/memberships (Issue #62, extended by TH-0102): deterministic
+backend authorization, canonical scope resolution
+(`all`/`own_groups`/`self`/`children`/`none`), IDOR regression coverage,
+sensitive-field withholding, audit recording, and transaction/fail-closed
+behavior.
 
 Against the REAL shipped app (app.main.app) and a real PostgreSQL
 database, matching tests/integration/test_events_api.py's pattern.
@@ -14,6 +15,7 @@ Run with a reachable PostgreSQL instance:
 """
 
 import datetime
+import threading
 import uuid
 
 import pytest
@@ -119,6 +121,20 @@ def _make_group_instructor_assignment(
     }
     defaults.update(overrides)
     return GroupInstructorAssignment(**defaults)  # type: ignore[arg-type]
+
+
+def _make_guardian_relationship(
+    guardian: Person, child: Person, **overrides: object
+) -> GuardianRelationship:
+    defaults: dict[str, object] = {
+        "guardian_person_id": guardian.id,
+        "child_person_id": child.id,
+        "relationship_type": "parent",
+        "status": "active",
+        "valid_from": _utc(2020, 1, 1),
+    }
+    defaults.update(overrides)
+    return GuardianRelationship(**defaults)  # type: ignore[arg-type]
 
 
 def _grant_permission(
@@ -1377,6 +1393,48 @@ def test_create_membership_overlapping_active_returns_409(client: TestClient) ->
 
 
 @requires_postgres
+def test_membership_self_scope_grants_access_to_own_membership(client: TestClient) -> None:
+    """ADR-0035 §7.3: `member` reads their own membership data via
+    `self` scope."""
+    with session_scope() as session:
+        club = _make_club()
+        member_person = _make_person()
+        member_user = _make_user(member_person)
+        session.add_all([club, member_person, member_user])
+        session.commit()
+        membership = _make_club_membership(club, member_person)
+        session.add(membership)
+        session.commit()
+        membership_id, member_user_id = membership.id, member_user.id
+    _grant_permission(member_user_id, "membership.read", scope_type="self")
+    _authenticate_as(member_user_id)
+
+    response = client.get(f"/api/v1/memberships/{membership_id}")
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == str(membership_id)
+
+
+@requires_postgres
+def test_membership_self_scope_denies_other_persons_membership(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        other_person = _make_person()
+        member_person = _make_person()
+        member_user = _make_user(member_person)
+        session.add_all([club, other_person, member_person, member_user])
+        session.commit()
+        membership = _make_club_membership(club, other_person)
+        session.add(membership)
+        session.commit()
+        membership_id, member_user_id = membership.id, member_user.id
+    _grant_permission(member_user_id, "membership.read", scope_type="self")
+    _authenticate_as(member_user_id)
+
+    response = client.get(f"/api/v1/memberships/{membership_id}")
+    assert response.status_code == 404, response.text
+
+
+@requires_postgres
 def test_get_membership_all_scope_succeeds(client: TestClient) -> None:
     with session_scope() as session:
         club = _make_club()
@@ -1582,6 +1640,175 @@ def test_get_membership_of_other_club_returns_404(client: TestClient) -> None:
     assert response.status_code == 404, response.text
 
 
+# --- Membership: guardian `children` scope (ADR-0035 §7.3, TH-0102) -------
+
+
+@requires_postgres
+def test_membership_children_scope_grants_access_to_own_child(client: TestClient) -> None:
+    """A Guardian with an active GuardianRelationship to the membership's
+    Person may read that membership through the `children` scope."""
+    with session_scope() as session:
+        club = _make_club()
+        child_person = _make_person()
+        guardian_person = _make_person()
+        guardian_user = _make_user(guardian_person)
+        session.add_all([club, child_person, guardian_person, guardian_user])
+        session.commit()
+        session.add(_make_guardian_relationship(guardian_person, child_person))
+        membership = _make_club_membership(club, child_person)
+        session.add(membership)
+        session.commit()
+        membership_id, guardian_user_id = membership.id, guardian_user.id
+    _grant_permission(guardian_user_id, "membership.read", scope_type="children")
+    _authenticate_as(guardian_user_id)
+
+    response = client.get(f"/api/v1/memberships/{membership_id}")
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == str(membership_id)
+
+
+@requires_postgres
+def test_membership_children_scope_denies_unrelated_person(client: TestClient) -> None:
+    """`children` scope must not grant access to a Person the requester
+    has no active GuardianRelationship to — a bare `membership.read`
+    grant with this scope must not become a global read."""
+    with session_scope() as session:
+        club = _make_club()
+        unrelated_person = _make_person()
+        guardian_person = _make_person()
+        guardian_user = _make_user(guardian_person)
+        session.add_all([club, unrelated_person, guardian_person, guardian_user])
+        session.commit()
+        membership = _make_club_membership(club, unrelated_person)
+        session.add(membership)
+        session.commit()
+        membership_id, guardian_user_id = membership.id, guardian_user.id
+    _grant_permission(guardian_user_id, "membership.read", scope_type="children")
+    _authenticate_as(guardian_user_id)
+
+    response = client.get(f"/api/v1/memberships/{membership_id}")
+    assert response.status_code == 404, response.text
+
+
+@requires_postgres
+def test_membership_children_scope_denies_inactive_relationship_status(
+    client: TestClient,
+) -> None:
+    """A stored `status != active` GuardianRelationship (e.g. `revoked`)
+    must not satisfy `children` scope even though the row still exists."""
+    with session_scope() as session:
+        club = _make_club()
+        child_person = _make_person()
+        guardian_person = _make_person()
+        guardian_user = _make_user(guardian_person)
+        session.add_all([club, child_person, guardian_person, guardian_user])
+        session.commit()
+        session.add(
+            _make_guardian_relationship(guardian_person, child_person, status="revoked")
+        )
+        membership = _make_club_membership(club, child_person)
+        session.add(membership)
+        session.commit()
+        membership_id, guardian_user_id = membership.id, guardian_user.id
+    _grant_permission(guardian_user_id, "membership.read", scope_type="children")
+    _authenticate_as(guardian_user_id)
+
+    response = client.get(f"/api/v1/memberships/{membership_id}")
+    assert response.status_code == 404, response.text
+
+
+@requires_postgres
+def test_membership_children_scope_denies_expired_relationship_interval(
+    client: TestClient,
+) -> None:
+    """A GuardianRelationship whose `valid_to` has already passed is
+    read-time `inactive` (people-api.md §18) and must not satisfy
+    `children` scope even though the stored `status` column is still
+    `active`."""
+    with session_scope() as session:
+        club = _make_club()
+        child_person = _make_person()
+        guardian_person = _make_person()
+        guardian_user = _make_user(guardian_person)
+        session.add_all([club, child_person, guardian_person, guardian_user])
+        session.commit()
+        session.add(
+            _make_guardian_relationship(
+                guardian_person,
+                child_person,
+                valid_from=_utc(2020, 1, 1),
+                valid_to=_utc(2021, 1, 1),
+            )
+        )
+        membership = _make_club_membership(club, child_person)
+        session.add(membership)
+        session.commit()
+        membership_id, guardian_user_id = membership.id, guardian_user.id
+    _grant_permission(guardian_user_id, "membership.read", scope_type="children")
+    _authenticate_as(guardian_user_id)
+
+    response = client.get(f"/api/v1/memberships/{membership_id}")
+    assert response.status_code == 404, response.text
+
+
+@requires_postgres
+def test_list_memberships_children_scope_returns_only_own_children(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        own_child = _make_person()
+        other_child = _make_person()
+        guardian_person = _make_person()
+        guardian_user = _make_user(guardian_person)
+        session.add_all([club, own_child, other_child, guardian_person, guardian_user])
+        session.commit()
+        session.add(_make_guardian_relationship(guardian_person, own_child))
+        own_membership = _make_club_membership(club, own_child)
+        other_membership = _make_club_membership(club, other_child)
+        session.add_all([own_membership, other_membership])
+        session.commit()
+        own_membership_id = own_membership.id
+        other_membership_id = other_membership.id
+        guardian_user_id = guardian_user.id
+    _grant_permission(guardian_user_id, "membership.read", scope_type="children")
+    _authenticate_as(guardian_user_id)
+
+    response = client.get("/api/v1/memberships")
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(own_membership_id) in ids
+    assert str(other_membership_id) not in ids
+
+
+@requires_postgres
+def test_person_memberships_children_scope_grants_history_access(client: TestClient) -> None:
+    """`GET /persons/{person_id}/memberships` for a Guardian's own child
+    is governed by the same `children` scope as the top-level list/detail
+    endpoints (people-api.md §7.3/§13)."""
+    with session_scope() as session:
+        club = _make_club()
+        child_person = _make_person()
+        guardian_person = _make_person()
+        guardian_user = _make_user(guardian_person)
+        session.add_all([club, child_person, guardian_person, guardian_user])
+        session.commit()
+        session.add(_make_guardian_relationship(guardian_person, child_person))
+        membership = _make_club_membership(club, child_person)
+        session.add(membership)
+        session.commit()
+        child_id, membership_id, guardian_user_id = (
+            child_person.id,
+            membership.id,
+            guardian_user.id,
+        )
+    _grant_permission(guardian_user_id, "membership.read", scope_type="children")
+    _authenticate_as(guardian_user_id)
+
+    response = client.get(f"/api/v1/persons/{child_id}/memberships")
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(membership_id) in ids
+
+
 @requires_postgres
 def test_person_memberships_endpoint_returns_person_history(client: TestClient) -> None:
     with session_scope() as session:
@@ -1737,6 +1964,248 @@ def test_transition_active_to_suspended_succeeds(client: TestClient) -> None:
     # active -> suspended does not end the membership period: no
     # membership.ended row is emitted for it.
     assert _latest_audit_row(action="membership.ended", resource_id=membership_id) is None
+
+
+@requires_postgres
+def test_transition_pending_to_active_succeeds(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        session.add_all([club, person, requester_person, requester_user])
+        session.commit()
+        membership = _make_club_membership(club, person, status="pending")
+        session.add(membership)
+        session.commit()
+        membership_id, user_id = membership.id, requester_user.id
+    _grant_permission(user_id, "membership.manage", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        f"/api/v1/memberships/{membership_id}/status",
+        json={"status": "active"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "active"
+    assert response.json()["left_at"] is None
+
+
+@requires_postgres
+def test_transition_pending_to_archived_leaves_left_at_null(client: TestClient) -> None:
+    """Issue #62 accepted decisions / TH-0102: `pending -> archived` is
+    the one ENDING_STATUSES transition that must NOT set `left_at` —
+    the membership period never actually started, so there is no
+    "leave" moment to record.
+    """
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        session.add_all([club, person, requester_person, requester_user])
+        session.commit()
+        membership = _make_club_membership(club, person, status="pending")
+        session.add(membership)
+        session.commit()
+        membership_id, user_id = membership.id, requester_user.id
+    _grant_permission(user_id, "membership.manage", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        f"/api/v1/memberships/{membership_id}/status",
+        json={"status": "archived"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "archived"
+    assert response.json()["left_at"] is None
+
+
+@requires_postgres
+def test_transition_active_to_archived_sets_left_at(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        session.add_all([club, person, requester_person, requester_user])
+        session.commit()
+        membership = _make_club_membership(club, person, status="active")
+        session.add(membership)
+        session.commit()
+        membership_id, user_id = membership.id, requester_user.id
+    _grant_permission(user_id, "membership.manage", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        f"/api/v1/memberships/{membership_id}/status",
+        json={"status": "archived"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "archived"
+    assert response.json()["left_at"] is not None
+
+
+@requires_postgres
+def test_transition_suspended_to_active_succeeds(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        session.add_all([club, person, requester_person, requester_user])
+        session.commit()
+        membership = _make_club_membership(club, person, status="suspended")
+        session.add(membership)
+        session.commit()
+        membership_id, user_id = membership.id, requester_user.id
+    _grant_permission(user_id, "membership.manage", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        f"/api/v1/memberships/{membership_id}/status",
+        json={"status": "active"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "active"
+    assert response.json()["left_at"] is None
+
+
+@requires_postgres
+def test_transition_suspended_to_inactive_sets_left_at(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        session.add_all([club, person, requester_person, requester_user])
+        session.commit()
+        membership = _make_club_membership(club, person, status="suspended")
+        session.add(membership)
+        session.commit()
+        membership_id, user_id = membership.id, requester_user.id
+    _grant_permission(user_id, "membership.manage", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        f"/api/v1/memberships/{membership_id}/status",
+        json={"status": "inactive"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "inactive"
+    assert response.json()["left_at"] is not None
+    assert _latest_audit_row(action="membership.ended", resource_id=membership_id) is not None
+
+
+@requires_postgres
+def test_transition_suspended_to_archived_sets_left_at(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        session.add_all([club, person, requester_person, requester_user])
+        session.commit()
+        membership = _make_club_membership(club, person, status="suspended")
+        session.add(membership)
+        session.commit()
+        membership_id, user_id = membership.id, requester_user.id
+    _grant_permission(user_id, "membership.manage", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        f"/api/v1/memberships/{membership_id}/status",
+        json={"status": "archived"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "archived"
+    assert response.json()["left_at"] is not None
+
+
+@requires_postgres
+def test_transition_inactive_to_archived_succeeds(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        session.add_all([club, person, requester_person, requester_user])
+        session.commit()
+        membership = _make_club_membership(
+            club, person, status="inactive", left_at=_utc(2025, 1, 1)
+        )
+        session.add(membership)
+        session.commit()
+        membership_id, user_id = membership.id, requester_user.id
+    _grant_permission(user_id, "membership.manage", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        f"/api/v1/memberships/{membership_id}/status",
+        json={"status": "archived"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "archived"
+    # left_at was already set (inactive is itself an ENDING_STATUSES value)
+    # and must not be rewritten by this further ending transition.
+    assert response.json()["left_at"] == "2025-01-01T00:00:00Z"
+
+
+@requires_postgres
+def test_transition_pending_to_suspended_is_rejected(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        session.add_all([club, person, requester_person, requester_user])
+        session.commit()
+        membership = _make_club_membership(club, person, status="pending")
+        session.add(membership)
+        session.commit()
+        membership_id, user_id = membership.id, requester_user.id
+    _grant_permission(user_id, "membership.manage", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        f"/api/v1/memberships/{membership_id}/status",
+        json={"status": "suspended"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["error"]["code"] == "invalid_membership_transition"
+
+
+@requires_postgres
+def test_transition_pending_to_inactive_is_rejected(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        session.add_all([club, person, requester_person, requester_user])
+        session.commit()
+        membership = _make_club_membership(club, person, status="pending")
+        session.add(membership)
+        session.commit()
+        membership_id, user_id = membership.id, requester_user.id
+    _grant_permission(user_id, "membership.manage", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        f"/api/v1/memberships/{membership_id}/status",
+        json={"status": "inactive"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["error"]["code"] == "invalid_membership_transition"
 
 
 @requires_postgres
@@ -1992,6 +2461,80 @@ def test_rejoin_after_inactive_creates_new_membership_row(client: TestClient) ->
     assert {str(old_membership_id), new_membership_id} <= ids
 
 
+# --- Membership: concurrent conflicting lifecycle updates ------------------
+
+
+@requires_postgres
+def test_concurrent_conflicting_status_transitions_only_one_succeeds(
+    client: TestClient,
+) -> None:
+    """ADR-0022 §6's transactional-locking requirement, applied to
+    ClubMembership lifecycle: `_get_authorized_membership_or_404(...,
+    lock=True)` takes `SELECT ... FOR UPDATE` on the row for the status
+    endpoint, so two concurrent transitions of the *same already-terminal
+    target* must serialize rather than race — the second request's locked
+    read must observe the first request's already-committed `archived`
+    status and correctly reject its own `archived -> archived` attempt
+    (not in ALLOWED_STATUS_TRANSITIONS), rather than both succeeding from
+    a stale, pre-lock view of `active`.
+
+    This also proves `left_at` is set exactly once and exactly one
+    `membership.ended` audit row is emitted despite two concurrent
+    requests attempting the same ending transition.
+    """
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        session.add_all([club, person, requester_person, requester_user])
+        session.commit()
+        membership = _make_club_membership(club, person, status="active")
+        session.add(membership)
+        session.commit()
+        membership_id, user_id = membership.id, requester_user.id
+    _grant_permission(user_id, "membership.manage", scope_type="all")
+    _authenticate_as(user_id)
+
+    start_gate = threading.Barrier(2, timeout=10)
+    results: dict[str, int] = {}
+
+    def attempt(name: str) -> None:
+        start_gate.wait()
+        response = client.post(
+            f"/api/v1/memberships/{membership_id}/status",
+            json={"status": "archived"},
+            headers=_csrf_headers(client),
+        )
+        results[name] = response.status_code
+
+    thread_a = threading.Thread(target=attempt, args=("a",))
+    thread_b = threading.Thread(target=attempt, args=("b",))
+    thread_a.start()
+    thread_b.start()
+    thread_a.join(timeout=15)
+    thread_b.join(timeout=15)
+
+    assert sorted(results.values()) == [200, 409], results
+
+    with session_scope() as verify:
+        row = verify.get(ClubMembership, membership_id)
+        assert row is not None
+        assert row.status == "archived"
+        assert row.left_at is not None
+
+        ended_rows = (
+            verify.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "membership.ended", AuditLog.resource_id == membership_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(ended_rows) == 1
+
+
 @requires_postgres
 def test_transition_without_permission_returns_404(client: TestClient) -> None:
     with session_scope() as session:
@@ -2076,6 +2619,58 @@ def test_person_create_rolls_back_when_audit_insert_fails() -> None:
             select(Person).where(Person.first_name == "Ghost")
         ).scalar_one_or_none()
         assert remaining is None, "Person must not survive a rolled-back audit insert"
+
+
+@requires_postgres
+def test_transition_membership_status_rolls_back_when_audit_insert_fails() -> None:
+    """Same fail-closed contract (ADR-0024 §5 / ADR-0035 §13) applied to
+    `app.people.service.transition_membership_status`: if the
+    `membership.status_changed` audit insert fails, the ClubMembership's
+    `status`/`left_at` mutation must not survive either — both statements
+    execute inside the same DB transaction and roll back together.
+    """
+    from app.people.service import transition_membership_status
+
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        membership = _make_club_membership(club, person, status="active")
+        session.add(membership)
+        session.commit()
+        membership_id = membership.id
+
+        # actor_user_id references a nonexistent User -> the AuditLog
+        # actor_user_id FK violates on flush inside
+        # transition_membership_status's own try/except, forcing a
+        # rollback of the status/left_at mutation too.
+        bogus_actor_id = uuid.uuid4()
+        with pytest.raises(IntegrityError):
+            transition_membership_status(
+                session,
+                membership=membership,
+                new_status="inactive",
+                reason=None,
+                actor_user_id=bogus_actor_id,
+            )
+
+    with session_scope() as verify_session:
+        row = verify_session.get(ClubMembership, membership_id)
+        assert row is not None
+        assert row.status == "active", "status must not survive a rolled-back audit insert"
+        assert row.left_at is None, "left_at must not survive a rolled-back audit insert"
+
+        ended_rows = (
+            verify_session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "membership.ended", AuditLog.resource_id == membership_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert ended_rows == []
 
 
 @requires_postgres
