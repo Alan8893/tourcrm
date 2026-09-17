@@ -43,6 +43,12 @@ to check a relationship against, so it keeps using the generic
 (`club_id IS NULL`) `all` assignment, matching Issue #62's explicit
 "Creating a Person has no Club relationship yet and therefore requires
 global `all`" decision.
+
+`is_system_admin_person_update_grant` (ADR-0035 §5, TH-0101) is a second,
+narrower exception: `birth_date` may be changed only by the canonical
+system `admin` role, not merely by *some* role holding an `all`-scope
+`person.update` grant — see that function's own docstring for why a bare
+scope check is not equivalent to "is admin" here.
 """
 
 import uuid
@@ -51,8 +57,9 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
+from app.authentication.bootstrap import ADMIN_ROLE_CODE
 from app.authorization.context import ResourceContext
-from app.authorization.service import applicable_assignments
+from app.authorization.service import applicable_assignments, club_boundary_matches, scope_matches
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 from app.db.identity import ClubMembership, Person, User
 
@@ -213,6 +220,39 @@ def is_person_visible(
     return bool(session.execute(stmt).scalar())
 
 
+def is_system_admin_person_update_grant(session: Session, user_id: uuid.UUID) -> bool:
+    """ADR-0035 §5: only the canonical system `admin` role may change
+    `birth_date`, including on the admin's own Person. This is a
+    role-identity requirement, not merely a scope one: a bare `all`-scope
+    `person.update` grant via *any* role (e.g. a custom, non-system role
+    an installation happens to seed with that exact grant) is not
+    "admin" in the ADR-0035 sense and must not pass this check, even
+    though such a grant is otherwise sufficient for ordinary
+    `person.update` access to every field except `birth_date`.
+
+    Reuses the same identity `app.authentication.bootstrap` already uses
+    to recognize the canonical administrator (`Role.code ==
+    ADMIN_ROLE_CODE` *and* `Role.is_system`) — never a bare, ad hoc
+    `Role.code == "admin"` string comparison invented in this module —
+    and the same `applicable_assignments`/`club_boundary_matches`/
+    `scope_matches` building blocks `app.authorization.service.can()`
+    itself uses for its scope evaluation, evaluated against an empty
+    `ResourceContext` (global reach only, matching `person.create`'s own
+    precedent in this module): only a currently-effective, globally
+    (`club_id IS NULL`) `all`-scope assignment through that one role
+    satisfies it.
+    """
+    global_all_context = ResourceContext()
+    assignments = applicable_assignments(session, user_id, "person.update")
+    return any(
+        assignment.role.code == ADMIN_ROLE_CODE
+        and assignment.role.is_system
+        and club_boundary_matches(assignment.club_id, global_all_context.club_id)
+        and scope_matches(assignment.scope_type, global_all_context)
+        for assignment in assignments
+    )
+
+
 def build_membership_resource_context(
     session: Session, *, membership: ClubMembership, requester_user_id: uuid.UUID
 ) -> ResourceContext:
@@ -269,6 +309,7 @@ def membership_visibility_filter(
 __all__ = [
     "person_visibility_filter",
     "is_person_visible",
+    "is_system_admin_person_update_grant",
     "build_membership_resource_context",
     "membership_visibility_filter",
 ]

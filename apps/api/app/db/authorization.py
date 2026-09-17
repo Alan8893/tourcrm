@@ -67,6 +67,7 @@ _NULL_SENTINEL_UUID = "00000000-0000-0000-0000-000000000000"
 
 DOCUMENTED_PERMISSION_CODES = (
     "person.read",
+    "person.create",
     "person.update",
     "membership.read",
     "membership.manage",
