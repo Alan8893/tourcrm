@@ -1809,6 +1809,249 @@ def test_person_memberships_children_scope_grants_history_access(client: TestCli
     assert str(membership_id) in ids
 
 
+# --- Membership: multiple simultaneous assignments are independent branches
+# (ADR-0035 §7.3 regression — `children` combined with every other scope) --
+
+
+@requires_postgres
+def test_membership_self_and_children_scopes_are_independent_branches(
+    client: TestClient,
+) -> None:
+    """A user holding both `self` and `children` grants for
+    `membership.read` sees the union of what each grants alone — `self`
+    does not extend to the child's membership and `children` does not
+    extend to an unrelated third person's membership."""
+    with session_scope() as session:
+        club = _make_club()
+        guardian_person = _make_person()
+        guardian_user = _make_user(guardian_person)
+        child_person = _make_person()
+        unrelated_person = _make_person()
+        session.add_all(
+            [club, guardian_person, guardian_user, child_person, unrelated_person]
+        )
+        session.commit()
+        session.add(_make_guardian_relationship(guardian_person, child_person))
+        own_membership = _make_club_membership(club, guardian_person)
+        child_membership = _make_club_membership(club, child_person)
+        unrelated_membership = _make_club_membership(club, unrelated_person)
+        session.add_all([own_membership, child_membership, unrelated_membership])
+        session.commit()
+        own_id, child_id, unrelated_id = (
+            own_membership.id,
+            child_membership.id,
+            unrelated_membership.id,
+        )
+        guardian_user_id = guardian_user.id
+    _grant_permission(guardian_user_id, "membership.read", scope_type="self")
+    _grant_permission(guardian_user_id, "membership.read", scope_type="children")
+    _authenticate_as(guardian_user_id)
+
+    list_response = client.get("/api/v1/memberships")
+    assert list_response.status_code == 200, list_response.text
+    ids = {item["id"] for item in list_response.json()["items"]}
+    assert str(own_id) in ids
+    assert str(child_id) in ids
+    assert str(unrelated_id) not in ids
+
+    assert client.get(f"/api/v1/memberships/{own_id}").status_code == 200
+    assert client.get(f"/api/v1/memberships/{child_id}").status_code == 200
+    assert client.get(f"/api/v1/memberships/{unrelated_id}").status_code == 404
+
+
+@requires_postgres
+def test_membership_own_groups_and_children_scopes_are_independent_branches(
+    client: TestClient,
+) -> None:
+    """An Instructor who is also a Guardian (both grants held at once)
+    sees their own_groups-reachable memberships AND their own child's
+    membership, but not a third person who is neither."""
+    with session_scope() as session:
+        club = _make_club()
+        instructor_guardian_person = _make_person()
+        instructor_guardian_user = _make_user(instructor_guardian_person)
+        group_member_person = _make_person()
+        child_person = _make_person()
+        unrelated_person = _make_person()
+        session.add_all(
+            [
+                club,
+                instructor_guardian_person,
+                instructor_guardian_user,
+                group_member_person,
+                child_person,
+                unrelated_person,
+            ]
+        )
+        session.commit()
+        group_membership, group = _setup_group_membership(
+            session, club=club, person=group_member_person
+        )
+        session.add(_make_group_instructor_assignment(group, instructor_guardian_user))
+        session.add(_make_guardian_relationship(instructor_guardian_person, child_person))
+        child_membership = _make_club_membership(club, child_person)
+        unrelated_membership = _make_club_membership(club, unrelated_person)
+        session.add_all([child_membership, unrelated_membership])
+        session.commit()
+        group_member_membership_id = group_membership.id
+        child_membership_id = child_membership.id
+        unrelated_membership_id = unrelated_membership.id
+        user_id = instructor_guardian_user.id
+    _grant_permission(user_id, "membership.read", scope_type="own_groups")
+    _grant_permission(user_id, "membership.read", scope_type="children")
+    _authenticate_as(user_id)
+
+    list_response = client.get("/api/v1/memberships")
+    assert list_response.status_code == 200, list_response.text
+    ids = {item["id"] for item in list_response.json()["items"]}
+    assert str(group_member_membership_id) in ids
+    assert str(child_membership_id) in ids
+    assert str(unrelated_membership_id) not in ids
+
+    assert client.get(f"/api/v1/memberships/{group_member_membership_id}").status_code == 200
+    assert client.get(f"/api/v1/memberships/{child_membership_id}").status_code == 200
+    assert client.get(f"/api/v1/memberships/{unrelated_membership_id}").status_code == 404
+
+
+@requires_postgres
+def test_membership_all_scoped_club_and_children_scope_are_independent_branches(
+    client: TestClient,
+) -> None:
+    """A club-scoped `all` grant and an (unscoped) `children` grant must
+    not bleed into each other: `all` stays bounded to its own Club, and
+    `children` reaches the child's membership even in a *different* Club
+    the `all` grant does not cover — but never an unrelated person there.
+    """
+    with session_scope() as session:
+        club_a = _make_club()
+        club_b = _make_club()
+        guardian_person = _make_person()
+        guardian_user = _make_user(guardian_person)
+        club_a_person = _make_person()
+        child_person = _make_person()
+        unrelated_person_in_club_b = _make_person()
+        session.add_all(
+            [
+                club_a,
+                club_b,
+                guardian_person,
+                guardian_user,
+                club_a_person,
+                child_person,
+                unrelated_person_in_club_b,
+            ]
+        )
+        session.commit()
+        session.add(_make_guardian_relationship(guardian_person, child_person))
+        club_a_membership = _make_club_membership(club_a, club_a_person)
+        # The child's own membership lives in club_b, outside the
+        # club_a-scoped `all` grant — only `children` can reach it.
+        child_membership = _make_club_membership(club_b, child_person)
+        unrelated_membership = _make_club_membership(club_b, unrelated_person_in_club_b)
+        session.add_all([club_a_membership, child_membership, unrelated_membership])
+        session.commit()
+        club_a_id = club_a.id
+        club_a_membership_id = club_a_membership.id
+        child_membership_id = child_membership.id
+        unrelated_membership_id = unrelated_membership.id
+        guardian_user_id = guardian_user.id
+    _grant_permission(guardian_user_id, "membership.read", scope_type="all", club_id=club_a_id)
+    _grant_permission(guardian_user_id, "membership.read", scope_type="children")
+    _authenticate_as(guardian_user_id)
+
+    list_response = client.get("/api/v1/memberships")
+    assert list_response.status_code == 200, list_response.text
+    ids = {item["id"] for item in list_response.json()["items"]}
+    assert str(club_a_membership_id) in ids
+    assert str(child_membership_id) in ids
+    assert str(unrelated_membership_id) not in ids
+
+    assert client.get(f"/api/v1/memberships/{club_a_membership_id}").status_code == 200
+    assert client.get(f"/api/v1/memberships/{child_membership_id}").status_code == 200
+    assert client.get(f"/api/v1/memberships/{unrelated_membership_id}").status_code == 404
+
+
+@requires_postgres
+def test_membership_none_scope_does_not_block_or_extend_children_scope(
+    client: TestClient,
+) -> None:
+    """A `none` grant contributes no access of its own but must not
+    suppress a separate `children` grant held by the same user either —
+    there is no explicit-deny model (roles-and-permissions.md §13):
+    permissions/scopes are purely additive."""
+    with session_scope() as session:
+        club = _make_club()
+        guardian_person = _make_person()
+        guardian_user = _make_user(guardian_person)
+        child_person = _make_person()
+        unrelated_person = _make_person()
+        session.add_all(
+            [club, guardian_person, guardian_user, child_person, unrelated_person]
+        )
+        session.commit()
+        session.add(_make_guardian_relationship(guardian_person, child_person))
+        child_membership = _make_club_membership(club, child_person)
+        unrelated_membership = _make_club_membership(club, unrelated_person)
+        session.add_all([child_membership, unrelated_membership])
+        session.commit()
+        child_membership_id = child_membership.id
+        unrelated_membership_id = unrelated_membership.id
+        guardian_user_id = guardian_user.id
+    _grant_permission(guardian_user_id, "membership.read", scope_type="none")
+    _grant_permission(guardian_user_id, "membership.read", scope_type="children")
+    _authenticate_as(guardian_user_id)
+
+    list_response = client.get("/api/v1/memberships")
+    assert list_response.status_code == 200, list_response.text
+    ids = {item["id"] for item in list_response.json()["items"]}
+    assert str(child_membership_id) in ids
+    assert str(unrelated_membership_id) not in ids
+
+    assert client.get(f"/api/v1/memberships/{child_membership_id}").status_code == 200
+    assert client.get(f"/api/v1/memberships/{unrelated_membership_id}").status_code == 404
+
+
+@requires_postgres
+def test_list_memberships_multiple_own_groups_assignments_across_clubs_are_additive(
+    client: TestClient,
+) -> None:
+    """Several assignments of the *same* permission+scope_type but
+    different club_id boundaries must each independently contribute their
+    own Club's memberships — not just the first/last one evaluated."""
+    with session_scope() as session:
+        club_a = _make_club()
+        club_b = _make_club()
+        instructor_person = _make_person()
+        instructor_user = _make_user(instructor_person)
+        member_a = _make_person()
+        member_b = _make_person()
+        session.add_all(
+            [club_a, club_b, instructor_person, instructor_user, member_a, member_b]
+        )
+        session.commit()
+        membership_a, group_a = _setup_group_membership(session, club=club_a, person=member_a)
+        membership_b, group_b = _setup_group_membership(session, club=club_b, person=member_b)
+        session.add(_make_group_instructor_assignment(group_a, instructor_user))
+        session.add(_make_group_instructor_assignment(group_b, instructor_user))
+        session.commit()
+        club_a_id, club_b_id = club_a.id, club_b.id
+        membership_a_id, membership_b_id = membership_a.id, membership_b.id
+        instructor_user_id = instructor_user.id
+    _grant_permission(
+        instructor_user_id, "membership.read", scope_type="own_groups", club_id=club_a_id
+    )
+    _grant_permission(
+        instructor_user_id, "membership.read", scope_type="own_groups", club_id=club_b_id
+    )
+    _authenticate_as(instructor_user_id)
+
+    response = client.get("/api/v1/memberships")
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(membership_a_id) in ids
+    assert str(membership_b_id) in ids
+
+
 @requires_postgres
 def test_person_memberships_endpoint_returns_person_history(client: TestClient) -> None:
     with session_scope() as session:
