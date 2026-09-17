@@ -1,155 +1,236 @@
 # TourCRM Header Asset Runtime Specification
 
 **Status:** APPROVED BASELINE  
-**Scope:** TH-0089 Header visual composition implementation  
-**Related:** TH-0091 / PR #114 asset hand-off
+**Scope:** runtime integration of the approved Header illustration asset package v1  
+**Related:** TH-0091 / PR #114 (asset hand-off, already merged)
 
 ## 1. Purpose
 
-Define how the approved Header / Brand Zone illustration package is consumed by the web application.
+Define the production runtime contract for consuming the approved Header illustration package in the TourCRM web application.
 
-This specification covers runtime selection and rendering only. It does not define creation of artwork or future theme scheduling.
+This document does **not** redefine or recreate the artwork. The canonical artwork package remains `docs/06-ui/assets/packages/header-scenes-v1/`.
 
-## 2. Asset source
+## 2. Non-negotiable constraints
 
-The canonical source package is:
+- Do not modify PR #114 or reimplement TH-0091.
+- Do not create a second asset-production PR for TH-0091.
+- No SVG.
+- No generic icon-library assets.
+- Do not create new artwork in this stage.
+- Do not change the approved Navigation Architecture or UI Foundation.
+- Do not change logo, profile menu, mobile menu, navigation labels, routes, roles, permissions, or backend APIs.
+- Header artwork is decorative only and must never become an interaction surface.
+- The existing official TourCRM «Вектор» logo remains the brand source of truth.
+
+## 3. Canonical source and production runtime location
+
+### Canonical source
 
 `docs/06-ui/assets/packages/header-scenes-v1/`
 
-Current theme:
-
-`basic`
-
-Current paired assets:
+Current approved basic theme contains nine desktop/mobile pairs:
 
 - `desk-basic-01.png` … `desk-basic-09.png`
 - `mob-basic-01.png` … `mob-basic-09.png`
 
-The asset naming contract is defined by `docs/06-ui/TOURCRM-HEADER-SCENES-V1-SPEC.md`.
+### Production runtime assets
 
-The application must not assign semantic meaning to sequence numbers. `01` is an ordered position, not a scene identifier.
+The frontend must consume production copies from:
 
-## 3. Runtime asset location
+`apps/web/public/assets/ui/header-scenes-v1/<viewport>-<theme>-<sequence>.png`
 
-For browser delivery, approved source assets are copied unchanged into the web application's public asset tree under:
+The documentation package remains the canonical source; `public/` is the browser-delivery copy.
 
-`/assets/ui/header-scenes-v1/`
+Runtime code must not reference files directly from `docs/`.
 
-The public runtime path is an implementation delivery path; the canonical source remains the documented asset package above.
+## 4. Naming contract
 
-No SVG conversion is permitted.
+Runtime asset names follow:
 
-## 4. Theme selection
+`<viewport>-<theme>-<sequence>.png`
 
-The MVP uses the fixed theme slug:
+Where:
 
-`basic`
+- `viewport`: `desk` or `mob`;
+- `theme`: lowercase ASCII slug, e.g. `basic`, `winter`, `ny`, `8mar`;
+- `sequence`: zero-padded position inside that theme.
 
-Automatic selection of `winter`, `ny`, `8mar`, or other future themes is **out of scope** for this task.
+The filename sequence is positional and must not encode semantic scene names.
 
-Future theme selection must be a separate product decision and implementation task. It must provide only a theme slug to the asset resolver; it must not introduce configurable filesystem paths.
+## 5. Theme model
 
-If a requested theme is unavailable at runtime, the resolver must safely fall back to `basic`.
+Theme selection and rotation are separate concerns.
 
-## 5. Daily rotation
+For this stage:
 
-The Header displays one illustration pair per calendar day.
+- active theme is `basic`;
+- theme selection is static frontend configuration;
+- there is no database state;
+- there is no API;
+- there is no administrator UI;
+- there is no automatic seasonal-calendar logic;
+- future themes may contain a different number of scenes.
 
-The selection is deterministic and does not require persistence.
+If a requested theme is unavailable or has no valid paired sequences, the resolver falls back to `basic`.
 
-### Algorithm
+## 6. Paired scene rule
 
-1. Use the UTC calendar date.
-2. Calculate the number of whole UTC days since `2026-01-01`.
-3. Calculate `dayIndex modulo availablePairCount`.
-4. Select the pair at that zero-based index.
-5. When the end of the available set is reached, wrap to the first pair.
+A sequence participates in rotation only when both files exist for the active theme:
 
-The same sequence is therefore selected for desktop and mobile on the same date.
+- `desk-<theme>-NN.png`
+- `mob-<theme>-NN.png`
 
-There is no database state, cookie, localStorage, sessionStorage, or API call for rotation state.
+The runtime registry/selector must enumerate **paired sequences**, sort them numerically, and ignore incomplete pairs.
 
-The image changes naturally when the UTC calendar date changes. A page reload is sufficient to display the current day's selection.
+This guarantees that desktop and mobile display the same conceptual scene for a given day.
 
-## 6. Pairing contract
+If the selected theme has no valid paired sequences, the runtime falls back to `basic`.
 
-A sequence participates in rotation only when both assets exist:
+If `basic` itself has no valid pairs, the implementation must keep the existing non-illustrated Header treatment functional rather than breaking the Header.
 
-`desk-<theme>-<sequence>.png`
+## 7. Daily rotation
 
-and
+MVP rotation is deterministic and globally consistent:
 
-`mob-<theme>-<sequence>.png`
+- one scene per UTC calendar day;
+- sequential cyclic rotation;
+- no persistence;
+- no database;
+- no localStorage/sessionStorage;
+- no user-specific randomization.
 
-The runtime must not independently rotate desktop and mobile lists, because that could produce different scenes for the same day.
+Use a fixed UTC epoch of `2026-01-01T00:00:00Z`.
 
-If a future theme contains an incomplete desktop/mobile pair, that sequence is excluded from the active paired set.
+Conceptually:
 
-If the selected theme has no complete pairs, use the `basic` theme. If `basic` also has no complete pairs, render the existing non-illustrated Header treatment rather than breaking the Header.
+`dayIndex = number of complete UTC days since epoch`
 
-## 7. Responsive rendering
+`sequence = pairedSequences[dayIndex mod pairedSequences.length]`
 
-Desktop asset:
+The implementation must use UTC date boundaries so that SSR/hydration and different user time zones do not produce conflicting daily scenes.
 
-`desk-<theme>-<sequence>.png`
+Adding or removing paired sequence files changes the future cyclic mapping according to the resulting sorted paired set. This is intentional and acceptable for v1.
 
-Mobile asset:
+## 8. Responsive selection
 
-`mob-<theme>-<sequence>.png`
+- Desktop, laptop and tablet landscape use `desk` assets.
+- Mobile uses `mob` assets according to the existing frontend breakpoint strategy.
+- The mobile composition is a dedicated asset, not a crop of the desktop asset.
+- The implementation must preserve the existing Header layout and controls.
 
-The mobile asset is a dedicated composition and must not be implemented as a crop of the desktop asset.
+The same selected sequence must be used for both viewport variants.
 
-The existing responsive breakpoint and Header layout remain unchanged unless required solely to prevent the decorative layer from interfering with the approved composition.
+## 9. Header integration
 
-## 8. Decorative behavior
+The artwork is a decorative layer of the existing Header/brand zone.
 
-The illustration is purely decorative.
+Required behavior:
 
-Requirements:
+- it must sit visually behind/around the brand area without obscuring the official logo;
+- it must not cover or interfere with the profile menu;
+- it must not cover or interfere with the mobile `Меню` control;
+- it must not introduce horizontal scrolling or unexpected header height changes;
+- it must not become a clickable/focusable element;
+- decorative image semantics must be hidden from assistive technology (`aria-hidden` or equivalent decorative semantics; empty alt where an image element is used);
+- pointer interaction must pass through the artwork (`pointer-events: none` or equivalent);
+- the existing compact Header remains the structural authority.
 
-- `alt` must be empty / decorative semantics.
-- It must not receive keyboard focus.
-- It must not intercept pointer events.
-- Existing logo, profile menu, navigation and mobile `Меню` controls retain their current behavior.
-- Functional controls remain visually and interactively above the decorative layer.
-- The illustration must not change Header height unexpectedly.
-- Do not add animation merely for daily rotation.
-- Do not add a new loading state visible to the user.
+## 10. Visual requirements
 
-The approved alpha transparency in the PNG masters must be preserved. Do not replace it with a CSS-painted gradient.
+The approved artwork contract must remain intact:
 
-## 9. No new architecture
+- transparent RGBA PNG;
+- desktop 1600×400;
+- mobile 800×500;
+- desktop left-edge alpha fade is real transparency, not a painted color gradient;
+- no text, logo, buttons, UI controls, frames or watermarks;
+- central brand/control area remains readable;
+- artwork must not reduce usability or contrast of Header controls.
 
-This feature is presentation-layer behavior only.
+## 11. Runtime registry/selector contract
 
-Do not add:
+Introduce a small dedicated Header-scene asset registry/selector within the existing frontend asset architecture.
 
-- backend endpoints;
-- database tables or fields;
-- permissions;
-- user settings;
-- theme administration UI;
-- semantic scene entities;
-- CMS behavior;
-- filesystem-path configuration;
-- generic icon-library assets;
-- SVG assets.
+Responsibilities:
 
-## 10. Acceptance criteria
+1. enumerate the production asset set for the active theme;
+2. construct only valid desktop/mobile pairs;
+3. sort sequences numerically;
+4. select the daily sequence from the UTC day index;
+5. expose the corresponding desktop/mobile runtime paths;
+6. provide deterministic fallback to `basic` when the configured theme is unavailable or has no valid pairs.
 
-- [ ] Header renders the approved basic illustration set.
-- [ ] Exactly one desktop/mobile pair is selected for a given UTC date.
-- [ ] Consecutive UTC dates advance to the next pair.
-- [ ] The sequence wraps after the final available pair.
-- [ ] Desktop uses `desk-basic-XX.png`.
-- [ ] Mobile uses `mob-basic-XX.png`.
-- [ ] Desktop and mobile show the same sequence on the same date.
-- [ ] Incomplete future pairs are excluded from rotation.
-- [ ] Unknown/unavailable themes fall back to `basic`.
-- [ ] If no usable pair exists, the existing Header remains functional.
-- [ ] Illustration is decorative and cannot intercept interaction.
-- [ ] Existing logo, profile menu, navigation and mobile menu remain unchanged.
-- [ ] No SVG or generic icon-library asset is introduced.
-- [ ] No backend/API/DB change is introduced.
-- [ ] Responsive QA passes at approximately 1440×900, 834×1112 and 390×844.
-- [ ] Existing frontend tests, lint, typecheck and build pass.
+Do not duplicate business/domain logic into this selector. It is presentation asset selection only.
+
+Do not load all 18 images merely to determine the current scene. The runtime should need only the currently relevant viewport asset where practical.
+
+## 12. Error and fallback behavior
+
+- Unknown/unavailable configured theme → use `basic`.
+- Configured theme with zero complete pairs → use `basic`.
+- Incomplete sequence pair → exclude that sequence.
+- If no usable basic pair exists, preserve the existing non-illustrated Header.
+- No user-facing error message is required for normal fallback.
+
+## 13. Testing requirements
+
+Automated tests must cover at minimum:
+
+- fixed epoch calculation;
+- same UTC day → same sequence;
+- next UTC day → next sequence;
+- cyclic wraparound;
+- numeric ordering of sequences;
+- incomplete desktop/mobile pair exclusion;
+- configured-theme fallback to `basic`;
+- same sequence maps to `desk` and `mob` variants;
+- deterministic output independent of local timezone;
+- runtime paths use `/assets/ui/header-scenes-v1/...` rather than `docs/...`;
+- decorative semantics/non-interaction of the Header scene layer.
+
+## 14. Visual QA
+
+Verify at minimum:
+
+- 1440×900 desktop;
+- 834×1112 tablet;
+- 390×844 mobile.
+
+Check:
+
+- logo readability;
+- profile/menu usability;
+- mobile menu usability;
+- no layout shift attributable to the scene;
+- no horizontal overflow;
+- scene alignment and transparency;
+- desktop/mobile pair consistency;
+- existing UI Foundation remains visually unchanged outside the new decorative layer.
+
+## 15. Out of scope
+
+- login/authentication;
+- role/permission logic;
+- admin theme management;
+- database/API changes;
+- automatic season/date theme switching;
+- per-user personalization;
+- analytics;
+- new Header artwork;
+- navigation redesign;
+- changes to PR #114.
+
+## 16. Definition of Done
+
+The stage is complete when:
+
+1. approved header assets are available in the production runtime location;
+2. `basic` theme is rendered by the existing Header;
+3. one deterministic UTC scene is selected per day;
+4. desktop/mobile use paired variants of the same sequence;
+5. fallback behavior is covered by tests;
+6. artwork is decorative and cannot intercept interaction;
+7. logo, profile menu and mobile menu remain fully usable;
+8. no backend/API/DB/auth/navigation changes were introduced;
+9. tests, lint, typecheck and production build pass;
+10. visual QA passes at the required viewports.
