@@ -40,12 +40,15 @@
 
 ## 3. Persons
 
+People Management endpoints are governed by ADR-0035 and `docs/05-api/people-api.md`.
+
 - `GET /persons`
 - `GET /persons/{id}`
 - `POST /persons`
 - `PATCH /persons/{id}`
-- `POST /persons/{id}/archive`
 - `GET /persons/{id}/audit`
+
+There is no Person archive endpoint in the current MVP. Person archiving is deferred by ADR-0034; related lifecycle entities must not be used to simulate Person archival.
 
 ## 4. Club memberships
 
@@ -53,20 +56,24 @@
 - `GET /memberships/{id}`
 - `POST /memberships`
 - `PATCH /memberships/{id}`
-- `POST /memberships/{id}/activate`
-- `POST /memberships/{id}/suspend`
-- `POST /memberships/{id}/end`
+- `POST /memberships/{id}/status`
 - `GET /persons/{id}/memberships`
+
+Membership lifecycle is exposed through the canonical `/status` operation. The older separate `/activate`, `/suspend` and `/end` endpoints are not part of the current contract.
 
 ## 5. Guardians
 
-Canonical resource is `guardian-relationships`, not `guardians` (ADR-0025 §4). The previously listed duplicate `/guardians` CRUD (list/detail/create/update) is removed; the nested per-person collection is renamed to match.
+Canonical resource is `guardian-relationships`, not `guardians` (ADR-0025 §4).
 
-- `GET /persons/{id}/children`
 - `GET /persons/{id}/guardian-relationships`
 - `POST /persons/{id}/guardian-relationships`
 - `PATCH /guardian-relationships/{id}`
 - `POST /guardian-relationships/{id}/terminate`
+- `GET /me/children`
+
+`GET /persons/{id}/children` is not canonical and is not part of the current API contract. `/me/children` is the Guardian-only current-children projection and derives the requester identity from the authenticated session.
+
+GuardianRelationship create, update and terminate operations are admin-only according to ADR-0035. There is no primary-guardian/primary-representative concept in the current contract.
 
 ## 6. Invitations
 
