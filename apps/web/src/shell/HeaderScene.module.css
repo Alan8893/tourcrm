@@ -9,11 +9,15 @@
 }
 
 .image {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1600px;
+  height: 400px;
+  max-width: none;
+  max-height: none;
+  transform: translate(-50%, -50%);
   display: block;
-  width: 100%;
-  height: auto;
-  max-height: 100%;
-  margin-inline: auto;
   object-fit: contain;
   object-position: center;
   pointer-events: none;
@@ -22,9 +26,7 @@
 
 @media (max-width: 767.98px) {
   .image {
-    width: auto;
-    height: 100%;
-    max-width: 100%;
-    max-height: none;
+    width: 800px;
+    height: 500px;
   }
 }
