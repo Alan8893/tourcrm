@@ -25,15 +25,49 @@ sources:
   relationship in question (`self` = "this relationship is about me, the
   child") — used by `GET /persons/{person_id}/guardian-relationships`
   (`person_id == self`) and by the create endpoint.
-- `children`: the requester holds an *active* GuardianRelationship to the
-  same `child_person_id` (`children` = "I am an active guardian of this
-  child") — resolved via `_active_guardian_condition` below, reused
-  unchanged for `/me/children` (Issue #64 §12: "self also applies to
-  /me/children").
+- `children`: the requester's own Person is the `guardian_person_id` of
+  the relationship in question (`children` = "this is my own relationship
+  record, as the guardian"), mirroring `self` exactly but for the other
+  side of the same row.
 
-`own_groups`/`own_events` are not applicable (no Group/Event relationship
-exists for this entity) and fail closed, matching Person's treatment of
-inapplicable scopes.
+  TH-0103 (ADR-0035 §8.4) fixed a real bug here: this scope previously
+  matched *any* row sharing the same `child_person_id` as one of the
+  requester's own active relationships — i.e. "I am an active guardian of
+  this child" rather than "this row is mine" — which let a co-guardian
+  see a *different* guardian's own relationship record for the same
+  child merely because both are related to that child. ADR-0035 §8.4 is
+  explicit that this must not happen ("A Guardian must not see other
+  representatives of the same child merely because they are both related
+  to that child"); roles-and-permissions.md §7.1 confirms `guardian`
+  reads only "собственные relationship records". `children` is therefore
+  a plain `guardian_person_id == requester_person_id` identity match, not
+  gated on the row's own active/interval status (historical relationships
+  are preserved and remain visible to their own guardian, exactly like
+  `self`'s unconditional child-side match). `GET /me/children` is a
+  separate, narrower *Person* projection with its own explicit
+  active-and-interval-valid requirement (ADR-0035 §9) — see
+  `children_visibility_filter` below, which still uses
+  `_active_guardian_condition` and is unaffected by this fix.
+
+TH-0103 (ADR-0035 §8.4 / roles-and-permissions.md §7.1) adds a third:
+
+- `own_groups`: an Instructor may read a GuardianRelationship "involving
+  Persons reachable through own_groups" — resolved as either the
+  `guardian_person_id` side or the `child_person_id` side being reachable
+  through the requester's own_groups chain (`Person -> active
+  ClubMembership -> active GroupMembership -> Group -> active
+  GroupInstructorAssignment -> requesting User`), reusing
+  `app.people.authorization.own_group_condition_for_person` — the exact
+  same chain already used for Person/ClubMembership `own_groups` — rather
+  than re-deriving it. Only a *global* (`club_id IS NULL`) `own_groups`
+  assignment matches, consistent with `self`/`children` above and this
+  module's Club-neutral treatment of the entity (see below): a
+  club-scoped assignment of any scope_type never matches a
+  GuardianRelationship.
+
+`own_events` is not applicable (no Event relationship exists for this
+entity) and fails closed, matching Person's treatment of inapplicable
+scopes.
 """
 
 import uuid
@@ -45,6 +79,7 @@ from sqlalchemy.orm import Session, aliased
 from app.authorization.context import ResourceContext
 from app.authorization.service import applicable_assignments
 from app.db.identity import GuardianRelationship, Person, User
+from app.people.authorization import own_group_condition_for_person
 
 
 def _active_interval(valid_from: Any, valid_to: Any) -> sa.ColumnElement[bool]:
@@ -91,15 +126,18 @@ def build_guardian_relationship_resource_context(
     """
     requester_person_id = _person_id_for_user(session, requester_user_id)
     is_self = relationship.child_person_id == requester_person_id
-    is_child = session.execute(
+    is_child = relationship.guardian_person_id == requester_person_id
+    is_own_group = session.execute(
         sa.select(
-            _active_guardian_condition(
-                guardian_person_id=requester_person_id,
-                child_person_id=relationship.child_person_id,
+            sa.or_(
+                own_group_condition_for_person(relationship.guardian_person_id, requester_user_id),
+                own_group_condition_for_person(relationship.child_person_id, requester_user_id),
             )
         )
     ).scalar()
-    return ResourceContext(club_id=None, is_self=is_self, is_child=bool(is_child))
+    return ResourceContext(
+        club_id=None, is_self=is_self, is_child=bool(is_child), is_own_group=bool(is_own_group)
+    )
 
 
 def build_guardian_relationship_create_context(
@@ -155,14 +193,22 @@ def guardian_relationship_visibility_filter(
         elif assignment.scope_type == "self":
             scope_predicate = GuardianRelationship.child_person_id == requester_person_id
         elif assignment.scope_type == "children":
-            scope_predicate = _active_guardian_condition(
-                guardian_person_id=requester_person_id,
-                child_person_id=GuardianRelationship.child_person_id,
+            scope_predicate = GuardianRelationship.guardian_person_id == requester_person_id
+        elif assignment.scope_type == "own_groups":
+            # TH-0103 / ADR-0035 §8.4: either side of the relationship
+            # being reachable through the Instructor's own_groups chain
+            # is sufficient ("relationships involving Persons reachable
+            # through own_groups").
+            scope_predicate = sa.or_(
+                own_group_condition_for_person(
+                    GuardianRelationship.guardian_person_id, user_id
+                ),
+                own_group_condition_for_person(GuardianRelationship.child_person_id, user_id),
             )
         elif assignment.scope_type == "none":
             scope_predicate = sa.false()
         else:
-            # own_groups/own_events: not applicable to GuardianRelationship.
+            # own_events: not applicable to GuardianRelationship.
             continue
         clauses.append(scope_predicate)
 

@@ -66,7 +66,6 @@ from app.people.authorization import is_person_visible, is_system_admin_person_u
 from app.people.guardian_authorization import build_guardian_relationship_create_context
 from app.people.guardian_lifecycle import (
     DuplicateActiveGuardianRelationshipError,
-    DuplicatePrimaryContactError,
     SelfLinkNotAllowedError,
 )
 from app.people.guardian_queries import (
@@ -358,7 +357,6 @@ def create_person_guardian_relationship(
             guardian_person_id=payload.guardian_person_id,
             child_person_id=person_id,
             relationship_type=payload.relationship_type,
-            is_primary_contact=payload.is_primary_contact,
             actor_user_id=principal.user_id,
             request_id=get_request_id(request),
         )
@@ -366,7 +364,7 @@ def create_person_guardian_relationship(
         raise APIError(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "guardian_link_not_allowed", str(exc)
         ) from exc
-    except (DuplicateActiveGuardianRelationshipError, DuplicatePrimaryContactError) as exc:
+    except DuplicateActiveGuardianRelationshipError as exc:
         raise APIError(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "guardian_link_not_allowed", str(exc)
         ) from exc

@@ -68,14 +68,11 @@ class DuplicateActiveGuardianRelationshipError(GuardianRelationshipDomainError):
     overlapping validity interval — enforced by the
     `ck_guardian_relationships_no_overlapping_active` GiST exclusion
     constraint, caught and re-raised as this typed error by
-    app.people.guardian_service."""
+    app.people.guardian_service.
 
-
-class DuplicatePrimaryContactError(GuardianRelationshipDomainError):
-    """database-schema.md §7: an active, primary-contact relationship
-    already exists for this child — enforced by the
-    `ck_guardian_relationships_no_overlapping_primary_contact` GiST
-    exclusion constraint."""
+    TH-0103 removed `is_primary_contact` and its matching
+    `DuplicatePrimaryContactError`/exclusion constraint entirely — no
+    primary-contact concept exists (ADR-0035 §8)."""
 
 
 def validate_guardian_relationship_status(value: str) -> None:
@@ -119,7 +116,6 @@ __all__ = [
     "SelfLinkNotAllowedError",
     "AlreadyRevokedError",
     "DuplicateActiveGuardianRelationshipError",
-    "DuplicatePrimaryContactError",
     "validate_guardian_relationship_status",
     "validate_guardian_child_distinct",
     "effective_status",

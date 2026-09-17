@@ -76,7 +76,6 @@ def test_creating_a_valid_guardian_relationship_persists_all_fields() -> None:
             guardian,
             child,
             relationship_type="mother",
-            is_primary_contact=True,
             valid_to=_utc(2030, 1, 1),
         )
         session.add(relationship)
@@ -89,7 +88,6 @@ def test_creating_a_valid_guardian_relationship_persists_all_fields() -> None:
         assert fetched.child_person_id == child.id
         assert fetched.relationship_type == "mother"
         assert fetched.status == "active"
-        assert fetched.is_primary_contact is True
         assert fetched.valid_from == _utc(2024, 1, 1)
         assert fetched.valid_to == _utc(2030, 1, 1)
         assert fetched.created_at is not None
@@ -97,27 +95,12 @@ def test_creating_a_valid_guardian_relationship_persists_all_fields() -> None:
 
 
 @requires_postgres
-def test_is_primary_contact_defaults_to_false_when_not_specified() -> None:
-    with session_scope() as session:
-        guardian = _make_person()
-        child = _make_person()
-        session.add_all([guardian, child])
-        session.commit()
-
-        relationship = GuardianRelationship(
-            guardian_person_id=guardian.id,
-            child_person_id=child.id,
-            relationship_type="parent",
-            status="active",
-            valid_from=_utc(2024, 1, 1),
-        )
-        session.add(relationship)
-        session.commit()
-
-        fetched = session.execute(
-            select(GuardianRelationship).where(GuardianRelationship.id == relationship.id)
-        ).scalar_one()
-        assert fetched.is_primary_contact is False
+def test_guardian_relationship_has_no_primary_contact_field() -> None:
+    """TH-0103 / ADR-0035 §8: there is no `is_primary_contact` (or any
+    other primary/priority) concept for GuardianRelationship — multiple
+    active representatives are equal in the base relationship model.
+    """
+    assert not hasattr(GuardianRelationship, "is_primary_contact")
 
 
 @requires_postgres
@@ -382,127 +365,15 @@ def test_closing_a_relationship_period_preserves_the_row() -> None:
         assert fetched.valid_to == _utc(2024, 12, 31)
 
 
-# --- primary contact ------------------------------------------------------
+# --- multiple active representatives (ADR-0035 §8: no primary concept) ----
 
 
 @requires_postgres
-def test_duplicate_active_primary_contact_for_same_child_is_rejected() -> None:
-    with session_scope() as session:
-        guardian_a = _make_person()
-        guardian_b = _make_person()
-        child = _make_person()
-        session.add_all([guardian_a, guardian_b, child])
-        session.commit()
-
-        session.add(
-            _make_relationship(
-                guardian_a, child, relationship_type="mother", is_primary_contact=True
-            )
-        )
-        session.commit()
-
-        session.add(
-            _make_relationship(
-                guardian_b,
-                child,
-                relationship_type="father",
-                is_primary_contact=True,
-                valid_from=_utc(2024, 6, 1),
-            )
-        )
-        with pytest.raises(IntegrityError):
-            session.commit()
-
-
-@requires_postgres
-def test_historical_non_overlapping_primary_contacts_for_same_child_are_allowed() -> None:
-    with session_scope() as session:
-        guardian_a = _make_person()
-        guardian_b = _make_person()
-        child = _make_person()
-        session.add_all([guardian_a, guardian_b, child])
-        session.commit()
-
-        first_primary = _make_relationship(
-            guardian_a,
-            child,
-            relationship_type="mother",
-            is_primary_contact=True,
-            valid_from=_utc(2024, 1, 1),
-            valid_to=_utc(2024, 6, 1),
-        )
-        session.add(first_primary)
-        session.commit()
-
-        second_primary = _make_relationship(
-            guardian_b,
-            child,
-            relationship_type="father",
-            is_primary_contact=True,
-            valid_from=_utc(2024, 6, 1),
-        )
-        session.add(second_primary)
-        session.commit()  # must not raise: validity periods do not overlap
-
-        fetched_first = session.execute(
-            select(GuardianRelationship).where(GuardianRelationship.id == first_primary.id)
-        ).scalar_one()
-        assert fetched_first.valid_to == _utc(2024, 6, 1)
-
-
-@requires_postgres
-def test_revoked_primary_contact_does_not_block_a_new_one() -> None:
-    """Scoped to status='active' rows (see model docstring): revoking a
-    primary contact frees the child for a new one even without first
-    closing valid_to, since the row no longer counts as active."""
-    with session_scope() as session:
-        guardian_a = _make_person()
-        guardian_b = _make_person()
-        child = _make_person()
-        session.add_all([guardian_a, guardian_b, child])
-        session.commit()
-
-        first_primary = _make_relationship(
-            guardian_a,
-            child,
-            relationship_type="mother",
-            is_primary_contact=True,
-            status="revoked",
-        )
-        session.add(first_primary)
-        session.commit()
-
-        second_primary = _make_relationship(
-            guardian_b, child, relationship_type="father", is_primary_contact=True
-        )
-        session.add(second_primary)
-        session.commit()  # must not raise: the first row is not active
-
-
-@requires_postgres
-def test_non_primary_relationships_do_not_conflict_with_primary_contact() -> None:
-    with session_scope() as session:
-        guardian_a = _make_person()
-        guardian_b = _make_person()
-        child = _make_person()
-        session.add_all([guardian_a, guardian_b, child])
-        session.commit()
-
-        session.add(
-            _make_relationship(
-                guardian_a, child, relationship_type="mother", is_primary_contact=True
-            )
-        )
-        session.add(
-            _make_relationship(
-                guardian_b, child, relationship_type="father", is_primary_contact=False
-            )
-        )
-        session.commit()  # must not raise: only is_primary_contact=true rows conflict
-
-
-@requires_postgres
-def test_multiple_active_non_primary_relationships_for_same_child_are_allowed() -> None:
+def test_multiple_active_representatives_for_same_child_are_allowed() -> None:
+    """ADR-0035 §8 / TH-0103: multiple active representatives are equal
+    in the base relationship model — there is no primary-contact
+    invariant limiting how many simultaneous active guardians a child may
+    have."""
     with session_scope() as session:
         guardian_a = _make_person()
         guardian_b = _make_person()
@@ -652,81 +523,6 @@ def test_concurrent_duplicate_active_relationship_leaves_exactly_one() -> None:
         assert active_count == 1, (
             f"trial {trial}: expected exactly one surviving active relationship, "
             f"got {active_count}; outcomes={result}"
-        )
-
-
-# --- concurrency: primary-contact race -------------------------------------
-
-
-@requires_postgres
-def test_concurrent_primary_contact_assignment_leaves_exactly_one() -> None:
-    """Real-concurrency proof for the GiST exclusion constraint backing
-    "at most one valid primary-contact relationship exists for a child
-    at a time" (ADR-0023 §3): two transactions racing to assign an
-    overlapping active primary-contact relationship for the same child
-    (different guardians) must never both succeed.
-
-    See test_concurrent_duplicate_active_relationship_leaves_exactly_one's
-    docstring for why both IntegrityError (ExclusionViolation) and
-    OperationalError (a genuine PostgreSQL deadlock between the two
-    concurrent exclusion-constraint checks) are treated as "rejected"
-    here.
-    """
-    trial_count = 30
-    for trial in range(trial_count):
-        with session_scope() as setup:
-            guardian_a = _make_person()
-            guardian_b = _make_person()
-            child = _make_person()
-            setup.add_all([guardian_a, guardian_b, child])
-            setup.commit()
-            guardian_a_id, guardian_b_id, child_id = guardian_a.id, guardian_b.id, child.id
-
-        start_gate = threading.Barrier(2, timeout=10)
-        result: dict[str, str] = {}
-
-        def attempt(
-            name: str, guardian_id: uuid.UUID, relationship_type: str
-        ) -> None:
-            with session_scope() as session:
-                guardian_ref = Person(id=guardian_id)
-                child_ref = Person(id=child_id)
-                start_gate.wait()
-                try:
-                    session.add(
-                        _make_relationship(
-                            guardian_ref,
-                            child_ref,
-                            relationship_type=relationship_type,
-                            is_primary_contact=True,
-                        )
-                    )
-                    session.commit()
-                    result[name] = "succeeded"
-                except (IntegrityError, OperationalError):
-                    session.rollback()
-                    result[name] = "rejected"
-
-        thread_a = threading.Thread(target=attempt, args=("a", guardian_a_id, "mother"))
-        thread_b = threading.Thread(target=attempt, args=("b", guardian_b_id, "father"))
-        thread_a.start()
-        thread_b.start()
-        thread_a.join(timeout=10)
-        thread_b.join(timeout=10)
-
-        with session_scope() as check:
-            primary_count = check.execute(
-                text(
-                    "SELECT count(*) FROM guardian_relationships "
-                    "WHERE child_person_id = :c AND is_primary_contact = true "
-                    "AND status = 'active'"
-                ),
-                {"c": str(child_id)},
-            ).scalar_one()
-
-        assert primary_count == 1, (
-            f"trial {trial}: expected exactly one surviving primary contact, "
-            f"got {primary_count}; outcomes={result}"
         )
 
 

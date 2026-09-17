@@ -20,7 +20,6 @@ from pydantic import BaseModel
 class GuardianRelationshipCreateRequest(BaseModel):
     guardian_person_id: UUID
     relationship_type: str
-    is_primary_contact: bool = False
     # Issue #64 §8/§16: creation must reject any status other than
     # `active` — there is no `pending` status for this entity (ADR-0023).
     # A Literal type rejects anything else at the schema layer, the same
@@ -30,14 +29,14 @@ class GuardianRelationshipCreateRequest(BaseModel):
 
 
 class GuardianRelationshipUpdateRequest(BaseModel):
-    """PATCH: only `relationship_type`/`is_primary_contact` — no `status`
-    field exists on this schema at all, so a client cannot smuggle a
-    status change through PATCH regardless of payload content (Issue #64
-    §8/§13).
+    """PATCH: only `relationship_type` — no `status` field exists on this
+    schema at all, so a client cannot smuggle a status change through
+    PATCH regardless of payload content (Issue #64 §8/§13). TH-0103
+    removed `is_primary_contact`: no primary-contact concept exists
+    (ADR-0035 §8).
     """
 
     relationship_type: Optional[str] = None
-    is_primary_contact: Optional[bool] = None
 
 
 class GuardianRelationshipOut(BaseModel):
@@ -46,7 +45,6 @@ class GuardianRelationshipOut(BaseModel):
     child_person_id: UUID
     relationship_type: str
     status: str
-    is_primary_contact: bool
     valid_from: datetime
     valid_to: Optional[datetime]
     created_at: datetime
@@ -54,13 +52,17 @@ class GuardianRelationshipOut(BaseModel):
 
 
 class ChildOut(BaseModel):
-    """`GET /me/children` projection (Issue #64 §9 GAP-B, resolved by the
-    PO as exactly these four fields). Deliberately excludes
+    """`GET /me/children` projection — ADR-0035 §9 / TH-0103's exact
+    canonical field list. `last_name`/`first_name`/`middle_name` are
+    returned as separate fields (never a computed `full_name`) matching
+    ADR-0035 §9's projection verbatim. Deliberately excludes
     `phone`/`email`/`address` and every other Person field, matching
     Issue #62 §9's sensitive-field withholding policy.
     """
 
     id: UUID
-    full_name: str
+    last_name: str
+    first_name: str
+    middle_name: Optional[str]
     birth_date: Optional[date]
     photo_file_id: Optional[UUID]
