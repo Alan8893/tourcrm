@@ -4,8 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "sync-header-scenes": "node scripts/sync-header-scenes.mjs",
+    "dev": "npm run sync-header-scenes && vite",
+    "build": "npm run sync-header-scenes && tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "lint": "eslint .",
@@ -32,7 +33,6 @@
     "jsdom": "^25.0.1",
     "typescript": "^5.6.3",
     "typescript-eslint": "^8.15.0",
-    "vite": "^5.4.11",
     "vitest": "^2.1.8"
   }
 }
