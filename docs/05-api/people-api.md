@@ -56,13 +56,19 @@ Permission: `person.read` с подходящим scope.
 
 API возвращает только поля, разрешённые конкретному requester.
 
-Медицинские, контактные, документальные и иные чувствительные данные могут иметь отдельные permissions.
+Контактные поля `phone`, `email`, `address` являются полями Person и не имеют отдельных permissions: они доступны admin/instructor в пределах разрешённого scope и самому Person через `self`. GuardianRelationship не предоставляет доступ к контактам ребёнка.
+
+Медицинские, документальные и иные чувствительные данные не считаются автоматически доступными только из-за `person.read` и регулируются отдельной policy соответствующего домена.
 
 ## 6. Создание Person
 
 ### POST `/api/v1/persons`
 
-Создание Person доступно уполномоченным администраторам/инструкторам согласно permission policy.
+Создание Person выполняется только при наличии канонического permission `person.create`. В MVP `person.create` доступен только `admin`.
+
+Person является Club-neutral identity. В MVP используется один инициализированный Club; отдельный выбор Club в UI не вводится.
+
+Создание Person и создание `ClubMembership` являются разными доменными операциями. UI может последовательно выполнить их в одном пользовательском сценарии.
 
 ADR-0025 §9: heuristic duplicate detection (similarity/fuzzy matching, email/phone scoring, автоматическое объединение) не реализуется в текущем MVP slice. `DUPLICATE_PERSON` остаётся зарезервированным error-кодом для потенциального будущего использования, а не требованием текущего slice.
 
@@ -72,15 +78,27 @@ ADR-0025 §9: heuristic duplicate detection (similarity/fuzzy matching, email/ph
 
 Частичное обновление с audit для значимых изменений.
 
+Authorization:
+- `admin` может обновлять Persons в своём разрешённом `all` scope;
+- `instructor` может обновлять Persons, доступных через `own_groups`;
+- `member` и `guardian` могут обновлять только собственный Person;
+- все роли могут изменять собственные `first_name`, `last_name`, `middle_name`, `phone`, `email`, `address`, `photo_file_id`;
+- `birth_date` может изменять только `admin`, включая собственный Person;
+- `id` неизменяем.
+
+Контактные поля `phone`, `email`, `address` не имеют отдельных permissions.
+
 ADR-0025 §10: в кодовой базе нет уже принятого project-wide optimistic-concurrency механизма (ни у одного реализованного домена — Events, Groups — его нет; `api-contract.md` §19/`api-conventions.md` §17 оставляют выбор конкретного механизма за доменом). Текущий slice не изобретает новый механизм: `PATCH` использует last-write-wins семантику, что явно фиксируется как принятая граница текущего slice, а не как недосмотр.
 
-## 8. Архивирование Person
+## 8. Архивирование Person — deferred
 
-### POST `/api/v1/persons/{person_id}/archive`
+В MVP Person не имеет lifecycle archive и не имеет поля `status`/`archived_at`.
 
-Архивирование не уничтожает историю мероприятий, походов, документов, финансов и аудита.
+Endpoint `POST /api/v1/persons/{person_id}/archive` не является частью текущего API-контракта.
 
-Физическое удаление Person по умолчанию запрещено.
+Нельзя имитировать архивирование Person через `User`, `ClubMembership`, `GroupMembership` или `GuardianRelationship`. Физическое удаление Person также не является частью доменного API.
+
+Будущее архивирование требует отдельного решения о persistence, lifecycle, User, membership/group, guardian relationships, authorization, API, audit и UI (ADR-0034).
 
 ## 9. Membership list
 
@@ -92,7 +110,9 @@ ADR-0025 §10: в кодовой базе нет уже принятого proje
 
 ### POST `/api/v1/memberships`
 
-Создаёт связь Person ↔ Club.
+Permission: `membership.manage` и административный scope.
+
+Создаёт связь Person ↔ Club. В MVP создание `ClubMembership` выполняется только `admin`.
 
 Request concept:
 
@@ -109,11 +129,15 @@ Request concept:
 
 ### PATCH `/api/v1/memberships/{membership_id}`
 
-Изменяются только допустимые атрибуты текущего жизненного цикла.
+Permission: `membership.manage` и административный scope.
+
+Изменять `membership_type` может только `admin`. Lifecycle status не изменяется через произвольный PATCH: допустимые переходы выполняются через status endpoint (§12).
 
 ## 12. Membership status transition
 
 ### POST `/api/v1/memberships/{membership_id}/status`
+
+Permission: `membership.manage` и административный scope. В MVP lifecycle transitions `ClubMembership` выполняет только `admin`.
 
 Request:
 
@@ -368,21 +392,29 @@ Permission: `group.manage` + scope + object relationship.
 - `child_person_id`;
 - `relationship_type`;
 - `status`;
-- `is_primary_contact`;
 - `valid_from`;
 - `valid_to`;
 - `created_at`;
 - `updated_at`.
 
+Primary guardian/contact concept не существует: `is_primary_contact` и `primary_guardian_id` не являются частью модели. Несколько активных representatives равноправны.
+
 Канонические значения `status`: `active`, `inactive`, `revoked`.
 
-Self-link guardian → same person запрещён. Дублирующие активные relationships одного типа для одной пары не допускаются; исторические `inactive`/`revoked` сохраняются. Для ребёнка допускается не более одной одновременно действующей primary-contact relationship.
+Self-link guardian → same person запрещён. Дублирующие активные relationships одного типа для одной пары не допускаются; исторические `inactive`/`revoked` сохраняются. Понятия primary guardian/contact нет, поэтому ограничение на primary relationship отсутствует.
 
-Permissions: `guardian_relationship.read` (чтение), `guardian_relationship.manage` (создание/изменение/terminate) — приняты ADR-0025 §2. Ранее использовавшийся здесь `guardian.read` не был каноническим permission и заменён. Никакие другие GuardianRelationship-специфичные permissions не вводятся.
+Permissions: `guardian_relationship.read` (чтение), `guardian_relationship.manage` (создание/изменение/terminate) — приняты ADR-0025 §2. `guardian_relationship.manage` в MVP доступен только `admin`; instructor/member/guardian имеют только соответствующее чтение в своих scope. Ранее использовавшийся здесь `guardian.read` не был каноническим permission и заменён. Никакие другие GuardianRelationship-специфичные permissions не вводятся.
 
 URI: канонический ресурс — `guardian-relationships`, не `guardians` (ADR-0025 §4). `/guardians` не сохраняется как alias нигде в этом контракте, включая вложенную коллекцию под Person.
 
-Authorization/scope: `GuardianRelationship` остаётся Club-neutral и не имеет `club_id` (ADR-0023 §3) — обычное club-scoped assignment само по себе не превращается в доступ к `GuardianRelationship`: только глобальное (без `club_id`) assignment авторизует доступ к этой сущности. Из канонического scope vocabulary (ADR-0013) для `GuardianRelationship` применимы `all`, `self`, `children`, `none`; `own_groups`/`own_events` к этой сущности неприменимы (нет Group/Event relationship) и всегда fail closed. `self` означает, что requester сам является `child_person_id` конкретного relationship. `children` означает, что requester — активный (`status = active`, в пределах `[valid_from, valid_to)`) guardian ребёнка, к которому относится relationship. Новые scopes не вводятся.
+Authorization/scope: `GuardianRelationship` остаётся Club-neutral и не имеет `club_id`. Доступ вычисляется по роли, permission и relationship policy. Для этой сущности применяются только существующие scopes `all`, `self`, `children`, `none`; новые scopes не вводятся.
+
+- `admin`: чтение всех разрешённых relationships в глобальном `all` scope; create/update/terminate.
+- `instructor`: только чтение relationships, связанных с Persons, доступными через `own_groups`; mutations запрещены.
+- `member`: только чтение собственных relationship records (`self`).
+- `guardian`: только чтение собственных relationship records; другие representatives ребёнка не раскрываются.
+
+`children` используется для вычисления связанных детей, но не превращает GuardianRelationship в общий доступ к любым полям Person ребёнка. `own_groups`/`own_events` не применяются напрямую к самой Club-neutral сущности, а instructor access определяется через reachable Persons.
 
 ### GET `/api/v1/persons/{person_id}/guardian-relationships`
 
@@ -390,7 +422,7 @@ Authorization/scope: `GuardianRelationship` остаётся Club-neutral и н�
 
 ### POST `/api/v1/persons/{person_id}/guardian-relationships`
 
-Создаёт `GuardianRelationship` с существующим Person непосредственно. Permission: `guardian_relationship.manage`.
+Создаёт `GuardianRelationship` с существующим Person непосредственно. Permission: `guardian_relationship.manage`. В MVP создание выполняется только `admin`; guardian/member/instructor не могут создавать relationship.
 
 Request concept:
 
@@ -398,7 +430,6 @@ Request concept:
 {
   "guardian_person_id": "...",
   "relationship_type": "parent",
-  "is_primary_contact": true,
   "status": "active"
 }
 ```
@@ -409,11 +440,13 @@ Request concept:
 
 ### PATCH `/api/v1/guardian-relationships/{relationship_id}`
 
-Изменяет relationship type/primary contact согласно permission (`guardian_relationship.manage`) и lifecycle rules. Не изменяет `status` напрямую — переходы `status` выполняются только через `terminate` (ниже) либо natural lifecycle (истечение `valid_to`).
+Изменяет допустимые non-lifecycle attributes согласно permission `guardian_relationship.manage`. В MVP update выполняется только `admin`.
+
+`status` не изменяется напрямую — `terminate` переводит relationship в `revoked`, а истечение `valid_to` даёт read-time производный статус `inactive`.
 
 ### POST `/api/v1/guardian-relationships/{relationship_id}/terminate`
 
-Прекращает актуальность связи без уничтожения истории. Permission: `guardian_relationship.manage`.
+Прекращает актуальность связи без уничтожения истории. Permission: `guardian_relationship.manage`. В MVP terminate выполняется только `admin`.
 
 Каноническая семантика (ADR-0025 §3): `terminate` всегда переводит relationship в `status = revoked`. Альтернативного исхода нет; `terminate` уже `revoked` relationship отклоняется (соответствующий HTTP status, canonical error code `guardian_link_not_allowed` — см. §29). `inactive` — отдельное, не-revoked историческое состояние и никогда не является результатом `terminate`.
 
@@ -437,7 +470,9 @@ Parent-visible projection для каждого ребёнка ограниче�
 
 ```text
 id
-full_name
+last_name
+first_name
+middle_name
 birth_date
 photo_file_id
 ```
@@ -496,11 +531,17 @@ Role assignment не меняет Person.
 
 ## 26. Sensitive profile sections
 
-API должен поддерживать отдельные policy areas для contact data, address, medical/safety data, documents, emergency contacts и guardian data.
-
 Не следует выдавать полный Person object любому requester с общим `person.read`.
 
-ADR-0025 §8: до определения отдельной permission/scope policy для этих полей `phone`, `email` и `address` не выдаются через baseline Person API ни одному requester (включая обладателя `person.read`). Это принятое ограничение scope текущего implementation slice, а не временный недосмотр.
+`phone`, `email` и `address` не имеют отдельных permissions. Они доступны:
+- `admin` — для Persons в разрешённом `all` scope;
+- `instructor` — для Persons в разрешённом `own_groups` scope;
+- `member` — только для собственного Person;
+- `guardian` — только для собственного Person.
+
+GuardianRelationship не предоставляет guardian доступ к контактам ребёнка.
+
+Медицинские, документальные, emergency и иные чувствительные данные регулируются отдельной policy соответствующего домена; их наличие не выводится автоматически из `person.read`.
 
 ## 27. Validation
 
@@ -509,7 +550,7 @@ ADR-0025 §8: до определения отдельной permission/scope po
 - корректность форматов дат;
 - отсутствие невозможных интервалов membership;
 - корректность guardian relationship lifecycle;
-- отсутствие более одной действующей primary-contact relationship для ребёнка;
+- отсутствие self-link и дублирующих активных GuardianRelationship одного типа для одной пары;
 - невозможность создать `GroupMembership` или `GroupInstructorAssignment` для архивной (`status = archived`) группы (§14.1, §15, §16);
 - отсутствие дублирующего активного `GroupMembership` для одной и той же пары `(group_id, club_membership_id)` (§15.2 — обязательный DB invariant, реализованный на уровне БД текущего Group API implementation slice);
 - отсутствие пересекающихся по интервалу `[valid_from, valid_to)` `is_primary = true` записей `GroupInstructorAssignment` на одну группу (§16.2 — обязательный DB invariant, реализованный на уровне БД текущего Group API implementation slice);
@@ -518,7 +559,7 @@ ADR-0025 §8: до определения отдельной permission/scope po
 
 ## 28. Audit
 
-Audit обязателен для создания/изменения/архивирования Person, membership status, создания/изменения/архивирования Group, создания/изменения/завершения GroupMembership, создания/завершения GroupInstructorAssignment, создания/изменения/терминации GuardianRelationship, role assignments и import execution.
+Audit обязателен для создания/изменения Person, membership status, создания/изменения/архивирования Group, создания/изменения/завершения GroupMembership, создания/завершения GroupInstructorAssignment, создания/изменения/терминации GuardianRelationship, role assignments и import execution. Person archive не аудируется, поскольку endpoint и lifecycle в MVP отсутствуют.
 
 Используется исключительно закрытый словарь `action` ADR-0024 §4 — новые audit action codes этим контрактом не вводятся:
 
@@ -575,7 +616,7 @@ Group/GroupMembership/GroupInstructorAssignment-специфичные machine-r
 
 `PATCH /api/v1/guardian-relationships/{relationship_id}` и `POST /api/v1/guardian-relationships/{relationship_id}/terminate` защищены от IDOR через existence-hiding: relationship, который реально не существует, и relationship, который существует, но requester к нему не авторизован, возвращают одинаковый HTTP 404 с одинаковым machine-readable кодом `guardian_relationship_not_found` — по публичному ответу их невозможно отличить друг от друга.
 
-Для validation/business-link ошибок (self-link, дублирующая active relationship, дублирующая primary-contact relationship, повторный `terminate` уже `revoked` relationship) используется canonical machine-readable код `guardian_link_not_allowed` с соответствующим HTTP status (422 для validation-ошибок при создании/изменении, 409 для повторного `terminate`).
+Для validation/business-link ошибок (self-link, дублирующая active relationship, повторный `terminate` уже `revoked` relationship) используется canonical machine-readable код `guardian_link_not_allowed` с соответствующим HTTP status (422 для validation-ошибок при создании/изменении, 409 для повторного `terminate`).
 
 ### `INSUFFICIENT_SCOPE`
 
@@ -595,8 +636,8 @@ Group/GroupMembership/GroupInstructorAssignment endpoints не вводят proj
 6. Один ребёнок может иметь несколько guardians.
 7. Parent API показывает только разрешённых детей по GuardianRelationship.
 8. Child id никогда не заменяет authorization check.
-9. Sensitive fields защищены отдельными permissions/scopes.
-10. Pending membership не становится active без требуемого approval.
+9. Sensitive fields защищены role/scope/object policy; отдельные permissions для `phone`/`email`/`address` не вводятся.
+10. Membership lifecycle transitions выполняются только admin; повторное вступление после inactive создаёт новый membership period.
 11. Import поддерживает dry-run.
 12. Role changes не изменяют Person или Membership.
 13. Исторически значимые записи не удаляются физически по обычным CRUD endpoint'ам.
