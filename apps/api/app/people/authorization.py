@@ -12,12 +12,17 @@ Python — so an unauthorized row can never leak through pagination/totals/
 offsets. Person authorization does not use this ResourceContext-based
 shape at all — see below.
 
-Issue #62 only requires `all`/`own_groups`/`self` for Person and
-ClubMembership (`children`/`own_events` are not applicable — Guardian
-access is Issue #64's concern, and neither entity has an Event
-relationship). Both stay at their ResourceContext tri-state default
-(`None`, "never resolved") here, which is the correct fail-closed value
-per app.authorization.context.ResourceContext's own contract.
+Issue #62 originally left `children`/`own_events` unresolved for both
+Person and ClubMembership (`own_events` still is: neither entity has an
+Event relationship). TH-0102 (ADR-0035 §7.3) now requires `children` for
+ClubMembership read: a Guardian may read their children's membership data
+through the authorized `children`/GuardianRelationship path — resolved
+below the same way app.people.guardian_authorization resolves it for
+GuardianRelationship itself (an *active* GuardianRelationship from the
+requester to the membership's Person). ADR-0035 §3.2 is explicit that a
+Guardian gets no such access to Person through People management, so
+Person's own `person_visibility_filter` deliberately still fails closed on
+`children` — only ClubMembership's resolution changes here.
 
 `Person` has no `club_id` of its own (Club-neutral: a Person may have
 `ClubMembership` rows in more than one Club). Because of this, a single
@@ -61,7 +66,7 @@ from app.authentication.bootstrap import ADMIN_ROLE_CODE
 from app.authorization.context import ResourceContext
 from app.authorization.service import applicable_assignments, club_boundary_matches, scope_matches
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
-from app.db.identity import ClubMembership, Person, User
+from app.db.identity import ClubMembership, GuardianRelationship, Person, User
 
 _ACTIVE_GROUP_MEMBERSHIP_STATUS = "active"
 _ACTIVE_CLUB_MEMBERSHIP_STATUS = "active"
@@ -74,6 +79,26 @@ def _active_interval(valid_from: Any, valid_to: Any) -> sa.ColumnElement[bool]:
 
 def _person_id_for_user(session: Session, user_id: uuid.UUID) -> uuid.UUID:
     return session.execute(sa.select(User.person_id).where(User.id == user_id)).scalar_one()
+
+
+def _active_guardian_condition(*, guardian_person_id, child_person_id) -> sa.ColumnElement[bool]:
+    """True if an *active* GuardianRelationship exists making
+    `guardian_person_id` a guardian of `child_person_id` right now.
+
+    Duplicated from app.people.guardian_authorization's identically-named
+    helper rather than imported — matching that module's own documented
+    convention of duplicating this specific small predicate per module
+    instead of sharing it.
+    """
+    gr = aliased(GuardianRelationship)
+    return sa.exists(
+        sa.select(gr.id).where(
+            gr.guardian_person_id == guardian_person_id,
+            gr.child_person_id == child_person_id,
+            gr.status == "active",
+            _active_interval(gr.valid_from, gr.valid_to),
+        )
+    )
 
 
 def _own_group_condition_for_person(
@@ -266,8 +291,18 @@ def build_membership_resource_context(
     is_own_group = session.execute(
         sa.select(_own_group_condition_for_membership(membership.id, requester_user_id))
     ).scalar()
+    is_child = session.execute(
+        sa.select(
+            _active_guardian_condition(
+                guardian_person_id=requester_person_id, child_person_id=membership.person_id
+            )
+        )
+    ).scalar()
     return ResourceContext(
-        club_id=membership.club_id, is_self=is_self, is_own_group=bool(is_own_group)
+        club_id=membership.club_id,
+        is_self=is_self,
+        is_own_group=bool(is_own_group),
+        is_child=bool(is_child),
     )
 
 
@@ -281,8 +316,8 @@ def membership_visibility_filter(
     if not assignments:
         return sa.false()
 
-    needs_self = any(a.scope_type == "self" for a in assignments)
-    requester_person_id = _person_id_for_user(session, user_id) if needs_self else None
+    needs_person = any(a.scope_type in ("self", "children") for a in assignments)
+    requester_person_id = _person_id_for_user(session, user_id) if needs_person else None
 
     clauses: list[sa.ColumnElement[bool]] = []
     for assignment in assignments:
@@ -297,6 +332,15 @@ def membership_visibility_filter(
             scope_predicate = _own_group_condition_for_membership(ClubMembership.id, user_id)
         elif assignment.scope_type == "self":
             scope_predicate = ClubMembership.person_id == requester_person_id
+        elif assignment.scope_type == "children":
+            # ADR-0035 §7.3: a Guardian may read their children's
+            # membership data through the authorized `children`/
+            # GuardianRelationship path — an *active* GuardianRelationship
+            # from the requester to the membership's Person.
+            scope_predicate = _active_guardian_condition(
+                guardian_person_id=requester_person_id,
+                child_person_id=ClubMembership.person_id,
+            )
         elif assignment.scope_type == "none":
             scope_predicate = sa.false()
         else:

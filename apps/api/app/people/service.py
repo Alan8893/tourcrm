@@ -330,11 +330,19 @@ def transition_membership_status(
     a new row (app.people.service.create_membership) rather than
     transitioning this one back to `active` — `inactive -> active` is not
     in the allowed transition graph.
+
+    TH-0102 (ADR-0035 §7.2) carves out one explicit exception:
+    `pending -> archived` leaves `left_at` NULL — the membership period
+    never actually started, so there is no "leave" moment to record. This
+    is keyed off `old_status` (not merely "is `left_at` already set"),
+    matching the canonical rule's own wording.
     """
     validate_membership_status_transition(membership.status, new_status)
 
     old_status = membership.status
-    ends_period = new_status in ENDING_STATUSES and membership.left_at is None
+    ends_period = (
+        new_status in ENDING_STATUSES and membership.left_at is None and old_status != "pending"
+    )
     if ends_period:
         membership.left_at = datetime.now(timezone.utc)
     membership.status = new_status
