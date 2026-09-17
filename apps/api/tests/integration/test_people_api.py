@@ -147,6 +147,25 @@ def _grant_permission(
         session.commit()
 
 
+def _grant_via_system_admin_role(user_id: uuid.UUID, *, club_id: uuid.UUID | None = None) -> None:
+    """Grant `user_id` an `all`-scope assignment through the actual
+    canonical system `admin` role (seeded by migration e5ae1ad9e1e1 with
+    `is_system = true`) — distinct from `_grant_permission`, which always
+    creates a brand-new, non-system ad hoc role. Required for exercising
+    ADR-0035 §5's `birth_date` rule, which checks the granting role's own
+    identity (`Role.code == "admin"` and `Role.is_system`), not merely
+    the assignment's scope.
+    """
+    with session_scope() as session:
+        admin_role = session.execute(select(Role).where(Role.code == "admin")).scalar_one()
+        session.add(
+            UserRoleAssignment(
+                user_id=user_id, role_id=admin_role.id, scope_type="all", club_id=club_id
+            )
+        )
+        session.commit()
+
+
 def _authenticate_as(user_id: uuid.UUID) -> None:
     app.dependency_overrides[get_current_principal] = lambda: CurrentPrincipal(
         user_id=user_id, session_id=uuid.uuid4()
@@ -1066,9 +1085,15 @@ def test_birth_date_and_other_fields_together_are_rejected_atomically_without_sc
 
 
 @requires_postgres
-def test_all_scope_can_update_own_birth_date(client: TestClient) -> None:
-    """ADR-0035 §5: an all-scope (admin-shaped) requester may update
-    birth_date, explicitly including their own Person."""
+def test_non_admin_role_with_all_scope_person_update_cannot_update_birth_date(
+    client: TestClient,
+) -> None:
+    """ADR-0035 §5 requires the canonical `admin` role specifically, not
+    merely `person.update` with `all` scope: a custom, non-system role
+    seeded with exactly that grant (same shape `_grant_permission` always
+    creates) must still be denied — this is the scenario a bare
+    scope-only check would incorrectly allow.
+    """
     with session_scope() as session:
         person = _make_person(birth_date=None)
         user = _make_user(person)
@@ -1076,6 +1101,31 @@ def test_all_scope_can_update_own_birth_date(client: TestClient) -> None:
         session.commit()
         person_id, user_id = person.id, user.id
     _grant_permission(user_id, "person.update", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.patch(
+        f"/api/v1/persons/{person_id}",
+        json={"birth_date": "2000-01-01"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
+    with session_scope() as session:
+        unchanged = session.get(Person, person_id)
+        assert unchanged.birth_date is None
+
+
+@requires_postgres
+def test_system_admin_role_can_update_own_birth_date(client: TestClient) -> None:
+    """ADR-0035 §5: the canonical system admin role may update
+    birth_date, explicitly including their own Person."""
+    with session_scope() as session:
+        person = _make_person(birth_date=None)
+        user = _make_user(person)
+        session.add_all([person, user])
+        session.commit()
+        person_id, user_id = person.id, user.id
+    _grant_via_system_admin_role(user_id)
     _authenticate_as(user_id)
 
     response = client.patch(
@@ -1092,7 +1142,7 @@ def test_all_scope_can_update_own_birth_date(client: TestClient) -> None:
 
 
 @requires_postgres
-def test_all_scope_can_update_another_persons_birth_date(client: TestClient) -> None:
+def test_system_admin_role_can_update_another_persons_birth_date(client: TestClient) -> None:
     with session_scope() as session:
         target = _make_person(birth_date=None)
         requester_person = _make_person()
@@ -1100,7 +1150,7 @@ def test_all_scope_can_update_another_persons_birth_date(client: TestClient) -> 
         session.add_all([target, requester_person, requester_user])
         session.commit()
         target_id, user_id = target.id, requester_user.id
-    _grant_permission(user_id, "person.update", scope_type="all")
+    _grant_via_system_admin_role(user_id)
     _authenticate_as(user_id)
 
     response = client.patch(

@@ -57,12 +57,12 @@ from app.api.v1.guardian_relationships_schemas import (
 from app.api.v1.memberships_schemas import MembershipOut
 from app.api.v1.persons_schemas import PersonCreateRequest, PersonOut, PersonUpdateRequest
 from app.authorization.context import ResourceContext
-from app.authorization.service import Authorizer
+from app.authorization.service import AuthorizationDenied, Authorizer
 from app.db.identity import Person
 from app.db.session import get_db
 from app.people import guardian_service
 from app.people import service as people_service
-from app.people.authorization import is_person_visible
+from app.people.authorization import is_person_visible, is_system_admin_person_update_grant
 from app.people.guardian_authorization import build_guardian_relationship_create_context
 from app.people.guardian_lifecycle import (
     DuplicateActiveGuardianRelationshipError,
@@ -224,17 +224,14 @@ def update_person(
     )
     fields = payload.model_dump(exclude_unset=True)
     if "birth_date" in fields:
-        # ADR-0035 §5: only admin may update birth_date, including their
-        # own Person — operationalized as "holds an all-scope
-        # person.update assignment" (ADR-0035 §10's admin -> all pattern),
-        # never a Role.code == "admin" check. An empty ResourceContext
-        # only matches an `all`-scope assignment (see
-        # app.authorization.service.scope_matches), so own_groups/self
-        # scoped updaters are denied here even for their own Person,
-        # exactly matching the ADR-0035 §3.1 table.
-        Authorizer(
-            session=db, user_id=principal.user_id, permission_code="person.update"
-        ).check(ResourceContext())
+        # ADR-0035 §5: only the canonical system admin role may change
+        # birth_date, including on the admin's own Person — a bare
+        # all-scope person.update grant via any role is not sufficient
+        # (see app.people.authorization.is_system_admin_person_update_
+        # grant's own docstring for why this cannot be expressed as a
+        # plain Authorizer.check(ResourceContext()) scope check).
+        if not is_system_admin_person_update_grant(db, principal.user_id):
+            raise AuthorizationDenied("person.update")
     person = people_service.update_person(
         db,
         person=person,
