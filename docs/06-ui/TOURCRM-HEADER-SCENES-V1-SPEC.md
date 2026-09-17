@@ -124,7 +124,9 @@ If a WebP production derivative is required later, it must be generated from the
 
 ---
 
-## 5. Approved scene catalog
+## 5. Approved visual scene set
+
+The current basic theme contains these approved visual scenes:
 
 | # | Scene | Desktop | Mobile |
 |---|---|---|---|
@@ -137,6 +139,8 @@ If a WebP production derivative is required later, it must be generated from the
 | 07 | Crossing | Approved | Approved |
 | 08 | Camp Morning | Approved | Approved |
 | 09 | Finish | Approved | Approved |
+
+These scene descriptions are a **design reference only**. The application does not need to know or store the semantic meaning of a particular sequence number. Future themes may contain a different number and composition of assets.
 
 ### Scene meanings
 
@@ -169,43 +173,68 @@ Group has completed the route and celebrates the shared result; tourism rather t
 
 ---
 
-## 6. Asset naming
+## 6. Asset naming contract
 
-Use these exact names:
-
-### Desktop
+Use the following canonical naming pattern:
 
 ```text
-01-forest-hike-desktop.png
-02-mountains-desktop.png
-03-camp-desktop.png
-04-campfire-desktop.png
-05-kayaks-desktop.png
-06-navigation-desktop.png
-07-crossing-desktop.png
-08-camp-morning-desktop.png
-09-finish-desktop.png
+<viewport>-<theme>-<sequence>.png
 ```
 
-### Mobile
+### Components
+
+- `viewport`: `desk` or `mob`
+- `theme`: lowercase ASCII theme slug, for example `basic`, `winter`, `ny`, `8mar`
+- `sequence`: zero-padded numeric sequence inside the selected theme, for example `01`, `02`, `03`
+
+Examples:
 
 ```text
-01-forest-hike-mobile.png
-02-mountains-mobile.png
-03-camp-mobile.png
-04-campfire-mobile.png
-05-kayaks-mobile.png
-06-navigation-mobile.png
-07-crossing-mobile.png
-08-camp-morning-mobile.png
-09-finish-mobile.png
+desk-basic-01.png
+desk-basic-02.png
+desk-basic-03.png
+...
+desk-basic-09.png
+
+mob-basic-01.png
+mob-basic-02.png
+mob-basic-03.png
+...
+mob-basic-09.png
 ```
+
+Future thematic packages follow exactly the same contract:
+
+```text
+desk-winter-01.png
+mob-winter-01.png
+
+desk-ny-01.png
+mob-ny-01.png
+
+desk-8mar-01.png
+mob-8mar-01.png
+```
+
+### Naming rules
+
+- lowercase only;
+- ASCII characters only;
+- hyphen-separated components;
+- no spaces;
+- no scene names in filenames;
+- no version suffix in individual filenames;
+- no `desktop/` or `mobile/` directory component;
+- sequence number is only a stable position inside a theme, not a semantic scene ID;
+- the number of assets is not globally fixed and may differ between themes.
+
+The application must not depend on `01` meaning Forest Hike, `05` meaning Kayaks, or any other specific scene. The files are treated as an ordered set belonging to a theme.
 
 ---
 
 ## 7. Repository location
 
-Place the approved source assets here:
+Place approved source assets directly in the package directory:
 
 ```text
 docs/
@@ -213,34 +242,74 @@ docs/
     └── assets/
         └── packages/
             └── header-scenes-v1/
-                ├── desktop/
-                │   ├── 01-forest-hike-desktop.png
-                │   ├── 02-mountains-desktop.png
-                │   ├── 03-camp-desktop.png
-                │   ├── 04-campfire-desktop.png
-                │   ├── 05-kayaks-desktop.png
-                │   ├── 06-navigation-desktop.png
-                │   ├── 07-crossing-desktop.png
-                │   ├── 08-camp-morning-desktop.png
-                │   └── 09-finish-desktop.png
-                │
-                └── mobile/
-                    ├── 01-forest-hike-mobile.png
-                    ├── 02-mountains-mobile.png
-                    ├── 03-camp-mobile.png
-                    ├── 04-campfire-mobile.png
-                    ├── 05-kayaks-mobile.png
-                    ├── 06-navigation-mobile.png
-                    ├── 07-crossing-mobile.png
-                    ├── 08-camp-morning-mobile.png
-                    └── 09-finish-mobile.png
+                ├── desk-basic-01.png
+                ├── desk-basic-02.png
+                ├── desk-basic-03.png
+                ├── desk-basic-04.png
+                ├── desk-basic-05.png
+                ├── desk-basic-06.png
+                ├── desk-basic-07.png
+                ├── desk-basic-08.png
+                ├── desk-basic-09.png
+                ├── mob-basic-01.png
+                ├── mob-basic-02.png
+                ├── mob-basic-03.png
+                ├── mob-basic-04.png
+                ├── mob-basic-05.png
+                ├── mob-basic-06.png
+                ├── mob-basic-07.png
+                ├── mob-basic-08.png
+                └── mob-basic-09.png
+```
+
+Future themes are added to the same package directory using the same naming contract. For example:
+
+```text
+header-scenes-v1/
+├── desk-basic-01.png
+├── ...
+├── mob-basic-09.png
+├── desk-winter-01.png
+├── ...
+├── mob-winter-07.png
+├── desk-ny-01.png
+├── ...
+└── mob-ny-12.png
 ```
 
 This package is separate from the official brand package. Do not place these files into `brand/`.
 
 ---
 
-## 8. Header implementation rules
+## 8. Theme and asset selection
+
+The asset package is designed for automatic Header rotation.
+
+The application needs to know only:
+
+1. which theme is active;
+2. which viewport is required;
+3. which asset sequence should be displayed according to the approved rotation algorithm.
+
+The rotation algorithm is intentionally **not defined by this asset specification** and may be decided separately (for example, daily rotation, random rotation, deterministic rotation, or another approved strategy).
+
+The application must not require a semantic scene catalog to perform selection.
+
+### Theme configuration
+
+If a system-level Header theme setting is introduced, it should store the theme slug only, for example:
+
+```text
+theme = basic
+```
+
+The asset path remains fixed. The selected theme is resolved through the naming contract.
+
+Do not introduce a configurable filesystem path as part of the Header asset contract.
+
+---
+
+## 9. Header implementation rules
 
 The Header / Brand Zone must use these assets as decorative visual content.
 
@@ -283,7 +352,7 @@ The decorative image must not become an interactive element.
 
 ---
 
-## 9. Composition safety
+## 10. Composition safety
 
 The Header must remain readable when the illustration is rendered behind / alongside interface content.
 
@@ -295,12 +364,12 @@ Do not introduce CSS masks or overlays that materially alter the approved artwor
 
 ---
 
-## 10. Acceptance checklist
+## 11. Acceptance checklist
 
 The asset package is accepted only when all of the following are true:
 
-- [ ] Exactly **18 PNG files** are present.
-- [ ] Exactly 9 desktop assets and 9 mobile assets.
+- [ ] The current basic package contains exactly 18 PNG files.
+- [ ] The current basic package contains 9 desktop assets and 9 mobile assets.
 - [ ] Every desktop asset is **1600×400**.
 - [ ] Every mobile asset is **800×500**.
 - [ ] All assets are RGBA PNG.
@@ -311,8 +380,11 @@ The asset package is accepted only when all of the following are true:
 - [ ] No UI controls are present in the artwork.
 - [ ] No SVG assets are introduced.
 - [ ] Mobile assets are dedicated compositions, not desktop crops.
-- [ ] Scene numbering and filenames exactly match this specification.
-- [ ] All 18 assets remain visually consistent as one series.
+- [ ] Filenames follow `<viewport>-<theme>-<sequence>.png`.
+- [ ] No scene name is required in filenames.
+- [ ] No `desktop/` or `mobile/` subdirectories are required.
+- [ ] Future themes can contain a different number of assets without changing the naming contract.
+- [ ] All 18 current assets remain visually consistent as one basic series.
 - [ ] Header controls remain functional and clickable.
 - [ ] The decorative layer does not intercept pointer events.
 - [ ] Desktop and mobile rendering are visually checked in the actual TourCRM Header.
@@ -320,7 +392,7 @@ The asset package is accepted only when all of the following are true:
 
 ---
 
-## 11. Important implementation boundary
+## 12. Important implementation boundary
 
 This document defines the **approved visual asset contract**.
 
@@ -333,6 +405,7 @@ Frontend implementation must not:
 - add text or logo overlays inside the image;
 - create monitor-specific illustration variants;
 - substitute SVG;
-- alter the approved visual language.
+- alter the approved visual language;
+- make business logic depend on the semantic meaning of a sequence number.
 
 Any change to the visual assets requires a new visual approval before implementation.
