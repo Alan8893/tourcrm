@@ -26,7 +26,7 @@ from app.audit.service import record_audit_event
 from app.db.audit import AuditLog
 from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
-from app.db.identity import Club, ClubMembership, Person, User
+from app.db.identity import Club, ClubMembership, GuardianRelationship, Person, User
 from app.db.session import session_scope
 from app.main import app
 
@@ -178,7 +178,7 @@ def test_create_person_with_global_all_scope_succeeds(client: TestClient) -> Non
         session.add_all([person, user])
         session.commit()
         user_id = user.id
-    _grant_permission(user_id, "person.update", scope_type="all")
+    _grant_permission(user_id, "person.create", scope_type="all")
     _authenticate_as(user_id)
 
     response = client.post(
@@ -198,10 +198,12 @@ def test_create_person_with_global_all_scope_succeeds(client: TestClient) -> Non
     assert body["first_name"] == "Anna"
     assert body["last_name"] == "Petrova"
     assert body["birth_date"] == "2010-05-01"
-    # Sensitive fields never returned, even though they were just submitted.
-    assert "phone" not in body
-    assert "email" not in body
-    assert "address" not in body
+    # ADR-0035 §3/§4 supersedes ADR-0025 §8: contact fields are now
+    # returned to a requester already authorized for the record (the
+    # creator, here, has an `all`-scope grant).
+    assert body["phone"] == "+70000000000"
+    assert body["email"] == "anna@example.com"
+    assert body["address"] == "1 Main St"
     assert "status" not in body
 
     audit_row = _latest_audit_row(action="person.created", resource_id=uuid.UUID(body["id"]))
@@ -243,7 +245,7 @@ def test_create_person_with_club_scoped_all_assignment_is_forbidden(client: Test
         session.add_all([club, person, user])
         session.commit()
         user_id, club_id = user.id, club.id
-    _grant_permission(user_id, "person.update", scope_type="all", club_id=club_id)
+    _grant_permission(user_id, "person.create", scope_type="all", club_id=club_id)
     _authenticate_as(user_id)
 
     response = client.post(
@@ -262,7 +264,7 @@ def test_create_person_rejects_missing_required_field(client: TestClient) -> Non
         session.add_all([person, user])
         session.commit()
         user_id = user.id
-    _grant_permission(user_id, "person.update", scope_type="all")
+    _grant_permission(user_id, "person.create", scope_type="all")
     _authenticate_as(user_id)
 
     response = client.post(
@@ -271,13 +273,64 @@ def test_create_person_rejects_missing_required_field(client: TestClient) -> Non
     assert response.status_code == 422, response.text
 
 
+@requires_postgres
+def test_create_person_with_only_person_update_permission_is_forbidden(client: TestClient) -> None:
+    """ADR-0035 §2: `person.create` is its own canonical permission,
+    distinct from `person.update` — holding only `person.update`, however
+    broad its scope, must never authorize creating a new Person.
+    """
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([person, user])
+        session.commit()
+        user_id = user.id
+    _grant_permission(user_id, "person.update", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        "/api/v1/persons",
+        json={"first_name": "Anna", "last_name": "Petrova"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
+
+
+@requires_postgres
+def test_create_person_accepts_photo_file_id(client: TestClient) -> None:
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([person, user])
+        session.commit()
+        user_id = user.id
+    _grant_permission(user_id, "person.create", scope_type="all")
+    _authenticate_as(user_id)
+    photo_file_id = uuid.uuid4()
+
+    response = client.post(
+        "/api/v1/persons",
+        json={"first_name": "Anna", "last_name": "Petrova", "photo_file_id": str(photo_file_id)},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["photo_file_id"] == str(photo_file_id)
+
+
 # --- Person: read -------------------------------------------------------
 
 
 @requires_postgres
 def test_get_person_all_scope_succeeds(client: TestClient) -> None:
+    """ADR-0035 §3/§4 supersedes ADR-0025 §8: an `all`-scope requester
+    authorized to read the Person also sees its contact fields — they are
+    ordinary Person fields with no separate permission.
+    """
     with session_scope() as session:
-        target = _make_person(first_name="Target")
+        target = _make_person(
+            first_name="Target", phone="+71234567890", email="target@example.com", address="Home"
+        )
         requester_person = _make_person()
         requester_user = _make_user(requester_person)
         session.add_all([target, requester_person, requester_user])
@@ -290,9 +343,9 @@ def test_get_person_all_scope_succeeds(client: TestClient) -> None:
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["id"] == str(target_id)
-    assert "phone" not in body
-    assert "email" not in body
-    assert "address" not in body
+    assert body["phone"] == "+71234567890"
+    assert body["email"] == "target@example.com"
+    assert body["address"] == "Home"
 
 
 @requires_postgres
@@ -724,8 +777,11 @@ def test_list_persons_all_scope_returns_all_persons(client: TestClient) -> None:
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["pagination"]["total"] >= 3  # requester + p1 + p2
+    # ADR-0035 §3/§4: contact fields are ordinary Person fields, present
+    # for every item the requester is authorized to see (value may be
+    # null when unset, but the key itself is not withheld).
     for item in body["items"]:
-        assert "phone" not in item
+        assert "phone" in item
 
 
 @requires_postgres
@@ -846,6 +902,296 @@ def test_update_person_idor_member_cannot_update_another_person(client: TestClie
     with session_scope() as session:
         victim = session.get(Person, other_id)
         assert victim.first_name == "Victim"
+
+
+# --- Person: contact fields (ADR-0035 §4) --------------------------------
+
+
+@requires_postgres
+def test_own_groups_instructor_can_read_and_update_target_contact_fields(
+    client: TestClient,
+) -> None:
+    """ADR-0035 §4: instructor may read/update contact fields of Persons
+    reachable through own_groups, exactly like any other Person field.
+    """
+    with session_scope() as session:
+        club = _make_club()
+        instructor_person = _make_person()
+        instructor_user = _make_user(instructor_person)
+        member_person = _make_person(phone="+70000000001", email="m@example.com", address="Addr")
+        session.add_all([club, instructor_person, instructor_user, member_person])
+        session.commit()
+        _, group = _setup_group_membership(session, club=club, person=member_person)
+        session.add(_make_group_instructor_assignment(group, instructor_user))
+        session.commit()
+        instructor_user_id, member_person_id = instructor_user.id, member_person.id
+    _grant_permission(instructor_user_id, "person.read", scope_type="own_groups")
+    _grant_permission(instructor_user_id, "person.update", scope_type="own_groups")
+    _authenticate_as(instructor_user_id)
+
+    read_response = client.get(f"/api/v1/persons/{member_person_id}")
+    assert read_response.status_code == 200, read_response.text
+    assert read_response.json()["phone"] == "+70000000001"
+
+    update_response = client.patch(
+        f"/api/v1/persons/{member_person_id}",
+        json={"phone": "+70000000002"},
+        headers=_csrf_headers(client),
+    )
+    assert update_response.status_code == 200, update_response.text
+    assert update_response.json()["phone"] == "+70000000002"
+
+
+@requires_postgres
+def test_guardian_relationship_does_not_grant_child_contact_access(client: TestClient) -> None:
+    """ADR-0035 §4/§8.4: an active GuardianRelationship never substitutes
+    for `person.read` + a matching scope on the child's Person record —
+    Person authorization has no `children` branch (it fails closed), and
+    `guardian_relationship.read` is a wholly separate permission that
+    never grants Person access by itself.
+    """
+    with session_scope() as session:
+        guardian_person = _make_person()
+        guardian_user = _make_user(guardian_person)
+        child_person = _make_person(
+            first_name="Child", phone="+79990001122", email="child@example.com"
+        )
+        session.add_all([guardian_person, guardian_user, child_person])
+        session.commit()
+        session.add(
+            GuardianRelationship(
+                guardian_person_id=guardian_person.id,
+                child_person_id=child_person.id,
+                relationship_type="parent",
+                status="active",
+                valid_from=_utc(2020, 1, 1),
+            )
+        )
+        session.commit()
+        guardian_user_id, child_id = guardian_user.id, child_person.id
+    # The guardian only holds person.read/self and guardian_relationship.read —
+    # never a `children`/`all`/`own_groups` grant on Person itself.
+    _grant_permission(guardian_user_id, "person.read", scope_type="self")
+    _grant_permission(guardian_user_id, "guardian_relationship.read", scope_type="self")
+    _authenticate_as(guardian_user_id)
+
+    response = client.get(f"/api/v1/persons/{child_id}")
+    assert response.status_code == 404, response.text
+
+
+# --- Person: birth_date admin-only update (ADR-0035 §5) -------------------
+
+
+@requires_postgres
+def test_self_scope_cannot_update_own_birth_date(client: TestClient) -> None:
+    """ADR-0035 §3.1/§5: self-scope alone never authorizes a birth_date
+    change, even on the requester's own Person — this is the same
+    "member and guardian have the same self-Person edit model, minus
+    birth_date" rule.
+    """
+    with session_scope() as session:
+        person = _make_person(birth_date=None)
+        user = _make_user(person)
+        session.add_all([person, user])
+        session.commit()
+        person_id, user_id = person.id, user.id
+    _grant_permission(user_id, "person.update", scope_type="self")
+    _authenticate_as(user_id)
+
+    response = client.patch(
+        f"/api/v1/persons/{person_id}",
+        json={"birth_date": "2000-01-01"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 403, response.text
+    with session_scope() as session:
+        unchanged = session.get(Person, person_id)
+        assert unchanged.birth_date is None
+
+
+@requires_postgres
+def test_own_groups_instructor_cannot_update_target_birth_date(client: TestClient) -> None:
+    """ADR-0035 §3.1: instructor's own_groups access to a Person never
+    extends to birth_date, even though other fields are updatable.
+    """
+    with session_scope() as session:
+        club = _make_club()
+        instructor_person = _make_person()
+        instructor_user = _make_user(instructor_person)
+        member_person = _make_person(birth_date=None)
+        session.add_all([club, instructor_person, instructor_user, member_person])
+        session.commit()
+        _, group = _setup_group_membership(session, club=club, person=member_person)
+        session.add(_make_group_instructor_assignment(group, instructor_user))
+        session.commit()
+        instructor_user_id, member_person_id = instructor_user.id, member_person.id
+    _grant_permission(instructor_user_id, "person.update", scope_type="own_groups")
+    _authenticate_as(instructor_user_id)
+
+    response = client.patch(
+        f"/api/v1/persons/{member_person_id}",
+        json={"birth_date": "2000-01-01"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 403, response.text
+
+
+@requires_postgres
+def test_birth_date_and_other_fields_together_are_rejected_atomically_without_scope(
+    client: TestClient,
+) -> None:
+    """A PATCH bundling an unauthorized birth_date change with an
+    otherwise-permitted field change must reject the whole request and
+    apply neither change — never a silent partial write.
+    """
+    with session_scope() as session:
+        person = _make_person(first_name="Old", birth_date=None)
+        user = _make_user(person)
+        session.add_all([person, user])
+        session.commit()
+        person_id, user_id = person.id, user.id
+    _grant_permission(user_id, "person.update", scope_type="self")
+    _authenticate_as(user_id)
+
+    response = client.patch(
+        f"/api/v1/persons/{person_id}",
+        json={"first_name": "New", "birth_date": "2000-01-01"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 403, response.text
+    with session_scope() as session:
+        unchanged = session.get(Person, person_id)
+        assert unchanged.first_name == "Old"
+        assert unchanged.birth_date is None
+
+
+@requires_postgres
+def test_all_scope_can_update_own_birth_date(client: TestClient) -> None:
+    """ADR-0035 §5: an all-scope (admin-shaped) requester may update
+    birth_date, explicitly including their own Person."""
+    with session_scope() as session:
+        person = _make_person(birth_date=None)
+        user = _make_user(person)
+        session.add_all([person, user])
+        session.commit()
+        person_id, user_id = person.id, user.id
+    _grant_permission(user_id, "person.update", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.patch(
+        f"/api/v1/persons/{person_id}",
+        json={"birth_date": "2000-01-01"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["birth_date"] == "2000-01-01"
+
+    audit_row = _latest_audit_row(action="person.updated", resource_id=person_id)
+    assert audit_row is not None
+    assert audit_row.details["changes"]["birth_date"] == {"from": None, "to": "2000-01-01"}
+
+
+@requires_postgres
+def test_all_scope_can_update_another_persons_birth_date(client: TestClient) -> None:
+    with session_scope() as session:
+        target = _make_person(birth_date=None)
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        session.add_all([target, requester_person, requester_user])
+        session.commit()
+        target_id, user_id = target.id, requester_user.id
+    _grant_permission(user_id, "person.update", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.patch(
+        f"/api/v1/persons/{target_id}",
+        json={"birth_date": "1999-12-31"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["birth_date"] == "1999-12-31"
+
+
+# --- Person: id immutability -----------------------------------------------
+
+
+@requires_postgres
+def test_patch_person_ignores_client_supplied_id(client: TestClient) -> None:
+    with session_scope() as session:
+        person = _make_person(first_name="Old")
+        user = _make_user(person)
+        session.add_all([person, user])
+        session.commit()
+        person_id, user_id = person.id, user.id
+    _grant_permission(user_id, "person.update", scope_type="self")
+    _authenticate_as(user_id)
+
+    spoofed_id = str(uuid.uuid4())
+    response = client.patch(
+        f"/api/v1/persons/{person_id}",
+        json={"id": spoofed_id, "first_name": "New"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["id"] == str(person_id)
+    assert body["id"] != spoofed_id
+    assert body["first_name"] == "New"
+
+
+# --- Person: no archive endpoint (ADR-0034) --------------------------------
+
+
+@requires_postgres
+def test_person_archive_endpoint_does_not_exist(client: TestClient) -> None:
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([person, user])
+        session.commit()
+        person_id, user_id = person.id, user.id
+    _grant_permission(user_id, "person.update", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        f"/api/v1/persons/{person_id}/archive",
+        json={},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 404, response.text
+
+
+# --- Person: update audit atomicity -----------------------------------------
+
+
+@requires_postgres
+def test_person_update_rolls_back_when_audit_insert_fails() -> None:
+    """Same fail-closed contract as test_person_create_rolls_back_when_
+    audit_insert_fails, applied to update_person: if the audit insert
+    fails, the field mutation must not survive either.
+    """
+    from app.people.service import update_person
+
+    with session_scope() as session:
+        person = _make_person(first_name="Old")
+        session.add(person)
+        session.commit()
+        person_id = person.id
+
+    with session_scope() as session:
+        person = session.get(Person, person_id)
+        bogus_actor_id = uuid.uuid4()
+        with pytest.raises(IntegrityError):
+            update_person(
+                session,
+                person=person,
+                actor_user_id=bogus_actor_id,
+                first_name="New",
+            )
+
+    with session_scope() as verify_session:
+        unchanged = verify_session.get(Person, person_id)
+        assert unchanged.first_name == "Old"
 
 
 # --- Membership: create -----------------------------------------------------

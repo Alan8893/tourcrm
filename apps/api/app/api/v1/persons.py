@@ -1,20 +1,21 @@
-"""Person API — /api/v1/persons (Issue #62).
+"""Person API — /api/v1/persons (Issue #62, TH-0101 / Issue #116).
 
 Canonical sources: docs/05-api/people-api.md §4-8 (as reconciled),
 docs/02-requirements/roles-and-permissions.md, ADR-0013 (scopes),
 ADR-0014 (response envelope), ADR-0017 (Person has no `status`),
-ADR-0024/ADR-0025 (audit).
+ADR-0024/ADR-0025 (audit), ADR-0035 (People management authorization),
+ADR-0034 (Person archiving deferred).
 
 Endpoints intentionally NOT implemented here (Issue #62 non-goals):
 Group/Role-assignment/Invitation/RegistrationRequest/Import API, and
-`POST /persons/{person_id}/archive`. The last is a genuine, still-open
-gap (Issue #62 GAP-7): "archiving a Person" has no defined effect
-anywhere in canonical docs, and `Person` has no `status`/lifecycle field
-(ADR-0017) that could represent it — adding one would be a new
-persistence field, which Issue #62 §6 prohibits without a separate
-decision. Implementing this endpoint would require inventing either a
-new column or an unspecified business rule; neither is done here — see
-the Issue #62 implementation report.
+`POST /persons/{person_id}/archive`. The last is formally deferred by
+ADR-0034, not an open gap: `Person` has no `status`/`archived_at`/
+soft-delete field, physical deletion is not part of the domain contract,
+and archive semantics must not be simulated through User/ClubMembership/
+GroupMembership/GuardianRelationship lifecycle changes. A future archive
+decision must define persistence, lifecycle, authorization and API
+contract separately (ADR-0034) — this module does not implement or
+approximate any of that.
 
 `GET/POST /persons/{person_id}/guardian-relationships` (Issue #64 §7)
 live here rather than in app.api.v1.guardian_relationships, mirroring how
@@ -26,9 +27,13 @@ Existence-hiding for the single-Person endpoints (detail/update),
 mirroring app.api.v1.events exactly: a Person that does not exist and a
 Person that exists but the caller is not authorized to act on receive an
 identical 404. The list endpoint instead silently excludes unauthorized
-rows via app.people.queries.list_persons_page (never a 403). Only
-`POST /persons` (no object yet exists to hide) uses the generic 403
-AuthorizationDenied contract.
+rows via app.people.queries.list_persons_page (never a 403). `POST
+/persons` (no object yet exists to hide) uses the generic 403
+AuthorizationDenied contract; `PATCH /persons/{person_id}` also uses it,
+but only for the narrower `birth_date` admin-only field gate (ADR-0035
+§5) — by that point existence/general-update access has already been
+established via the 404 check above, so a 403 there discloses nothing an
+authorized-for-other-fields caller didn't already know.
 """
 
 import uuid
@@ -89,6 +94,10 @@ def _person_out(person: Person) -> PersonOut:
         last_name=person.last_name,
         middle_name=person.middle_name,
         birth_date=person.birth_date,
+        phone=person.phone,
+        email=person.email,
+        address=person.address,
+        photo_file_id=person.photo_file_id,
         created_at=person.created_at,
         updated_at=person.updated_at,
     )
@@ -179,8 +188,10 @@ def create_person(
 ) -> PersonOut:
     # Person is Club-neutral (ADR-0017): no club_id to check ownership
     # against, so only a global `all`-scope assignment can create a
-    # Person — see app.people.authorization module docstring.
-    authorizer = Authorizer(session=db, user_id=principal.user_id, permission_code="person.update")
+    # Person — see app.people.authorization module docstring. ADR-0035 §2
+    # introduces `person.create` as its own canonical permission, distinct
+    # from `person.update`; only `admin` holds it in the current MVP.
+    authorizer = Authorizer(session=db, user_id=principal.user_id, permission_code="person.create")
     authorizer.check(ResourceContext())
 
     person = people_service.create_person(
@@ -192,6 +203,7 @@ def create_person(
         phone=payload.phone,
         email=payload.email,
         address=payload.address,
+        photo_file_id=payload.photo_file_id,
         actor_user_id=principal.user_id,
         request_id=get_request_id(request),
     )
@@ -211,6 +223,18 @@ def update_person(
         db, person_id=person_id, user_id=principal.user_id, permission_code="person.update"
     )
     fields = payload.model_dump(exclude_unset=True)
+    if "birth_date" in fields:
+        # ADR-0035 §5: only admin may update birth_date, including their
+        # own Person — operationalized as "holds an all-scope
+        # person.update assignment" (ADR-0035 §10's admin -> all pattern),
+        # never a Role.code == "admin" check. An empty ResourceContext
+        # only matches an `all`-scope assignment (see
+        # app.authorization.service.scope_matches), so own_groups/self
+        # scoped updaters are denied here even for their own Person,
+        # exactly matching the ADR-0035 §3.1 table.
+        Authorizer(
+            session=db, user_id=principal.user_id, permission_code="person.update"
+        ).check(ResourceContext())
     person = people_service.update_person(
         db,
         person=person,

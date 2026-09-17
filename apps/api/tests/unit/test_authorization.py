@@ -32,9 +32,11 @@ def test_canonical_scope_types_match_adr_0013() -> None:
 
 def test_documented_permission_codes_have_no_invented_entries() -> None:
     # roles-and-permissions.md §4's exact catalog — Issue #19 forbids adding
-    # permissions beyond what is documented there.
+    # permissions beyond what is documented there. `person.create` was
+    # added by ADR-0035 §2 / TH-0101.
     assert set(DOCUMENTED_PERMISSION_CODES) == {
         "person.read",
+        "person.create",
         "person.update",
         "membership.read",
         "membership.manage",

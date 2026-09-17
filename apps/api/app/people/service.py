@@ -21,12 +21,13 @@ anticipates this exact shape for "a future People/Membership service that
 must combine a business mutation with an audit record".
 
 `details` passed to `record_audit_event` is always an explicit, hand-built
-safe dict — never an ORM dump. For `Person`, the `phone`/`email`/`address`
-fields are the same fields ADR-0025 §8 withholds from the API response;
-this module extends that same caution to the audit trail by recording
-only *that* one of these three fields changed, never its value — audit
-records are not a back door around a withheld field. Non-sensitive Person
-fields (`first_name`, `last_name`, `middle_name`, `birth_date`) get a full
+safe dict — never an ORM dump. For `Person`, `phone`/`email`/`address` are
+contact fields (ADR-0035 §4): even though ADR-0035 exposes them in the API
+response to an authorized requester, the audit trail still records only
+*that* one of these three fields changed, never its value, per TH-0101's
+own audit rule against writing sensitive technical data into audit
+records. Non-sensitive Person fields (`first_name`, `last_name`,
+`middle_name`, `birth_date`, `photo_file_id`) get a full
 `{"from": ..., "to": ...}` diff entry, matching ADR-0024's own example.
 
 Validation (field values, status-transition graph) is delegated entirely
@@ -63,15 +64,40 @@ _LEFT_AT_AFTER_JOINED_AT_CONSTRAINT = "ck_club_memberships_left_at_after_joined_
 def _constraint_name(exc: IntegrityError) -> str | None:
     return getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
 
-# Person fields ADR-0025 §8 withholds from the API response — the audit
-# trail records only that one of these changed, never its value.
+# Person contact fields (ADR-0035 §4) — the audit trail records only that
+# one of these changed, never its value.
 _SENSITIVE_PERSON_FIELDS = frozenset({"phone", "email", "address"})
 
-# Person fields update_person() accepts; matches Issue #62 §8 exactly (no
-# `status` — Person has none; no `photo_file_id` — no file domain yet).
+# Person fields update_person() accepts (ADR-0035 §3.1/§5): no `status` —
+# Person has none (ADR-0034). Field-level restrictions beyond "is this
+# field updatable at all" (e.g. `birth_date` being admin-only) are the
+# caller's (router's) authorization responsibility, not this set's.
 UPDATABLE_PERSON_FIELDS = frozenset(
-    {"first_name", "last_name", "middle_name", "birth_date", "phone", "email", "address"}
+    {
+        "first_name",
+        "last_name",
+        "middle_name",
+        "birth_date",
+        "phone",
+        "email",
+        "address",
+        "photo_file_id",
+    }
 )
+
+
+def _json_safe_audit_value(value: Any) -> Any:
+    """AuditLog.details must be plain JSON-safe data (str/int/float/bool/
+    None/dict/list — see app.audit.security._JSON_SAFE_SCALAR_TYPES); a
+    raw `date`/`datetime` or `uuid.UUID` value (e.g. `birth_date`,
+    `photo_file_id`) is rejected by that check, so it must be stringified
+    before being placed into a diff entry.
+    """
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    return value
 
 
 def _person_field_diff(*, before: Person, fields: dict[str, Any]) -> dict[str, Any]:
@@ -84,8 +110,8 @@ def _person_field_diff(*, before: Person, fields: dict[str, Any]) -> dict[str, A
             changes[field_name] = {"changed": True}
         else:
             changes[field_name] = {
-                "from": old_value.isoformat() if hasattr(old_value, "isoformat") else old_value,
-                "to": new_value.isoformat() if hasattr(new_value, "isoformat") else new_value,
+                "from": _json_safe_audit_value(old_value),
+                "to": _json_safe_audit_value(new_value),
             }
     return {"changes": changes}
 
@@ -102,6 +128,7 @@ def create_person(
     address: Optional[str],
     actor_user_id: uuid.UUID,
     request_id: Optional[str] = None,
+    photo_file_id: Optional[uuid.UUID] = None,
 ) -> Person:
     """Create a Person and its `person.created` audit record in one
     transaction (fail-closed — see module docstring).
@@ -114,6 +141,7 @@ def create_person(
         phone=phone,
         email=email,
         address=address,
+        photo_file_id=photo_file_id,
     )
     session.add(person)
     try:
