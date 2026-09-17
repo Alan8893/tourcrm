@@ -33,12 +33,11 @@ router = APIRouter(prefix="/me", tags=["me"])
 
 
 def _child_out(person: Person) -> ChildOut:
-    full_name = " ".join(
-        part for part in (person.last_name, person.first_name, person.middle_name) if part
-    )
     return ChildOut(
         id=person.id,
-        full_name=full_name,
+        last_name=person.last_name,
+        first_name=person.first_name,
+        middle_name=person.middle_name,
         birth_date=person.birth_date,
         photo_file_id=person.photo_file_id,
     )

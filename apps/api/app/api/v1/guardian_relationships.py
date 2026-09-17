@@ -45,7 +45,6 @@ from app.people.guardian_authorization import build_guardian_relationship_resour
 from app.people.guardian_lifecycle import (
     AlreadyRevokedError,
     DuplicateActiveGuardianRelationshipError,
-    DuplicatePrimaryContactError,
     GuardianRelationshipDomainError,
     effective_status,
 )
@@ -67,7 +66,6 @@ def guardian_relationship_out(relationship: GuardianRelationship) -> GuardianRel
         child_person_id=relationship.child_person_id,
         relationship_type=relationship.relationship_type,
         status=effective_status(status=relationship.status, valid_to=relationship.valid_to),
-        is_primary_contact=relationship.is_primary_contact,
         valid_from=relationship.valid_from,
         valid_to=relationship.valid_to,
         created_at=relationship.created_at,
@@ -127,7 +125,7 @@ def update_guardian_relationship(
             request_id=get_request_id(request),
             **fields,
         )
-    except (DuplicateActiveGuardianRelationshipError, DuplicatePrimaryContactError) as exc:
+    except DuplicateActiveGuardianRelationshipError as exc:
         raise APIError(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "guardian_link_not_allowed", str(exc)
         ) from exc

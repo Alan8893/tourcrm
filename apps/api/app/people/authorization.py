@@ -101,7 +101,7 @@ def _active_guardian_condition(*, guardian_person_id, child_person_id) -> sa.Col
     )
 
 
-def _own_group_condition_for_person(
+def own_group_condition_for_person(
     person_id, requester_user_id, *, club_id: uuid.UUID | None = None
 ) -> sa.ColumnElement[bool]:
     """True if `requester_user_id` has an active `GroupInstructorAssignment`
@@ -122,6 +122,15 @@ def _own_group_condition_for_person(
     additionally restricted to that specific Club's ClubMembership —
     required because a club-scoped `own_groups` assignment must not
     reach across into a different Club.
+
+    Public (no leading underscore) and exported so
+    app.people.guardian_authorization can reuse this exact chain for
+    GuardianRelationship's own `own_groups` resolution (TH-0103, ADR-0035
+    §8.4) rather than re-deriving it — unlike this module's small
+    single-line helpers (`_active_interval`, `_person_id_for_user`),
+    which are duplicated per module by convention, this join is complex
+    enough that duplicating it would risk the two copies silently
+    diverging.
     """
     cm = aliased(ClubMembership)
     gm = aliased(GroupMembership)
@@ -150,7 +159,7 @@ def _own_group_condition_for_person(
 def _own_group_condition_for_membership(
     club_membership_id, requester_user_id
 ) -> sa.ColumnElement[bool]:
-    """Same as `_own_group_condition_for_person` but keyed directly by an
+    """Same as `own_group_condition_for_person` but keyed directly by an
     existing `ClubMembership.id` — used when a `ClubMembership` row is
     already loaded (avoids an extra join back through `person_id`).
 
@@ -214,7 +223,7 @@ def person_visibility_filter(
                     )
                 )
         elif assignment.scope_type == "own_groups":
-            scope_predicate = _own_group_condition_for_person(
+            scope_predicate = own_group_condition_for_person(
                 Person.id, user_id, club_id=assignment.club_id
             )
         elif assignment.scope_type == "self":
@@ -356,4 +365,5 @@ __all__ = [
     "is_system_admin_person_update_grant",
     "build_membership_resource_context",
     "membership_visibility_filter",
+    "own_group_condition_for_person",
 ]

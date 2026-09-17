@@ -27,20 +27,17 @@ from app.people.guardian_lifecycle import (
     CREATABLE_GUARDIAN_RELATIONSHIP_STATUS,
     AlreadyRevokedError,
     DuplicateActiveGuardianRelationshipError,
-    DuplicatePrimaryContactError,
     SelfLinkNotAllowedError,
     validate_guardian_child_distinct,
 )
 
 _NO_OVERLAPPING_ACTIVE_CONSTRAINT = "ck_guardian_relationships_no_overlapping_active"
-_NO_OVERLAPPING_PRIMARY_CONTACT_CONSTRAINT = (
-    "ck_guardian_relationships_no_overlapping_primary_contact"
-)
 _GUARDIAN_CHILD_DISTINCT_CONSTRAINT = "ck_guardian_relationships_guardian_child_distinct"
 
-# Fields update_guardian_relationship() accepts — matches Issue #64 §8
-# exactly (no `status`: changed only via terminate/natural expiry).
-UPDATABLE_GUARDIAN_RELATIONSHIP_FIELDS = frozenset({"relationship_type", "is_primary_contact"})
+# Fields update_guardian_relationship() accepts — TH-0103: `is_primary_contact`
+# removed (no primary-contact concept, ADR-0035 §8). No `status`: changed
+# only via terminate/natural expiry.
+UPDATABLE_GUARDIAN_RELATIONSHIP_FIELDS = frozenset({"relationship_type"})
 
 
 def _constraint_name(exc: IntegrityError) -> Optional[str]:
@@ -62,10 +59,6 @@ def _raise_for_constraint(exc: IntegrityError) -> None:
             "An overlapping active relationship already exists for this "
             "guardian/child/relationship_type"
         ) from exc
-    if name == _NO_OVERLAPPING_PRIMARY_CONTACT_CONSTRAINT:
-        raise DuplicatePrimaryContactError(
-            "An overlapping active primary-contact relationship already exists for this child"
-        ) from exc
     if name == _GUARDIAN_CHILD_DISTINCT_CONSTRAINT:
         raise SelfLinkNotAllowedError(
             "guardian_person_id and child_person_id must not be the same Person"
@@ -78,7 +71,6 @@ def create_guardian_relationship(
     guardian_person_id: uuid.UUID,
     child_person_id: uuid.UUID,
     relationship_type: str,
-    is_primary_contact: bool,
     actor_user_id: uuid.UUID,
     request_id: Optional[str] = None,
 ) -> GuardianRelationship:
@@ -93,7 +85,6 @@ def create_guardian_relationship(
         child_person_id=child_person_id,
         relationship_type=relationship_type,
         status=CREATABLE_GUARDIAN_RELATIONSHIP_STATUS,
-        is_primary_contact=is_primary_contact,
         valid_from=datetime.now(timezone.utc),
         valid_to=None,
     )
@@ -129,8 +120,8 @@ def update_guardian_relationship(
     request_id: Optional[str] = None,
     **fields: Any,
 ) -> GuardianRelationship:
-    """Apply a partial update (PATCH) of `relationship_type`/
-    `is_primary_contact` only (never `status`) and its
+    """Apply a partial update (PATCH) of `relationship_type` only (never
+    `status`; TH-0103 removed `is_primary_contact` entirely) and its
     `guardian_relationship.updated` audit record in one transaction.
     No-ops (no mutation, no audit record) when nothing actually changes.
     """

@@ -247,11 +247,29 @@ class ClubMembership(Base):
 
 class GuardianRelationship(Base):
     """Historical Person<->Person guardian/legal-representative
-    relationship (Issue #50).
+    relationship (Issue #50, revised by TH-0103).
 
     docs/03-architecture/adr/ADR-0023-event-relationships-and-guardian-
-    persistence.md §3, which this model follows field-for-field. See
-    also docs/03-architecture/domain-model.md, docs/03-architecture/
+    persistence.md §3 originally defined this model, including an
+    `is_primary_contact` field and its own "at most one active primary
+    contact per child" invariant. ADR-0035 §8 (accepted 2026-09-17,
+    later than ADR-0023) and TH-0103's own task contract explicitly and
+    repeatedly state the opposite: "No `primary`, `is_primary`, or
+    `primary_guardian_id` concept exists, including outside the MVP...
+    Multiple active representatives are equal in the base relationship
+    model" — `docs/05-api/people-api.md` §18 (already reconciled to
+    ADR-0035) confirms this in the same words
+    ("`is_primary_contact` и `primary_guardian_id` не являются частью
+    модели"). TH-0103 removes `is_primary_contact` and its exclusion
+    constraint to bring the implementation into compliance with the
+    later, explicit decision — see this Issue's implementation report
+    for the full reconciliation note: ADR-0023 §3,
+    `docs/03-architecture/database-schema.md` §7 and
+    `docs/03-architecture/domain-model.md` still list the removed field
+    and require a documentation-only follow-up (out of this slice's
+    scope, which must not edit canonical docs).
+
+    See also docs/03-architecture/domain-model.md, docs/03-architecture/
     data-model.md and docs/03-architecture/database-schema.md §7
     `guardian_relationships`.
 
@@ -280,28 +298,20 @@ class GuardianRelationship(Base):
     unconstrained string: ADR-0023 does not define a closed vocabulary
     for it, and none is invented here.
 
-    Two GiST exclusion constraints (the same mechanism already used for
-    `ClubMembership.ck_club_memberships_no_overlapping_active` and
-    `EventStaffAssignment.ck_event_staff_assignments_one_active_primary`)
-    enforce ADR-0023 §3's two concurrency-sensitive invariants declaratively
-    rather than through application-level locking, so they hold under
-    concurrent writes regardless of caller:
+    One GiST exclusion constraint (the same mechanism already used for
+    `ClubMembership.ck_club_memberships_no_overlapping_active`) enforces
+    ADR-0023 §3's remaining concurrency-sensitive invariant declaratively
+    rather than through application-level locking, so it holds under
+    concurrent writes regardless of caller: at most one *active*
+    relationship may exist at a time for the same (guardian_person_id,
+    child_person_id, relationship_type).
 
-    - at most one *active* relationship may exist at a time for the same
-      (guardian_person_id, child_person_id, relationship_type);
-    - at most one *active, primary-contact* relationship may exist at a
-      time for the same child_person_id, regardless of relationship_type
-      or guardian.
-
-    Both are scoped to `status = 'active'` rows only — a NULL `valid_to`
+    It is scoped to `status = 'active'` rows only — a NULL `valid_to`
     is unbounded/ongoing (tstzrange semantics), and closing a period
     (setting `valid_to`, or changing `status`) is how a historical
-    `inactive`/`revoked` row stops counting toward either invariant.
-    Neither constraint is stricter than ADR-0023 §3 requires: multiple
+    `inactive`/`revoked` row stops counting toward it. Multiple
     historical (non-overlapping, or non-active) rows for the same
-    guardian/child/type or the same child are explicitly allowed, and
-    non-primary-contact relationships never participate in the second
-    constraint at all.
+    guardian/child/type are explicitly allowed.
     """
 
     __tablename__ = "guardian_relationships"
@@ -317,9 +327,6 @@ class GuardianRelationship(Base):
     relationship_type: Mapped[str] = mapped_column(sa.String(64), nullable=False)
     # ADR-0023 §3: exactly active/inactive/revoked.
     status: Mapped[str] = mapped_column(sa.String(32), nullable=False)
-    is_primary_contact: Mapped[bool] = mapped_column(
-        sa.Boolean, nullable=False, server_default=sa.text("false")
-    )
     valid_from: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
     valid_to: Mapped[Optional[datetime]] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -357,18 +364,6 @@ class GuardianRelationship(Base):
             where=sa.text("status = 'active'"),
             using="gist",
             name="ck_guardian_relationships_no_overlapping_active",
-        ),
-        # ADR-0023 §3: "At most one valid primary-contact relationship
-        # exists for a child at a time." Scoped to status='active' rows
-        # (see class docstring) so a revoked/inactive row never blocks a
-        # new primary-contact assignment, and non-primary rows
-        # (is_primary_contact=false) never participate at all.
-        ExcludeConstraint(
-            (sa.column("child_person_id"), "="),
-            (sa.func.tstzrange(sa.column("valid_from"), sa.column("valid_to")), "&&"),
-            where=sa.text("is_primary_contact = true AND status = 'active'"),
-            using="gist",
-            name="ck_guardian_relationships_no_overlapping_primary_contact",
         ),
         # Names shortened from the "..._<col>_valid_from_valid_to" pattern
         # used elsewhere (e.g. GroupMembership) to stay within
