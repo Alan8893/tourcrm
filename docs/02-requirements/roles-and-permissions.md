@@ -49,14 +49,20 @@
 - `attendance.read`
 - `attendance.update`
 
-Примеры других permissions:
+Канонический каталог People permissions включает:
 
 - `person.read`
+- `person.create`
 - `person.update`
 - `membership.read`
 - `membership.manage`
 - `guardian_relationship.read`
 - `guardian_relationship.manage`
+
+`person.create` является отдельным каноническим permission и предоставляется только `admin`.
+
+Примеры других permissions:
+
 - `group.read`
 - `group.manage`
 - `trip.read`
@@ -84,6 +90,8 @@
 permissions и не должны использоваться как отдельные права.
 
 `guardian_relationship.read`/`guardian_relationship.manage` приняты ADR-0025 §2 для доступа к `GuardianRelationship`; ранее использовавшийся в `docs/05-api/people-api.md` код `guardian.read` не являлся каноническим и заменён этими permissions.
+
+Для People Management действует отдельная объектная policy из ADR-0035: наличие `person.read`, `person.update`, `membership.manage` или `guardian_relationship.manage` само по себе не отменяет scope, object relationship и lifecycle restrictions.
 
 ## 5. Scope model
 
@@ -119,11 +127,20 @@ Feature setting не может расширить permissions.
 | Ресурс/действие | admin | instructor | member | guardian |
 |---|---:|---:|---:|---:|
 | Auth/self account | ✅ | ✅ | ✅ | ✅ |
-| Свой Person | ✅ | ✅ | ✅ | ✅ |
-| Любой Person | ✅ | по scope | ❌ | ❌ |
-| Управление membership | ✅ | ограниченно | ❌ | ❌ |
-| GuardianRelationship: чтение | ✅ | по scope | ❌ | self (собственные связи) |
-| GuardianRelationship: управление | ✅ | ограниченно | ❌ | ограниченно (собственный linking flow) |
+| Свой Person: чтение | ✅ | ✅ | ✅ | ✅ |
+| Свой Person: изменение | ✅ | ✅ | ✅ | ✅ |
+| Свой Person: изменение birth_date | ✅ | ❌ | ❌ | ❌ |
+| Любой Person: чтение | ✅ в all scope | по `own_groups` | ❌ | ❌ |
+| Любой Person: изменение | ✅ в all scope | по `own_groups` | ❌ | ❌ |
+| Person: создание | ✅ `person.create` | ❌ | ❌ | ❌ |
+| Membership: чтение | ✅ authorized | `own_groups` | self | children/relationship |
+| Membership: создание | ✅ | ❌ | ❌ | ❌ |
+| Membership: изменение type | ✅ | ❌ | ❌ | ❌ |
+| Membership: lifecycle | ✅ | ❌ | ❌ | ❌ |
+| GuardianRelationship: чтение | authorized global | по `own_groups` | собственные relationship records | собственные relationship records |
+| GuardianRelationship: создание | ✅ | ❌ | ❌ | ❌ |
+| GuardianRelationship: изменение | ✅ | ❌ | ❌ | ❌ |
+| GuardianRelationship: terminate | ✅ | ❌ | ❌ | ❌ |
 | Группы: чтение | ✅ | assigned | ограниченно | ограниченно |
 | Группы: управление | ✅ | ❌ | ❌ | ❌ |
 | Event: чтение | ✅ | по scope | по scope | children/relationship |
@@ -156,6 +173,50 @@ Feature setting не может расширить permissions.
 
 Матрица является базовой. Для чувствительных данных действуют дополнительные объектные ограничения.
 
+### 7.1 People Management — каноническая policy
+
+`Person` является Club-neutral identity. В MVP Person не имеет `status`, не архивируется и не удаляется через People API; см. ADR-0034.
+
+**Person**
+
+- `person.create`: только `admin`.
+- `person.read`: каждый пользователь может читать собственный Person; `admin` — Persons в authorized `all` scope; `instructor` — Persons только через `own_groups`; `member` и `guardian` не получают общего доступа к другим Persons.
+- `person.update`: каждый пользователь может изменять собственный Person в разрешённых полях; `admin` — Persons в authorized `all` scope; `instructor` — Persons через `own_groups`.
+- `id` неизменяем.
+- `first_name`, `last_name`, `middle_name`, `phone`, `email`, `address`, `photo` доступны для изменения пользователем в рамках его собственной записи; `admin`/`instructor` также могут изменять эти поля у Persons в своей authorized scope.
+- `birth_date` доступен для чтения в authorized scope; изменять его может только `admin`, включая собственный Person.
+- Отдельных `person.contact.read/update` permissions нет. Контакты являются полями Person и регулируются той же role/scope/object policy.
+- `GuardianRelationship` не даёт автоматического доступа к контактам ребёнка.
+
+**ClubMembership**
+
+- Создание membership — только `admin`.
+- Изменение `membership_type` — только `admin`.
+- Lifecycle transitions — только `admin`.
+- `archived` — terminal; `inactive → active` не допускается.
+- Повторное вступление после `inactive` создаёт новый membership period.
+- `member`, `guardian`, `instructor` не могут самостоятельно менять lifecycle membership.
+- Read: `admin` — authorized full; `instructor` — `own_groups`; `member` — self; `guardian` — children/relationship.
+- История читается через `GET /persons/{person_id}/memberships`; отдельный history endpoint не вводится.
+
+**GuardianRelationship**
+
+- Create/update/terminate — только `admin`.
+- `instructor` может читать relationships в пределах Persons, достижимых через `own_groups`, но не изменяет их.
+- `member` читает собственные relationship records.
+- `guardian` читает собственные relationship records; доступ к другим представителям того же ребёнка не предоставляется.
+- Не существует `primary_guardian`, `is_primary` или приоритета по порядку создания.
+- `terminate` переводит relationship в `revoked`; `revoked` terminal, restore не предусмотрен.
+- Потребность в прекращении связи, обнаруженная instructor, передаётся admin вне системы; отдельный request workflow не вводится.
+
+**`/me/children`**
+
+- Доступно только `guardian`.
+- Возвращает только текущих детей с активной и interval-valid GuardianRelationship.
+- Inactive/revoked/expired relationships исключаются.
+- Projection: `id`, `last_name`, `first_name`, `middle_name`, `birth_date`, `photo_file_id`.
+- Контакты ребёнка и сведения о других представителях не возвращаются.
+
 ## 8. Sensitive data
 
 К sensitive domain относятся как минимум:
@@ -167,15 +228,19 @@ Feature setting не может расширить permissions.
 - контактные данные несовершеннолетних;
 - экстренные контакты.
 
-Доступ к ним должен проверяться отдельно. Нельзя считать, что доступ к Person автоматически означает доступ ко всем дочерним объектам Person.
+Для People контактные поля `phone`, `email`, `address` не имеют отдельных permissions: доступ определяется канонической People role/scope/object policy из §7.1. Доступ к другим sensitive дочерним объектам Person проверяется отдельно. Нельзя считать, что доступ к Person автоматически означает доступ ко всем дочерним объектам Person.
 
 ## 9. Self access
 
 `self` применяется только к данным, которые пользователь имеет право видеть о себе. Например, member может видеть свой профиль, свои мероприятия, свои достижения и свою историю посещения, но не получает право просматривать другого member через подмену идентификатора ресурса.
 
+Все четыре базовые роли могут читать и изменять собственные `first_name`, `last_name`, `middle_name`, `phone`, `email`, `address` и `photo`. `birth_date` для self доступен всем для чтения, но изменяется только admin.
+
 ## 10. Guardian access
 
 `children` не означает доступ к любому ребёнку в клубе. Сервис должен вычислять допустимых детей через активные GuardianRelationship.
+
+GuardianRelationship сам по себе не расширяет доступ guardian к полному Person ребёнка и не предоставляет его контакты. Для `/me/children` используется отдельная безопасная projection policy.
 
 Удалённая/неактивная связь автоматически прекращает актуальный доступ, если отдельное правило не требует сохранения read-only исторического доступа.
 
@@ -188,6 +253,8 @@ Feature setting не может расширить permissions.
 Роль instructor не должна автоматически давать доступ ко всем членам клуба.
 
 Для Event `own_events` означает явное назначение/ответственность за мероприятие; `own_groups` означает ответственность за целевую группу. Инструкторские Event-операции не получают глобальный `all` scope только из роли instructor.
+
+Для People `own_groups` означает цепочку Person → active ClubMembership → active GroupMembership → Group → active GroupInstructorAssignment → requesting User в том же Club; co-membership или одна роль instructor не являются достаточным основанием.
 
 ## 12. Event authorization contract
 
@@ -259,92 +326,4 @@ Admin обладает расширенными правами клуба, но 
 - изменение системных/feature settings;
 - доступ к чувствительным административным функциям, если это будет предусмотрено policy.
 
-Event/attendance mutations также должны соблюдать audit requirements домена.
-
-## 17. UI requirements
-
-Frontend должен:
-
-- не показывать пользователю заведомо недоступные действия, где это улучшает UX;
-- корректно обрабатывать HTTP 401/403;
-- не полагаться на скрытие кнопок как на security mechanism;
-- предотвращать случайные действия вне scope через форму и навигацию.
-
-## 18. Future roles
-
-Архитектура должна допускать появление ролей:
-
-- club_manager;
-- senior_instructor;
-- trainee_instructor;
-- finance_manager;
-- document_manager;
-- medical_responsible;
-
-без переписывания модели authorization.
-
-## 19. RoleAssignment contract
-
-`RoleAssignment` связывает User с существующей Role и несёт собственный authorization scope. Один User может иметь несколько RoleAssignment; effective permissions являются additive union с последующей проверкой scope и object-level policies.
-
-### 19.1 Validity and revoke
-
-RoleAssignment имеет временной интервал `[valid_from, valid_to)`.
-
-- `valid_from` — серверно/доменом определяемое начало действия назначения;
-- `valid_to = NULL` означает открытый, действующий интервал;
-- revoke не удаляет assignment, а закрывает его интервал установкой `valid_to` в серверное UTC-время операции;
-- завершённый assignment сохраняется как историческая запись;
-- повторный revoke уже завершённого assignment запрещён;
-- повторное назначение после revoke создаётся отдельным RoleAssignment, а старый интервал не переоткрывается.
-
-Эффективным считается только assignment, действующий в момент проверки authorization и не нарушающий остальные условия доступа, включая состояние User. Является ли активное состояние ClubMembership дополнительным условием эффективности, регулируется ADR-0027 и специфичными для домена политиками, а не данным разделом (см. также §19.4).
-
-### 19.2 Scope combinations
-
-Для RoleAssignment канонические комбинации таковы:
-
-| Scope | `club_id` | `scope_ref_id` |
-|---|---|---|
-| `all` | опционален (см. ниже) | `NULL` |
-| `self` | обязателен | `NULL` |
-| `children` | обязателен | `NULL` |
-| `own_groups` | обязателен | `NULL` |
-| `own_events` | обязателен | `NULL` |
-| `none` | `NULL` | `NULL` |
-
-`scope_ref_id` в MVP не используется для этих scopes. В частности, `own_groups` определяется через доменную связь пользователя с Group, а `own_events` — через EventStaffAssignment, а не через ссылку на конкретный объект в RoleAssignment.
-
-`self`, `children`, `own_groups` и `own_events` всегда ограничены указанным Club. Global `self`/`children`/`own_groups`/`own_events` assignments в MVP не поддерживаются.
-
-**Amendment (TH-0089 / Issue #99, ADR-0026's own amendment section):** `all` — единственный scope, для которого `club_id` может быть либо конкретным Club (club-wide authority), либо `NULL` (installation-wide authority). Это устраняет ранее существовавшее внутреннее противоречие с §19.5 (`role.manage`), который уже описывал `all + club_id = NULL` как валидную комбинацию ("может управлять RoleAssignment в любом Club"), хотя эта таблица до амендмента этого не допускала. `all + club_id = NULL` используется, в частности, для initial administrator bootstrap (ADR-0027).
-
-### 19.3 Role catalog mutability
-
-Базовые/system roles (`admin`, `instructor`, `member`, `guardian`) и их permission sets не управляются через RoleAssignment API. Текущий slice не предоставляет Role CRUD, Permission CRUD или RolePermission CRUD.
-
-`role.manage` не предоставляет права изменять каталог ролей или их permissions.
-
-### 19.4 Cross-Club integrity
-
-Для club-scoped RoleAssignment целевой User должен иметь активный `ClubMembership` в указанном Club.
-
-Club-scoped assignment не может быть создан для User, который не состоит в соответствующем Club.
-
-Если ClubMembership целевого User впоследствии заканчивается, RoleAssignment не удаляется, не revoke'ится и не изменяется автоматически. Является ли последующее отсутствие активного членства дополнительным условием эффективной authorization (в отличие от целостности на момент создания), определяется ADR-0027, а не данным разделом.
-
-### 19.5 `role.manage` authorization
-
-`role.manage` является permission управления RoleAssignment, но не Role/Permission catalog.
-
-Для MVP `role.manage` допускается только со scope `all`:
-
-- `all + club_id = NULL` — управление RoleAssignment в любом Club;
-- `all + конкретный club_id` — управление RoleAssignment только в этом Club;
-- `self`, `children`, `own_groups`, `own_events` и `none` не являются допустимыми scopes для `role.manage`.
-
-Scope вызывающего пользователя определяет разрешённый target Club. Остальные проверки целевого RoleAssignment применяются независимо от права вызывающего.
-
-### 19.6 RoleAssignment audit
-
-Назначение, изменение и отзыв RoleAssignment используют закрытые audit action codes `role_assignment.created`, `role_assignment.changed` и `role_assignment.revoked` из ADR-0024. Audit mutation и business mutation выполняются в одной транзакции по общим правилам ADR-0024.
+Для People mutation + audit выполняются в одной DB transaction; failure audit приводит к rollback/fail-closed согласно ADR-0024 и ADR-0035.
