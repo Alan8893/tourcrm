@@ -1,5 +1,6 @@
 .header {
   grid-area: header;
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -8,6 +9,14 @@
   padding: 0 var(--space-5);
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.start,
+.profile {
+  position: relative;
+  z-index: 1;
 }
 
 .start {
