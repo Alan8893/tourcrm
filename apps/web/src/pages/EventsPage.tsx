@@ -5,14 +5,17 @@ import { PageHeader } from "../components/ui/PageHeader";
 import { FilterSelect, type FilterOption } from "../components/ui/FilterSelect";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
+import { SearchInput } from "../components/ui/SearchInput";
 import { Dialog } from "../components/ui/Dialog";
 import { Loading } from "../components/ui/Loading";
 import { EmptyState } from "../components/ui/EmptyState";
 import { ErrorState } from "../components/ui/ErrorState";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { useNotify } from "../components/ui/notificationContext";
-import { useCurrentUser, currentClubId } from "../api/auth";
+import { useCurrentUser, currentClubId, displayName } from "../api/auth";
 import { useGroups } from "../api/groups";
+import { useUsers, userFullName } from "../api/users";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import {
   useCalendarRange,
   useCreateEvent,
@@ -75,10 +78,10 @@ type CalendarFiltersState = {
   group_id: string;
   event_type: string;
   status: string;
-  mine: boolean;
+  user_id: string;
 };
 
-const EMPTY_FILTERS: CalendarFiltersState = { group_id: "", event_type: "", status: "", mine: false };
+const EMPTY_FILTERS: CalendarFiltersState = { group_id: "", event_type: "", status: "", user_id: "" };
 
 function useCalendarUrlState() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -93,7 +96,7 @@ function useCalendarUrlState() {
       group_id: searchParams.get("group_id") ?? "",
       event_type: searchParams.get("event_type") ?? "",
       status: searchParams.get("status") ?? "",
-      mine: searchParams.get("mine") === "1",
+      user_id: searchParams.get("user_id") ?? "",
     }),
     [searchParams],
   );
@@ -114,13 +117,13 @@ function useCalendarUrlState() {
     });
   }
 
-  function setFilter(key: keyof CalendarFiltersState, value: string | boolean) {
+  function setFilter(key: keyof CalendarFiltersState, value: string) {
     setSearchParams((previous) => {
       const next = new URLSearchParams(previous);
-      if (!value || value === "") {
+      if (!value) {
         next.delete(key);
       } else {
-        next.set(key, value === true ? "1" : String(value));
+        next.set(key, value);
       }
       return next;
     });
@@ -159,7 +162,7 @@ export function EventsPage() {
     group_id: filters.group_id || undefined,
     event_type: filters.event_type || undefined,
     status: filters.status || undefined,
-    user_id: filters.mine ? currentUserId : undefined,
+    user_id: filters.user_id || undefined,
   });
 
   const itemsByDay = useMemo(() => {
@@ -179,8 +182,31 @@ export function EventsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [detailItem, setDetailItem] = useState<CalendarItem | null>(null);
   const [editingItem, setEditingItem] = useState<CalendarItem | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // The picker dialog knows a selected instructor's name at the moment it
+  // is picked; the URL only ever stores the bare `user_id`. Kept in local
+  // state (not derived) so the name survives re-renders within this
+  // session — but only for the id it was learned for: if `filters.user_id`
+  // ever points elsewhere (Reset, Back/Forward, a fresh page load), the id
+  // guard below falls back to a neutral label rather than showing a stale
+  // or fabricated name. There is no `GET /users/{id}` to re-resolve a name
+  // from a bare id (docs/05-api/users-api.md — list/search only), so this
+  // is a deliberate, disclosed limitation, not an oversight.
+  const [pickedInstructor, setPickedInstructor] = useState<{ id: string; name: string } | null>(
+    null,
+  );
 
-  const filtersActive = Boolean(filters.group_id || filters.event_type || filters.status || filters.mine);
+  const filtersActive = Boolean(
+    filters.group_id || filters.event_type || filters.status || filters.user_id,
+  );
+  const isMineSelected = Boolean(currentUserId) && filters.user_id === currentUserId;
+  const selectedInstructorLabel = !filters.user_id
+    ? null
+    : isMineSelected && meQuery.data
+      ? displayName(meQuery.data.user)
+      : pickedInstructor && pickedInstructor.id === filters.user_id
+        ? pickedInstructor.name
+        : "Инструктор выбран";
 
   function goToMonth(delta: number) {
     selectDate(addMonths(selectedDate, delta));
@@ -214,6 +240,23 @@ export function EventsPage() {
         onChange={setFilter}
         onReset={resetFilters}
         filtersActive={filtersActive}
+        clubId={clubId}
+        selectedInstructorLabel={selectedInstructorLabel}
+        isMineSelected={isMineSelected}
+        onToggleMine={(checked) => setFilter("user_id", checked && currentUserId ? currentUserId : "")}
+        onOpenPicker={() => setPickerOpen(true)}
+        onClearInstructor={() => setFilter("user_id", "")}
+      />
+
+      <InstructorPickerDialog
+        open={pickerOpen}
+        clubId={clubId}
+        onClose={() => setPickerOpen(false)}
+        onSelect={(user) => {
+          setPickedInstructor(user);
+          setFilter("user_id", user.id);
+          setPickerOpen(false);
+        }}
       />
 
       {calendarQuery.isError ? (
@@ -308,12 +351,24 @@ function FiltersToolbar({
   onChange,
   onReset,
   filtersActive,
+  clubId,
+  selectedInstructorLabel,
+  isMineSelected,
+  onToggleMine,
+  onOpenPicker,
+  onClearInstructor,
 }: {
   filters: CalendarFiltersState;
   groupOptions: Array<{ id: string; name: string }>;
-  onChange: (key: keyof CalendarFiltersState, value: string | boolean) => void;
+  onChange: (key: keyof CalendarFiltersState, value: string) => void;
   onReset: () => void;
   filtersActive: boolean;
+  clubId: string | null;
+  selectedInstructorLabel: string | null;
+  isMineSelected: boolean;
+  onToggleMine: (checked: boolean) => void;
+  onOpenPicker: () => void;
+  onClearInstructor: () => void;
 }) {
   const groupFilterOptions: FilterOption[] = [
     { value: "", label: "Все группы" },
@@ -340,38 +395,117 @@ function FiltersToolbar({
         options={STATUS_FILTER_OPTIONS}
         onChange={(value) => onChange("status", value)}
       />
-      {/*
-       * NOT the ADR-0036 "Instructor/user" filter — that filter requires
-       * browsing/searching the club's instructors, which needs a way to
-       * list/search Users. No such canonical endpoint exists: `GET /users`
-       * is documented in endpoint-inventory.md §2 but is not implemented
-       * anywhere in apps/api (confirmed by reading app/api/v1/*.py — there
-       * is no users.py route module at all). Building one is out of scope
-       * for a frontend-only change and is not invented here.
-       *
-       * This checkbox is a narrower, separately useful control: it
-       * self-scopes the existing `/events/calendar?user_id=` param to the
-       * signed-in user (already known from `/auth/me`), which is real,
-       * canonical, working functionality — but it answers "show only my
-       * events", not "let me pick which instructor's events to show". The
-       * accepted Instructor/user filter itself remains an open contract
-       * gap pending a PO decision (see PR description).
-       */}
+      <div className={styles.instructorControl}>
+        {selectedInstructorLabel ? (
+          <div className={styles.selectedInstructor}>
+            <span>{selectedInstructorLabel}</span>
+            <Button variant="secondary" onClick={onOpenPicker}>
+              Изменить
+            </Button>
+            <Button variant="secondary" onClick={onClearInstructor}>
+              Очистить
+            </Button>
+          </div>
+        ) : (
+          <Button
+            variant="secondary"
+            disabled={!clubId}
+            title={clubId ? undefined : "Недоступно без привязки к клубу"}
+            onClick={onOpenPicker}
+          >
+            Выбрать инструктора
+          </Button>
+        )}
+      </div>
+      {/* A convenience shortcut over the same `user_id` filter (self's own
+       * id) — not a separate/alternative filter and not itself "the"
+       * Instructor/user filter (that is the picker above, backed by the
+       * real `GET /users` directory, TH-0107). */}
       <label className={styles.mineToggle}>
         <input
           type="checkbox"
-          checked={filters.mine}
-          onChange={(event) => onChange("mine", event.target.checked)}
+          checked={isMineSelected}
+          onChange={(event) => onToggleMine(event.target.checked)}
         />
         Только мои события
       </label>
-      <p className={styles.filterGapNote}>
-        Фильтр по инструктору недоступен: в API нет справочника пользователей.
-      </p>
       <Button variant="secondary" onClick={onReset} disabled={!filtersActive}>
         Сбросить
       </Button>
     </div>
+  );
+}
+
+function InstructorPickerDialog({
+  open,
+  clubId,
+  onClose,
+  onSelect,
+}: {
+  open: boolean;
+  clubId: string | null;
+  onClose: () => void;
+  onSelect: (user: { id: string; name: string }) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
+  const usersQuery = useUsers({
+    role: "instructor",
+    club_id: clubId ?? undefined,
+    search: debouncedSearch,
+    enabled: open,
+  });
+
+  function handleClose() {
+    setSearch("");
+    onClose();
+  }
+
+  return (
+    <Dialog open={open} title="Выбрать инструктора" onClose={handleClose}>
+      <div className={styles.form}>
+        <SearchInput
+          label="Поиск инструктора"
+          value={search}
+          onChange={setSearch}
+          placeholder="Например, «Иванова»"
+        />
+        {usersQuery.isLoading ? <Loading label="Загружаем инструкторов…" /> : null}
+        {usersQuery.isError ? (
+          <ErrorState
+            illustration="error"
+            title="Не удалось загрузить инструкторов"
+            description={usersQuery.error.message}
+            action={
+              <Button variant="secondary" onClick={() => usersQuery.refetch()}>
+                Повторить
+              </Button>
+            }
+          />
+        ) : null}
+        {usersQuery.isSuccess ? (
+          <ul className={styles.pickerList}>
+            {usersQuery.data.items.map((user) => (
+              <li key={user.id}>
+                <button
+                  type="button"
+                  className={styles.pickerItem}
+                  onClick={() => {
+                    onSelect({ id: user.id, name: userFullName(user) });
+                    setSearch("");
+                  }}
+                >
+                  {userFullName(user)}
+                </button>
+              </li>
+            ))}
+            {usersQuery.data.items.length === 0 ? (
+              <li className={styles.pickerEmpty}>Ничего не найдено</li>
+            ) : null}
+          </ul>
+        ) : null}
+      </div>
+    </Dialog>
   );
 }
 

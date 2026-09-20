@@ -80,6 +80,35 @@ function calendarResponse(
   };
 }
 
+type UserDirectoryFixture = {
+  id: string;
+  person_id?: string;
+  last_name: string;
+  first_name: string;
+  middle_name?: string | null;
+};
+
+function usersResponse(
+  items: UserDirectoryFixture[],
+  pagination: { total?: number; pages?: number } = {},
+) {
+  return {
+    items: items.map((item) => ({
+      id: item.id,
+      person_id: item.person_id ?? `person-${item.id}`,
+      first_name: item.first_name,
+      last_name: item.last_name,
+      middle_name: item.middle_name ?? null,
+    })),
+    pagination: {
+      page: 1,
+      page_size: 20,
+      total: pagination.total ?? items.length,
+      pages: pagination.pages ?? (items.length ? 1 : 0),
+    },
+  };
+}
+
 function eventDetailResponse(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: "ev-1",
@@ -301,6 +330,227 @@ describe("EventsPage — filters", () => {
   });
 });
 
+describe("EventsPage — instructor/user filter (TH-0107)", () => {
+  it("opens the picker and loads the instructor directory scoped to role and club", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      { match: "/events/calendar", response: calendarResponse([]) },
+      {
+        match: "/users?",
+        response: usersResponse([{ id: "instr-1", last_name: "Кузнецова", first_name: "Ольга" }]),
+      },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Выбрать инструктора" }));
+
+    expect(await screen.findByText("Кузнецова Ольга")).toBeInTheDocument();
+  });
+
+  it("requests the directory with role=instructor and the current club_id", async () => {
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      { match: "/events/calendar", response: calendarResponse([]) },
+      { match: "/users?", response: usersResponse([]) },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Выбрать инструктора" }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([input]) => String(input).includes("role=instructor") && String(input).includes("club_id=club-1"),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("shows a loading state while the directory is being fetched", async () => {
+    let resolveUsers: (() => void) | undefined;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/auth/me")) return jsonResponse(meResponse());
+      if (url.includes("/groups?status=active")) return jsonResponse(groupsResponse());
+      if (url.includes("/events/calendar")) return jsonResponse(calendarResponse([]));
+      if (url.includes("/users?")) {
+        await new Promise<void>((resolve) => {
+          resolveUsers = resolve;
+        });
+        return jsonResponse(usersResponse([]));
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Выбрать инструктора" }));
+
+    expect(await screen.findByText("Загружаем инструкторов…")).toBeInTheDocument();
+    resolveUsers?.();
+  });
+
+  it("shows an empty state when no instructor matches, and an error state with working Retry otherwise", async () => {
+    let calls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/auth/me")) return jsonResponse(meResponse());
+      if (url.includes("/groups?status=active")) return jsonResponse(groupsResponse());
+      if (url.includes("/events/calendar")) return jsonResponse(calendarResponse([]));
+      if (url.includes("/users?")) {
+        calls += 1;
+        if (calls === 1) return jsonResponse(usersResponse([]));
+        return jsonResponse(
+          { error: { code: "internal_error", message: "Сбой сервера", details: {}, request_id: "r1" } },
+          500,
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Выбрать инструктора" }));
+    expect(await screen.findByText("Ничего не найдено")).toBeInTheDocument();
+
+    // Force a refetch (search change) to exercise the error path.
+    await user.type(screen.getByLabelText("Поиск инструктора"), "з");
+    expect(await screen.findByText("Не удалось загрузить инструкторов")).toBeInTheDocument();
+
+    calls = 0; // next fetch (the Retry click) succeeds again
+    await user.click(screen.getByRole("button", { name: "Повторить" }));
+    expect(await screen.findByText("Ничего не найдено")).toBeInTheDocument();
+  });
+
+  it("debounces the search field into the `search` query param", async () => {
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      { match: "/events/calendar", response: calendarResponse([]) },
+      { match: "/users?", response: usersResponse([]) },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Выбрать инструктора" }));
+    await user.type(screen.getByLabelText("Поиск инструктора"), "Куз");
+
+    await waitFor(
+      () => {
+        expect(
+          fetchMock.mock.calls.some(([input]) => String(input).includes("search=%D0%9A%D1%83%D0%B7")),
+        ).toBe(true);
+      },
+      { timeout: 2000 },
+    );
+  });
+
+  it("selecting an instructor applies user_id to the calendar query and closes the dialog", async () => {
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      { match: "/events/calendar", response: calendarResponse([]) },
+      {
+        match: "/users?",
+        response: usersResponse([{ id: "instr-1", last_name: "Кузнецова", first_name: "Ольга" }]),
+      },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Выбрать инструктора" }));
+    await user.click(await screen.findByText("Кузнецова Ольга"));
+
+    expect(screen.queryByRole("dialog", { name: "Выбрать инструктора" })).not.toBeInTheDocument();
+    expect(await screen.findByText("Кузнецова Ольга")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes("user_id=instr-1"))).toBe(true);
+    });
+  });
+
+  it("«Только мои события» is the same user_id filter, self-scoped — checking it and picking another instructor are mutually exclusive", async () => {
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse({ userId: "u1" }) },
+      { match: "/groups?status=active", response: groupsResponse() },
+      { match: "/events/calendar", response: calendarResponse([]) },
+      {
+        match: "/users?",
+        response: usersResponse([{ id: "instr-1", last_name: "Кузнецова", first_name: "Ольга" }]),
+      },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    const mineCheckbox = await screen.findByRole("checkbox", { name: "Только мои события" });
+
+    await user.click(mineCheckbox);
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes("user_id=u1"))).toBe(true);
+    });
+    expect(mineCheckbox).toBeChecked();
+
+    // Picking a different instructor supersedes "mine".
+    await user.click(screen.getByRole("button", { name: "Изменить" }));
+    await user.click(await screen.findByText("Кузнецова Ольга"));
+    expect(mineCheckbox).not.toBeChecked();
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes("user_id=instr-1"))).toBe(true);
+    });
+  });
+
+  it("Сбросить clears the selected instructor along with the other filters", async () => {
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      { match: "/events/calendar", response: calendarResponse([]) },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}&user_id=instr-1` });
+    await screen.findByText("Инструктор выбран");
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Сбросить" }));
+
+    expect(screen.queryByText("Инструктор выбран")).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Выбрать инструктора" })).toBeInTheDocument();
+    await waitFor(() => {
+      const lastCalendarCall = fetchMock.mock.calls
+        .map(([input]) => String(input))
+        .filter((url) => url.includes("/events/calendar"))
+        .at(-1);
+      expect(lastCalendarCall).not.toContain("user_id");
+    });
+  });
+
+  it("persists the selected instructor across month navigation", async () => {
+    const marchRange = monthRange(new Date(2026, 2, 15));
+    const aprilRange = monthRange(new Date(2026, 3, 15));
+    stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      { match: encodeURIComponent(marchRange.from), response: calendarResponse([]) },
+      { match: encodeURIComponent(aprilRange.from), response: calendarResponse([]) },
+    ]);
+
+    renderWithProviders(<EventsPage />, {
+      route: `/events?date=${FIXED_DATE}&user_id=instr-1`,
+    });
+    await screen.findByText("Инструктор выбран");
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Следующий месяц" }));
+    await screen.findByText("Апрель 2026");
+
+    expect(screen.getByText("Инструктор выбран")).toBeInTheDocument();
+  });
+});
+
 describe("EventsPage — browser history (ADR-0036 Back/Forward)", () => {
   it("pushes a history entry per month navigation, and Back/Forward restores the exact previous/next state", async () => {
     const range = fixedRange();
@@ -369,6 +619,29 @@ describe("EventsPage — browser history (ADR-0036 Back/Forward)", () => {
     await act(async () => { await router.navigate(-1); });
     await waitFor(() => expect(screen.getByLabelText("Группа")).toHaveValue(""));
     expect(router.state.location.search).not.toContain("group_id");
+  });
+
+  it("pushes a history entry for the instructor/user filter too, restorable via Back", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse({ userId: "u1" }) },
+      { match: "/groups?status=active", response: groupsResponse() },
+      { match: "/events/calendar", response: calendarResponse([]) },
+    ]);
+
+    const { router } = renderWithHistory(<EventsPage />, {
+      initialEntries: [`/events?date=${FIXED_DATE}`],
+    });
+
+    await screen.findByRole("button", { name: "Выбрать инструктора" });
+    expect(router.state.location.search).not.toContain("user_id");
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("checkbox", { name: "Только мои события" }));
+    await waitFor(() => expect(router.state.location.search).toContain("user_id=u1"));
+
+    await act(async () => { await router.navigate(-1); });
+    await waitFor(() => expect(router.state.location.search).not.toContain("user_id"));
+    expect(await screen.findByRole("button", { name: "Выбрать инструктора" })).toBeInTheDocument();
   });
 });
 
