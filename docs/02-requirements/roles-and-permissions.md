@@ -333,6 +333,8 @@ Role-specific relationship rules:
 
 ClubMembership.membership_type is not a system role selector. For the current Person creation workflow, the initial membership remains fixed as member/active.
 
+Implemented via `GET/POST /api/v1/persons/{person_id}/role-assignments` and `DELETE /api/v1/persons/{person_id}/role-assignments/{role_code}` (people-api.md §24.1) — a canonical-role-code-only, Person-scoped entry point onto the same `RoleAssignment` resource the flat `/api/v1/role-assignments` API already owns (ADR-0025 §6, ADR-0026); not a second model or a second API.
+
 See ADR-0039.
 
 ## 14. Participation and self-registration

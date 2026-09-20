@@ -43,3 +43,28 @@ class RoleAssignmentOut(BaseModel):
     valid_to: Optional[datetime]
     created_at: datetime
     updated_at: datetime
+
+
+class PersonRoleAssignmentCreateRequest(BaseModel):
+    """`POST /persons/{person_id}/role-assignments` (TH-0112 / ADR-0039).
+
+    Deliberately narrower than `RoleAssignmentCreateRequest`: only a
+    canonical role code is accepted (ADR-0039 §3) — never a raw `role_id`,
+    `user_id`, `scope_type`, or `club_id`. Identity and scope are always
+    resolved/decided server-side (see app.role_assignments.person_roles's
+    module docstring).
+    """
+
+    role_code: str
+
+
+class PersonRoleAssignmentOut(BaseModel):
+    """Response for the Person-scoped role-assignment endpoints. Exposes
+    `role_code` (never `role_id`) so the client never needs to know a
+    Role's opaque id to render or act on it."""
+
+    id: UUID
+    person_id: UUID
+    role_code: str
+    club_id: Optional[UUID]
+    valid_from: datetime

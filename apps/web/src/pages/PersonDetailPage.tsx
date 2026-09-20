@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { PageHeader } from "../components/ui/PageHeader";
@@ -17,23 +17,29 @@ import { useNotify } from "../components/ui/notificationContext";
 import { useCurrentUser, currentClubId } from "../api/auth";
 import {
   personFullName,
+  personRoleLabel,
   usePerson,
   usePersons,
   usePersonGuardianRelationships,
   usePersonMemberships,
+  usePersonRoleAssignments,
+  useAddPersonRole,
   useCreateGuardianRelationship,
   useCreateMembership,
+  useRemovePersonRole,
   useTerminateGuardianRelationship,
   useTransitionMembershipStatus,
   useUpdateGuardianRelationship,
   useUpdateMembershipType,
   useUpdatePerson,
   CANONICAL_MEMBERSHIP_STATUSES,
+  CANONICAL_PERSON_ROLE_CODES,
   MEMBERSHIP_NEXT_STATUSES,
   type GuardianRelationship,
   type Membership,
   type Person,
   type PersonFields,
+  type PersonRoleCode,
 } from "../api/people";
 import {
   membershipStatusIcon,
@@ -107,6 +113,11 @@ export function PersonDetailPage() {
             id: "guardians",
             label: "Представители",
             content: <GuardiansTab personId={person.id} isAdmin={isAdmin} />,
+          },
+          {
+            id: "roles",
+            label: "Роли",
+            content: <RolesTab personId={person.id} isAdmin={isAdmin} />,
           },
         ]}
       />
@@ -886,5 +897,300 @@ function TerminateGuardianRelationshipDialog({
         );
       }}
     />
+  );
+}
+
+// --- Roles tab (TH-0112 / ADR-0039) -----------------------------------------
+//
+// System roles (RoleAssignment), never `membership_type` — see
+// app.role_assignments.person_roles's module docstring on the backend
+// side. `role.manage` is admin-only in the current MVP (same as every
+// other action gated by `isAdmin` in this file), so no separate
+// permission flag is threaded through here.
+
+function RolesTab({ personId, isAdmin }: { personId: string; isAdmin: boolean }) {
+  const rolesQuery = usePersonRoleAssignments(personId);
+  const removeRole = useRemovePersonRole();
+  const notify = useNotify();
+  const [addOpen, setAddOpen] = useState(false);
+  const [linkChildOpen, setLinkChildOpen] = useState(false);
+
+  const activeRoleCodes = rolesQuery.data?.items.map((role) => role.role_code) ?? [];
+  const hasGuardianRole = activeRoleCodes.includes("guardian");
+
+  return (
+    <div>
+      {isAdmin ? (
+        <div className={styles.tabActions}>
+          <Button variant="secondary" icon="action.add" onClick={() => setAddOpen(true)}>
+            Добавить роль
+          </Button>
+        </div>
+      ) : null}
+
+      {rolesQuery.isLoading ? <Loading label="Загружаем роли…" /> : null}
+      {rolesQuery.isError ? (
+        <ErrorState
+          illustration="error"
+          title="Не удалось загрузить роли"
+          description={rolesQuery.error.message}
+        />
+      ) : null}
+      {rolesQuery.isSuccess && rolesQuery.data.items.length === 0 ? (
+        <EmptyState
+          illustration="empty-people"
+          title="Роли не назначены"
+          description="У этого человека пока нет системных ролей."
+        />
+      ) : null}
+      {rolesQuery.isSuccess && rolesQuery.data.items.length > 0 ? (
+        <ul className={styles.list}>
+          {rolesQuery.data.items.map((role) => (
+            <li key={role.id} className={styles.row}>
+              <div className={styles.rowMain}>
+                <span>{personRoleLabel(role.role_code)}</span>
+              </div>
+              {isAdmin ? (
+                <div className={styles.rowActions}>
+                  <Button
+                    variant="destructive"
+                    icon="action.delete"
+                    disabled={removeRole.isPending}
+                    onClick={() => {
+                      removeRole.mutate(
+                        { personId, role_code: role.role_code as PersonRoleCode },
+                        {
+                          onSuccess: () => notify("success", "Роль удалена"),
+                          onError: (error) => notify("error", error.message),
+                        },
+                      );
+                    }}
+                  >
+                    Удалить
+                  </Button>
+                </div>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {isAdmin && hasGuardianRole ? (
+        <div className={styles.tabActions}>
+          <Button variant="secondary" onClick={() => setLinkChildOpen(true)}>
+            Привязать ребёнка
+          </Button>
+        </div>
+      ) : null}
+
+      <AddPersonRoleDialog
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        personId={personId}
+        existingRoleCodes={activeRoleCodes}
+      />
+      <LinkChildDialog
+        open={linkChildOpen}
+        onClose={() => setLinkChildOpen(false)}
+        guardianPersonId={personId}
+      />
+    </div>
+  );
+}
+
+function AddPersonRoleDialog({
+  open,
+  onClose,
+  personId,
+  existingRoleCodes,
+}: {
+  open: boolean;
+  onClose: () => void;
+  personId: string;
+  existingRoleCodes: string[];
+}) {
+  const availableRoles = CANONICAL_PERSON_ROLE_CODES.filter(
+    (code) => !existingRoleCodes.includes(code),
+  );
+  const [roleCode, setRoleCode] = useState<PersonRoleCode>(availableRoles[0] ?? "member");
+  const addRole = useAddPersonRole();
+  const notify = useNotify();
+
+  // Re-initialize the selection to the first still-available role each
+  // time the dialog opens — a role assigned in an earlier visit must
+  // never remain pre-selected/offered again (it no longer appears in
+  // `availableRoles` at all, but the previous selection could otherwise
+  // linger as a stale value).
+  useEffect(() => {
+    if (open) setRoleCode(availableRoles[0] ?? "member");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  function handleSubmit() {
+    if (availableRoles.length === 0) return;
+    addRole.mutate(
+      { personId, role_code: roleCode },
+      {
+        onSuccess: () => {
+          notify("success", "Роль добавлена");
+          onClose();
+        },
+        onError: (error) => notify("error", error.message),
+      },
+    );
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title="Добавить роль"
+      onClose={onClose}
+      actions={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={addRole.isPending}>
+            Отмена
+          </Button>
+          <Button
+            variant="primary"
+            onClick={handleSubmit}
+            disabled={availableRoles.length === 0 || addRole.isPending}
+          >
+            Добавить
+          </Button>
+        </>
+      }
+    >
+      <div className={styles.form}>
+        {availableRoles.length === 0 ? (
+          <p>Все канонические роли уже назначены этому человеку.</p>
+        ) : (
+          <FilterSelect
+            label="Роль"
+            value={roleCode}
+            options={availableRoles.map((code) => ({ value: code, label: personRoleLabel(code) }))}
+            onChange={(value) => setRoleCode(value as PersonRoleCode)}
+          />
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+function LinkChildDialog({
+  open,
+  onClose,
+  guardianPersonId,
+}: {
+  open: boolean;
+  onClose: () => void;
+  guardianPersonId: string;
+}) {
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
+  const [selected, setSelected] = useState<{ id: string; name: string } | null>(null);
+  const [relationshipType, setRelationshipType] = useState("");
+  const searchQuery = usePersons({ page: 1, search: debouncedSearch });
+  const createRelationship = useCreateGuardianRelationship();
+  const notify = useNotify();
+
+  function reset() {
+    setSearch("");
+    setSelected(null);
+    setRelationshipType("");
+  }
+
+  function handleClose() {
+    reset();
+    onClose();
+  }
+
+  function handleSubmit() {
+    if (!selected || !relationshipType.trim()) return;
+    // Reversed direction from CreateGuardianRelationshipDialog: the
+    // *searched* Person becomes the child (`personId`), and the current
+    // Person Detail page's own Person (already holding the guardian
+    // role) is `guardian_person_id` — same existing endpoint/hook, no
+    // new GuardianRelationship API (ADR-0039 §7).
+    createRelationship.mutate(
+      { personId: selected.id, guardian_person_id: guardianPersonId, relationship_type: relationshipType.trim() },
+      {
+        onSuccess: () => {
+          notify("success", "Ребёнок привязан");
+          handleClose();
+        },
+        onError: (error) => notify("error", error.message),
+      },
+    );
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title="Привязать ребёнка"
+      onClose={handleClose}
+      actions={
+        <>
+          <Button variant="secondary" onClick={handleClose} disabled={createRelationship.isPending}>
+            Отмена
+          </Button>
+          <Button
+            variant="primary"
+            onClick={handleSubmit}
+            disabled={!selected || !relationshipType.trim() || createRelationship.isPending}
+          >
+            Привязать
+          </Button>
+        </>
+      }
+    >
+      <div className={styles.form}>
+        {selected ? (
+          <div className={styles.selectedPerson}>
+            <span>{selected.name}</span>
+            <Button variant="secondary" onClick={() => setSelected(null)}>
+              Изменить выбор
+            </Button>
+          </div>
+        ) : (
+          <>
+            <SearchInput
+              label="Поиск ребёнка"
+              value={search}
+              onChange={setSearch}
+              placeholder="Например, «Иванов»"
+            />
+            {searchQuery.isSuccess && debouncedSearch ? (
+              <ul className={styles.pickerList}>
+                {searchQuery.data.items
+                  .filter((candidate) => candidate.id !== guardianPersonId)
+                  .map((candidate) => (
+                    <li key={candidate.id}>
+                      <button
+                        type="button"
+                        className={styles.pickerItem}
+                        onClick={() =>
+                          setSelected({ id: candidate.id, name: personFullName(candidate) })
+                        }
+                      >
+                        {personFullName(candidate)}
+                      </button>
+                    </li>
+                  ))}
+                {searchQuery.data.items.length === 0 ? (
+                  <li className={styles.pickerEmpty}>Ничего не найдено</li>
+                ) : null}
+              </ul>
+            ) : null}
+          </>
+        )}
+        <Input
+          label="Тип связи"
+          value={relationshipType}
+          onChange={(e) => setRelationshipType(e.target.value)}
+          placeholder="Например, «родитель»"
+          required
+        />
+      </div>
+    </Dialog>
   );
 }

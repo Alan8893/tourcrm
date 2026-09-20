@@ -91,6 +91,7 @@ describe("PersonDetailPage", () => {
       { match: "/auth/me", response: meResponse("member") },
       { match: "/persons/p1/memberships", response: { items: [membership()], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } } },
       { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1", response: PERSON },
     ]);
 
@@ -122,6 +123,7 @@ describe("PersonDetailPage", () => {
         response: { items: [guardianRelationship()], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } },
       },
       { match: "/persons/g1", response: GUARDIAN_PERSON },
+      { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1", response: PERSON },
     ]);
 
@@ -188,6 +190,7 @@ describe("PersonDetailPage", () => {
       { match: "/auth/me", response: meResponse("admin") },
       { match: "/persons/p1/memberships", response: emptyCollection() },
       { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1", response: PERSON },
     ]);
 
@@ -208,6 +211,7 @@ describe("PersonDetailPage", () => {
       { match: "/auth/me", response: meResponse("member") },
       { match: "/persons/p1/memberships", response: emptyCollection() },
       { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1", response: PERSON },
     ]);
 
@@ -229,6 +233,7 @@ describe("PersonDetailPage", () => {
       { match: "/auth/me", response: meResponse("member") },
       { match: "/persons/p1/memberships", response: emptyCollection() },
       { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1", response: PERSON },
     ]);
 
@@ -264,6 +269,7 @@ describe("PersonDetailPage", () => {
       { match: "/auth/me", response: meResponse("member") },
       { match: "/persons/p1/memberships", response: emptyCollection() },
       { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1", response: PERSON },
     ]);
 
@@ -298,6 +304,7 @@ describe("PersonDetailPage", () => {
       { match: "/auth/me", response: meResponse("member") },
       { match: "/persons/p1/memberships", response: { items: [membership()], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } } },
       { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1", response: PERSON },
     ]);
 
@@ -322,6 +329,7 @@ describe("PersonDetailPage", () => {
       { match: "/auth/me", response: meResponse("admin") },
       { match: "/persons/p1/memberships", response: { items: [membership({ status: "active" })], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } } },
       { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1", response: PERSON },
     ]);
 
@@ -350,6 +358,7 @@ describe("PersonDetailPage", () => {
       { match: "/auth/me", response: meResponse("admin") },
       { match: "/persons/p1/memberships", response: { items: [membership({ status: "archived" })], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } } },
       { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1", response: PERSON },
     ]);
 
@@ -374,6 +383,7 @@ describe("PersonDetailPage", () => {
       { match: "/auth/me", response: meResponse("admin") },
       { match: "/persons/p1/memberships", response: emptyCollection() },
       { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1", response: PERSON },
       { match: "/memberships", response: membership({ status: "active" }) },
     ]);
@@ -405,6 +415,7 @@ describe("PersonDetailPage", () => {
       { match: "/persons/p1/memberships", response: emptyCollection() },
       { match: "/persons/p1/guardian-relationships", response: { items: [guardianRelationship()], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } } },
       { match: "/persons/g1", response: GUARDIAN_PERSON },
+      { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1", response: PERSON },
     ]);
 
@@ -429,6 +440,7 @@ describe("PersonDetailPage", () => {
       { match: "/auth/me", response: meResponse("admin") },
       { match: "/persons/p1/memberships", response: emptyCollection() },
       { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1", response: PERSON },
       {
         match: "/persons?",
@@ -470,6 +482,7 @@ describe("PersonDetailPage", () => {
         response: { items: [guardianRelationship({ status: "revoked" })], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } },
       },
       { match: "/persons/g1", response: GUARDIAN_PERSON },
+      { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1", response: PERSON },
     ]);
 
@@ -498,6 +511,7 @@ describe("PersonDetailPage", () => {
         response: { items: [guardianRelationship()], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } },
       },
       { match: "/persons/g1", response: GUARDIAN_PERSON },
+      { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1", response: PERSON },
       { match: "/terminate", response: guardianRelationship({ status: "revoked" }) },
     ]);
@@ -521,5 +535,330 @@ describe("PersonDetailPage", () => {
         fetchMock.mock.calls.some(([input]) => String(input).includes("/terminate")),
       ).toBe(true);
     });
+  });
+});
+
+function roleAssignment(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "ra1",
+    person_id: "p1",
+    role_code: "instructor",
+    club_id: "club-1",
+    valid_from: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+describe("PersonDetailPage — roles tab (TH-0112)", () => {
+  it("renders the person's current roles", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/persons/p1/memberships", response: emptyCollection() },
+      { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      {
+        match: "/persons/p1/role-assignments",
+        response: { items: [roleAssignment({ role_code: "member" })], pagination: { page: 1, page_size: 1, total: 1, pages: 1 } },
+      },
+      { match: "/persons/p1", response: PERSON },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Роли" }));
+
+    expect(await screen.findByText("Участник")).toBeInTheDocument();
+  });
+
+  it("shows an empty state when no roles are assigned", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/persons/p1/memberships", response: emptyCollection() },
+      { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      { match: "/persons/p1/role-assignments", response: emptyCollection() },
+      { match: "/persons/p1", response: PERSON },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Роли" }));
+
+    expect(await screen.findByText("Роли не назначены")).toBeInTheDocument();
+  });
+
+  it("renders multiple roles at once", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/persons/p1/memberships", response: emptyCollection() },
+      { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      {
+        match: "/persons/p1/role-assignments",
+        response: {
+          items: [roleAssignment({ id: "ra1", role_code: "instructor" }), roleAssignment({ id: "ra2", role_code: "guardian" })],
+          pagination: { page: 1, page_size: 2, total: 2, pages: 1 },
+        },
+      },
+      { match: "/persons/p1", response: PERSON },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Роли" }));
+
+    expect(await screen.findByText("Инструктор")).toBeInTheDocument();
+    expect(screen.getByText("Родитель")).toBeInTheDocument();
+  });
+
+  it("lets an admin add a role, and the list reflects the new role after the mutation", async () => {
+    let roles: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/auth/me")) return jsonResponse(meResponse("admin"));
+      if (url.includes("/persons/p1/memberships")) return jsonResponse(emptyCollection());
+      if (url.includes("/persons/p1/guardian-relationships")) return jsonResponse(emptyCollection());
+      if (url.includes("/persons/p1/role-assignments") && method === "POST") {
+        const created = roleAssignment({ id: "ra-new", role_code: "admin" });
+        roles = [...roles, created];
+        return jsonResponse(created, 201);
+      }
+      if (url.includes("/persons/p1/role-assignments") && method === "GET") {
+        return jsonResponse({ items: roles, pagination: { page: 1, page_size: roles.length || 1, total: roles.length, pages: roles.length ? 1 : 0 } });
+      }
+      if (url.endsWith("/persons/p1")) return jsonResponse(PERSON);
+      throw new Error(`Unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Роли" }));
+    expect(await screen.findByText("Роли не назначены")).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: "Добавить роль" }));
+    await user.click(await screen.findByRole("button", { name: "Добавить" }));
+
+    expect(await screen.findByText("Роль добавлена")).toBeInTheDocument();
+    expect(await screen.findByText("Администратор")).toBeInTheDocument();
+    expect(screen.queryByText("Роли не назначены")).not.toBeInTheDocument();
+  });
+
+  it("does not offer an already-assigned role again when adding", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/persons/p1/memberships", response: emptyCollection() },
+      { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      {
+        match: "/persons/p1/role-assignments",
+        response: {
+          items: [roleAssignment({ id: "ra1", role_code: "instructor" }), roleAssignment({ id: "ra2", role_code: "guardian" })],
+          pagination: { page: 1, page_size: 2, total: 2, pages: 1 },
+        },
+      },
+      { match: "/persons/p1", response: PERSON },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Роли" }));
+    await user.click(await screen.findByRole("button", { name: "Добавить роль" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Добавить роль" });
+    const select = within(dialog).getByLabelText("Роль") as HTMLSelectElement;
+    const optionLabels = Array.from(select.options).map((option) => option.textContent);
+    expect(optionLabels).toEqual(["Администратор", "Участник"]);
+  });
+
+  it("lets an admin remove a role, and the list reflects removal after the mutation", async () => {
+    let roles: Array<Record<string, unknown>> = [roleAssignment({ id: "ra1", role_code: "guardian" })];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/auth/me")) return jsonResponse(meResponse("admin"));
+      if (url.includes("/persons/p1/memberships")) return jsonResponse(emptyCollection());
+      if (url.includes("/persons/p1/guardian-relationships")) return jsonResponse(emptyCollection());
+      if (url.includes("/persons/p1/role-assignments/guardian") && method === "DELETE") {
+        roles = [];
+        return new Response(null, { status: 204 });
+      }
+      if (url.includes("/persons/p1/role-assignments") && method === "GET") {
+        return jsonResponse({ items: roles, pagination: { page: 1, page_size: roles.length || 1, total: roles.length, pages: roles.length ? 1 : 0 } });
+      }
+      if (url.endsWith("/persons/p1")) return jsonResponse(PERSON);
+      throw new Error(`Unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Роли" }));
+    expect(await screen.findByText("Родитель")).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: "Удалить" }));
+
+    expect(await screen.findByText("Роль удалена")).toBeInTheDocument();
+    expect(await screen.findByText("Роли не назначены")).toBeInTheDocument();
+  });
+
+  it("shows the guardian role's \"Привязать ребёнка\" action only when the guardian role is active", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/persons/p1/memberships", response: emptyCollection() },
+      { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      {
+        match: "/persons/p1/role-assignments",
+        response: { items: [roleAssignment({ role_code: "guardian" })], pagination: { page: 1, page_size: 1, total: 1, pages: 1 } },
+      },
+      { match: "/persons/p1", response: PERSON },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Роли" }));
+
+    expect(await screen.findByRole("button", { name: "Привязать ребёнка" })).toBeInTheDocument();
+  });
+
+  it("does not show \"Привязать ребёнка\" without the guardian role", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/persons/p1/memberships", response: emptyCollection() },
+      { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      {
+        match: "/persons/p1/role-assignments",
+        response: { items: [roleAssignment({ role_code: "member" })], pagination: { page: 1, page_size: 1, total: 1, pages: 1 } },
+      },
+      { match: "/persons/p1", response: PERSON },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Роли" }));
+    await screen.findByText("Участник");
+
+    expect(screen.queryByRole("button", { name: "Привязать ребёнка" })).not.toBeInTheDocument();
+  });
+
+  it("hides role-management controls for a non-admin (unauthorized) user", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("member") },
+      { match: "/persons/p1/memberships", response: emptyCollection() },
+      { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
+      {
+        match: "/persons/p1/role-assignments",
+        response: { items: [roleAssignment({ role_code: "guardian" })], pagination: { page: 1, page_size: 1, total: 1, pages: 1 } },
+      },
+      { match: "/persons/p1", response: PERSON },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Роли" }));
+    await screen.findByText("Родитель");
+
+    expect(screen.queryByRole("button", { name: "Добавить роль" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Удалить" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Привязать ребёнка" })).not.toBeInTheDocument();
+  });
+
+  it("shows a mutation error via toast when adding a role fails, without changing the list", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/auth/me")) return jsonResponse(meResponse("admin"));
+      if (url.includes("/persons/p1/memberships")) return jsonResponse(emptyCollection());
+      if (url.includes("/persons/p1/guardian-relationships")) return jsonResponse(emptyCollection());
+      if (url.includes("/persons/p1/role-assignments") && method === "POST") {
+        return jsonResponse(
+          {
+            error: {
+              code: "person_has_no_user_account",
+              message: "У этого человека ещё нет учётной записи",
+              details: {},
+              request_id: "r1",
+            },
+          },
+          422,
+        );
+      }
+      if (url.includes("/persons/p1/role-assignments") && method === "GET") {
+        return jsonResponse(emptyCollection());
+      }
+      if (url.endsWith("/persons/p1")) return jsonResponse(PERSON);
+      throw new Error(`Unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Роли" }));
+    await user.click(await screen.findByRole("button", { name: "Добавить роль" }));
+    await user.click(await screen.findByRole("button", { name: "Добавить" }));
+
+    expect(await screen.findByText("У этого человека ещё нет учётной записи")).toBeInTheDocument();
+    expect(screen.getByText("Роли не назначены")).toBeInTheDocument();
   });
 });
