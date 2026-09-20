@@ -394,3 +394,99 @@ export function useTerminateGuardianRelationship() {
     },
   });
 }
+
+// --- System role assignments (TH-0112 / ADR-0039) --------------------------
+//
+// A Person-scoped, canonical-role-code-only view onto RoleAssignment
+// (app/api/v1/persons.py's `.../role-assignments` endpoints). Identity
+// (Person -> User) and scope are always resolved server-side — this
+// client never sends a `user_id`, `role_id`, or `scope_type`, only one of
+// the four canonical `role_code` values below.
+
+export type PersonRoleCode = "admin" | "instructor" | "member" | "guardian";
+
+export const CANONICAL_PERSON_ROLE_CODES: PersonRoleCode[] = [
+  "admin",
+  "instructor",
+  "member",
+  "guardian",
+];
+
+/** ADR-0039 §3's canonical human-readable labels — the People UI must
+ * never render a raw role code, and must never use `membership_type` as
+ * a substitute for these. */
+export function personRoleLabel(roleCode: string): string {
+  switch (roleCode) {
+    case "admin":
+      return "Администратор";
+    case "instructor":
+      return "Инструктор";
+    case "member":
+      return "Участник";
+    case "guardian":
+      return "Родитель";
+    default:
+      return roleCode;
+  }
+}
+
+export type PersonRoleAssignment = {
+  id: string;
+  person_id: string;
+  role_code: string;
+  club_id: string | null;
+  valid_from: string;
+};
+
+/** `GET /api/v1/persons/{person_id}/role-assignments` — `role.manage`.
+ * Empty for a Person with no active roles, and (indistinguishably, at
+ * this endpoint) for a Person with no linked User account yet — only
+ * `useAddPersonRole`'s own rejection tells the two apart. */
+export function usePersonRoleAssignments(personId: string | undefined) {
+  return useQuery<CollectionResponse<PersonRoleAssignment>, ApiError>({
+    queryKey: ["persons", "role-assignments", personId],
+    queryFn: () =>
+      apiFetch<CollectionResponse<PersonRoleAssignment>>(`/persons/${personId}/role-assignments`),
+    enabled: Boolean(personId),
+  });
+}
+
+/** `POST /api/v1/persons/{person_id}/role-assignments` — `role.manage`.
+ * Rejects with `person_has_no_user_account` (422) when the Person has no
+ * linked User, and `duplicate_role_assignment` (409) when the role is
+ * already active — both are ordinary `ApiError`s for the caller to
+ * surface, never silently retried or swallowed here. */
+export function useAddPersonRole() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    PersonRoleAssignment,
+    ApiError,
+    { personId: string; role_code: PersonRoleCode }
+  >({
+    mutationFn: ({ personId, role_code }) =>
+      apiFetch<PersonRoleAssignment>(`/persons/${personId}/role-assignments`, {
+        method: "POST",
+        body: JSON.stringify({ role_code }),
+      }),
+    onSuccess: (_assignment, { personId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["persons", "role-assignments", personId] });
+    },
+  });
+}
+
+/** `DELETE /api/v1/persons/{person_id}/role-assignments/{role_code}` —
+ * `role.manage`. Removing a role that is not currently active (or a
+ * Person with no User) is a 404 (`role_assignment_not_found`) —
+ * existence-hiding, matching the top-level RoleAssignment API's own
+ * revoke convention; the UI only ever offers this for a role it just
+ * listed as active, so this should not occur in normal use. */
+export function useRemovePersonRole() {
+  const queryClient = useQueryClient();
+  return useMutation<void, ApiError, { personId: string; role_code: PersonRoleCode }>({
+    mutationFn: ({ personId, role_code }) =>
+      apiFetch<void>(`/persons/${personId}/role-assignments/${role_code}`, { method: "DELETE" }),
+    onSuccess: (_result, { personId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["persons", "role-assignments", personId] });
+    },
+  });
+}

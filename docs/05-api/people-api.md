@@ -523,6 +523,18 @@ ADR-0025 §6: канонический API-ресурс — top-level `/api/v1/r
 
 Role assignment не меняет Person.
 
+### 24.1 Person-scoped role management (TH-0112, ADR-0039)
+
+Person Detail управляет системными ролями человека через отдельный, узкий вход в тот же канонический ресурс `RoleAssignment` — ADR-0025 §6 не пересматривается: `/api/v1/role-assignments` остаётся канонической идентичностью ресурса, а эндпоинты ниже — Person-scoped представление/действие над ним, по аналогии с `GET /persons/{id}/memberships` и `GET/POST /persons/{id}/guardian-relationships`.
+
+- `GET /api/v1/persons/{person_id}/role-assignments` — все текущие активные роли этого Person. Требует `role.manage`. Пустой список как для «ролей нет», так и для «у Person ещё нет User» (различить эти случаи может только попытка `POST`).
+- `POST /api/v1/persons/{person_id}/role-assignments` — тело `{"role_code": "admin"|"instructor"|"member"|"guardian"}`. Требует `role.manage`. Никогда не принимает `user_id`, `role_id`, `scope_type` или `club_id` от клиента — identity разрешается backend строго через Person → User, scope и Club выбираются backend'ом (см. `app.role_assignments.person_roles`). Ошибки: `404` (Person не найден), `422 invalid_role_code`, `422 person_has_no_user_account` (у Person ещё нет User — это не account-creation workflow, и этот endpoint никогда не создаёт User), `422 role_assignment_club_membership_missing`, `409 duplicate_role_assignment` (роль уже активна — та же canonical conflict, что и у top-level `POST /role-assignments`).
+- `DELETE /api/v1/persons/{person_id}/role-assignments/{role_code}` — снимает только конкретную активную роль этого Person; другие роли и другие Persons не затрагиваются. Existence-hiding: отсутствие роли для снятия (включая «Person без User») — `404 role_assignment_not_found`, как и у top-level `POST /role-assignments/{id}/revoke`.
+
+Назначение/снятие роли никогда не создаёт и не изменяет: Person, ClubMembership, membership_type/status, GroupMembership, GroupInstructorAssignment, EventStaffAssignment, EventParticipation, GuardianRelationship (ADR-0039 §5-§9). Guardian-роль не создаёт GuardianRelationship автоматически — Person Detail лишь предлагает переход в уже существующий workflow `POST /persons/{child_person_id}/guardian-relationships` (§18) с текущим Person как `guardian_person_id`.
+
+Аудит — существующие `role_assignment.created`/`role_assignment.revoked` (ADR-0024/ADR-0026); новый audit action не вводится.
+
 ## 25. Instructor assignment
 
 Инструктор — Person/User с соответствующим role assignment. Само наличие роли не означает ответственность за конкретную группу или Event.

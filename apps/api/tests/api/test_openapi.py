@@ -77,6 +77,11 @@ _PERSON_PATHS = {
     "/api/v1/persons",
     "/api/v1/persons/{person_id}",
     "/api/v1/persons/{person_id}/memberships",
+    # TH-0112 / ADR-0039: Person-scoped system role management, a
+    # canonical-role-code-only view onto the same flat `/role-assignments`
+    # resource (see _ROLE_ASSIGNMENT_PATHS below and ADR-0025 §6).
+    "/api/v1/persons/{person_id}/role-assignments",
+    "/api/v1/persons/{person_id}/role-assignments/{role_code}",
 }
 
 _MEMBERSHIP_PATHS = {

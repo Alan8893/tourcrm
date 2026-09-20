@@ -56,6 +56,14 @@ People Management endpoints are governed by ADR-0035 and `docs/05-api/people-api
 
 There is no Person archive endpoint in the current MVP. Person archiving is deferred by ADR-0034; related lifecycle entities must not be used to simulate Person archival.
 
+### Person role assignments (TH-0112 / ADR-0039)
+
+- `GET /persons/{person_id}/role-assignments`
+- `POST /persons/{person_id}/role-assignments`
+- `DELETE /persons/{person_id}/role-assignments/{role_code}`
+
+A `role.manage`-gated, canonical-role-code-only view onto the same `RoleAssignment` resource `/role-assignments` (§24) already owns — see `people-api.md` §24 and ADR-0025 §6 (the flat `/role-assignments` collection remains the canonical resource identity; this is a Person-scoped convenience entry point, not a second model or a second API).
+
 ## 4. Club memberships
 
 - `GET /memberships`
@@ -413,6 +421,8 @@ Large exports are asynchronous.
 - `GET /audit-logs/{id}`
 
 Security-sensitive settings require elevated permission and audit.
+
+TH-0112 / ADR-0039 adds `GET/POST /persons/{person_id}/role-assignments` and `DELETE /persons/{person_id}/role-assignments/{role_code}` (§3) as a Person Detail-facing, canonical-role-code-only entry point onto this same resource — it does not replace or duplicate the endpoints above.
 
 ## 25. Integrations
 

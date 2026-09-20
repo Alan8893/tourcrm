@@ -7,8 +7,13 @@ ADR-0024/ADR-0025 (audit), ADR-0035 (People management authorization),
 ADR-0034 (Person archiving deferred).
 
 Endpoints intentionally NOT implemented here (Issue #62 non-goals):
-Group/Role-assignment/Invitation/RegistrationRequest/Import API, and
-`POST /persons/{person_id}/archive`. The last is formally deferred by
+Group/Invitation/RegistrationRequest/Import API, and
+`POST /persons/{person_id}/archive`. (`GET/POST /persons/{person_id}/
+role-assignments` and `DELETE .../role-assignments/{role_code}` were
+added later by TH-0112 / ADR-0039 — see that section below; the
+canonical RoleAssignment resource itself remains the flat
+`/api/v1/role-assignments`, ADR-0025 §6.) The archive endpoint is
+formally deferred by
 ADR-0034, not an open gap: `Person` has no `status`/`archived_at`/
 soft-delete field, physical deletion is not part of the domain contract,
 and archive semantics must not be simulated through User/ClubMembership/
@@ -56,7 +61,13 @@ from app.api.v1.guardian_relationships_schemas import (
 )
 from app.api.v1.memberships_schemas import MembershipOut
 from app.api.v1.persons_schemas import PersonCreateRequest, PersonOut, PersonUpdateRequest
+from app.api.v1.role_assignments_schemas import (
+    PersonRoleAssignmentCreateRequest,
+    PersonRoleAssignmentOut,
+)
+from app.authorization.context import ResourceContext
 from app.authorization.service import AuthorizationDenied, Authorizer
+from app.db.authorization import UserRoleAssignment
 from app.db.identity import Person
 from app.db.session import get_db
 from app.people import guardian_service
@@ -84,10 +95,17 @@ from app.people.queries import (
     list_memberships_page,
     list_persons_page,
 )
+from app.role_assignments import person_roles as person_role_service
+from app.role_assignments.service import (
+    DuplicateRoleAssignmentError,
+    RoleAssignmentClubMembershipMissingError,
+)
 
 router = APIRouter(prefix="/persons", tags=["persons"])
 
 _NOT_FOUND_DETAIL = "Person not found"
+_ROLE_ASSIGNMENT_NOT_FOUND_CODE = "role_assignment_not_found"
+_ROLE_ASSIGNMENT_NOT_FOUND_MESSAGE = "Role assignment not found"
 
 
 def _person_out(person: Person) -> PersonOut:
@@ -394,3 +412,160 @@ def create_person_guardian_relationship(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "guardian_link_not_allowed", str(exc)
         ) from exc
     return guardian_relationship_out(relationship)
+
+
+# --- Person role assignments (TH-0112 / ADR-0039) --------------------------
+#
+# A Person-scoped, canonical-role-code-only view onto the same
+# UserRoleAssignment rows the flat `/api/v1/role-assignments` resource
+# already owns (ADR-0025 §6 remains the canonical resource identity; see
+# app.role_assignments.person_roles's module docstring for why this
+# narrower entry point does not re-litigate that decision). `role.manage`
+# is the sole authorization gate, checked the same way the generic API
+# checks it: effective `role.manage` against the (sole) Club boundary.
+
+
+def _person_role_assignment_out(
+    assignment: UserRoleAssignment, *, person_id: uuid.UUID
+) -> PersonRoleAssignmentOut:
+    return PersonRoleAssignmentOut(
+        id=assignment.id,
+        person_id=person_id,
+        role_code=assignment.role.code,
+        club_id=assignment.club_id,
+        valid_from=assignment.valid_from,
+    )
+
+
+@router.get(
+    "/{person_id}/role-assignments",
+    response_model=CollectionResponse[PersonRoleAssignmentOut],
+)
+def list_person_role_assignments(
+    person_id: uuid.UUID,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+) -> CollectionResponse[PersonRoleAssignmentOut]:
+    """All of `person_id`'s currently-effective system roles. Empty for a
+    Person with no linked User (see app.role_assignments.person_roles.
+    list_person_role_assignments) — indistinguishable here from "has a
+    User but zero roles"; only the mutating endpoints below need to tell
+    the two apart."""
+    if db.get(Person, person_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+
+    club_id = person_role_service.resolve_sole_club_id(db)
+    Authorizer(session=db, user_id=principal.user_id, permission_code="role.manage").check(
+        ResourceContext(club_id=club_id)
+    )
+
+    rows = person_role_service.list_person_role_assignments(db, person_id=person_id)
+    return CollectionResponse(
+        items=[_person_role_assignment_out(row, person_id=person_id) for row in rows],
+        pagination=Pagination(
+            page=1, page_size=len(rows) or 1, total=len(rows), pages=1 if rows else 0
+        ),
+    )
+
+
+@router.post(
+    "/{person_id}/role-assignments",
+    status_code=status.HTTP_201_CREATED,
+    response_model=PersonRoleAssignmentOut,
+)
+def add_person_role_assignment(
+    person_id: uuid.UUID,
+    payload: PersonRoleAssignmentCreateRequest,
+    request: Request,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> PersonRoleAssignmentOut:
+    if db.get(Person, person_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+
+    club_id = person_role_service.resolve_sole_club_id(db)
+    Authorizer(session=db, user_id=principal.user_id, permission_code="role.manage").check(
+        ResourceContext(club_id=club_id)
+    )
+
+    if payload.role_code not in person_role_service.CANONICAL_PERSON_ROLE_CODES:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "invalid_role_code",
+            f"{payload.role_code!r} is not a canonical role code",
+        )
+
+    try:
+        assignment = person_role_service.add_person_role(
+            db,
+            person_id=person_id,
+            role_code=payload.role_code,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
+        )
+    except person_role_service.PersonHasNoUserAccountError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "person_has_no_user_account", str(exc)
+        ) from exc
+    except RoleAssignmentClubMembershipMissingError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "role_assignment_club_membership_missing",
+            str(exc),
+        ) from exc
+    except DuplicateRoleAssignmentError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "duplicate_role_assignment", str(exc)) from exc
+    return _person_role_assignment_out(assignment, person_id=person_id)
+
+
+@router.delete("/{person_id}/role-assignments/{role_code}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_person_role_assignment(
+    person_id: uuid.UUID,
+    role_code: str,
+    request: Request,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> None:
+    """Revoke `person_id`'s own currently-effective `role_code` assignment
+    only — never another Person's, never another role this Person holds.
+
+    Existence-hiding, mirroring `POST /role-assignments/{id}/revoke`
+    exactly: "no such Person", "Person has no User yet", and "this Person
+    has no active assignment of this role" all receive the identical 404
+    (`role_assignment_not_found`) — there is nothing here for an
+    unauthorized or already-ended state to disclose.
+    """
+    if db.get(Person, person_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+
+    club_id = person_role_service.resolve_sole_club_id(db)
+    Authorizer(session=db, user_id=principal.user_id, permission_code="role.manage").check(
+        ResourceContext(club_id=club_id)
+    )
+
+    if role_code not in person_role_service.CANONICAL_PERSON_ROLE_CODES:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "invalid_role_code",
+            f"{role_code!r} is not a canonical role code",
+        )
+
+    try:
+        person_role_service.remove_person_role(
+            db,
+            person_id=person_id,
+            role_code=role_code,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
+        )
+    except (
+        person_role_service.PersonHasNoUserAccountError,
+        person_role_service.PersonRoleAssignmentNotFoundError,
+    ) as exc:
+        raise APIError(
+            status.HTTP_404_NOT_FOUND,
+            _ROLE_ASSIGNMENT_NOT_FOUND_CODE,
+            _ROLE_ASSIGNMENT_NOT_FOUND_MESSAGE,
+        ) from exc
