@@ -227,6 +227,22 @@ Request:
 
 Текущий password должен быть проверен до изменения.
 
+### 15.1 Administrator password reset / first-access setup
+
+The administrator may initiate a password reset for a managed user account.
+
+The administrator does not choose or receive the user's permanent password.
+
+The operation creates a one-time setup/reset credential. On first use the user must establish a new password and confirm it.
+
+If email delivery is not yet available in the MVP, the system may expose the generated temporary credential to the administrator for delivery to the user. That credential is temporary and must be invalidated after successful setup or expiry.
+
+Permanent passwords and raw credentials must never be returned through ordinary API responses.
+
+The exact administrative endpoint and UI are implementation concerns and must reuse the existing password-reset/security model. A parallel password mechanism must not be introduced.
+
+See ADR-0038.
+
 ## 16. Invitation API
 
 ### POST `/api/v1/auth/invitations`
