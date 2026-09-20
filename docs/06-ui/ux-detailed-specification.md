@@ -133,18 +133,34 @@ TourCRM
 
 ### 5.4 Guardian
 
-Основная навигация:
+Глобальная навигация Guardian использует утверждённый закрытый navigation catalog приложения и не добавляет отдельный пункт «Children».
+
+Guardian-specific child context предоставляется через Home/Dashboard:
 
 - Home;
-- Children;
-- Calendar;
-- Events;
-- Trips;
-- Documents;
-- Notifications;
-- Payments, если finance permissions/relationship policy разрешает доступ.
+- contextual section «Мои дети»;
+- далее — доступные в общем navigation catalog разделы и role/permission-controlled actions.
 
-Для нескольких детей должен существовать child switcher без повторной авторизации.
+Для нескольких детей Home/Dashboard должен позволять увидеть доступных детей без повторной авторизации. Отдельный глобальный navigation item «Children» в текущей Navigation Architecture не используется.
+
+### 5.5 Guardian — «Мои дети»
+
+«Мои дети» — контекстная секция Guardian Home/Dashboard, а не самостоятельный глобальный раздел.
+
+Canonical data source:
+`GET /api/v1/me/children`.
+
+Frontend:
+- не передаёт guardian_id или person_id для определения владельца списка;
+- использует только детей, возвращённых backend;
+- не расширяет canonical projection дополнительными полями;
+- не вводит отдельный child-management route;
+- не использует ProfileMenu как entry point для этого контекста;
+- не вводит новые permissions/scopes.
+
+Backend остаётся единственным источником истины для authorization. Наличие child_id в UI не является доказательством доступа к данным ребёнка.
+
+> Исторические формулировки Guardian navigation с отдельным пунктом «Children» считаются superseded закрытой Navigation Architecture и не должны использоваться как основание для добавления нового пункта навигации.
 
 ---
 
@@ -254,6 +270,20 @@ Dashboard адаптируется по роли.
 - achievements;
 - expiring own documents;
 - unread notifications.
+
+### Guardian Home — contextual «Мои дети»
+
+Guardian Home/Dashboard includes a contextual «Мои дети» section.
+
+The section:
+- consumes `GET /api/v1/me/children`;
+- displays only the canonical child projection returned by the backend;
+- supports zero, one or multiple current children;
+- has loading, empty and error states;
+- does not expose contacts or other fields that are absent from the canonical projection;
+- does not create a new global navigation item or standalone route.
+
+Any richer child-specific context (events, attendance, documents, payments, etc.) must use separately authorized canonical APIs and is outside the scope of this entry-point decision.
 
 ### Guardian widgets
 
