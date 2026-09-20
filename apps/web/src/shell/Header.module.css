@@ -1,3 +1,16 @@
+/*
+ * TH-0109: this used to also set `overflow: hidden`, which clipped
+ * ProfileMenu's dropdown (an absolutely positioned descendant that
+ * extends below the header's own height) — no z-index can escape a
+ * clipping ancestor's `overflow: hidden`. It's safe to drop here:
+ * HeaderScene's own `.scene` already self-clips its oversized artwork via
+ * its own `overflow: hidden` (HeaderScene.module.css), so this box never
+ * relied on clipping its children for that. `isolation: isolate` is kept
+ * — it only scopes z-index comparisons between HeaderScene/.start/.profile
+ * to inside this box, and (being a positioned element) still makes the
+ * whole header, dropdown included, paint above the in-flow `<main>`
+ * content below it without needing an inflated z-index anywhere.
+ */
 .header {
   grid-area: header;
   position: relative;
@@ -9,7 +22,6 @@
   padding: 0 var(--space-5);
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
-  overflow: hidden;
   isolation: isolate;
 }
 

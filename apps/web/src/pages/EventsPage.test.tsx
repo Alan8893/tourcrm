@@ -909,6 +909,117 @@ describe("EventsPage — create / edit", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Новое событие" })).not.toBeInTheDocument());
   });
 
+  it("publishes the newly created draft so it appears in the calendar, without a full page reload (TH-0109)", async () => {
+    const range = fixedRange();
+    const reloadSpy = vi.fn();
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, reload: reloadSpy },
+      writable: true,
+    });
+    let calendarCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/auth/me")) return jsonResponse(meResponse());
+      if (url.includes("/groups?status=active")) return jsonResponse(groupsResponse());
+      if (url.includes("/events/new-event/status") && method === "POST") {
+        return jsonResponse(
+          eventDetailResponse({ id: "new-event", title: "Утренняя тренировка", status: "published" }),
+        );
+      }
+      if (url.endsWith("/events") && method === "POST") {
+        return jsonResponse(
+          eventDetailResponse({ id: "new-event", title: "Утренняя тренировка", status: "draft" }),
+        );
+      }
+      if (url.includes(encodeURIComponent(range.from))) {
+        calendarCalls += 1;
+        if (calendarCalls === 1) return jsonResponse(calendarResponse([]));
+        return jsonResponse(
+          calendarResponse([
+            calendarItem({
+              id: "new-event",
+              title: "Утренняя тренировка",
+              start_at: "2026-03-15T17:00:00+03:00",
+              end_at: "2026-03-15T18:00:00+03:00",
+            }),
+          ]),
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Создать событие" }));
+    await user.type(screen.getByLabelText("Название"), "Утренняя тренировка");
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    // The dialog only closes/toasts on the mutation's own onSuccess, which
+    // now only fires after the publish step also succeeds.
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Новое событие" })).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByText("Событие создано")).toBeInTheDocument();
+
+    // The calendar range was refetched (not just cached) and now includes
+    // the newly published event — proving invalidation actually ran.
+    expect(await screen.findByText("Утренняя тренировка")).toBeInTheDocument();
+    expect(calendarCalls).toBeGreaterThanOrEqual(2);
+    expect(
+      fetchMock.mock.calls.some(
+        ([reqInput, reqInit]) =>
+          String(reqInput).includes("/events/new-event/status") &&
+          (reqInit as RequestInit)?.method === "POST" &&
+          JSON.parse(String((reqInit as RequestInit).body)).status === "published",
+      ),
+    ).toBe(true);
+    expect(reloadSpy).not.toHaveBeenCalled();
+  });
+
+  it("shows an error and keeps the dialog open when publishing the created event fails (TH-0109)", async () => {
+    const range = fixedRange();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/auth/me")) return jsonResponse(meResponse());
+      if (url.includes("/groups?status=active")) return jsonResponse(groupsResponse());
+      if (url.includes(encodeURIComponent(range.from))) return jsonResponse(calendarResponse([]));
+      if (url.includes("/events/new-event/status") && method === "POST") {
+        return jsonResponse(
+          {
+            error: {
+              code: "internal_error",
+              message: "Не удалось опубликовать событие",
+              details: {},
+              request_id: "r1",
+            },
+          },
+          500,
+        );
+      }
+      if (url.endsWith("/events") && method === "POST") {
+        return jsonResponse(eventDetailResponse({ id: "new-event", status: "draft" }));
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Создать событие" }));
+    await user.type(screen.getByLabelText("Название"), "Утренняя тренировка");
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    expect(await screen.findByText("Не удалось опубликовать событие")).toBeInTheDocument();
+    // No false success — the dialog must not close/toast on a failed publish.
+    expect(screen.getByRole("dialog", { name: "Новое событие" })).toBeInTheDocument();
+    expect(screen.queryByText("Событие создано")).not.toBeInTheDocument();
+  });
+
   it("edits an existing event through PATCH /events/{id}", async () => {
     const range = fixedRange();
     const fetchMock = stubFetch([
