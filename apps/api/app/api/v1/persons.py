@@ -56,13 +56,16 @@ from app.api.v1.guardian_relationships_schemas import (
 )
 from app.api.v1.memberships_schemas import MembershipOut
 from app.api.v1.persons_schemas import PersonCreateRequest, PersonOut, PersonUpdateRequest
-from app.authorization.context import ResourceContext
 from app.authorization.service import AuthorizationDenied, Authorizer
 from app.db.identity import Person
 from app.db.session import get_db
 from app.people import guardian_service
 from app.people import service as people_service
-from app.people.authorization import is_person_visible, is_system_admin_person_update_grant
+from app.people.authorization import (
+    has_person_create_assignment,
+    is_person_visible,
+    is_system_admin_person_update_grant,
+)
 from app.people.guardian_authorization import build_guardian_relationship_create_context
 from app.people.guardian_lifecycle import (
     DuplicateActiveGuardianRelationshipError,
@@ -185,13 +188,18 @@ def create_person(
     db: Session = Depends(get_db),
     _csrf: None = Depends(require_csrf_token),
 ) -> PersonOut:
-    # Person is Club-neutral (ADR-0017): no club_id to check ownership
-    # against, so only a global `all`-scope assignment can create a
-    # Person — see app.people.authorization module docstring. ADR-0035 §2
-    # introduces `person.create` as its own canonical permission, distinct
-    # from `person.update`; only `admin` holds it in the current MVP.
-    authorizer = Authorizer(session=db, user_id=principal.user_id, permission_code="person.create")
-    authorizer.check(ResourceContext())
+    # Person is Club-neutral (ADR-0017) and a not-yet-created Person has no
+    # target Club to check a club-scoped assignment's boundary against —
+    # the generic Authorizer/club_boundary_matches engine would incorrectly
+    # deny a club-scoped `all`-scope assignment here (e.g. the bootstrap-
+    # created primary administrator). See
+    # app.people.authorization.has_person_create_assignment (TH-0106 /
+    # Issue #131) for the narrow, documented exception this uses instead.
+    # ADR-0035 §2 introduces `person.create` as its own canonical
+    # permission, distinct from `person.update`; only `admin` holds it in
+    # the current MVP.
+    if not has_person_create_assignment(db, principal.user_id):
+        raise AuthorizationDenied("person.create")
 
     person = people_service.create_person(
         db,
