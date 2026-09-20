@@ -335,34 +335,6 @@ ClubMembership.membership_type is not a system role selector. For the current Pe
 
 See ADR-0039.
 
-### 13.1 Person role management — ADR-0039
-
-System roles are managed from Person Detail through the canonical RoleAssignment model/API.
-
-The initial Person creation form does not ask for a system role. Person creation and initial ClubMembership creation remain separate from role assignment.
-
-Canonical MVP roles:
-- admin;
-- instructor;
-- member;
-- guardian.
-
-One Person/User may have multiple active roles simultaneously.
-
-Role assignment/removal does not mutate Person, ClubMembership, membership status, or membership_type.
-
-Role-specific relationship rules:
-- instructor does not automatically assign GroupInstructorAssignment;
-- instructor does not automatically become responsible for Events;
-- guardian does not automatically create GuardianRelationship;
-- after assigning guardian, the Person Detail workflow should allow an admin to link one or more children through GuardianRelationship;
-- member requires no additional role-specific relationship setup;
-- admin grants the existing admin role permissions and does not change Person or ClubMembership.
-
-ClubMembership.membership_type is not a system role selector. For the current Person creation workflow, the initial membership remains fixed as member/active.
-
-See ADR-0039.
-
 ## 14. Participation and self-registration
 
 `EventParticipation` является отдельной сущностью и не создаётся автоматически
