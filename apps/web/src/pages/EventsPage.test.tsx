@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { EventsPage } from "./EventsPage";
 import styles from "./EventsPage.module.css";
-import { renderWithProviders, stubFetch } from "../test/renderWithProviders";
+import { renderWithProviders, renderWithHistory, stubFetch } from "../test/renderWithProviders";
 import { formatDateParam, monthLabel, monthRange } from "../domain/calendarDate";
 
 function meResponse(overrides: Partial<{ userId: string; roleCode: string }> = {}) {
@@ -298,6 +298,77 @@ describe("EventsPage — filters", () => {
       expect(lastCalendarCall).toBeDefined();
       expect(lastCalendarCall).not.toContain("group_id");
     });
+  });
+});
+
+describe("EventsPage — browser history (ADR-0036 Back/Forward)", () => {
+  it("pushes a history entry per month navigation, and Back/Forward restores the exact previous/next state", async () => {
+    const range = fixedRange();
+    const nextRange = monthRange(new Date(2026, 3, 15));
+    stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      { match: `from=${encodeURIComponent(range.from)}`, response: calendarResponse([]) },
+      { match: `from=${encodeURIComponent(nextRange.from)}`, response: calendarResponse([]) },
+    ]);
+
+    const { router } = renderWithHistory(<EventsPage />, {
+      initialEntries: [`/events?date=${FIXED_DATE}`],
+    });
+
+    await screen.findByText("Март 2026");
+    expect(router.state.location.search).toContain(`date=${FIXED_DATE}`);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Следующий месяц" }));
+    await screen.findByText("Апрель 2026");
+    expect(router.state.location.search).toContain(`date=2026-04-15`);
+
+    // Back restores the exact previous state (not a skip or a reset).
+    await act(async () => { await router.navigate(-1); });
+    expect(await screen.findByText("Март 2026")).toBeInTheDocument();
+    expect(router.state.location.search).toContain(`date=${FIXED_DATE}`);
+
+    // Forward restores the exact next state — proving the month change was
+    // pushed as a real, distinct entry rather than replacing the current
+    // one (a replaced entry would leave nothing for Forward to reach).
+    await act(async () => { await router.navigate(1); });
+    expect(await screen.findByText("Апрель 2026")).toBeInTheDocument();
+    expect(router.state.location.search).toContain(`date=2026-04-15`);
+  });
+
+  it("pushes a history entry per filter change and per Reset, restorable via Back", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse([{ id: "g1", name: "Орлы" }]) },
+      { match: "/events/calendar", response: calendarResponse([]) },
+    ]);
+
+    const { router } = renderWithHistory(<EventsPage />, {
+      initialEntries: [`/events?date=${FIXED_DATE}`],
+    });
+
+    await screen.findByRole("option", { name: "Орлы" });
+    expect(router.state.location.search).not.toContain("group_id");
+
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByLabelText("Группа"), "g1");
+    await waitFor(() => expect(screen.getByLabelText("Группа")).toHaveValue("g1"));
+    expect(router.state.location.search).toContain("group_id=g1");
+
+    await user.click(screen.getByRole("button", { name: "Сбросить" }));
+    await waitFor(() => expect(screen.getByLabelText("Группа")).toHaveValue(""));
+    expect(router.state.location.search).not.toContain("group_id");
+
+    // Back must undo the Reset first (restoring the filter) — Reset is its
+    // own history entry, not folded into the filter-change entry.
+    await act(async () => { await router.navigate(-1); });
+    await waitFor(() => expect(screen.getByLabelText("Группа")).toHaveValue("g1"));
+    expect(router.state.location.search).toContain("group_id=g1");
+
+    await act(async () => { await router.navigate(-1); });
+    await waitFor(() => expect(screen.getByLabelText("Группа")).toHaveValue(""));
+    expect(router.state.location.search).not.toContain("group_id");
   });
 });
 

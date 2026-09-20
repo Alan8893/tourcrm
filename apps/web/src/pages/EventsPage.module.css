@@ -16,6 +16,16 @@
   cursor: pointer;
 }
 
+/* Makes the ADR-0036 Instructor/user filter contract gap visible in the
+   running app, not just in code comments/PR text — see the comment above
+   .mineToggle's usage in EventsPage.tsx. */
+.filterGapNote {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
 /* --- Desktop / tablet composition --------------------------------- */
 
 .desktopLayout {

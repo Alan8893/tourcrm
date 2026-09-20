@@ -98,43 +98,42 @@ function useCalendarUrlState() {
     [searchParams],
   );
 
+  // Every one of these pushes a new history entry (react-router's default
+  // `setSearchParams` navigation — `replace` is never passed) rather than
+  // replacing the current one. ADR-0036 / TH-0105 requires that browser
+  // Back/Forward step through calendar state (date, month, filters,
+  // Reset), not just refresh/bookmark/share — `{ replace: true }` would
+  // make every navigation invisible to history and break Back/Forward,
+  // so it must not be used here.
+
   function selectDate(date: Date) {
-    setSearchParams(
-      (previous) => {
-        const next = new URLSearchParams(previous);
-        next.set("date", formatDateParam(date));
-        return next;
-      },
-      { replace: true },
-    );
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      next.set("date", formatDateParam(date));
+      return next;
+    });
   }
 
   function setFilter(key: keyof CalendarFiltersState, value: string | boolean) {
-    setSearchParams(
-      (previous) => {
-        const next = new URLSearchParams(previous);
-        if (!value || value === "") {
-          next.delete(key);
-        } else {
-          next.set(key, value === true ? "1" : String(value));
-        }
-        return next;
-      },
-      { replace: true },
-    );
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      if (!value || value === "") {
+        next.delete(key);
+      } else {
+        next.set(key, value === true ? "1" : String(value));
+      }
+      return next;
+    });
   }
 
   function resetFilters() {
-    setSearchParams(
-      (previous) => {
-        const next = new URLSearchParams(previous);
-        (Object.keys(EMPTY_FILTERS) as Array<keyof CalendarFiltersState>).forEach((key) =>
-          next.delete(key),
-        );
-        return next;
-      },
-      { replace: true },
-    );
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      (Object.keys(EMPTY_FILTERS) as Array<keyof CalendarFiltersState>).forEach((key) =>
+        next.delete(key),
+      );
+      return next;
+    });
   }
 
   return { selectedDate, filters, selectDate, setFilter, resetFilters };
@@ -341,6 +340,23 @@ function FiltersToolbar({
         options={STATUS_FILTER_OPTIONS}
         onChange={(value) => onChange("status", value)}
       />
+      {/*
+       * NOT the ADR-0036 "Instructor/user" filter — that filter requires
+       * browsing/searching the club's instructors, which needs a way to
+       * list/search Users. No such canonical endpoint exists: `GET /users`
+       * is documented in endpoint-inventory.md §2 but is not implemented
+       * anywhere in apps/api (confirmed by reading app/api/v1/*.py — there
+       * is no users.py route module at all). Building one is out of scope
+       * for a frontend-only change and is not invented here.
+       *
+       * This checkbox is a narrower, separately useful control: it
+       * self-scopes the existing `/events/calendar?user_id=` param to the
+       * signed-in user (already known from `/auth/me`), which is real,
+       * canonical, working functionality — but it answers "show only my
+       * events", not "let me pick which instructor's events to show". The
+       * accepted Instructor/user filter itself remains an open contract
+       * gap pending a PO decision (see PR description).
+       */}
       <label className={styles.mineToggle}>
         <input
           type="checkbox"
@@ -349,6 +365,9 @@ function FiltersToolbar({
         />
         Только мои события
       </label>
+      <p className={styles.filterGapNote}>
+        Фильтр по инструктору недоступен: в API нет справочника пользователей.
+      </p>
       <Button variant="secondary" onClick={onReset} disabled={!filtersActive}>
         Сбросить
       </Button>
