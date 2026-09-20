@@ -93,21 +93,28 @@ def test_admin_role_permission_count_matches_canonical_catalog_exactly() -> None
 
 
 # --- (6) no instructor/member/guardian grants are introduced ---------------
+#
+# TH-0107 (migration 95487f3b616b, after this one in the chain) is the one
+# deliberate exception: `instructor` receives exactly one grant,
+# `user.directory.read`, via its own migration/PO decision — see that
+# migration's docstring and app.users.authorization. `member`/`guardian`
+# still receive nothing, and `instructor` receives nothing beyond that one
+# permission, at head.
 
 
 @requires_postgres
-def test_non_admin_baseline_roles_receive_no_grants_from_this_migration() -> None:
+def test_non_admin_baseline_roles_receive_no_unexpected_grants() -> None:
     with session_scope() as session:
-        rows = (
+        rows = set(
             session.execute(
-                select(Role.code)
-                .join(RolePermission, RolePermission.role_id == Role.id)
+                select(Role.code, Permission.code)
+                .select_from(RolePermission)
+                .join(Role, Role.id == RolePermission.role_id)
+                .join(Permission, Permission.id == RolePermission.permission_id)
                 .where(Role.code != "admin")
-            )
-            .scalars()
-            .all()
+            ).all()
         )
-        assert rows == []
+        assert rows == {("instructor", "user.directory.read")}
 
 
 # --- (2)/(4) partial-state convergence + unrelated rows survive ------------
@@ -172,7 +179,10 @@ def test_reapplying_admin_seed_after_downgrade_and_upgrade_is_idempotent(
     assert _admin_permission_codes() == set(DOCUMENTED_PERMISSION_CODES)
     with session_scope() as session:
         rows = session.execute(select(RolePermission)).scalars().all()
-        assert len(rows) == len(DOCUMENTED_PERMISSION_CODES)
+        # admin's full canonical set, plus TH-0107's one additional
+        # (instructor, user.directory.read) grant (migration 95487f3b616b,
+        # re-applied by the same upgrade-to-head above).
+        assert len(rows) == len(DOCUMENTED_PERMISSION_CODES) + 1
 
 
 # --- (5) downgrade removes only rows this migration introduced -------------

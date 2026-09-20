@@ -27,8 +27,11 @@ _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
 # `components/schemas` and so was never caught by this check even before
 # this change) is exactly such a case. `User` itself is not a fictitious
 # domain this guard was ever meant to catch — it has existed since
-# Issue #19's identity foundation, and no standalone `/api/v1/users` CRUD
-# endpoint exists or is added here.
+# Issue #19's identity foundation. TH-0107 adds one read-only directory
+# endpoint, `GET /users` (see _USER_PATHS below) — not the full admin User
+# Management API endpoint-inventory.md §2 documents; the rest of that
+# section (`GET/PATCH /users/{id}`, `POST /users`, block/disable/activate/
+# archive, sessions) remains unimplemented.
 
 
 def test_openapi_schema_is_served(real_client) -> None:
@@ -108,6 +111,10 @@ _GROUP_PATHS = {
 # `/api/v1/groups/{group_id}/members/{person_id}/transfer` — both are
 # deliberately not implemented (people-api.md §15.3-15.4, Issue #71 §3).
 
+_USER_PATHS = {
+    "/api/v1/users",
+}
+
 _ROLE_ASSIGNMENT_PATHS = {
     "/api/v1/role-assignments",
     "/api/v1/role-assignments/{assignment_id}/revoke",
@@ -141,9 +148,9 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
     # slice (Issue #40), the Person/ClubMembership API (Issue #62), the
     # GuardianRelationship API (Issue #64), the Group/GroupMembership/
     # GroupInstructorAssignment API (Issue #71), the RoleAssignment API
-    # (Issue #74), and the Event recurrence API (Issue #79) are the only
-    # domain endpoints so far — no Trip/etc. CRUD endpoints have been
-    # added under /api/v1.
+    # (Issue #74), the Event recurrence API (Issue #79), and the read-only
+    # User directory (TH-0107) are the only domain endpoints so far — no
+    # Trip/etc. CRUD endpoints have been added under /api/v1.
     assert (
         set(schema["paths"].keys())
         == {"/health/live", "/health/ready"}
@@ -154,6 +161,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _GUARDIAN_RELATIONSHIP_PATHS
         | _ME_PATHS
         | _GROUP_PATHS
+        | _USER_PATHS
         | _ROLE_ASSIGNMENT_PATHS
         | _EVENT_RECURRENCE_PATHS
     )

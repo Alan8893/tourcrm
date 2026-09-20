@@ -38,6 +38,12 @@
 - `GET /users/{id}/sessions`
 - `POST /users/{id}/sessions/revoke`
 
+Только `GET /users` реализован (TH-0107) — как безопасный операционный справочник пользователей
+(например, для выбора инструктора в фильтре Calendar), не как полноценный admin User Management
+API. См. `docs/05-api/users-api.md` для полного контракта: permission/scope, query-параметры,
+club boundary, response projection. Остальные endpoints этого раздела (`GET /users/{id}`,
+`POST/PATCH /users`, block/disable/activate/archive, sessions) не реализованы в текущем MVP.
+
 ## 3. Persons
 
 People Management endpoints are governed by ADR-0035 and `docs/05-api/people-api.md`.

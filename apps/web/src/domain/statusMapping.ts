@@ -75,6 +75,53 @@ export function eventStatusLabel(status: EventStatus): string {
   }
 }
 
+/** app.events.vocabulary.CANONICAL_EVENT_TYPES (events-and-schedule.md §3) —
+ * the closed, backend-validated event_type vocabulary. Calendar create/edit
+ * forms and filters must only offer these values. */
+export type EventType =
+  | "lesson"
+  | "training"
+  | "trip"
+  | "competition"
+  | "tour_slet"
+  | "excursion"
+  | "meeting"
+  | "other";
+
+export const CANONICAL_EVENT_TYPES: readonly EventType[] = [
+  "lesson",
+  "training",
+  "trip",
+  "competition",
+  "tour_slet",
+  "excursion",
+  "meeting",
+  "other",
+];
+
+export function eventTypeLabel(eventType: string): string {
+  switch (eventType as EventType) {
+    case "lesson":
+      return "Занятие";
+    case "training":
+      return "Тренировка";
+    case "trip":
+      return "Поход";
+    case "competition":
+      return "Соревнование";
+    case "tour_slet":
+      return "Слёт";
+    case "excursion":
+      return "Экскурсия";
+    case "meeting":
+      return "Собрание";
+    case "other":
+      return "Другое";
+    default:
+      return eventType;
+  }
+}
+
 /** business-rules.md §4: ClubMembership's status vocabulary. */
 export type MembershipStatus = "pending" | "active" | "suspended" | "inactive" | "archived";
 
