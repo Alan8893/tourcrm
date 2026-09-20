@@ -389,3 +389,47 @@
   flex-direction: column;
   gap: var(--space-3);
 }
+
+/* --- Targeting (TH-0108): Group / instructor multi-select -------------- */
+
+.targetingField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.targetingLabel {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.pickerItemRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.chipList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.chipRemovable {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+
+.chipRemoveButton {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: var(--color-text-secondary);
+  padding: 0;
+}

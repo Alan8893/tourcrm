@@ -1100,6 +1100,643 @@ def test_update_event_ignores_status_field_in_body(client: TestClient) -> None:
     assert response.json()["status"] == "draft"
 
 
+# --- targeting (TH-0108 / ADR-0037 §1-§2) ------------------------------------
+
+
+def _create_event_payload(club_id: uuid.UUID, **overrides: object) -> dict:
+    payload = {
+        "club_id": str(club_id),
+        "event_type": "lesson",
+        "title": "Orienteering",
+        "start_at": "2026-09-20T17:00:00+03:00",
+        "end_at": "2026-09-20T19:00:00+03:00",
+        "timezone": "Europe/Moscow",
+    }
+    payload.update(overrides)
+    return payload
+
+
+@requires_postgres
+def test_create_event_with_no_groups_is_club_wide(client: TestClient) -> None:
+    """Test 1: an Event created without `group_ids` is club-wide — no
+    EventGroupTarget row is created, and the response reflects this."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        club_id, user_id = club.id, user.id
+    _grant_permission(user_id, "event.create", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        "/api/v1/events", json=_create_event_payload(club_id), headers=_csrf_headers(client)
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["group_ids"] == []
+    assert body["instructor_ids"] == []
+
+    with session_scope() as session:
+        targets = session.execute(
+            select(EventGroupTarget).where(EventGroupTarget.event_id == uuid.UUID(body["id"]))
+        ).scalars().all()
+        assert targets == []
+
+
+@requires_postgres
+def test_create_event_with_one_group_creates_target(client: TestClient) -> None:
+    """Test 2: an Event created with one `group_ids` entry creates
+    exactly one active EventGroupTarget for it."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        group = _make_group(club)
+        session.add(group)
+        session.commit()
+        club_id, user_id, group_id = club.id, user.id, group.id
+    _grant_permission(user_id, "event.create", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        "/api/v1/events",
+        json=_create_event_payload(club_id, group_ids=[str(group_id)]),
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["group_ids"] == [str(group_id)]
+
+    with session_scope() as session:
+        targets = session.execute(
+            select(EventGroupTarget).where(EventGroupTarget.event_id == uuid.UUID(body["id"]))
+        ).scalars().all()
+        assert len(targets) == 1
+        assert targets[0].group_id == group_id
+        assert targets[0].valid_to is None
+
+
+@requires_postgres
+def test_create_event_with_multiple_groups_creates_all_targets(client: TestClient) -> None:
+    """Test 3: an Event created with several `group_ids` targets all of
+    them."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        group_a = _make_group(club)
+        group_b = _make_group(club)
+        session.add_all([group_a, group_b])
+        session.commit()
+        club_id, user_id = club.id, user.id
+        group_ids = {group_a.id, group_b.id}
+    _grant_permission(user_id, "event.create", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        "/api/v1/events",
+        json=_create_event_payload(club_id, group_ids=[str(gid) for gid in group_ids]),
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert set(uuid.UUID(gid) for gid in body["group_ids"]) == group_ids
+
+    with session_scope() as session:
+        targets = session.execute(
+            select(EventGroupTarget).where(EventGroupTarget.event_id == uuid.UUID(body["id"]))
+        ).scalars().all()
+        assert {t.group_id for t in targets} == group_ids
+
+
+@requires_postgres
+def test_create_event_with_cross_club_group_is_rejected(client: TestClient) -> None:
+    """Test 4: a Group belonging to a different Club than the Event is
+    rejected — backend-enforced, not a frontend-only validation."""
+    with session_scope() as session:
+        club = _make_club()
+        other_club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, other_club, person, user])
+        session.commit()
+        foreign_group = _make_group(other_club)
+        session.add(foreign_group)
+        session.commit()
+        club_id, user_id, foreign_group_id = club.id, user.id, foreign_group.id
+    _grant_permission(user_id, "event.create", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        "/api/v1/events",
+        json=_create_event_payload(
+            club_id, title="Cross-club attempt", group_ids=[str(foreign_group_id)]
+        ),
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "group_club_mismatch"
+
+
+@requires_postgres
+def test_create_event_with_instructor_assignment_succeeds(client: TestClient) -> None:
+    """Tests 5 & 7: a User with active ClubMembership in the Event's
+    Club can be assigned as a responsible instructor via `instructor_ids`
+    — creating exactly one active EventStaffAssignment."""
+    with session_scope() as session:
+        club = _make_club()
+        creator_person = _make_person()
+        creator = _make_user(creator_person)
+        instructor_person = _make_person()
+        instructor = _make_user(instructor_person)
+        session.add_all([club, creator_person, creator, instructor_person, instructor])
+        session.commit()
+        session.add(_make_club_membership(club, instructor_person))
+        session.commit()
+        club_id, creator_id, instructor_id = club.id, creator.id, instructor.id
+    _grant_permission(creator_id, "event.create", scope_type="all")
+    _authenticate_as(creator_id)
+
+    response = client.post(
+        "/api/v1/events",
+        json=_create_event_payload(club_id, instructor_ids=[str(instructor_id)]),
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["instructor_ids"] == [str(instructor_id)]
+
+    with session_scope() as session:
+        assignments = session.execute(
+            select(EventStaffAssignment).where(
+                EventStaffAssignment.event_id == uuid.UUID(body["id"])
+            )
+        ).scalars().all()
+        assert len(assignments) == 1
+        assert assignments[0].user_id == instructor_id
+        assert assignments[0].role_in_event == "instructor"
+        assert assignments[0].is_primary is False
+
+
+@requires_postgres
+def test_create_event_with_instructor_without_active_membership_is_rejected(
+    client: TestClient,
+) -> None:
+    """Test 6: a User with no ClubMembership at all in the Event's Club
+    cannot be assigned."""
+    with session_scope() as session:
+        club = _make_club()
+        creator_person = _make_person()
+        creator = _make_user(creator_person)
+        instructor_person = _make_person()
+        instructor = _make_user(instructor_person)
+        session.add_all([club, creator_person, creator, instructor_person, instructor])
+        session.commit()
+        club_id, creator_id, instructor_id = club.id, creator.id, instructor.id
+    _grant_permission(creator_id, "event.create", scope_type="all")
+    _authenticate_as(creator_id)
+
+    response = client.post(
+        "/api/v1/events",
+        json=_create_event_payload(club_id, instructor_ids=[str(instructor_id)]),
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "instructor_club_membership_missing"
+
+
+@requires_postgres
+def test_create_event_with_instructor_from_another_club_is_rejected(client: TestClient) -> None:
+    """Test 8: a User whose only active ClubMembership is in a different
+    Club cannot be assigned — cross-Club assignment stays forbidden."""
+    with session_scope() as session:
+        club = _make_club()
+        other_club = _make_club()
+        creator_person = _make_person()
+        creator = _make_user(creator_person)
+        instructor_person = _make_person()
+        instructor = _make_user(instructor_person)
+        session.add_all(
+            [club, other_club, creator_person, creator, instructor_person, instructor]
+        )
+        session.commit()
+        session.add(_make_club_membership(other_club, instructor_person))
+        session.commit()
+        club_id, creator_id, instructor_id = club.id, creator.id, instructor.id
+    _grant_permission(creator_id, "event.create", scope_type="all")
+    _authenticate_as(creator_id)
+
+    response = client.post(
+        "/api/v1/events",
+        json=_create_event_payload(club_id, instructor_ids=[str(instructor_id)]),
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "instructor_club_membership_missing"
+
+
+@requires_postgres
+def test_group_targeting_does_not_create_participation(client: TestClient) -> None:
+    """Test 9: targeting a Group is audience selection only — it never
+    creates EventParticipation, even for members of that Group."""
+    with session_scope() as session:
+        club = _make_club()
+        creator_person = _make_person()
+        creator = _make_user(creator_person)
+        member_person = _make_person()
+        session.add_all([club, creator_person, creator, member_person])
+        session.commit()
+        group = _make_group(club)
+        session.add(group)
+        session.commit()
+        club_membership = _make_club_membership(club, member_person)
+        session.add(club_membership)
+        session.commit()
+        session.add(_make_group_membership(group, club_membership))
+        session.commit()
+        club_id, creator_id, group_id = club.id, creator.id, group.id
+    _grant_permission(creator_id, "event.create", scope_type="all")
+    _authenticate_as(creator_id)
+
+    response = client.post(
+        "/api/v1/events",
+        json=_create_event_payload(club_id, group_ids=[str(group_id)]),
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 201, response.text
+
+    with session_scope() as session:
+        participations = session.execute(
+            select(EventParticipation).where(
+                EventParticipation.event_id == uuid.UUID(response.json()["id"])
+            )
+        ).scalars().all()
+        assert participations == []
+
+
+@requires_postgres
+def test_instructor_assignment_does_not_create_group_membership(client: TestClient) -> None:
+    """Test 10: assigning a responsible instructor never creates
+    GroupInstructorAssignment or GroupMembership — an instructor may be
+    responsible for an Event without being a Group instructor."""
+    with session_scope() as session:
+        club = _make_club()
+        creator_person = _make_person()
+        creator = _make_user(creator_person)
+        instructor_person = _make_person()
+        instructor = _make_user(instructor_person)
+        session.add_all([club, creator_person, creator, instructor_person, instructor])
+        session.commit()
+        session.add(_make_club_membership(club, instructor_person))
+        session.commit()
+        club_id, creator_id, instructor_id = club.id, creator.id, instructor.id
+    _grant_permission(creator_id, "event.create", scope_type="all")
+    _authenticate_as(creator_id)
+
+    response = client.post(
+        "/api/v1/events",
+        json=_create_event_payload(club_id, instructor_ids=[str(instructor_id)]),
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 201, response.text
+
+    with session_scope() as session:
+        instructor_assignments = session.execute(
+            select(GroupInstructorAssignment).where(
+                GroupInstructorAssignment.user_id == instructor_id
+            )
+        ).scalars().all()
+        assert instructor_assignments == []
+        group_memberships = session.execute(select(GroupMembership)).scalars().all()
+        assert group_memberships == []
+
+
+@requires_postgres
+def test_repeated_identical_update_does_not_duplicate_targeting(client: TestClient) -> None:
+    """Test 11: PATCHing the same `group_ids`/`instructor_ids` twice in a
+    row must not create a second active row for the same (event, group)
+    or (event, user) pair — the sync stays idempotent."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        instructor_person = _make_person()
+        instructor = _make_user(instructor_person)
+        session.add_all([club, person, user, instructor_person, instructor])
+        session.commit()
+        group = _make_group(club)
+        session.add(group)
+        session.commit()
+        session.add(_make_club_membership(club, instructor_person))
+        session.commit()
+        event = _make_event(club)
+        session.add(event)
+        session.flush()
+        session.add(_make_event_occurrence_for(event))
+        session.commit()
+        user_id, event_id, group_id, instructor_id = user.id, event.id, group.id, instructor.id
+    _grant_permission(user_id, "event.update", scope_type="all")
+    _authenticate_as(user_id)
+
+    payload = {"group_ids": [str(group_id)], "instructor_ids": [str(instructor_id)]}
+    first = client.patch(
+        f"/api/v1/events/{event_id}", json=payload, headers=_csrf_headers(client)
+    )
+    assert first.status_code == 200, first.text
+    second = client.patch(
+        f"/api/v1/events/{event_id}", json=payload, headers=_csrf_headers(client)
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["group_ids"] == [str(group_id)]
+    assert second.json()["instructor_ids"] == [str(instructor_id)]
+
+    with session_scope() as session:
+        targets = session.execute(
+            select(EventGroupTarget).where(EventGroupTarget.event_id == event_id)
+        ).scalars().all()
+        assert len(targets) == 1
+        assignments = session.execute(
+            select(EventStaffAssignment).where(EventStaffAssignment.event_id == event_id)
+        ).scalars().all()
+        assert len(assignments) == 1
+
+
+@requires_postgres
+def test_removing_a_group_ends_its_target(client: TestClient) -> None:
+    """Test 12: dropping a Group from `group_ids` on update ends
+    (`valid_to`) the corresponding EventGroupTarget — it is never
+    deleted, matching this codebase's historical-interval convention."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        group_a = _make_group(club)
+        group_b = _make_group(club)
+        session.add_all([group_a, group_b])
+        session.commit()
+        event = _make_event(club)
+        session.add(event)
+        session.flush()
+        session.add(_make_event_occurrence_for(event))
+        session.commit()
+        user_id, event_id = user.id, event.id
+        group_a_id, group_b_id = group_a.id, group_b.id
+    _grant_permission(user_id, "event.update", scope_type="all")
+    _authenticate_as(user_id)
+
+    setup = client.patch(
+        f"/api/v1/events/{event_id}",
+        json={"group_ids": [str(group_a_id), str(group_b_id)]},
+        headers=_csrf_headers(client),
+    )
+    assert setup.status_code == 200, setup.text
+
+    drop_b = client.patch(
+        f"/api/v1/events/{event_id}",
+        json={"group_ids": [str(group_a_id)]},
+        headers=_csrf_headers(client),
+    )
+    assert drop_b.status_code == 200, drop_b.text
+    assert drop_b.json()["group_ids"] == [str(group_a_id)]
+
+    with session_scope() as session:
+        target_b = session.execute(
+            select(EventGroupTarget).where(
+                EventGroupTarget.event_id == event_id, EventGroupTarget.group_id == group_b_id
+            )
+        ).scalar_one()
+        assert target_b.valid_to is not None
+        target_a = session.execute(
+            select(EventGroupTarget).where(
+                EventGroupTarget.event_id == event_id, EventGroupTarget.group_id == group_a_id
+            )
+        ).scalar_one()
+        assert target_a.valid_to is None
+
+
+@requires_postgres
+def test_removing_an_instructor_ends_its_assignment(client: TestClient) -> None:
+    """Test 13: dropping a User from `instructor_ids` on update ends the
+    corresponding EventStaffAssignment."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        instructor_person = _make_person()
+        instructor = _make_user(instructor_person)
+        session.add_all([club, person, user, instructor_person, instructor])
+        session.commit()
+        session.add(_make_club_membership(club, instructor_person))
+        session.commit()
+        event = _make_event(club)
+        session.add(event)
+        session.flush()
+        session.add(_make_event_occurrence_for(event))
+        session.commit()
+        user_id, event_id, instructor_id = user.id, event.id, instructor.id
+    _grant_permission(user_id, "event.update", scope_type="all")
+    _authenticate_as(user_id)
+
+    setup = client.patch(
+        f"/api/v1/events/{event_id}",
+        json={"instructor_ids": [str(instructor_id)]},
+        headers=_csrf_headers(client),
+    )
+    assert setup.status_code == 200, setup.text
+
+    drop = client.patch(
+        f"/api/v1/events/{event_id}",
+        json={"instructor_ids": []},
+        headers=_csrf_headers(client),
+    )
+    assert drop.status_code == 200, drop.text
+    assert drop.json()["instructor_ids"] == []
+
+    with session_scope() as session:
+        assignment = session.execute(
+            select(EventStaffAssignment).where(
+                EventStaffAssignment.event_id == event_id,
+                EventStaffAssignment.user_id == instructor_id,
+            )
+        ).scalar_one()
+        assert assignment.valid_to is not None
+
+
+@requires_postgres
+def test_create_event_rolls_back_entirely_on_group_target_failure(client: TestClient) -> None:
+    """Test 14 (create): if targeting fails (cross-Club Group), the
+    Event itself must not remain in the database either — no partially
+    created Event."""
+    with session_scope() as session:
+        club = _make_club()
+        other_club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, other_club, person, user])
+        session.commit()
+        foreign_group = _make_group(other_club)
+        session.add(foreign_group)
+        session.commit()
+        club_id, user_id, foreign_group_id = club.id, user.id, foreign_group.id
+    _grant_permission(user_id, "event.create", scope_type="all")
+    _authenticate_as(user_id)
+
+    unique_title = f"Atomicity check {uuid.uuid4().hex[:8]}"
+    response = client.post(
+        "/api/v1/events",
+        json=_create_event_payload(
+            club_id, title=unique_title, group_ids=[str(foreign_group_id)]
+        ),
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 422, response.text
+
+    with session_scope() as session:
+        orphaned = session.execute(
+            select(Event).where(Event.title == unique_title)
+        ).scalars().all()
+        assert orphaned == []
+
+
+@requires_postgres
+def test_update_event_rolls_back_field_changes_on_group_target_failure(
+    client: TestClient,
+) -> None:
+    """Test 14 (update): if a PATCH's targeting fails, its field changes
+    (title, here) must also roll back — the two are one transaction."""
+    with session_scope() as session:
+        club = _make_club()
+        other_club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, other_club, person, user])
+        session.commit()
+        foreign_group = _make_group(other_club)
+        session.add(foreign_group)
+        session.commit()
+        event = _make_event(club, title="Original title")
+        session.add(event)
+        session.flush()
+        session.add(_make_event_occurrence_for(event))
+        session.commit()
+        user_id, event_id, foreign_group_id = user.id, event.id, foreign_group.id
+    _grant_permission(user_id, "event.update", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.patch(
+        f"/api/v1/events/{event_id}",
+        json={"title": "Should not apply", "group_ids": [str(foreign_group_id)]},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 422, response.text
+
+    with session_scope() as session:
+        event = session.execute(select(Event).where(Event.id == event_id)).scalar_one()
+        assert event.title == "Original title"
+
+
+@requires_postgres
+def test_calendar_group_filter_sees_targeted_event(client: TestClient) -> None:
+    """Test 15: an Event created (and published) with a target Group is
+    found by Calendar's `group_id` filter, via the same EventGroupTarget
+    row this endpoint wrote."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        group = _make_group(club)
+        session.add(group)
+        session.commit()
+        club_id, user_id, group_id = club.id, user.id, group.id
+    _grant_permission(user_id, "event.create", scope_type="all")
+    _grant_permission(user_id, "event.update", scope_type="all")
+    _grant_permission(user_id, "event.read", scope_type="all")
+    _authenticate_as(user_id)
+
+    created = client.post(
+        "/api/v1/events",
+        json=_create_event_payload(club_id, group_ids=[str(group_id)]),
+        headers=_csrf_headers(client),
+    )
+    assert created.status_code == 201, created.text
+    event_id = created.json()["id"]
+    publish = client.post(
+        f"/api/v1/events/{event_id}/status",
+        json={"status": "published"},
+        headers=_csrf_headers(client),
+    )
+    assert publish.status_code == 200, publish.text
+
+    response = client.get(
+        "/api/v1/events/calendar",
+        params={
+            "from": "2026-09-01T00:00:00Z",
+            "to": "2026-10-01T00:00:00Z",
+            "group_id": str(group_id),
+        },
+    )
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()["items"]}
+    assert event_id in ids
+
+
+@requires_postgres
+def test_calendar_instructor_filter_sees_assigned_event(client: TestClient) -> None:
+    """Test 16: an Event created (and published) with a responsible
+    instructor is found by Calendar's `user_id` filter."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        instructor_person = _make_person()
+        instructor = _make_user(instructor_person)
+        session.add_all([club, person, user, instructor_person, instructor])
+        session.commit()
+        session.add(_make_club_membership(club, instructor_person))
+        session.commit()
+        club_id, user_id, instructor_id = club.id, user.id, instructor.id
+    _grant_permission(user_id, "event.create", scope_type="all")
+    _grant_permission(user_id, "event.update", scope_type="all")
+    _grant_permission(user_id, "event.read", scope_type="all")
+    _authenticate_as(user_id)
+
+    created = client.post(
+        "/api/v1/events",
+        json=_create_event_payload(club_id, instructor_ids=[str(instructor_id)]),
+        headers=_csrf_headers(client),
+    )
+    assert created.status_code == 201, created.text
+    event_id = created.json()["id"]
+    publish = client.post(
+        f"/api/v1/events/{event_id}/status",
+        json={"status": "published"},
+        headers=_csrf_headers(client),
+    )
+    assert publish.status_code == 200, publish.text
+
+    response = client.get(
+        "/api/v1/events/calendar",
+        params={
+            "from": "2026-09-01T00:00:00Z",
+            "to": "2026-10-01T00:00:00Z",
+            "user_id": str(instructor_id),
+        },
+    )
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()["items"]}
+    assert event_id in ids
+
+
 # --- lifecycle / status transitions ------------------------------------------
 
 

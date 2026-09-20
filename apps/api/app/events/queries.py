@@ -24,6 +24,7 @@ predicates in app.events.authorization are.
 
 import uuid
 from datetime import datetime
+from datetime import timezone as dt_timezone
 from typing import Optional
 
 import sqlalchemy as sa
@@ -125,4 +126,48 @@ def list_events_page(
     return list(rows), total
 
 
-__all__ = ["list_events_page", "InvalidSortError", "DEFAULT_SORT"]
+def get_event_targeting(
+    session: Session, *, event_id: uuid.UUID
+) -> tuple[list[uuid.UUID], list[uuid.UUID]]:
+    """TH-0108 / ADR-0037 §1-§2: the Event's *currently active*
+    (validity-interval sense) target Group ids and responsible-instructor
+    User ids, for `EventOut.group_ids`/`.instructor_ids` — so the
+    frontend can repopulate the edit form's selectors. Unlike this
+    module's own `group_id`/`instructor_id` *search* filters above
+    (which deliberately match any historical row), a response
+    projection must reflect the Event's present targeting only; an
+    ended (`valid_to` in the past) row is not currently part of it.
+    """
+    moment = datetime.now(dt_timezone.utc)
+    group_ids = (
+        session.execute(
+            sa.select(EventGroupTarget.group_id)
+            .where(
+                EventGroupTarget.event_id == event_id,
+                EventGroupTarget.valid_from <= moment,
+                sa.or_(EventGroupTarget.valid_to.is_(None), EventGroupTarget.valid_to > moment),
+            )
+            .order_by(EventGroupTarget.valid_from.asc())
+        )
+        .scalars()
+        .all()
+    )
+    instructor_ids = (
+        session.execute(
+            sa.select(EventStaffAssignment.user_id)
+            .where(
+                EventStaffAssignment.event_id == event_id,
+                EventStaffAssignment.valid_from <= moment,
+                sa.or_(
+                    EventStaffAssignment.valid_to.is_(None), EventStaffAssignment.valid_to > moment
+                ),
+            )
+            .order_by(EventStaffAssignment.valid_from.asc())
+        )
+        .scalars()
+        .all()
+    )
+    return list(group_ids), list(instructor_ids)
+
+
+__all__ = ["list_events_page", "InvalidSortError", "DEFAULT_SORT", "get_event_targeting"]

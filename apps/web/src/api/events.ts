@@ -144,6 +144,11 @@ export type EventDetail = {
   updated_by: string | null;
   created_at: string;
   updated_at: string;
+  /** TH-0108 / ADR-0037 §1-§2: currently active target Group ids and
+   * responsible-instructor User ids — bare UUIDs, joined locally against
+   * the already-loaded Group list / User Directory to display names. */
+  group_ids: string[];
+  instructor_ids: string[];
 };
 
 export function useEvent(eventId: string | undefined) {
@@ -167,6 +172,13 @@ export type EventFields = {
   location_address?: string;
   location_latitude?: number;
   location_longitude?: number;
+  /** TH-0108: 0 entries (or omitted) means club-wide; 1+ means this
+   * Event targets exactly those Groups/instructors. Sent as-is to
+   * `POST /events` — the backend resolves and validates everything
+   * (Club ownership, active ClubMembership); this hook does none of
+   * that itself. */
+  group_ids?: string[];
+  instructor_ids?: string[];
 };
 
 function invalidateCalendarAndEvent(queryClient: ReturnType<typeof useQueryClient>, eventId?: string) {

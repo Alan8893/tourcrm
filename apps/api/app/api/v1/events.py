@@ -99,8 +99,20 @@ from app.events.lifecycle import (
     validate_event_type,
     validate_time_range,
 )
-from app.events.queries import DEFAULT_SORT, InvalidSortError, list_events_page
+from app.events.queries import (
+    DEFAULT_SORT,
+    InvalidSortError,
+    get_event_targeting,
+    list_events_page,
+)
 from app.events.series_authorization import build_occurrence_resource_context
+from app.events.service import (
+    EventGroupNotFoundError,
+    EventGroupTargetError,
+    EventStaffAssignmentError,
+    EventStaffAssignmentPrimaryConflictError,
+    EventStaffUserNotFoundError,
+)
 
 logger = logging.getLogger("tourcrm.api")
 
@@ -120,7 +132,8 @@ _STATUS_TRANSITION_PERMISSIONS = {
 }
 
 
-def _event_out(event: Event) -> EventOut:
+def _event_out(db: Session, event: Event) -> EventOut:
+    group_ids, instructor_ids = get_event_targeting(db, event_id=event.id)
     return EventOut(
         id=event.id,
         club_id=event.club_id,
@@ -145,6 +158,8 @@ def _event_out(event: Event) -> EventOut:
         updated_by=event.updated_by,
         created_at=event.created_at,
         updated_at=event.updated_at,
+        group_ids=group_ids,
+        instructor_ids=instructor_ids,
     )
 
 
@@ -182,6 +197,36 @@ def _raise_for_domain_error(exc: EventDomainError) -> NoReturn:
     # InvalidEventTypeError, InvalidEventStatusError, InvalidTimeRangeError,
     # InvalidTimezoneError, InconsistentCoordinatesError all land here.
     raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_event_data", str(exc)) from exc
+
+
+def _raise_for_group_target_error(exc: EventGroupTargetError) -> NoReturn:
+    """TH-0108 / ADR-0037 §1: dispatches app.events.service's
+    EventGroupTarget validation failures (raised by
+    create_event_with_targeting/update_event_with_targeting) onto the
+    canonical 422 error envelope — never a bare 500."""
+    if isinstance(exc, EventGroupNotFoundError):
+        raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_group_id", str(exc)) from exc
+    # EventGroupTargetClubMismatchError
+    raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "group_club_mismatch", str(exc)) from exc
+
+
+def _raise_for_staff_assignment_error(exc: EventStaffAssignmentError) -> NoReturn:
+    """TH-0108 / ADR-0037 §2: dispatches app.events.service's
+    EventStaffAssignment validation failures the same way — see
+    `_raise_for_group_target_error`."""
+    if isinstance(exc, EventStaffUserNotFoundError):
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_instructor_id", str(exc)
+        ) from exc
+    if isinstance(exc, EventStaffAssignmentPrimaryConflictError):
+        # Unreachable in practice today (this API never sets
+        # is_primary=True), kept for completeness against the full
+        # EventStaffAssignmentError hierarchy.
+        raise APIError(status.HTTP_409_CONFLICT, "primary_conflict", str(exc)) from exc
+    # EventStaffClubMembershipMissingError
+    raise APIError(
+        status.HTTP_422_UNPROCESSABLE_ENTITY, "instructor_club_membership_missing", str(exc)
+    ) from exc
 
 
 @router.get("", response_model=CollectionResponse[EventOut])
@@ -224,7 +269,7 @@ def list_events(
 
     pages = (total + page_size - 1) // page_size if total else 0
     return CollectionResponse(
-        items=[_event_out(event) for event in rows],
+        items=[_event_out(db, event) for event in rows],
         pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
     )
 
@@ -386,7 +431,7 @@ def get_event(
     event = _get_authorized_event_or_404(
         db, event_id=event_id, user_id=principal.user_id, permission_code="event.read"
     )
-    return _event_out(event)
+    return _event_out(db, event)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=EventOut)
@@ -410,7 +455,7 @@ def create_event(
     authorizer.check(ResourceContext(club_id=payload.club_id))
 
     try:
-        event = events_crud.create_event(
+        event = events_crud.create_event_with_targeting(
             db,
             club_id=payload.club_id,
             event_type=payload.event_type,
@@ -425,11 +470,17 @@ def create_event(
             location_latitude=payload.location_latitude,
             location_longitude=payload.location_longitude,
             created_by=principal.user_id,
+            group_ids=payload.group_ids,
+            instructor_user_ids=payload.instructor_ids,
         )
     except EventDomainError as exc:
         _raise_for_domain_error(exc)
+    except EventGroupTargetError as exc:
+        _raise_for_group_target_error(exc)
+    except EventStaffAssignmentError as exc:
+        _raise_for_staff_assignment_error(exc)
     logger.info("events.create.success event_id=%s user_id=%s", event.id, principal.user_id)
-    return _event_out(event)
+    return _event_out(db, event)
 
 
 _NON_NULLABLE_UPDATE_FIELDS = ("event_type", "title", "start_at", "end_at", "timezone")
@@ -452,6 +503,12 @@ def update_event(
     )
 
     fields = payload.model_dump(exclude_unset=True)
+    # group_ids/instructor_ids are targeting relationships, not
+    # UPDATABLE_EVENT_FIELDS — extracted here so **fields below only ever
+    # carries plain Event columns, exactly as update_event_with_targeting
+    # (and the plain update_event it wraps) expects.
+    group_ids = fields.pop("group_ids", None)
+    instructor_ids = fields.pop("instructor_ids", None)
     for field_name in _NON_NULLABLE_UPDATE_FIELDS:
         if field_name in fields and fields[field_name] is None:
             raise APIError(
@@ -461,11 +518,22 @@ def update_event(
             )
 
     try:
-        event = events_crud.update_event(db, event=event, updated_by=principal.user_id, **fields)
+        event = events_crud.update_event_with_targeting(
+            db,
+            event=event,
+            updated_by=principal.user_id,
+            group_ids=group_ids,
+            instructor_user_ids=instructor_ids,
+            **fields,
+        )
     except EventDomainError as exc:
         _raise_for_domain_error(exc)
+    except EventGroupTargetError as exc:
+        _raise_for_group_target_error(exc)
+    except EventStaffAssignmentError as exc:
+        _raise_for_staff_assignment_error(exc)
     logger.info("events.update.success event_id=%s user_id=%s", event.id, principal.user_id)
-    return _event_out(event)
+    return _event_out(db, event)
 
 
 @router.post("/{event_id}/status", response_model=EventOut)
@@ -508,7 +576,7 @@ def transition_event_status(
         event.status,
         principal.user_id,
     )
-    return _event_out(event)
+    return _event_out(db, event)
 
 
 @router.post("/{event_id}/archive", response_model=EventOut)
@@ -531,7 +599,7 @@ def archive_event(
     except EventDomainError as exc:
         _raise_for_domain_error(exc)
     logger.info("events.archive.success event_id=%s user_id=%s", event.id, principal.user_id)
-    return _event_out(event)
+    return _event_out(db, event)
 
 
 # --- Attendance (Issue #94 / TH-0087, ADR-0032) -----------------------------

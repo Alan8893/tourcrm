@@ -52,19 +52,21 @@ to).
 
 import uuid
 from datetime import datetime
-from typing import Optional
+from datetime import timezone as dt_timezone
+from typing import Optional, Sequence
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from app.db.event_recurrence import EventOccurrence
-from app.db.events import Event
+from app.db.events import Event, EventGroupTarget, EventStaffAssignment
 from app.events.lifecycle import (
     validate_coordinates,
     validate_event_type,
     validate_status_transition,
     validate_time_range,
 )
+from app.events.service import build_event_group_target, build_event_staff_assignment
 
 # ADR-0018: every Event starts as `draft`; no document describes a
 # "create directly as published" path, and `status` is never
@@ -75,6 +77,12 @@ INITIAL_EVENT_STATUS = "draft"
 # the dedicated archive endpoint (`event.manage`), never through the
 # general status-transition endpoint.
 ARCHIVED_STATUS = "archived"
+
+# TH-0108 / ADR-0037 §2: the free-form `role_in_event` value the Event API
+# assigns to every responsible instructor/User it creates — the form has
+# no per-assignment role selector, matching the dominant convention already
+# used across this codebase's own EventStaffAssignment tests/fixtures.
+DEFAULT_STAFF_ROLE_IN_EVENT = "instructor"
 
 # The PATCH-writable Event fields (Issue #40): `status`/`cancellation_reason`
 # only change through transition_event_status()/archive_event(); `id`,
@@ -211,19 +219,232 @@ def create_event(
     return event
 
 
-def update_event(
+def _active_event_group_targets(
+    session: Session, *, event_id: uuid.UUID
+) -> dict[uuid.UUID, EventGroupTarget]:
+    """Currently-active (validity-interval sense) EventGroupTarget rows
+    for `event_id`, keyed by `group_id` — the same active-interval
+    predicate app.events.authorization uses for visibility, duplicated
+    here as a small one-liner per this codebase's own convention rather
+    than importing across the crud/authorization boundary.
+    """
+    now = datetime.now(dt_timezone.utc)
+    rows = (
+        session.execute(
+            sa.select(EventGroupTarget).where(
+                EventGroupTarget.event_id == event_id,
+                EventGroupTarget.valid_from <= now,
+                sa.or_(EventGroupTarget.valid_to.is_(None), EventGroupTarget.valid_to > now),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {row.group_id: row for row in rows}
+
+
+def _active_event_staff_assignments(
+    session: Session, *, event_id: uuid.UUID
+) -> dict[uuid.UUID, EventStaffAssignment]:
+    """Currently-active EventStaffAssignment rows for `event_id`, keyed
+    by `user_id` — see `_active_event_group_targets`'s docstring."""
+    now = datetime.now(dt_timezone.utc)
+    rows = (
+        session.execute(
+            sa.select(EventStaffAssignment).where(
+                EventStaffAssignment.event_id == event_id,
+                EventStaffAssignment.valid_from <= now,
+                sa.or_(
+                    EventStaffAssignment.valid_to.is_(None), EventStaffAssignment.valid_to > now
+                ),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {row.user_id: row for row in rows}
+
+
+def _apply_event_group_targets(
+    session: Session, *, event_id: uuid.UUID, group_ids: Sequence[uuid.UUID], now: datetime
+) -> None:
+    """Synchronizes EventGroupTarget to exactly `group_ids` (deduplicated,
+    order-preserving): adds a new active row for each newly-desired
+    Group, ends (`valid_to = now`, never deletes) each currently-active
+    row whose Group is no longer desired, and leaves an already-active,
+    still-desired row untouched — so a repeated call with the same
+    `group_ids` is a no-op (Test 11's idempotency requirement) and never
+    creates a duplicate active row for the same (event, group) pair.
+    `group_ids=[]` means club-wide (ADR-0037 §1/§5): every currently
+    active target is ended, none added.
+    """
+    desired = list(dict.fromkeys(group_ids))
+    desired_set = set(desired)
+    active = _active_event_group_targets(session, event_id=event_id)
+    for group_id, row in active.items():
+        if group_id not in desired_set:
+            row.valid_to = now
+    for group_id in desired:
+        if group_id not in active:
+            session.add(
+                build_event_group_target(
+                    session, event_id=event_id, group_id=group_id, valid_from=now
+                )
+            )
+
+
+def _apply_event_staff_assignments(
+    session: Session,
+    *,
+    event_id: uuid.UUID,
+    user_ids: Sequence[uuid.UUID],
+    role_in_event: str,
+    now: datetime,
+) -> None:
+    """Synchronizes EventStaffAssignment to exactly `user_ids` — see
+    `_apply_event_group_targets`'s docstring for the identical add/end/
+    leave-untouched idempotency shape. Every newly-created assignment is
+    `is_primary=False`: this API exposes no primary-instructor selector.
+    """
+    desired = list(dict.fromkeys(user_ids))
+    desired_set = set(desired)
+    active = _active_event_staff_assignments(session, event_id=event_id)
+    for user_id, row in active.items():
+        if user_id not in desired_set:
+            row.valid_to = now
+    for user_id in desired:
+        if user_id not in active:
+            session.add(
+                build_event_staff_assignment(
+                    session,
+                    event_id=event_id,
+                    user_id=user_id,
+                    role_in_event=role_in_event,
+                    valid_from=now,
+                    is_primary=False,
+                )
+            )
+
+
+def create_event_with_targeting(
+    session: Session,
+    *,
+    club_id: uuid.UUID,
+    event_type: str,
+    title: str,
+    description: Optional[str],
+    start_at: datetime,
+    end_at: datetime,
+    timezone: str,
+    location_type: Optional[str],
+    location_name: Optional[str],
+    location_address: Optional[str],
+    location_latitude: Optional[float],
+    location_longitude: Optional[float],
+    created_by: uuid.UUID,
+    group_ids: Sequence[uuid.UUID] = (),
+    instructor_user_ids: Sequence[uuid.UUID] = (),
+    role_in_event: str = DEFAULT_STAFF_ROLE_IN_EVENT,
+) -> Event:
+    """TH-0108 / ADR-0037 §1-§2: `POST /events`'s actual operation —
+    create the Event (plus its linked EventOccurrence, exactly like
+    `create_event`) and its initial Group targeting / responsible-
+    instructor assignments, all atomically in one transaction. Any
+    failure — an invalid field, a cross-Club Group, a nonexistent Group/
+    User, or a User without active ClubMembership in this Club — rolls
+    back the Event (and its occurrence) too: no partially-created Event
+    is ever left behind.
+
+    Deliberately does not call `create_event()`/`create_event_group_target()`/
+    `create_event_staff_assignment()`: each of those commits its own
+    transaction (this module's and app.events.service's own established
+    pattern), which would make the Event and its targeting independently
+    committable and reopen the exact non-atomic gap this function closes
+    — mirroring app.people.service.create_person_with_membership's
+    identical rationale for Person + its initial ClubMembership.
+
+    `group_ids=()` (the default) means club-wide (ADR-0037 §1/§5): zero
+    EventGroupTarget rows are created. `instructor_user_ids=()` means no
+    responsible User is assigned yet — both are valid, independent
+    states. Group targeting and instructor assignment never create
+    GroupMembership, EventParticipation, or any other relationship —
+    this function touches only Event, EventOccurrence, EventGroupTarget
+    and EventStaffAssignment.
+    """
+    validate_event_type(event_type)
+    validate_time_range(start_at, end_at)
+    validate_coordinates(location_latitude, location_longitude)
+
+    event_id = uuid.uuid4()
+    event = Event(
+        id=event_id,
+        club_id=club_id,
+        event_type=event_type,
+        title=title,
+        description=description,
+        start_at=start_at,
+        end_at=end_at,
+        timezone=timezone,
+        location_type=location_type,
+        location_name=location_name,
+        location_address=location_address,
+        location_latitude=location_latitude,
+        location_longitude=location_longitude,
+        status=INITIAL_EVENT_STATUS,
+        cancellation_reason=None,
+        created_by=created_by,
+        updated_by=created_by,
+    )
+    session.add(event)
+    try:
+        session.flush()
+        occurrence = EventOccurrence(
+            event_id=event_id,
+            series_id=None,
+            club_id=club_id,
+            name=title,
+            description=description,
+            event_type=event_type,
+            recurrence_anchor_at=start_at,
+            starts_at=start_at,
+            ends_at=end_at,
+            timezone=timezone,
+            status=_EVENT_TO_OCCURRENCE_STATUS[INITIAL_EVENT_STATUS],
+            cancellation_reason=None,
+            created_by=created_by,
+            updated_by=created_by,
+        )
+        session.add(occurrence)
+
+        now = datetime.now(dt_timezone.utc)
+        _apply_event_group_targets(session, event_id=event_id, group_ids=group_ids, now=now)
+        _apply_event_staff_assignments(
+            session,
+            event_id=event_id,
+            user_ids=instructor_user_ids,
+            role_in_event=role_in_event,
+            now=now,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return event
+
+
+def _apply_event_field_updates(
     session: Session,
     *,
     event: Event,
     updated_by: uuid.UUID,
     **fields,
-) -> Event:
-    """Apply a partial update (PATCH) of the client-writable Event
-    fields, keeping the linked `EventOccurrence`'s mirrored fields in
-    sync in the same transaction (ADR-0033 §3 — the same row, in place;
-    never a new occurrence, never a deleted one). `status`/
-    `cancellation_reason` are never accepted here — see
-    transition_event_status()/archive_event() for lifecycle changes.
+) -> None:
+    """The no-commit body of `update_event` — validates and applies a
+    partial update of the client-writable Event fields, keeping the
+    linked `EventOccurrence`'s mirrored fields in sync (ADR-0033 §3).
+    Extracted so `update_event_with_targeting` can compose it with the
+    EventGroupTarget/EventStaffAssignment sync below inside one shared
+    transaction, the same shape `create_event_with_targeting` uses.
     """
     unknown_fields = set(fields) - UPDATABLE_EVENT_FIELDS
     if unknown_fields:
@@ -253,7 +474,73 @@ def update_event(
             setattr(occurrence, occurrence_field, value)
     occurrence.updated_by = updated_by
 
+
+def update_event(
+    session: Session,
+    *,
+    event: Event,
+    updated_by: uuid.UUID,
+    **fields,
+) -> Event:
+    """Apply a partial update (PATCH) of the client-writable Event
+    fields, keeping the linked `EventOccurrence`'s mirrored fields in
+    sync in the same transaction (ADR-0033 §3 — the same row, in place;
+    never a new occurrence, never a deleted one). `status`/
+    `cancellation_reason` are never accepted here — see
+    transition_event_status()/archive_event() for lifecycle changes.
+    """
+    _apply_event_field_updates(session, event=event, updated_by=updated_by, **fields)
     session.commit()
+    return event
+
+
+def update_event_with_targeting(
+    session: Session,
+    *,
+    event: Event,
+    updated_by: uuid.UUID,
+    group_ids: Optional[Sequence[uuid.UUID]] = None,
+    instructor_user_ids: Optional[Sequence[uuid.UUID]] = None,
+    role_in_event: str = DEFAULT_STAFF_ROLE_IN_EVENT,
+    **fields,
+) -> Event:
+    """TH-0108 / ADR-0037 §1-§2: PATCH counterpart of
+    `create_event_with_targeting` — applies the same Event field updates
+    as `update_event`, and additionally synchronizes EventGroupTarget/
+    EventStaffAssignment to the given desired sets, all committed
+    together in the one transaction this function owns; any failure
+    (an invalid field, a cross-Club Group, a nonexistent Group/User, or
+    a User without active ClubMembership) rolls back the field changes
+    too — mirroring `create_event_with_targeting`'s identical rationale.
+
+    `group_ids=None`/`instructor_user_ids=None` (the defaults, matching
+    the router's `exclude_unset` PATCH semantics — the field was simply
+    not present in the request body) leave the current targeting/
+    assignments completely untouched. An explicit list — including an
+    empty one, meaning "make this Event club-wide" / "unassign every
+    instructor" — replaces the currently active set via
+    `_apply_event_group_targets`/`_apply_event_staff_assignments`: see
+    those functions' docstrings for the add/end/leave-untouched
+    idempotency shape.
+    """
+    _apply_event_field_updates(session, event=event, updated_by=updated_by, **fields)
+
+    try:
+        now = datetime.now(dt_timezone.utc)
+        if group_ids is not None:
+            _apply_event_group_targets(session, event_id=event.id, group_ids=group_ids, now=now)
+        if instructor_user_ids is not None:
+            _apply_event_staff_assignments(
+                session,
+                event_id=event.id,
+                user_ids=instructor_user_ids,
+                role_in_event=role_in_event,
+                now=now,
+            )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     return event
 
 
@@ -315,9 +602,12 @@ __all__ = [
     "INITIAL_EVENT_STATUS",
     "ARCHIVED_STATUS",
     "UPDATABLE_EVENT_FIELDS",
+    "DEFAULT_STAFF_ROLE_IN_EVENT",
     "EventTransitionNotAllowedError",
     "create_event",
+    "create_event_with_targeting",
     "update_event",
+    "update_event_with_targeting",
     "transition_event_status",
     "archive_event",
 ]
