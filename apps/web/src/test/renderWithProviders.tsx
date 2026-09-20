@@ -37,7 +37,11 @@ export function renderWithProviders(
  * substring — enough for these component tests without pulling in a
  * network-mocking dependency. */
 export function stubFetch(handlers: Array<{ match: string; response: unknown; status?: number }>) {
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  // Typed with the real 2-arg `fetch` signature (even though the body only
+  // reads `input`) so `fetchMock.mock.calls[i][1]` — the request `init` a
+  // caller may want to assert on, e.g. to inspect a POST/PATCH body — is
+  // typed, not just present at runtime.
+  const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (input) => {
     const url = typeof input === "string" ? input : input.toString();
     const handler = handlers.find((entry) => url.includes(entry.match));
     if (!handler) {

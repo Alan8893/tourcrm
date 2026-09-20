@@ -2,7 +2,10 @@ import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch, ApiError, type CollectionResponse } from "./client";
+import type { CalendarItem } from "./events";
 import type { GroupStatus } from "../domain/statusMapping";
+
+export type { CalendarItem };
 
 export type Group = {
   id: string;
@@ -25,20 +28,6 @@ export type GroupMembership = {
   membership_status: "active" | "ended";
   created_at: string;
   updated_at: string;
-};
-
-export type CalendarItem = {
-  id: string;
-  kind: "event" | "occurrence";
-  club_id: string;
-  event_type: string;
-  title: string;
-  description: string | null;
-  start_at: string;
-  end_at: string;
-  timezone: string;
-  status: string;
-  cancellation_reason: string | null;
 };
 
 export function useGroups(params: { status?: GroupStatus } = {}) {

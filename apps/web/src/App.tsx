@@ -10,6 +10,7 @@ import { PeoplePage } from "./pages/PeoplePage";
 import { PersonDetailPage } from "./pages/PersonDetailPage";
 import { GroupsPage } from "./pages/GroupsPage";
 import { GroupDetailPage } from "./pages/GroupDetailPage";
+import { EventsPage } from "./pages/EventsPage";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 
@@ -38,7 +39,7 @@ export function App() {
               <Route path="people/:personId" element={<PersonDetailPage />} />
               <Route path="groups" element={<GroupsPage />} />
               <Route path="groups/:groupId" element={<GroupDetailPage />} />
-              <Route path="events" element={<PlaceholderPage title="События" />} />
+              <Route path="events" element={<EventsPage />} />
               <Route path="achievements" element={<PlaceholderPage title="Достижения" />} />
               <Route path="reports" element={<PlaceholderPage title="Отчёты" />} />
               <Route path="settings" element={<PlaceholderPage title="Настройки" />} />

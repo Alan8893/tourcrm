@@ -1,0 +1,342 @@
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.mineToggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-base);
+  color: var(--color-text-primary);
+  padding-bottom: 9px;
+  cursor: pointer;
+}
+
+/* --- Desktop / tablet composition --------------------------------- */
+
+.desktopLayout {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-6);
+}
+
+.calendarPanel {
+  flex: 1 1 640px;
+  min-width: 0;
+}
+
+.dayPanel {
+  flex: 1 1 320px;
+  min-width: 280px;
+}
+
+@media (max-width: 1023.98px) {
+  .desktopLayout {
+    flex-direction: column;
+  }
+
+  .dayPanel {
+    width: 100%;
+  }
+}
+
+.dayPanelTitle {
+  font-size: var(--font-size-md);
+  font-weight: 700;
+  margin: 0 0 var(--space-3);
+  text-transform: capitalize;
+}
+
+.calendarNav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.calendarNavButtons {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.calendarNavLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-md);
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.fetchingIndicator {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.monthGrid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+  background: var(--color-border);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.monthCell {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-1);
+  min-height: 92px;
+  padding: var(--space-2);
+  background: var(--color-surface);
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.monthCell:hover {
+  background: var(--color-surface-muted);
+}
+
+.monthCellOutside {
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+}
+
+.monthCellDate {
+  font-weight: 600;
+  font-size: var(--font-size-sm);
+}
+
+.monthCellToday .monthCellDate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
+}
+
+.monthCellSelected {
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+
+.monthCellChips {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chip {
+  font-size: 11px;
+  line-height: 1.3;
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chipStatusPlanned {
+  background: var(--color-info-soft);
+  color: var(--color-info);
+}
+
+.chipStatusOngoing {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-hover);
+}
+
+.chipStatusCompleted {
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+
+/* Cancelled must not rely on color alone: strikethrough on top of the
+   distinct tone, matching the StatusBadge's own icon+label pairing. */
+.chipStatusCancelled {
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+  text-decoration: line-through;
+}
+
+.chipOverflow {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.skeletonCell {
+  cursor: default;
+  position: relative;
+  overflow: hidden;
+}
+
+.skeletonCell::after {
+  content: "";
+  position: absolute;
+  inset: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-muted);
+  animation: pulse 1.3s ease-in-out infinite;
+}
+
+/* --- Mobile composition -------------------------------------------- */
+
+.mobileLayout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.dayStepper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.dayStepperLabel {
+  font-weight: 700;
+  font-size: var(--font-size-base);
+  text-transform: capitalize;
+}
+
+/* --- Shared day list -------------------------------------------------- */
+
+.dayList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.eventRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.eventRow:hover {
+  background: var(--color-surface-muted);
+}
+
+.eventRowTime {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.eventRowMain {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.eventRowTitle {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eventRowTitleCancelled {
+  composes: eventRowTitle;
+  text-decoration: line-through;
+  color: var(--color-text-secondary);
+}
+
+.eventRowMeta {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.recurringBadge {
+  display: inline-block;
+  margin-right: var(--space-1);
+  color: var(--color-accent);
+}
+
+/* --- Detail dialog ------------------------------------------------ */
+
+.detailBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.detailRecurring {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+.detailList {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.detailList dt {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.detailList dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.cancellationReason {
+  color: var(--color-danger);
+}
+
+.detailActions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-4);
+}
+
+/* --- Form ------------------------------------------------------------ */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
