@@ -1,6 +1,13 @@
 .scene {
   position: absolute;
   inset: 0;
+  /*
+   * Reserve room for the ProfileMenu's name label (visible from 640px up,
+   * see ProfileMenu.module.css `.name` breakpoint), which has no background
+   * of its own. Without this the artwork's right edge can render directly
+   * under the label and wash out its contrast.
+   */
+  right: 112px;
   z-index: 0;
   display: block;
   overflow: hidden;
@@ -8,25 +15,38 @@
   user-select: none;
 }
 
+@media (max-width: 639.98px) {
+  .scene {
+    /* Below 640px the name label is hidden and only the avatar remains,
+       which carries its own solid background, so no reserve is needed. */
+    right: 0;
+  }
+}
+
 .image {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 1600px;
-  height: 400px;
-  max-width: none;
-  max-height: none;
-  transform: translate(-50%, -50%);
+  inset: 0;
+  width: 100%;
+  height: 100%;
   display: block;
-  object-fit: contain;
-  object-position: center;
+  /*
+   * The master artwork (desk 1600x400, mob 800x500) is far taller than the
+   * compact Header, and its brand-relevant content spans most of its own
+   * height. `object-fit: none` keeps the artwork at its authored pixel
+   * scale (no shrink-to-fit, no stretch) and lets `object-position` pick a
+   * fixed crop window into it, sized by the Header itself via the `100%`
+   * box above.
+   */
+  object-fit: none;
+  object-position: center 65%;
   pointer-events: none;
   user-select: none;
 }
 
 @media (max-width: 767.98px) {
   .image {
-    width: 800px;
-    height: 500px;
+    /* Mobile artwork is vertically denser; its own center already lands on
+       the group of hikers, so no offset is needed there. */
+    object-position: center;
   }
 }
