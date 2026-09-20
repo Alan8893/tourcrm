@@ -175,11 +175,33 @@ function invalidateCalendarAndEvent(queryClient: ReturnType<typeof useQueryClien
   if (eventId) void queryClient.invalidateQueries({ queryKey: ["events", "detail", eventId] });
 }
 
+/** ADR-0018: every Event is created in `draft`, and `GET /events/calendar`
+ * never returns `draft`/`archived` items (see CALENDAR_STATUSES in
+ * EventsPage.tsx) — so a freshly created Event is invisible in the
+ * calendar until published. This UI has no separate "save as draft"
+ * action anywhere, so the one "Создать событие" flow carries the new
+ * Event through the only transition `draft` allows
+ * (`ALLOWED_STATUS_TRANSITIONS` in app/events/lifecycle.py:
+ * `draft -> published`) via the existing canonical `POST
+ * /events/{id}/status` lifecycle operation — no new endpoint, no change
+ * to the Event domain lifecycle. If the create step fails, publish is
+ * never attempted; if publish fails after a successful create, the
+ * mutation still rejects (so the caller sees an error, not a false
+ * success) and the Event is left as a draft rather than being deleted —
+ * there is no Event delete/rollback operation in this domain. */
 export function useCreateEvent() {
   const queryClient = useQueryClient();
   return useMutation<EventDetail, ApiError, EventFields>({
-    mutationFn: (input) =>
-      apiFetch<EventDetail>("/events", { method: "POST", body: JSON.stringify(input) }),
+    mutationFn: async (input) => {
+      const created = await apiFetch<EventDetail>("/events", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      return apiFetch<EventDetail>(`/events/${created.id}/status`, {
+        method: "POST",
+        body: JSON.stringify({ status: "published" }),
+      });
+    },
     onSuccess: () => invalidateCalendarAndEvent(queryClient),
   });
 }
