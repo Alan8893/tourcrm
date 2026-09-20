@@ -21,9 +21,12 @@ import {
   useCreateEvent,
   useEvent,
   useOccurrence,
+  useRegisterForEvent,
   useRescheduleOccurrence,
   useUpdateEvent,
+  useWithdrawFromEvent,
   type CalendarItem,
+  type EventDetail,
   type EventFields,
 } from "../api/events";
 import {
@@ -864,6 +867,9 @@ function EventDetailDialog({
         {query.isSuccess && item.kind === "event" && eventQuery.data ? (
           <EventLocation event={eventQuery.data} />
         ) : null}
+        {query.isSuccess && item.kind === "event" && eventQuery.data ? (
+          <EventSelfRegistration event={eventQuery.data} />
+        ) : null}
       </div>
       <div className={styles.detailActions}>
         <Button variant="primary" icon="action.edit" onClick={onEdit}>
@@ -871,6 +877,56 @@ function EventDetailDialog({
         </Button>
       </div>
     </Dialog>
+  );
+}
+
+/** TH-0108.2 / ADR-0037: self-registration action for the currently
+ * viewed Event. Renders nothing for a non-`published` Event (draft/
+ * completed/cancelled/archived) — self-registration is unavailable in
+ * every one of those states. Eligibility itself is never computed here:
+ * this only reflects `my_registration_status`, which the backend already
+ * resolved from the authenticated viewer's own Person; an ineligible
+ * click still surfaces as an ordinary backend rejection via toast, never
+ * a client-side guess. */
+function EventSelfRegistration({ event }: { event: EventDetail }) {
+  const notify = useNotify();
+  const register = useRegisterForEvent();
+  const withdraw = useWithdrawFromEvent();
+
+  if (event.status !== "published") return null;
+
+  const registered = event.my_registration_status === "registered";
+  const pending = register.isPending || withdraw.isPending;
+
+  const handleRegister = () => {
+    register.mutate(event.id, {
+      onSuccess: () => notify("success", "Вы записаны на мероприятие"),
+      onError: (error) => notify("error", error.message),
+    });
+  };
+
+  const handleWithdraw = () => {
+    withdraw.mutate(event.id, {
+      onSuccess: () => notify("success", "Запись отменена"),
+      onError: (error) => notify("error", error.message),
+    });
+  };
+
+  return (
+    <div className={styles.registrationRow}>
+      {registered ? (
+        <>
+          <StatusBadge status="status.success" label="Вы записаны" />
+          <Button variant="destructive" icon="action.cancel" onClick={handleWithdraw} disabled={pending}>
+            Отменить запись
+          </Button>
+        </>
+      ) : (
+        <Button variant="primary" icon="action.confirm" onClick={handleRegister} disabled={pending}>
+          Записаться
+        </Button>
+      )}
+    </div>
   );
 }
 

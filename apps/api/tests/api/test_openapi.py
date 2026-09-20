@@ -69,6 +69,8 @@ _EVENT_PATHS = {
     "/api/v1/events/{event_id}/attendance",
     "/api/v1/events/{event_id}/attendance/{person_id}",
     "/api/v1/events/{event_id}/attendance/{person_id}/corrections",
+    # TH-0108.2 / ADR-0037: participant self-registration/withdrawal.
+    "/api/v1/events/{event_id}/participation",
 }
 
 _PERSON_PATHS = {
