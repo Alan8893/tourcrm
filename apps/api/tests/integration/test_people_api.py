@@ -617,6 +617,170 @@ def test_create_person_denies_cross_club_scoped_assignment_boundary_still_enforc
     assert response.json()["error"]["code"] == "forbidden"
 
 
+# --- Person: create — single-Club invariant (TH-0111 PO follow-up) ------
+#
+# TourCRM is not, and is not becoming, a multi-club product in the current
+# MVP: `club_id` stays a required technical column everywhere (models,
+# authorization, API) — nothing here removes it or adds Club selection.
+# The only change is that `resolve_current_club_id_for_person_create` no
+# longer silently resolves `.first()`/an unverified assignment `club_id`:
+# it fails closed whenever "exactly one Club" doesn't actually hold.
+
+
+@requires_postgres
+def test_create_person_with_zero_clubs_fails_closed() -> None:
+    """No Club exists at all (should be unreachable via bootstrap in
+    practice) — must not silently proceed; the club-count `SELECT`
+    resolving to nothing surfaces as the canonical, detail-free 500
+    `internal_error` envelope (`app.people.authorization.
+    NoClubConfiguredError`, uncaught by design — see its docstring) rather
+    than a Person being created without any Club context at all.
+
+    Uses a local `raise_server_exceptions=False` client (matching
+    `tests/api/conftest.py`'s `real_client` pattern) instead of this
+    file's shared `client` fixture: with `raise_server_exceptions=True`,
+    an uncaught exception propagates out of Starlette's
+    `BaseHTTPMiddleware` layer before the registered `Exception` handler
+    converts it to a response, which would make this test fail on the
+    raw exception instead of asserting the client-facing contract.
+    """
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        with session_scope() as session:
+            person = _make_person()
+            user = _make_user(person)
+            session.add_all([person, user])
+            session.commit()
+            user_id = user.id
+        _grant_permission(user_id, "person.create", scope_type="all")
+        _authenticate_as(user_id)
+
+        response = client.post(
+            "/api/v1/persons",
+            json={"first_name": "Anna", "last_name": "Petrova"},
+            headers=_csrf_headers(client),
+        )
+        assert response.status_code == 500, response.text
+        assert response.json()["error"]["code"] == "internal_error"
+
+        with session_scope() as session:
+            orphaned = session.execute(
+                select(Person).where(Person.first_name == "Anna", Person.last_name == "Petrova")
+            ).scalars().all()
+            assert orphaned == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+@requires_postgres
+def test_create_person_with_multiple_clubs_fails_closed() -> None:
+    """More than one Club exists — a state the current product/MVP does
+    not support and should never reach in normal usage (there is still no
+    `POST /clubs` endpoint and bootstrap refuses to run twice). A global
+    `person.create` assignment gives no way to disambiguate which Club is
+    "current," so this must fail closed (`MultipleClubsConfiguredError`,
+    surfaced as the generic 500 `internal_error`) rather than silently
+    picking one via `.first()`. Uses a local
+    `raise_server_exceptions=False` client — see
+    `test_create_person_with_zero_clubs_fails_closed`'s docstring.
+    """
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        with session_scope() as session:
+            club_a = _make_club()
+            club_b = _make_club()
+            person = _make_person()
+            user = _make_user(person)
+            session.add_all([club_a, club_b, person, user])
+            session.commit()
+            user_id = user.id
+        _grant_permission(user_id, "person.create", scope_type="all")
+        _authenticate_as(user_id)
+
+        response = client.post(
+            "/api/v1/persons",
+            json={"first_name": "Anna", "last_name": "Petrova"},
+            headers=_csrf_headers(client),
+        )
+        assert response.status_code == 500, response.text
+        assert response.json()["error"]["code"] == "internal_error"
+
+        with session_scope() as session:
+            orphaned = session.execute(
+                select(Person).where(Person.first_name == "Anna", Person.last_name == "Petrova")
+            ).scalars().all()
+            assert orphaned == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+@requires_postgres
+def test_resolve_current_club_id_uses_sole_club_for_club_scoped_assignment() -> None:
+    """Test A precondition, isolated at the resolver level: exactly one
+    Club exists, and the caller's `person.create` assignment is scoped to
+    that same Club — `resolve_current_club_id_for_person_create` must
+    return exactly that Club's id (already exercised end-to-end by
+    `test_create_person_with_club_scoped_all_assignment_succeeds`; this
+    adds direct unit-level coverage of the resolver itself).
+    """
+    from app.people.authorization import resolve_current_club_id_for_person_create
+
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        user_id, club_id = user.id, club.id
+    _grant_permission(user_id, "person.create", scope_type="all", club_id=club_id)
+
+    with session_scope() as session:
+        resolved = resolve_current_club_id_for_person_create(session, user_id)
+        assert resolved == club_id
+
+
+@requires_postgres
+def test_resolve_current_club_id_denies_club_scoped_assignment_pointing_elsewhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A club-scoped `person.create` assignment whose `club_id` does not
+    match the system's sole Club must fail closed rather than being used
+    anyway or silently swapped for the sole Club.
+
+    `UserRoleAssignment.club_id` has a real `FOREIGN KEY ... ON DELETE
+    RESTRICT` to `clubs.id`, so a *persisted* assignment can only ever
+    reference a Club that actually exists — meaning this exact mismatch
+    (one real Club overall, but the assignment points elsewhere) cannot
+    be produced by inserting a second real Club: that would instead make
+    `test_create_person_with_multiple_clubs_fails_closed`'s scenario
+    apply. This test exercises the resolver's own defensive equality
+    check directly by stubbing `applicable_assignments` to return a
+    club-scoped assignment referencing an arbitrary, unpersisted club id
+    — the shape a corrupted/legacy row would have if the FK were ever
+    relaxed — while a single real Club exists in the database.
+    """
+    from app.authorization.service import AuthorizationDenied
+    from app.people import authorization as people_authorization
+
+    with session_scope() as session:
+        club = _make_club()
+        session.add(club)
+        session.commit()
+
+    class _ElsewhereAssignment:
+        scope_type = "all"
+        club_id = uuid.uuid4()
+
+    monkeypatch.setattr(
+        people_authorization,
+        "applicable_assignments",
+        lambda *args, **kwargs: [_ElsewhereAssignment()],
+    )
+
+    with session_scope() as session, pytest.raises(AuthorizationDenied):
+        people_authorization.resolve_current_club_id_for_person_create(session, uuid.uuid4())
+
+
 @requires_postgres
 def test_create_person_rejects_missing_required_field(client: TestClient) -> None:
     with session_scope() as session:

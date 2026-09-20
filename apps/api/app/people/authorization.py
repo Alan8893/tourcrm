@@ -75,7 +75,12 @@ from sqlalchemy.orm import Session, aliased
 
 from app.authentication.bootstrap import ADMIN_ROLE_CODE
 from app.authorization.context import ResourceContext
-from app.authorization.service import applicable_assignments, club_boundary_matches, scope_matches
+from app.authorization.service import (
+    AuthorizationDenied,
+    applicable_assignments,
+    club_boundary_matches,
+    scope_matches,
+)
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 from app.db.identity import Club, ClubMembership, GuardianRelationship, Person, User
 
@@ -296,7 +301,29 @@ class NoClubConfiguredError(Exception):
     (`app.authentication.bootstrap.bootstrap_initial_administrator`)
     creates the installation's one Club atomically with its first
     administrator, and no `person.create` assignment can exist before
-    that has run.
+    that has run. Left uncaught by the router (TH-0111): it reaches
+    `app.api.errors.unhandled_exception_handler`, which already produces
+    the canonical, detail-free 500 `internal_error` envelope and logs
+    server-side — a "controlled error" in exactly the PO's sense, without
+    a bespoke handler.
+    """
+
+
+class MultipleClubsConfiguredError(Exception):
+    """Raised by `resolve_current_club_id_for_person_create` if more than
+    one Club row exists. TourCRM's current product and MVP are explicitly
+    not multi-club (PO clarification, TH-0111 / Issue #140 follow-up):
+    `club_id` stays a required technical column throughout the schema,
+    authorization engine, and API — removing it would be an unrelated,
+    unwanted refactor — but the product-level invariant this function
+    enforces is "exactly one Club exists." More than one Club means that
+    invariant is already broken (there is still no `POST /clubs`
+    endpoint anywhere and bootstrap refuses to run twice, so this should
+    be unreachable via normal product usage); resolving to `.first()`
+    would silently guess which Club is "current" instead of surfacing the
+    inconsistency. Left uncaught by the router for the same reason as
+    `NoClubConfiguredError` — the generic 500 handler is the controlled
+    error path.
     """
 
 
@@ -304,41 +331,58 @@ def resolve_current_club_id_for_person_create(session: Session, user_id: uuid.UU
     """TH-0111 / Issue #140: resolve "the current Club" for the compound
     `POST /persons` operation (Person + its initial active ClubMembership)
     — using only already-established facts, not a new current-club
-    mechanism.
+    mechanism, and never silently guessing among ambiguous candidates.
 
-    Primary source: `user_id`'s own qualifying `person.create` assignment
-    (the same set `has_person_create_assignment` checks). If it is
-    club-scoped, that Club is unambiguously theirs — this is exactly the
+    TourCRM is not, and is not becoming, a multi-club system in the
+    current product/MVP (PO clarification following this Issue's initial
+    review): exactly one Club is expected to exist, `club_id` is never
+    chosen by the user, and this function's whole job is to make that one
+    Club's id available to the compound create operation — not to select
+    among several.
+
+    Step 1 — establish the sole Club, without ever picking `.first()`
+    silently: zero Club rows is `NoClubConfiguredError` (should be
+    unreachable — bootstrap creates the one Club atomically with the
+    first administrator); more than one Club row is
+    `MultipleClubsConfiguredError` (a data-integrity violation of the
+    single-Club invariant, not a "which one did they mean" question this
+    function is prepared to answer).
+
+    Step 2 — cross-check the caller's own qualifying `person.create`
+    assignment (the same set `has_person_create_assignment` checks)
+    against that sole Club, fail closed on a mismatch: if every
+    qualifying assignment is global (`club_id IS NULL`), the sole Club is
+    used directly — this is not a new "current club" concept, only
+    making an already-true fact explicit. If a qualifying assignment is
+    club-scoped, its `club_id` must equal the sole Club's id (the exact
     bootstrap-created, club-scoped primary administrator scenario TH-0106
-    fixed, and the scenario this Issue's bug report is about.
-
-    Fallback: if every qualifying assignment is global (`club_id IS
-    NULL`), resolve to the sole Club row. This is not a new "current
-    club" concept, only making an already-true fact explicit:
-    `docs/05-api/people-api.md` §6 documents that exactly one Club exists
-    for the lifetime of an installation in the current MVP, there is no
-    `POST /clubs` endpoint anywhere, and bootstrap refuses to run a
-    second time (`AdministratorAlreadyExistsError`) — so "the sole Club"
-    is already structurally guaranteed to be unambiguous, never a
-    guess among several.
+    fixed, and the scenario this Issue's original bug report is about);
+    an assignment scoped to any other (including nonexistent/stale)
+    Club id does not, in fact, authorize `person.create` for the Club
+    that actually exists, so it is denied via the same
+    `AuthorizationDenied("person.create")` contract `POST /persons`
+    already raises on an outright missing assignment — not a new
+    authorization decision, just this function refusing to paper over an
+    inconsistent assignment by substituting the sole Club underneath it.
     """
+    club_ids = session.execute(sa.select(Club.id)).scalars().all()
+    if len(club_ids) == 0:
+        raise NoClubConfiguredError("No Club exists yet; bootstrap must run first")
+    if len(club_ids) > 1:
+        raise MultipleClubsConfiguredError(
+            "More than one Club exists; TourCRM's current product requires exactly one"
+        )
+    sole_club_id = club_ids[0]
+
     assignments = applicable_assignments(session, user_id, "person.create")
     club_scoped_ids = {
         assignment.club_id
         for assignment in assignments
         if assignment.scope_type == "all" and assignment.club_id is not None
     }
-    if club_scoped_ids:
-        # Structurally a single value: a club-scoped assignment's
-        # `club_id` is FK-constrained to an existing Club row, and (per
-        # this function's own docstring) exactly one Club row can ever
-        # exist in the current MVP.
-        return next(iter(club_scoped_ids))
-
-    club_id = session.execute(sa.select(Club.id)).scalars().first()
-    if club_id is None:
-        raise NoClubConfiguredError("No Club exists yet; bootstrap must run first")
-    return club_id
+    if club_scoped_ids and sole_club_id not in club_scoped_ids:
+        raise AuthorizationDenied("person.create")
+    return sole_club_id
 
 
 def is_system_admin_person_update_grant(session: Session, user_id: uuid.UUID) -> bool:
@@ -451,6 +495,7 @@ __all__ = [
     "is_person_visible",
     "has_person_create_assignment",
     "NoClubConfiguredError",
+    "MultipleClubsConfiguredError",
     "resolve_current_club_id_for_person_create",
     "is_system_admin_person_update_grant",
     "build_membership_resource_context",
