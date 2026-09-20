@@ -214,35 +214,121 @@ Dashboard является роль-зависимым.
 
 ## 8. Календарь и мероприятия
 
-Единый календарный раздел строится вокруг Event.
+Единый календарный раздел строится вокруг Event и является рабочей точкой для просмотра, создания и редактирования мероприятий.
 
-Режимы:
+### 8.0 Календарь — MVP UX contract
+
+**Desktop**
+- основной режим: месяц;
+- текущий выбранный день выделен;
+- рядом с календарём отображается список событий выбранного дня;
+- календарь не превращается в плотную generic ERP grid.
+
+**Tablet**
 - месяц;
-- неделя;
-- список;
-- день для удобного мобильного сценария.
+- список событий выбранного дня располагается под календарём.
 
-Фильтры:
-- тип мероприятия;
-- группа;
-- инструктор;
-- статус;
-- период.
+**Mobile**
+- отдельная компактная навигация по дням;
+- список событий выбранного дня;
+- переход между месяцами сохраняется;
+- mobile composition не является просто уменьшенной desktop-версией.
 
-Карточка Event:
+**Navigation**
+- предыдущий месяц;
+- следующий месяц;
+- Today;
+- /events открывается на текущем месяце и сегодняшнем дне;
+- URL date может переопределять начальную дату;
+- переход между периодами автоматически перезагружает calendar range.
+
+**Event display**
+В календаре показываются:
+- время;
 - название;
 - тип;
-- дата/время;
-- timezone;
-- место;
-- описание;
-- организаторы;
-- участники;
-- посещаемость;
-- документы;
-- уведомления;
-- финансы, если применимо;
-- специализированные данные для Trip/TourSlet/Competition.
+- статус;
+- признак recurring.
+
+В списке выбранного дня/детали:
+- название;
+- начало/окончание;
+- тип;
+- статус;
+- группа, если доступна;
+- инструктор, если доступен;
+- место, если доступно;
+- признак recurring.
+
+Используются только данные, доступные текущему requester через canonical API.
+
+**Event interaction**
+Календарь в MVP поддерживает полный рабочий сценарий:
+- просмотр события;
+- создание события;
+- редактирование события.
+
+Создание и редактирование используют существующие canonical Event API/domain semantics. Frontend не создаёт собственную доменную модель события.
+
+Не входят в MVP:
+- drag-and-drop scheduling;
+- resize события мышью;
+- inline editing;
+- создание по клику на пустой слот;
+- recurrence editor;
+- редактирование серии без явного backend-supported scope.
+
+Удаление/архивирование доступно только там, где соответствующая canonical Event operation уже разрешена backend API и permission policy.
+
+**Filters**
+- группа;
+- инструктор/user;
+- тип мероприятия;
+- статус.
+
+Фильтры сохраняются при переходе между месяцами. Есть отдельный Reset. Новая глобальная filter/search infrastructure не вводится.
+
+**Timezone**
+- backend canonical representation: UTC / RFC 3339 instants;
+- display timezone: browser timezone;
+- frontend выполняет локальное отображение instant;
+- отдельное persistent user timezone setting не вводится;
+- DST учитывается средствами timezone-aware date/time formatting.
+
+**Status**
+Calendar использует существующий catalog:
+- published;
+- in_progress;
+- completed;
+- cancelled.
+
+cancelled должен отличаться не только цветом, но и дополнительным визуальным признаком (например, strike/pattern или утверждённый TourCRM icon language).
+
+**Loading / empty / error**
+- initial load: calendar skeleton;
+- period navigation: предыдущие данные остаются видимыми до загрузки нового диапазона + лёгкий loading indication;
+- empty range: «В этом периоде нет событий»;
+- mobile empty day: «На этот день событий нет»;
+- error: понятное сообщение + Retry, календарный shell сохраняется;
+- технические API details пользователю не показываются.
+
+**Pagination**
+Calendar requests the required [from,to) range. Если backend возвращает несколько страниц, frontend последовательно загружает все страницы, объединяет события и только затем строит визуальное представление. Отдельная pagination UI внутри календаря не используется.
+
+**Recurring events**
+- recurrence рассчитывается только backend;
+- frontend отображает persisted occurrences;
+- recurring indicator показывается пользователю;
+- открывается конкретный occurrence;
+- правила RRULE/version не показываются в обычном календарном UI;
+- редактирование серии не вводится отдельной frontend-семантикой без explicit backend-supported scope.
+
+**URL**
+Выбранный период/дата и фильтры являются deep-linkable через query string. Refresh, bookmark, back/forward и sharing должны восстанавливать состояние календаря. Новая routing mechanism не вводится.
+
+**Architecture boundary**
+Frontend отвечает за presentation, navigation, filters, range requests и interaction с canonical Event API.
+Backend отвечает за authorization, recurrence, occurrence materialization, status transitions и доступные mutation semantics.
 
 ### 8.1 Посещаемость
 
