@@ -149,6 +149,11 @@ export type EventDetail = {
    * the already-loaded Group list / User Directory to display names. */
   group_ids: string[];
   instructor_ids: string[];
+  /** TH-0108.2 / ADR-0037: the viewer's own current registration —
+   * "registered", "cancelled", or `null` if they have never registered
+   * for this Event. Purely informational, resolved server-side from the
+   * authenticated session; this app never computes it itself. */
+  my_registration_status: string | null;
 };
 
 export function useEvent(eventId: string | undefined) {
@@ -296,6 +301,52 @@ export function useRescheduleOccurrence() {
     onSuccess: (occurrence) => {
       void queryClient.invalidateQueries({ queryKey: ["events", "calendar"] });
       void queryClient.invalidateQueries({ queryKey: ["events", "occurrence", occurrence.id] });
+    },
+  });
+}
+
+// --- Self-registration (POST|DELETE /api/v1/events/{id}/participation) ----
+// TH-0108.2 / ADR-0037: the server resolves the Person from the
+// authenticated session — these hooks never send a `person_id` and never
+// decide eligibility themselves; a rejection (event not published, not
+// eligible) surfaces as an ordinary ApiError for the caller to display.
+
+export type EventParticipation = {
+  id: string;
+  event_id: string;
+  person_id: string;
+  registration_status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/** `POST /api/v1/events/{event_id}/participation` — idempotent: safe to
+ * call again while already registered, and restores a `cancelled`
+ * registration rather than erroring. Invalidates this Event's own detail
+ * query so `my_registration_status` reflects the new state immediately,
+ * without a page reload. */
+export function useRegisterForEvent() {
+  const queryClient = useQueryClient();
+  return useMutation<EventParticipation, ApiError, string>({
+    mutationFn: (eventId) =>
+      apiFetch<EventParticipation>(`/events/${eventId}/participation`, { method: "POST" }),
+    onSuccess: (_participation, eventId) => {
+      void queryClient.invalidateQueries({ queryKey: ["events", "detail", eventId] });
+    },
+  });
+}
+
+/** `DELETE /api/v1/events/{event_id}/participation` — idempotent: a
+ * repeat call, or a call with no existing registration at all, both
+ * succeed silently (`204 No Content`, no response body). Only ever
+ * affects the caller's own registration. */
+export function useWithdrawFromEvent() {
+  const queryClient = useQueryClient();
+  return useMutation<void, ApiError, string>({
+    mutationFn: (eventId) =>
+      apiFetch<void>(`/events/${eventId}/participation`, { method: "DELETE" }),
+    onSuccess: (_result, eventId) => {
+      void queryClient.invalidateQueries({ queryKey: ["events", "detail", eventId] });
     },
   });
 }

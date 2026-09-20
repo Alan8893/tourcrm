@@ -97,6 +97,12 @@ class EventOut(BaseModel):
     # User field.
     group_ids: list[UUID]
     instructor_ids: list[UUID]
+    # TH-0108.2 / ADR-0037: the authenticated caller's own current
+    # EventParticipation.registration_status for this Event — "registered",
+    # "cancelled", or null if they have never registered. Purely
+    # informational (for the self-registration UI); never used by any
+    # authorization decision.
+    my_registration_status: Optional[str]
 
 
 class CalendarItemOut(BaseModel):
@@ -126,6 +132,20 @@ class CalendarItemOut(BaseModel):
     cancellation_reason: Optional[str]
     series_id: Optional[UUID]
     series_version: Optional[int]
+
+
+class EventParticipationOut(BaseModel):
+    """Response for self-registration (`POST .../participation`) and
+    withdrawal (`DELETE .../participation`), TH-0108.2 / ADR-0037. `person_id`
+    is always the authenticated caller's own Person — never client-supplied,
+    returned here only as ordinary resource identity."""
+
+    id: UUID
+    event_id: UUID
+    person_id: UUID
+    registration_status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class ConflictObjectRefOut(BaseModel):

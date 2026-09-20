@@ -12,7 +12,7 @@
 
 `EventOccurrence` — конкретное запланированное проведение мероприятия.
 
-`EventParticipation` — участие человека в конкретном occurrence.
+`EventParticipation` — участие (регистрация) человека в конкретном `Event` — не в occurrence (расхождение с более ранней версией этого документа: канонические ADR-0023 §4 и ADR-0037 определяют `EventParticipation` как связь `Event`↔`Person`, `Attendance` же остаётся occurrence-based; см. §19-20 ниже).
 
 Посещаемость хранится относительно occurrence, а не только series/event.
 
@@ -279,27 +279,39 @@ Feed token должен быть отдельным секретом и не д�
 
 ## 19. Self registration
 
-### POST `/api/v1/me/events/{event_id}/registration`
+**TH-0108.2 / ADR-0037 (реализовано; заменяет предыдущий зарезервированный контракт этого раздела).**
 
-Endpoint зарезервирован контрактом, но **не входит в реализационно готовый первый срез**.
+Ранее этот раздел резервировал `POST /api/v1/me/events/{event_id}/registration` и блокировал реализацию до принятия детерминированной registration policy. ADR-0037 является более новым принятым решением: он задаёт MVP-политику self-registration явно и вводит canonical endpoint под общим префиксом `/api/v1/events` (не `/api/v1/me/...`) — старый путь никогда не был реализован и не используется.
 
-Реализация заблокирована до принятия детерминированной registration policy, включающей как минимум:
+### POST `/api/v1/events/{event_id}/participation`
 
-- event self-registration flag;
-- registration window;
-- membership state;
-- age/group restrictions;
-- capacity/waitlist rules;
-- допустимые registration status transitions;
-- cancellation deadline.
+Регистрирует **самого аутентифицированного пользователя** (через его canonical Person) на опубликованное мероприятие.
 
-Нельзя выводить эти правила из роли пользователя или из названия статуса без отдельного принятого правила.
+Request body отсутствует. Клиент не передаёт `person_id` ни в каком виде — Person определяется исключительно из authenticated principal. Любое поле `person_id` в теле запроса игнорируется backend.
+
+Eligibility (ADR-0037 §3/§5), в этом порядке:
+
+1. `Event.status == published`; иначе `409 event_not_published`. Для `draft`/`completed`/`cancelled`/`archived` регистрация недоступна.
+2. Person должен иметь active `ClubMembership` в Club события; иначе `403 not_eligible_for_event`.
+3. Если у Event есть 1+ active `EventGroupTarget` — Person должен иметь active `GroupMembership` хотя бы в одной из целевых Group; иначе `403 not_eligible_for_event`. Если целевых Group нет — Event club-wide, и шага 3 достаточно пройти шаг 2.
+
+Операция идемпотентна: повторный вызов при уже `registered` не создаёт вторую запись (unique `(event_id, person_id)` остаётся единственным persistence invariant, без изменений); вызов при существующей `cancelled` записи восстанавливает её в `registered` вместо создания дубликата.
+
+Не создаёт: `Attendance`, `GroupMembership`, `ClubMembership`, `GuardianRelationship`, платёж, доставку уведомления, `User`, `UserRoleAssignment`. Не требует и не проверяет никакой отдельный Event permission — self-registration является self-service операцией (ADR-0037 §12), а не операцией, проходящей через общий `Authorizer`/scope engine.
+
+Response: `EventParticipationOut` (`id`, `event_id`, `person_id`, `registration_status`, `created_at`, `updated_at`).
+
+Guardian registration ребёнка не входит в этот MVP-срез (ADR-0037 §11) — self-registration относится только к собственной Person аутентифицированного пользователя, независимо от роли guardian.
 
 ## 20. Cancel self registration
 
-### DELETE `/api/v1/me/events/{event_id}/registration`
+### DELETE `/api/v1/events/{event_id}/participation`
 
-Endpoint зарезервирован, но реализация также блокируется до принятия детерминированной registration policy и cancellation deadline.
+Отменяет **собственную** регистрацию аутентифицированного участника: `EventParticipation.registration_status = cancelled`. Никогда не отменяет регистрацию другого Person.
+
+Строка `EventParticipation` не удаляется физически — сохраняется как историческая запись с `registration_status = cancelled` (существующий паттерн проекта).
+
+Идемпотентна: отсутствие записи вообще и повторная отмена уже `cancelled` записи — оба silent no-op, `204 No Content`, без ошибки.
 
 ## 21. Participant status
 
@@ -513,6 +525,7 @@ There is no Club-configurable conflict severity policy in MVP.
 | Attendance update | `attendance.update` |
 | Attendance correction | `attendance.update` + mandatory reason + audit |
 | Conflict query | `event.read` |
+| Self-registration (`POST/DELETE .../participation`) | none — self-service, gated by identity + active ClubMembership + targeted GroupMembership + Event lifecycle (ADR-0037 §12); never `event.read`/any Event permission |
 
 Canonical scopes:
 

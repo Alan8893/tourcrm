@@ -132,6 +132,7 @@ function eventDetailResponse(overrides: Partial<Record<string, unknown>> = {}) {
     updated_at: "2026-01-01T00:00:00Z",
     group_ids: [],
     instructor_ids: [],
+    my_registration_status: null,
     ...overrides,
   };
 }
@@ -1369,6 +1370,188 @@ describe("EventsPage — event targeting (TH-0108)", () => {
     await user.click(screen.getByRole("button", { name: "Добавить инструктора" }));
 
     expect(await screen.findByText("Ничего не найдено")).toBeInTheDocument();
+  });
+});
+
+describe("EventsPage — participant self-registration (TH-0108.2)", () => {
+  it("shows \"Записаться\" for an eligible user, registers on click, and reflects the registered state without a page reload", async () => {
+    const range = fixedRange();
+    const reloadSpy = vi.fn();
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, reload: reloadSpy },
+      writable: true,
+    });
+    let registrationStatus: string | null = null;
+    let eventDetailCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/auth/me")) return jsonResponse(meResponse());
+      if (url.includes("/groups?status=active")) return jsonResponse(groupsResponse());
+      if (url.includes(encodeURIComponent(range.from))) {
+        return jsonResponse(
+          calendarResponse([
+            calendarItem({
+              id: "ev-1",
+              title: "Ориентирование",
+              start_at: "2026-03-15T17:00:00+03:00",
+              end_at: "2026-03-15T19:00:00+03:00",
+            }),
+          ]),
+        );
+      }
+      if (url.includes("/events/ev-1/participation") && method === "POST") {
+        registrationStatus = "registered";
+        return jsonResponse({
+          id: "part-1",
+          event_id: "ev-1",
+          person_id: "person-1",
+          registration_status: "registered",
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        });
+      }
+      if (url.includes("/events/ev-1") && method === "GET") {
+        eventDetailCalls += 1;
+        return jsonResponse(eventDetailResponse({ my_registration_status: registrationStatus }));
+      }
+      throw new Error(`Unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByText("Ориентирование"));
+    expect(await screen.findByRole("button", { name: "Записаться" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Записаться" }));
+
+    expect(await screen.findByText("Вы записаны на мероприятие")).toBeInTheDocument();
+    await screen.findByText("Вы записаны");
+    expect(await screen.findByRole("button", { name: "Отменить запись" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Записаться" })).not.toBeInTheDocument();
+    // The dialog re-rendered from a refetched query, not a mutation-local
+    // guess — proving invalidation actually ran, without reloading the page.
+    expect(eventDetailCalls).toBeGreaterThanOrEqual(2);
+    expect(reloadSpy).not.toHaveBeenCalled();
+  });
+
+  it("shows \"Вы записаны\" for an already-registered event and cancels on click, restoring the ability to register again", async () => {
+    const range = fixedRange();
+    let registrationStatus: string | null = "registered";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/auth/me")) return jsonResponse(meResponse());
+      if (url.includes("/groups?status=active")) return jsonResponse(groupsResponse());
+      if (url.includes(encodeURIComponent(range.from))) {
+        return jsonResponse(
+          calendarResponse([
+            calendarItem({
+              id: "ev-1",
+              title: "Ориентирование",
+              start_at: "2026-03-15T17:00:00+03:00",
+              end_at: "2026-03-15T19:00:00+03:00",
+            }),
+          ]),
+        );
+      }
+      if (url.includes("/events/ev-1/participation") && method === "DELETE") {
+        registrationStatus = "cancelled";
+        return new Response(null, { status: 204 });
+      }
+      if (url.includes("/events/ev-1") && method === "GET") {
+        return jsonResponse(eventDetailResponse({ my_registration_status: registrationStatus }));
+      }
+      throw new Error(`Unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByText("Ориентирование"));
+    expect(await screen.findByText("Вы записаны")).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: "Отменить запись" }));
+
+    expect(await screen.findByText("Запись отменена")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Записаться" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Отменить запись" })).not.toBeInTheDocument();
+  });
+
+  it("shows the backend's rejection via toast and keeps \"Записаться\" available for retry when the user is not eligible (e.g. not in the target Group)", async () => {
+    const range = fixedRange();
+    stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      {
+        match: encodeURIComponent(range.from),
+        response: calendarResponse([
+          calendarItem({
+            id: "ev-1",
+            title: "Ориентирование",
+            start_at: "2026-03-15T17:00:00+03:00",
+            end_at: "2026-03-15T19:00:00+03:00",
+          }),
+        ]),
+      },
+      {
+        match: "/events/ev-1/participation",
+        response: {
+          error: {
+            code: "not_eligible_for_event",
+            message: "Вы не можете записаться на это мероприятие",
+            details: {},
+            request_id: "r1",
+          },
+        },
+        status: 403,
+      },
+      { match: "/events/ev-1", response: eventDetailResponse() },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByText("Ориентирование"));
+    await user.click(await screen.findByRole("button", { name: "Записаться" }));
+
+    expect(await screen.findByText("Вы не можете записаться на это мероприятие")).toBeInTheDocument();
+    // No false success, and retry stays available rather than getting stuck.
+    expect(await screen.findByRole("button", { name: "Записаться" })).toBeEnabled();
+  });
+
+  it("shows no self-registration action for a non-published event (e.g. draft)", async () => {
+    const range = fixedRange();
+    stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      {
+        match: encodeURIComponent(range.from),
+        response: calendarResponse([
+          calendarItem({
+            id: "ev-1",
+            title: "Черновик",
+            status: "draft",
+            start_at: "2026-03-15T17:00:00+03:00",
+            end_at: "2026-03-15T19:00:00+03:00",
+          }),
+        ]),
+      },
+      { match: "/events/ev-1", response: eventDetailResponse({ status: "draft" }) },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+
+    const [dayListTitle] = await screen.findAllByText("Черновик");
+    await user.click(dayListTitle);
+    await screen.findByRole("button", { name: "Редактировать" });
+    expect(screen.queryByRole("button", { name: "Записаться" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Вы записаны")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Отменить запись" })).not.toBeInTheDocument();
   });
 });
 

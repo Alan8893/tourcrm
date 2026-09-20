@@ -194,6 +194,22 @@ Event может иметь одного или нескольких ответ�
 - excused;
 - cancelled.
 
+### 11.1 Self-registration участника (ADR-0037, TH-0108.2)
+
+Участник может самостоятельно зарегистрироваться на опубликованное (`Event.status == published`) мероприятие. Для `draft`/`completed`/`cancelled`/`archived` self-registration недоступна.
+
+Eligibility:
+
+- Person должен иметь active `ClubMembership` в Club мероприятия;
+- если у Event есть 1+ target Group — Person дополнительно должен состоять хотя бы в одной из них (active `GroupMembership`);
+- если целевых Group нет — Event club-wide, и первого условия достаточно.
+
+Person определяется только из аутентифицированной сессии; клиент не может передать `person_id` — нельзя зарегистрировать другого Person или ребёнка через Guardian-роль (Guardian registration ребёнка отдельно не входит в этот MVP-срез).
+
+Регистрация — `registered`; отмена собственной регистрации участником — `cancelled`. Обе операции идемпотентны: повторная регистрация не создаёт дубликат `EventParticipation`, повторная отмена не требует существования записи. Self-registration не создаёт Attendance, GroupMembership, ClubMembership, GuardianRelationship и не подразумевает оплату — эти факты остаются полностью независимыми.
+
+Self-registration не требует отдельного Event permission — это self-service операция, определяемая identity + membership + lifecycle, а не ролью пользователя.
+
 Нельзя считать человека посетившим мероприятие только потому, что он был зарегистрирован.
 
 ## 12. Посещаемость

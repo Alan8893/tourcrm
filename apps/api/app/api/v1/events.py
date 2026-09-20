@@ -8,11 +8,13 @@ ownership), ADR-0023 (relationship persistence semantics).
 
 Endpoints intentionally NOT implemented here (explicit Issue #40
 non-goals): EventSeries/recurrence, EventOccurrence, iCalendar,
-EventParticipation API, self-registration, participant status
-transitions, notifications. Calendar projection (`/calendar`, Issue #82 /
-TH-0080), conflict detection (`/conflicts`, Issue #91 / TH-0085) and
-Attendance (`/attendance...`, Issue #94 / TH-0087, ADR-0032) were added
-to this router by their own later Issues.
+admin-driven participant management/status transitions, notifications.
+Calendar projection (`/calendar`, Issue #82 / TH-0080), conflict
+detection (`/conflicts`, Issue #91 / TH-0085), Attendance
+(`/attendance...`, Issue #94 / TH-0087, ADR-0032) and participant
+self-registration (`/participation`, TH-0108.2, ADR-0037 — supersedes
+ADR-0020 §4's deferral for this one MVP policy) were added to this
+router by their own later Issues.
 
 Attendance's `{event_id}` path parameter resolves *only* against
 `EventOccurrence.id` (ADR-0032 §1's canonical identity is
@@ -44,7 +46,7 @@ from datetime import datetime
 from datetime import timezone as dt_timezone
 from typing import NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -54,6 +56,7 @@ from app.api.deps import (
     require_csrf_token,
 )
 from app.api.errors import APIError
+from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.events_schemas import (
     AttendanceBulkMarkOut,
@@ -71,6 +74,7 @@ from app.api.v1.events_schemas import (
     ConflictOut,
     EventCreateRequest,
     EventOut,
+    EventParticipationOut,
     EventStatusTransitionRequest,
     EventUpdateRequest,
 )
@@ -79,11 +83,12 @@ from app.authorization.context import ResourceContext
 from app.authorization.service import Authorizer
 from app.db.attendance import Attendance
 from app.db.event_recurrence import EventOccurrence
-from app.db.events import Event
+from app.db.events import Event, EventParticipation
 from app.db.identity import Club
 from app.db.session import get_db
 from app.events import attendance
 from app.events import crud as events_crud
+from app.events import participation as event_participation
 from app.events.authorization import build_event_resource_context
 from app.events.calendar import (
     CALENDAR_STATUS_FILTER_VALUES,
@@ -132,8 +137,12 @@ _STATUS_TRANSITION_PERMISSIONS = {
 }
 
 
-def _event_out(db: Session, event: Event) -> EventOut:
+def _event_out(db: Session, event: Event, *, viewer_user_id: uuid.UUID) -> EventOut:
     group_ids, instructor_ids = get_event_targeting(db, event_id=event.id)
+    viewer_person_id = event_participation.person_id_for_user(db, viewer_user_id)
+    my_registration_status = event_participation.get_viewer_registration_status(
+        db, event_id=event.id, person_id=viewer_person_id
+    )
     return EventOut(
         id=event.id,
         club_id=event.club_id,
@@ -160,6 +169,7 @@ def _event_out(db: Session, event: Event) -> EventOut:
         updated_at=event.updated_at,
         group_ids=group_ids,
         instructor_ids=instructor_ids,
+        my_registration_status=my_registration_status,
     )
 
 
@@ -269,7 +279,7 @@ def list_events(
 
     pages = (total + page_size - 1) // page_size if total else 0
     return CollectionResponse(
-        items=[_event_out(db, event) for event in rows],
+        items=[_event_out(db, event, viewer_user_id=principal.user_id) for event in rows],
         pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
     )
 
@@ -431,7 +441,7 @@ def get_event(
     event = _get_authorized_event_or_404(
         db, event_id=event_id, user_id=principal.user_id, permission_code="event.read"
     )
-    return _event_out(db, event)
+    return _event_out(db, event, viewer_user_id=principal.user_id)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=EventOut)
@@ -480,7 +490,7 @@ def create_event(
     except EventStaffAssignmentError as exc:
         _raise_for_staff_assignment_error(exc)
     logger.info("events.create.success event_id=%s user_id=%s", event.id, principal.user_id)
-    return _event_out(db, event)
+    return _event_out(db, event, viewer_user_id=principal.user_id)
 
 
 _NON_NULLABLE_UPDATE_FIELDS = ("event_type", "title", "start_at", "end_at", "timezone")
@@ -533,7 +543,7 @@ def update_event(
     except EventStaffAssignmentError as exc:
         _raise_for_staff_assignment_error(exc)
     logger.info("events.update.success event_id=%s user_id=%s", event.id, principal.user_id)
-    return _event_out(db, event)
+    return _event_out(db, event, viewer_user_id=principal.user_id)
 
 
 @router.post("/{event_id}/status", response_model=EventOut)
@@ -576,7 +586,7 @@ def transition_event_status(
         event.status,
         principal.user_id,
     )
-    return _event_out(db, event)
+    return _event_out(db, event, viewer_user_id=principal.user_id)
 
 
 @router.post("/{event_id}/archive", response_model=EventOut)
@@ -599,7 +609,86 @@ def archive_event(
     except EventDomainError as exc:
         _raise_for_domain_error(exc)
     logger.info("events.archive.success event_id=%s user_id=%s", event.id, principal.user_id)
-    return _event_out(db, event)
+    return _event_out(db, event, viewer_user_id=principal.user_id)
+
+
+# --- Self-registration (TH-0108.2, ADR-0037) --------------------------------
+#
+# Deliberately does NOT use _get_authorized_event_or_404/Authorizer: per
+# ADR-0037 §12, self-registration is a self-service operation gated by the
+# participant's own identity, active ClubMembership, targeted GroupMembership
+# and Event lifecycle — never by `event.read`/any generic Event permission
+# or scope. See app.events.participation's module docstring for the full
+# eligibility algorithm and rationale.
+
+
+def _participation_out(row: EventParticipation) -> EventParticipationOut:
+    return EventParticipationOut(
+        id=row.id,
+        event_id=row.event_id,
+        person_id=row.person_id,
+        registration_status=row.registration_status,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+@router.post("/{event_id}/participation", response_model=EventParticipationOut)
+def register_for_event(
+    event_id: uuid.UUID,
+    request: Request,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> EventParticipationOut:
+    # ADR-0037 §13: the client MUST NOT submit a person_id — there is no
+    # request body at all; the Person is resolved server-side from the
+    # authenticated principal by app.events.participation.register_for_event.
+    try:
+        participation = event_participation.register_for_event(
+            db,
+            event_id=event_id,
+            user_id=principal.user_id,
+            request_id=get_request_id(request),
+        )
+    except event_participation.EventNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL
+        ) from exc
+    except event_participation.EventNotPublishedError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "event_not_published", str(exc)) from exc
+    except event_participation.NotEligibleForEventError as exc:
+        raise APIError(status.HTTP_403_FORBIDDEN, "not_eligible_for_event", str(exc)) from exc
+    logger.info(
+        "events.participation.registered event_id=%s user_id=%s",
+        event_id,
+        principal.user_id,
+    )
+    return _participation_out(participation)
+
+
+@router.delete("/{event_id}/participation", status_code=status.HTTP_204_NO_CONTENT)
+def withdraw_from_event(
+    event_id: uuid.UUID,
+    request: Request,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> None:
+    # Idempotent: no participation row at all, and a row already
+    # `cancelled`, are both a silent no-op success — never a 404, matching
+    # ADR-0037 §6's "the operation is idempotent" requirement (test M/L).
+    event_participation.withdraw_from_event(
+        db,
+        event_id=event_id,
+        user_id=principal.user_id,
+        request_id=get_request_id(request),
+    )
+    logger.info(
+        "events.participation.cancelled event_id=%s user_id=%s",
+        event_id,
+        principal.user_id,
+    )
 
 
 # --- Attendance (Issue #94 / TH-0087, ADR-0032) -----------------------------

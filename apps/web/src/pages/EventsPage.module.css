@@ -376,6 +376,12 @@
   color: var(--color-danger);
 }
 
+.registrationRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
 .detailActions {
   display: flex;
   justify-content: flex-end;

@@ -16,6 +16,14 @@ a second: `membership.updated`, for non-lifecycle ClubMembership
 attribute changes (currently only `membership_type`) — distinct from
 `membership.status_changed` (a lifecycle status transition) and
 `membership.ended` (a lifecycle transition that also sets `left_at`).
+
+ADR-0037 (TH-0108.2) is a third such amendment: `event_participation.
+status_changed`, covering every `EventParticipation.registration_status`
+transition a participant's self-registration/withdrawal produces
+(unregistered -> registered, registered -> cancelled, cancelled ->
+registered) — one action code with `details={"from": ..., "to": ...}`,
+mirroring `membership.status_changed`'s identical shape for a
+multi-transition lifecycle column, rather than one action per direction.
 """
 
 CANONICAL_ACTOR_TYPES: frozenset[str] = frozenset({"user", "system"})
@@ -94,5 +102,7 @@ CANONICAL_AUDIT_ACTIONS: frozenset[str] = frozenset(
         "attendance.changed",
         "attendance.bulk_changed",
         "attendance.corrected",
+        # Event self-registration (ADR-0037 amendment to ADR-0024 §4, TH-0108.2)
+        "event_participation.status_changed",
     }
 )
