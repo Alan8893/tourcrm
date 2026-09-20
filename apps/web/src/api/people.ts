@@ -215,9 +215,12 @@ export type PersonFields = {
   photo_file_id?: string | null;
 };
 
-/** `POST /api/v1/persons` — `person.create`, admin-only, no `club_id`
- * (Person is Club-neutral; creating a ClubMembership is a distinct,
- * separate operation, never bundled into this call). */
+/** `POST /api/v1/persons` — `person.create`, admin-only, no `club_id` in
+ * the request (Person itself stays Club-neutral). TH-0111 / Issue #140:
+ * the backend now atomically creates the Person's initial active
+ * ClubMembership for the current Club in the same transaction, so this
+ * remains the single mutation the "Добавить человека" flow calls — never
+ * followed by a separate `useCreateMembership()` call from the frontend. */
 export function useCreatePerson() {
   const queryClient = useQueryClient();
   return useMutation<Person, ApiError, PersonFields>({

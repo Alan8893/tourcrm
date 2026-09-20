@@ -172,7 +172,7 @@ function CreatePersonDialog({ open, onClose }: { open: boolean; onClose: () => v
     <Dialog
       open={open}
       title="Новый человек"
-      description="Личность создаётся отдельно от членства в клубе — привязать её к клубу можно после."
+      description="Человек будет сразу добавлен в клуб с активным членством."
       onClose={handleClose}
       actions={
         <>

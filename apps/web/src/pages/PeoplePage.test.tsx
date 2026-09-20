@@ -220,6 +220,58 @@ describe("PeoplePage", () => {
     expect(await screen.findByText("Person detail page")).toBeInTheDocument();
   });
 
+  it("calls only POST /persons — never a separate /memberships request — and refreshes the list (TH-0111)", async () => {
+    // TH-0111 / Issue #140: `POST /persons` now atomically creates the
+    // Person's initial active ClubMembership on the backend, so the
+    // frontend must perform exactly one mutation and must never call
+    // `/memberships` itself to "finish" what the backend already did.
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/persons?page=1", response: peopleResponse([], { page: 1, page_size: 20, total: 0, pages: 0 }) },
+      {
+        match: "/persons",
+        response: {
+          id: "new-1",
+          first_name: "Мария",
+          last_name: "Смирнова",
+          middle_name: null,
+          birth_date: null,
+          phone: null,
+          email: null,
+          address: null,
+          photo_file_id: null,
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+      },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people" element={<PeoplePage />} />
+        <Route path="/people/:personId" element={<div>Person detail page</div>} />
+      </Routes>,
+      { route: "/people" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Добавить человека" }));
+    await user.type(screen.getByLabelText("Фамилия"), "Смирнова");
+    await user.type(screen.getByLabelText("Имя"), "Мария");
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    await screen.findByText("Person detail page");
+
+    const personCreateCalls = fetchMock.mock.calls.filter(([input, init]) => {
+      const url = String(input);
+      return url.includes("/persons") && !url.includes("/persons?") && init?.method === "POST";
+    });
+    expect(personCreateCalls).toHaveLength(1);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/memberships"))).toBe(
+      false,
+    );
+  });
+
   it("shows an API error via toast and keeps the create dialog open", async () => {
     stubFetch([
       { match: "/auth/me", response: meResponse("admin") },

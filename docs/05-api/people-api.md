@@ -66,9 +66,11 @@ API возвращает только поля, разрешённые конк�
 
 Создание Person выполняется только при наличии канонического permission `person.create`. В MVP `person.create` доступен только `admin`.
 
-Person является Club-neutral identity. В MVP используется один инициализированный Club; отдельный выбор Club в UI не вводится.
+Person является Club-neutral identity: сама схема `Person`/`PersonCreateRequest`/`PersonOut` не содержит `club_id`, и создание Person как domain entity остаётся отдельной операцией от создания `ClubMembership` как domain entity.
 
-Создание Person и создание `ClubMembership` являются разными доменными операциями. UI может последовательно выполнить их в одном пользовательском сценарии.
+**TH-0111 / Issue #140**: тем не менее, application-операция `POST /api/v1/persons` атомарно создаёт Person и его начальное активное `ClubMembership` для текущего Club — в одной транзакции: `person.created` + `membership.created` либо оба фиксируются, либо оба откатываются. Это необходимо, чтобы созданный Person сразу был виден создавшему его club-scoped admin (`person_visibility_filter`'s club-scoped `all` предикат требует реальной строки `ClubMembership`) — до TH-0111 Person без ClubMembership был невидим для своего создателя сразу после создания. Membership создаётся с `membership_type="member"`, `status="active"`, `joined_at` = момент создания; `membership_type` не является User Role и не требует отдельного выбора в форме. Текущий Club определяется через существующий канонический механизм — `person.create`-предоставляющий assignment вызывающего (если он club-scoped) либо единственный существующий Club в MVP (если assignment глобальный) — без введения нового current-club механизма и без изменения общего authorization engine. Авторизация остаётся прежней: только `person.create`; `membership.manage` для этой compound-операции не требуется, поскольку все поля создаваемого membership фиксированы и не являются предметом отдельного discretionary-решения. Ни User, ни UserRoleAssignment, ни GuardianRelationship, ни GroupMembership, ни GroupInstructorAssignment, ни EventParticipation этой операцией не создаются — назначение роли и все прочие доменные связи остаются отдельными операциями, инициируемыми позже со страницы Person.
+
+Никакого нового или отдельного endpoint для этого не вводится: `POST /api/v1/persons` остаётся единственным способом добавить человека.
 
 ADR-0025 §9: heuristic duplicate detection (similarity/fuzzy matching, email/phone scoring, автоматическое объединение) не реализуется в текущем MVP slice. `DUPLICATE_PERSON` остаётся зарезервированным error-кодом для потенциального будущего использования, а не требованием текущего slice.
 

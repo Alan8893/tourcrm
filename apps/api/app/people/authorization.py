@@ -77,7 +77,7 @@ from app.authentication.bootstrap import ADMIN_ROLE_CODE
 from app.authorization.context import ResourceContext
 from app.authorization.service import applicable_assignments, club_boundary_matches, scope_matches
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
-from app.db.identity import ClubMembership, GuardianRelationship, Person, User
+from app.db.identity import Club, ClubMembership, GuardianRelationship, Person, User
 
 _ACTIVE_GROUP_MEMBERSHIP_STATUS = "active"
 _ACTIVE_CLUB_MEMBERSHIP_STATUS = "active"
@@ -290,6 +290,57 @@ def has_person_create_assignment(session: Session, user_id: uuid.UUID) -> bool:
     return any(assignment.scope_type == "all" for assignment in assignments)
 
 
+class NoClubConfiguredError(Exception):
+    """Raised by `resolve_current_club_id_for_person_create` if literally
+    no Club row exists yet. Should be unreachable in practice: bootstrap
+    (`app.authentication.bootstrap.bootstrap_initial_administrator`)
+    creates the installation's one Club atomically with its first
+    administrator, and no `person.create` assignment can exist before
+    that has run.
+    """
+
+
+def resolve_current_club_id_for_person_create(session: Session, user_id: uuid.UUID) -> uuid.UUID:
+    """TH-0111 / Issue #140: resolve "the current Club" for the compound
+    `POST /persons` operation (Person + its initial active ClubMembership)
+    — using only already-established facts, not a new current-club
+    mechanism.
+
+    Primary source: `user_id`'s own qualifying `person.create` assignment
+    (the same set `has_person_create_assignment` checks). If it is
+    club-scoped, that Club is unambiguously theirs — this is exactly the
+    bootstrap-created, club-scoped primary administrator scenario TH-0106
+    fixed, and the scenario this Issue's bug report is about.
+
+    Fallback: if every qualifying assignment is global (`club_id IS
+    NULL`), resolve to the sole Club row. This is not a new "current
+    club" concept, only making an already-true fact explicit:
+    `docs/05-api/people-api.md` §6 documents that exactly one Club exists
+    for the lifetime of an installation in the current MVP, there is no
+    `POST /clubs` endpoint anywhere, and bootstrap refuses to run a
+    second time (`AdministratorAlreadyExistsError`) — so "the sole Club"
+    is already structurally guaranteed to be unambiguous, never a
+    guess among several.
+    """
+    assignments = applicable_assignments(session, user_id, "person.create")
+    club_scoped_ids = {
+        assignment.club_id
+        for assignment in assignments
+        if assignment.scope_type == "all" and assignment.club_id is not None
+    }
+    if club_scoped_ids:
+        # Structurally a single value: a club-scoped assignment's
+        # `club_id` is FK-constrained to an existing Club row, and (per
+        # this function's own docstring) exactly one Club row can ever
+        # exist in the current MVP.
+        return next(iter(club_scoped_ids))
+
+    club_id = session.execute(sa.select(Club.id)).scalars().first()
+    if club_id is None:
+        raise NoClubConfiguredError("No Club exists yet; bootstrap must run first")
+    return club_id
+
+
 def is_system_admin_person_update_grant(session: Session, user_id: uuid.UUID) -> bool:
     """ADR-0035 §5: only the canonical system `admin` role may change
     `birth_date`, including on the admin's own Person. This is a
@@ -399,6 +450,8 @@ __all__ = [
     "person_visibility_filter",
     "is_person_visible",
     "has_person_create_assignment",
+    "NoClubConfiguredError",
+    "resolve_current_club_id_for_person_create",
     "is_system_admin_person_update_grant",
     "build_membership_resource_context",
     "membership_visibility_filter",
