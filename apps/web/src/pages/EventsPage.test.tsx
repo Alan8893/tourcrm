@@ -130,6 +130,8 @@ function eventDetailResponse(overrides: Partial<Record<string, unknown>> = {}) {
     updated_by: null,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
+    group_ids: [],
+    instructor_ids: [],
     ...overrides,
   };
 }
@@ -1059,6 +1061,314 @@ describe("EventsPage — create / edit", () => {
       const body = JSON.parse(String((patchCall?.[1] as RequestInit).body));
       expect(body.title).toBe("Ориентирование (изменено)");
     });
+  });
+});
+
+describe("EventsPage — event targeting (TH-0108)", () => {
+  it("shows a Group selector, unchecked by default (club-wide)", async () => {
+    const range = fixedRange();
+    stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      {
+        match: "/groups?status=active",
+        response: groupsResponse([
+          { id: "g1", name: "Орлы" },
+          { id: "g2", name: "Волки" },
+        ]),
+      },
+      { match: encodeURIComponent(range.from), response: calendarResponse([]) },
+      { match: "/users?", response: usersResponse([]) },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Создать событие" }));
+
+    expect(await screen.findByRole("checkbox", { name: "Орлы" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Волки" })).not.toBeChecked();
+    expect(screen.getByText(/адресовано всем участникам клуба/)).toBeInTheDocument();
+  });
+
+  it("creates an event targeted to one selected Group", async () => {
+    const range = fixedRange();
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse([{ id: "g1", name: "Орлы" }]) },
+      { match: encodeURIComponent(range.from), response: calendarResponse([]) },
+      { match: "/users?", response: usersResponse([]) },
+      { match: "/events", response: eventDetailResponse({ id: "new-event", group_ids: ["g1"] }) },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Создать событие" }));
+    await user.type(screen.getByLabelText("Название"), "Занятие");
+    await user.click(await screen.findByRole("checkbox", { name: "Орлы" }));
+    expect(screen.queryByText(/адресовано всем участникам клуба/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    await waitFor(() => {
+      const postCall = fetchMock.mock.calls.find(
+        ([input, init]) => String(input).endsWith("/events") && (init as RequestInit)?.method === "POST",
+      );
+      expect(postCall).toBeDefined();
+      const body = JSON.parse(String((postCall?.[1] as RequestInit).body));
+      expect(body.group_ids).toEqual(["g1"]);
+    });
+  });
+
+  it("creates an event targeted to several selected Groups", async () => {
+    const range = fixedRange();
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      {
+        match: "/groups?status=active",
+        response: groupsResponse([
+          { id: "g1", name: "Орлы" },
+          { id: "g2", name: "Волки" },
+        ]),
+      },
+      { match: encodeURIComponent(range.from), response: calendarResponse([]) },
+      { match: "/users?", response: usersResponse([]) },
+      { match: "/events", response: eventDetailResponse({ id: "new-event", group_ids: ["g1", "g2"] }) },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Создать событие" }));
+    await user.type(screen.getByLabelText("Название"), "Занятие");
+    await user.click(await screen.findByRole("checkbox", { name: "Орлы" }));
+    await user.click(screen.getByRole("checkbox", { name: "Волки" }));
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    await waitFor(() => {
+      const postCall = fetchMock.mock.calls.find(
+        ([input, init]) => String(input).endsWith("/events") && (init as RequestInit)?.method === "POST",
+      );
+      expect(postCall).toBeDefined();
+      const body = JSON.parse(String((postCall?.[1] as RequestInit).body));
+      expect([...body.group_ids].sort()).toEqual(["g1", "g2"]);
+    });
+  });
+
+  it("selects a single instructor from the picker and sends it on save", async () => {
+    const range = fixedRange();
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      { match: encodeURIComponent(range.from), response: calendarResponse([]) },
+      { match: "/users?", response: usersResponse([{ id: "u2", first_name: "Пётр", last_name: "Сидоров" }]) },
+      { match: "/events", response: eventDetailResponse({ id: "new-event", instructor_ids: ["u2"] }) },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Создать событие" }));
+    await user.type(screen.getByLabelText("Название"), "Занятие");
+    await user.click(screen.getByRole("button", { name: "Добавить инструктора" }));
+    await user.click(await screen.findByRole("checkbox", { name: "Сидоров Пётр" }));
+    await user.click(screen.getByRole("button", { name: "Готово" }));
+
+    expect(screen.getByText("Сидоров Пётр")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+    await waitFor(() => {
+      const postCall = fetchMock.mock.calls.find(
+        ([input, init]) => String(input).endsWith("/events") && (init as RequestInit)?.method === "POST",
+      );
+      expect(postCall).toBeDefined();
+      const body = JSON.parse(String((postCall?.[1] as RequestInit).body));
+      expect(body.instructor_ids).toEqual(["u2"]);
+    });
+  });
+
+  it("selects several instructors from the picker", async () => {
+    const range = fixedRange();
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      { match: encodeURIComponent(range.from), response: calendarResponse([]) },
+      {
+        match: "/users?",
+        response: usersResponse([
+          { id: "u2", first_name: "Пётр", last_name: "Сидоров" },
+          { id: "u3", first_name: "Мария", last_name: "Кузнецова" },
+        ]),
+      },
+      { match: "/events", response: eventDetailResponse({ id: "new-event", instructor_ids: ["u2", "u3"] }) },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Создать событие" }));
+    await user.type(screen.getByLabelText("Название"), "Занятие");
+    await user.click(screen.getByRole("button", { name: "Добавить инструктора" }));
+    await user.click(await screen.findByRole("checkbox", { name: "Сидоров Пётр" }));
+    await user.click(screen.getByRole("checkbox", { name: "Кузнецова Мария" }));
+    await user.click(screen.getByRole("button", { name: "Готово" }));
+
+    expect(screen.getByText("Сидоров Пётр")).toBeInTheDocument();
+    expect(screen.getByText("Кузнецова Мария")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+    await waitFor(() => {
+      const postCall = fetchMock.mock.calls.find(
+        ([input, init]) => String(input).endsWith("/events") && (init as RequestInit)?.method === "POST",
+      );
+      expect(postCall).toBeDefined();
+      const body = JSON.parse(String((postCall?.[1] as RequestInit).body));
+      expect([...body.instructor_ids].sort()).toEqual(["u2", "u3"]);
+    });
+  });
+
+  it("restores existing Group/instructor targeting when editing an Event", async () => {
+    const range = fixedRange();
+    stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse([{ id: "g1", name: "Орлы" }]) },
+      {
+        match: encodeURIComponent(range.from),
+        response: calendarResponse([
+          calendarItem({
+            id: "ev-1",
+            title: "Ориентирование",
+            start_at: "2026-03-15T17:00:00+03:00",
+            end_at: "2026-03-15T19:00:00+03:00",
+          }),
+        ]),
+      },
+      { match: "/users?", response: usersResponse([{ id: "u2", first_name: "Пётр", last_name: "Сидоров" }]) },
+      {
+        match: "/events/ev-1",
+        response: eventDetailResponse({ group_ids: ["g1"], instructor_ids: ["u2"] }),
+      },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("Ориентирование"));
+    await user.click(await screen.findByRole("button", { name: "Редактировать" }));
+
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Орлы" })).toBeChecked());
+    expect(await screen.findByText("Сидоров Пётр")).toBeInTheDocument();
+  });
+
+  it("lets editing change the target Groups and instructors, sent via PATCH", async () => {
+    const range = fixedRange();
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse([{ id: "g1", name: "Орлы" }]) },
+      {
+        match: encodeURIComponent(range.from),
+        response: calendarResponse([
+          calendarItem({
+            id: "ev-1",
+            title: "Ориентирование",
+            start_at: "2026-03-15T17:00:00+03:00",
+            end_at: "2026-03-15T19:00:00+03:00",
+          }),
+        ]),
+      },
+      { match: "/users?", response: usersResponse([{ id: "u2", first_name: "Пётр", last_name: "Сидоров" }]) },
+      {
+        match: "/events/ev-1",
+        response: eventDetailResponse({ group_ids: ["g1"], instructor_ids: ["u2"] }),
+      },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("Ориентирование"));
+    await user.click(await screen.findByRole("button", { name: "Редактировать" }));
+
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Орлы" })).toBeChecked());
+    await user.click(screen.getByRole("checkbox", { name: "Орлы" }));
+    await user.click(await screen.findByRole("button", { name: /Убрать/ }));
+    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    await waitFor(() => {
+      const patchCall = fetchMock.mock.calls.find(
+        ([input, init]) => String(input).endsWith("/events/ev-1") && (init as RequestInit)?.method === "PATCH",
+      );
+      expect(patchCall).toBeDefined();
+      const body = JSON.parse(String((patchCall?.[1] as RequestInit).body));
+      expect(body.group_ids).toEqual([]);
+      expect(body.instructor_ids).toEqual([]);
+    });
+  });
+
+  it("shows a backend targeting error via toast and keeps the dialog open", async () => {
+    const range = fixedRange();
+    stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse([{ id: "g1", name: "Орлы" }]) },
+      { match: encodeURIComponent(range.from), response: calendarResponse([]) },
+      { match: "/users?", response: usersResponse([]) },
+      {
+        match: "/events",
+        response: {
+          error: {
+            code: "group_club_mismatch",
+            message: "Группа принадлежит другому клубу",
+            details: {},
+            request_id: "r1",
+          },
+        },
+        status: 422,
+      },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Создать событие" }));
+    await user.type(screen.getByLabelText("Название"), "Занятие");
+    await user.click(await screen.findByRole("checkbox", { name: "Орлы" }));
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    expect(await screen.findByText("Группа принадлежит другому клубу")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Новое событие" })).toBeInTheDocument();
+  });
+
+  it("shows a loading state while the instructor directory loads", async () => {
+    const range = fixedRange();
+    let resolveUsers: (value: Response) => void = () => {};
+    const usersPromise = new Promise<Response>((resolve) => {
+      resolveUsers = resolve;
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/auth/me")) return jsonResponse(meResponse());
+      if (url.includes("/groups?status=active")) return jsonResponse(groupsResponse());
+      if (url.includes(encodeURIComponent(range.from))) return jsonResponse(calendarResponse([]));
+      if (url.includes("/users?")) return usersPromise;
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Создать событие" }));
+    await user.click(screen.getByRole("button", { name: "Добавить инструктора" }));
+
+    expect(await screen.findByText("Загружаем инструкторов…")).toBeInTheDocument();
+    resolveUsers(jsonResponse(usersResponse([])));
+  });
+
+  it("shows an empty state when the instructor directory has no matches", async () => {
+    const range = fixedRange();
+    stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      { match: encodeURIComponent(range.from), response: calendarResponse([]) },
+      { match: "/users?", response: usersResponse([]) },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Создать событие" }));
+    await user.click(screen.getByRole("button", { name: "Добавить инструктора" }));
+
+    expect(await screen.findByText("Ничего не найдено")).toBeInTheDocument();
   });
 });
 

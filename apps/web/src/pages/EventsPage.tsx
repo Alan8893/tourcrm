@@ -912,6 +912,27 @@ function EventFormDialog({
   const eventQuery = useEvent(mode.kind === "edit-event" ? mode.eventId : undefined);
   const occurrenceQuery = useOccurrence(mode.kind === "edit-occurrence" ? mode.occurrenceId : undefined);
 
+  // TH-0108 / ADR-0037 §1-§2: Group targeting and responsible-instructor
+  // assignment are only meaningful for an ordinary Event, never a single
+  // recurring occurrence (EventGroupTarget/EventStaffAssignment belong to
+  // the parent Event, not per-occurrence — ADR-0033's model has no such
+  // concept), so this section is hidden for `edit-occurrence`, exactly
+  // like the existing location fields already are.
+  const isTargetingEditable = mode.kind === "create" || mode.kind === "edit-event";
+  const targetingClubId =
+    mode.kind === "create" ? mode.clubId : mode.kind === "edit-event" ? (eventQuery.data?.club_id ?? null) : null;
+
+  const groupsQuery = useGroups({ status: "active" });
+  // Resolves readable names for the club's instructors so already-assigned
+  // ones (edit mode) show a name, not a bare id, before the picker below
+  // has ever been searched — the same `GET /users` User Directory the
+  // picker itself queries, no new endpoint.
+  const instructorDirectoryQuery = useUsers({
+    role: "instructor",
+    club_id: targetingClubId ?? undefined,
+    enabled: isTargetingEditable && open,
+  });
+
   const loadingExisting =
     (mode.kind === "edit-event" && eventQuery.isLoading) ||
     (mode.kind === "edit-occurrence" && occurrenceQuery.isLoading);
@@ -930,6 +951,8 @@ function EventFormDialog({
         end: toDatetimeLocalValue(end),
         locationName: "",
         locationAddress: "",
+        groupIds: [] as string[],
+        instructorIds: [] as string[],
       };
     }
     if (mode.kind === "edit-event" && eventQuery.data) {
@@ -942,6 +965,8 @@ function EventFormDialog({
         end: toDatetimeLocalValue(new Date(event.end_at)),
         locationName: event.location_name ?? "",
         locationAddress: event.location_address ?? "",
+        groupIds: event.group_ids,
+        instructorIds: event.instructor_ids,
       };
     }
     if (mode.kind === "edit-occurrence" && occurrenceQuery.data) {
@@ -954,6 +979,8 @@ function EventFormDialog({
         end: toDatetimeLocalValue(new Date(occurrence.ends_at)),
         locationName: "",
         locationAddress: "",
+        groupIds: [] as string[],
+        instructorIds: [] as string[],
       };
     }
     return null;
@@ -966,6 +993,10 @@ function EventFormDialog({
   const [end, setEnd] = useState("");
   const [locationName, setLocationName] = useState("");
   const [locationAddress, setLocationAddress] = useState("");
+  const [groupIds, setGroupIds] = useState<string[]>([]);
+  const [instructorIds, setInstructorIds] = useState<string[]>([]);
+  const [instructorNames, setInstructorNames] = useState<Record<string, string>>({});
+  const [instructorPickerOpen, setInstructorPickerOpen] = useState(false);
   const [hydratedFor, setHydratedFor] = useState<string | null>(null);
 
   const formKey = mode.kind === "create" ? "create" : mode.kind === "edit-event" ? mode.eventId : mode.occurrenceId;
@@ -982,8 +1013,40 @@ function EventFormDialog({
     setEnd(initial.end);
     setLocationName(initial.locationName);
     setLocationAddress(initial.locationAddress);
+    setGroupIds(initial.groupIds);
+    setInstructorIds(initial.instructorIds);
     setHydratedFor(formKey);
   }, [initial, hydratedFor, formKey]);
+
+  // Caches every instructor name this dialog has ever seen from the
+  // Directory (both this unfiltered prefetch and the picker's own search
+  // results below merge in here), so a chip never shows a bare id once
+  // its owner has appeared in a directory response.
+  useEffect(() => {
+    if (!instructorDirectoryQuery.data) return;
+    setInstructorNames((previous) => {
+      const next = { ...previous };
+      for (const user of instructorDirectoryQuery.data.items) next[user.id] = userFullName(user);
+      return next;
+    });
+  }, [instructorDirectoryQuery.data]);
+
+  function toggleGroup(groupId: string) {
+    setGroupIds((previous) =>
+      previous.includes(groupId) ? previous.filter((id) => id !== groupId) : [...previous, groupId],
+    );
+  }
+
+  function toggleInstructor(user: { id: string; name: string }) {
+    setInstructorNames((previous) => ({ ...previous, [user.id]: user.name }));
+    setInstructorIds((previous) =>
+      previous.includes(user.id) ? previous.filter((id) => id !== user.id) : [...previous, user.id],
+    );
+  }
+
+  function removeInstructor(userId: string) {
+    setInstructorIds((previous) => previous.filter((id) => id !== userId));
+  }
 
   const isLocationEditable = mode.kind === "create" || mode.kind === "edit-event";
   const isValid =
@@ -992,6 +1055,7 @@ function EventFormDialog({
 
   function handleClose() {
     setHydratedFor(null);
+    setInstructorPickerOpen(false);
     onClose();
   }
 
@@ -1012,6 +1076,8 @@ function EventFormDialog({
         location_name: locationName.trim() || undefined,
         location_address: locationAddress.trim() || undefined,
         location_type: locationName.trim() ? "custom" : undefined,
+        group_ids: groupIds,
+        instructor_ids: instructorIds,
       };
       createEvent.mutate(fields, {
         onSuccess: () => {
@@ -1037,6 +1103,8 @@ function EventFormDialog({
             location_name: locationName.trim() || undefined,
             location_address: locationAddress.trim() || undefined,
             location_type: locationName.trim() ? "custom" : undefined,
+            group_ids: groupIds,
+            instructor_ids: instructorIds,
           },
         },
         {
@@ -1117,27 +1185,186 @@ function EventFormDialog({
             />
           </>
         ) : null}
+        {isTargetingEditable ? (
+          <>
+            <div className={styles.targetingField}>
+              <span className={styles.targetingLabel}>
+                Группы
+                {groupIds.length === 0 ? " — событие адресовано всем участникам клуба" : ""}
+              </span>
+              {groupsQuery.isLoading ? <Loading label="Загружаем группы…" /> : null}
+              {groupsQuery.isError ? (
+                <ErrorState
+                  illustration="error"
+                  title="Не удалось загрузить группы"
+                  description={groupsQuery.error.message}
+                  action={
+                    <Button variant="secondary" onClick={() => groupsQuery.refetch()}>
+                      Повторить
+                    </Button>
+                  }
+                />
+              ) : null}
+              {groupsQuery.isSuccess ? (
+                <ul className={styles.pickerList}>
+                  {groupsQuery.data.items.map((group) => (
+                    <li key={group.id}>
+                      <label className={`${styles.pickerItem} ${styles.pickerItemRow}`}>
+                        <input
+                          type="checkbox"
+                          checked={groupIds.includes(group.id)}
+                          onChange={() => toggleGroup(group.id)}
+                        />
+                        {group.name}
+                      </label>
+                    </li>
+                  ))}
+                  {groupsQuery.data.items.length === 0 ? (
+                    <li className={styles.pickerEmpty}>Нет активных групп</li>
+                  ) : null}
+                </ul>
+              ) : null}
+            </div>
+
+            <div className={styles.targetingField}>
+              <span className={styles.targetingLabel}>Ответственные инструкторы</span>
+              {instructorIds.length > 0 ? (
+                <div className={styles.chipList}>
+                  {instructorIds.map((id) => (
+                    <span key={id} className={styles.chipRemovable}>
+                      {instructorNames[id] ?? id}
+                      <button
+                        type="button"
+                        className={styles.chipRemoveButton}
+                        aria-label={`Убрать ${instructorNames[id] ?? "инструктора"}`}
+                        onClick={() => removeInstructor(id)}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <Button variant="secondary" onClick={() => setInstructorPickerOpen(true)}>
+                Добавить инструктора
+              </Button>
+            </div>
+          </>
+        ) : null}
       </div>
     );
   }
 
   return (
+    <>
+      <Dialog
+        open={open}
+        title={title_}
+        onClose={handleClose}
+        actions={
+          <>
+            <Button variant="secondary" onClick={handleClose} disabled={isPending}>
+              Отмена
+            </Button>
+            <Button variant="primary" onClick={handleSubmit} disabled={!isValid || isPending || loadingExisting}>
+              {mode.kind === "create" ? "Создать" : "Сохранить"}
+            </Button>
+          </>
+        }
+      >
+        {body}
+      </Dialog>
+      {isTargetingEditable ? (
+        <InstructorMultiPickerDialog
+          open={instructorPickerOpen}
+          clubId={targetingClubId}
+          selectedIds={instructorIds}
+          onToggle={toggleInstructor}
+          onClose={() => setInstructorPickerOpen(false)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function InstructorMultiPickerDialog({
+  open,
+  clubId,
+  selectedIds,
+  onToggle,
+  onClose,
+}: {
+  open: boolean;
+  clubId: string | null;
+  selectedIds: string[];
+  onToggle: (user: { id: string; name: string }) => void;
+  onClose: () => void;
+}) {
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
+  const usersQuery = useUsers({
+    role: "instructor",
+    club_id: clubId ?? undefined,
+    search: debouncedSearch,
+    enabled: open,
+  });
+
+  function handleClose() {
+    setSearch("");
+    onClose();
+  }
+
+  return (
     <Dialog
       open={open}
-      title={title_}
+      title="Выбрать инструкторов"
       onClose={handleClose}
       actions={
-        <>
-          <Button variant="secondary" onClick={handleClose} disabled={isPending}>
-            Отмена
-          </Button>
-          <Button variant="primary" onClick={handleSubmit} disabled={!isValid || isPending || loadingExisting}>
-            {mode.kind === "create" ? "Создать" : "Сохранить"}
-          </Button>
-        </>
+        <Button variant="primary" onClick={handleClose}>
+          Готово
+        </Button>
       }
     >
-      {body}
+      <div className={styles.form}>
+        <SearchInput
+          label="Поиск инструктора"
+          value={search}
+          onChange={setSearch}
+          placeholder="Например, «Иванова»"
+        />
+        {usersQuery.isLoading ? <Loading label="Загружаем инструкторов…" /> : null}
+        {usersQuery.isError ? (
+          <ErrorState
+            illustration="error"
+            title="Не удалось загрузить инструкторов"
+            description={usersQuery.error.message}
+            action={
+              <Button variant="secondary" onClick={() => usersQuery.refetch()}>
+                Повторить
+              </Button>
+            }
+          />
+        ) : null}
+        {usersQuery.isSuccess ? (
+          <ul className={styles.pickerList}>
+            {usersQuery.data.items.map((user) => (
+              <li key={user.id}>
+                <label className={`${styles.pickerItem} ${styles.pickerItemRow}`}>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.includes(user.id)}
+                    onChange={() => onToggle({ id: user.id, name: userFullName(user) })}
+                  />
+                  {userFullName(user)}
+                </label>
+              </li>
+            ))}
+            {usersQuery.data.items.length === 0 ? (
+              <li className={styles.pickerEmpty}>Ничего не найдено</li>
+            ) : null}
+          </ul>
+        ) : null}
+      </div>
     </Dialog>
   );
 }

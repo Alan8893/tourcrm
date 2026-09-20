@@ -65,6 +65,7 @@ from sqlalchemy.orm import Session
 from app.authorization.club_ownership import user_has_active_club_membership
 from app.db.events import Event, EventGroupTarget, EventStaffAssignment
 from app.db.groups import Group
+from app.db.identity import User
 
 _ONE_ACTIVE_PRIMARY_CONSTRAINT = "ck_event_staff_assignments_one_active_primary"
 
@@ -118,6 +119,28 @@ class EventGroupTargetClubMismatchError(EventGroupTargetError):
         self.group_club_id = group_club_id
 
 
+class EventGroupNotFoundError(EventGroupTargetError):
+    """TH-0108 / ADR-0037 §1: the target Group referenced by an
+    EventGroupTarget write does not exist. Raised instead of letting a
+    bare `NoResultFound` propagate from `_lock_group_club_id`.
+    """
+
+    def __init__(self, *, group_id: uuid.UUID) -> None:
+        super().__init__(f"Group {group_id} does not exist")
+        self.group_id = group_id
+
+
+class EventStaffUserNotFoundError(EventStaffAssignmentError):
+    """TH-0108 / ADR-0037 §2: the User referenced by an
+    EventStaffAssignment write does not exist. Raised instead of letting
+    a bare `NoResultFound` propagate from `user_has_active_club_membership`.
+    """
+
+    def __init__(self, *, user_id: uuid.UUID) -> None:
+        super().__init__(f"User {user_id} does not exist")
+        self.user_id = user_id
+
+
 def _lock_event_club_id(session: Session, event_id: uuid.UUID) -> uuid.UUID:
     return session.execute(
         select(Event.club_id).where(Event.id == event_id).with_for_update(read=True)
@@ -125,9 +148,12 @@ def _lock_event_club_id(session: Session, event_id: uuid.UUID) -> uuid.UUID:
 
 
 def _lock_group_club_id(session: Session, group_id: uuid.UUID) -> uuid.UUID:
-    return session.execute(
+    club_id = session.execute(
         select(Group.club_id).where(Group.id == group_id).with_for_update(read=True)
-    ).scalar_one()
+    ).scalar_one_or_none()
+    if club_id is None:
+        raise EventGroupNotFoundError(group_id=group_id)
+    return club_id
 
 
 def _is_one_active_primary_violation(exc: IntegrityError) -> bool:
@@ -137,6 +163,47 @@ def _is_one_active_primary_violation(exc: IntegrityError) -> bool:
     """
     constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
     return constraint_name == _ONE_ACTIVE_PRIMARY_CONSTRAINT
+
+
+def build_event_staff_assignment(
+    session: Session,
+    *,
+    event_id: uuid.UUID,
+    user_id: uuid.UUID,
+    role_in_event: str,
+    valid_from: datetime,
+    valid_to: Optional[datetime] = None,
+    is_primary: bool = False,
+) -> EventStaffAssignment:
+    """TH-0108: the no-commit half of `create_event_staff_assignment` —
+    validates and constructs an unsaved `EventStaffAssignment`, without
+    adding it to the session or committing. Exported (no leading
+    underscore) specifically so `app.events.crud`'s atomic Event-plus-
+    targeting functions can compose this exact check with other writes
+    inside one shared transaction, per ADR-0022 §3's "one shared
+    ownership-validation mechanism" — never a second, re-implemented
+    check. `create_event_staff_assignment` below is now a thin
+    add+commit wrapper around this for standalone callers.
+
+    Raises EventStaffUserNotFoundError when `user_id` does not exist,
+    and EventStaffClubMembershipMissingError when that User's Person has
+    no active ClubMembership in the target Event's Club — regardless of
+    any global `instructor` role the User may hold.
+    """
+    event_club_id = _lock_event_club_id(session, event_id)
+    if session.get(User, user_id) is None:
+        raise EventStaffUserNotFoundError(user_id=user_id)
+    if not user_has_active_club_membership(session, user_id=user_id, club_id=event_club_id):
+        raise EventStaffClubMembershipMissingError(user_id=user_id, club_id=event_club_id)
+
+    return EventStaffAssignment(
+        event_id=event_id,
+        user_id=user_id,
+        role_in_event=role_in_event,
+        is_primary=is_primary,
+        valid_from=valid_from,
+        valid_to=valid_to,
+    )
 
 
 def create_event_staff_assignment(
@@ -153,6 +220,7 @@ def create_event_staff_assignment(
     when the User's Person has an active ClubMembership in the target
     Event's Club.
 
+    Raises EventStaffUserNotFoundError when `user_id` does not exist.
     Raises EventStaffClubMembershipMissingError, and persists nothing,
     when that relationship is absent — regardless of any global
     `instructor` role the User may hold. Raises
@@ -162,19 +230,20 @@ def create_event_staff_assignment(
     and the write happen in one transaction — see the module docstring
     for the concurrency rationale.
     """
-    event_club_id = _lock_event_club_id(session, event_id)
-    if not user_has_active_club_membership(session, user_id=user_id, club_id=event_club_id):
+    try:
+        assignment = build_event_staff_assignment(
+            session,
+            event_id=event_id,
+            user_id=user_id,
+            role_in_event=role_in_event,
+            valid_from=valid_from,
+            valid_to=valid_to,
+            is_primary=is_primary,
+        )
+    except EventStaffAssignmentError:
         session.rollback()
-        raise EventStaffClubMembershipMissingError(user_id=user_id, club_id=event_club_id)
+        raise
 
-    assignment = EventStaffAssignment(
-        event_id=event_id,
-        user_id=user_id,
-        role_in_event=role_in_event,
-        is_primary=is_primary,
-        valid_from=valid_from,
-        valid_to=valid_to,
-    )
     session.add(assignment)
     try:
         session.commit()
@@ -184,6 +253,36 @@ def create_event_staff_assignment(
             raise EventStaffAssignmentPrimaryConflictError(event_id=event_id) from exc
         raise
     return assignment
+
+
+def build_event_group_target(
+    session: Session,
+    *,
+    event_id: uuid.UUID,
+    group_id: uuid.UUID,
+    valid_from: datetime,
+    valid_to: Optional[datetime] = None,
+) -> EventGroupTarget:
+    """TH-0108: the no-commit half of `create_event_group_target` — see
+    `build_event_staff_assignment`'s docstring for why this is exported
+    and how `app.events.crud` composes it.
+
+    Raises EventGroupNotFoundError when `group_id` does not exist, and
+    EventGroupTargetClubMismatchError when `Event.club_id != Group.club_id`.
+    """
+    event_club_id = _lock_event_club_id(session, event_id)
+    group_club_id = _lock_group_club_id(session, group_id)
+    if event_club_id != group_club_id:
+        raise EventGroupTargetClubMismatchError(
+            event_club_id=event_club_id, group_club_id=group_club_id
+        )
+
+    return EventGroupTarget(
+        event_id=event_id,
+        group_id=group_id,
+        valid_from=valid_from,
+        valid_to=valid_to,
+    )
 
 
 def create_event_group_target(
@@ -197,26 +296,21 @@ def create_event_group_target(
     """ADR-0022 §7 / ADR-0023 §2: create an EventGroupTarget only when
     `Event.club_id == Group.club_id`.
 
-    Raises EventGroupTargetClubMismatchError, and persists nothing, on a
+    Raises EventGroupNotFoundError when `group_id` does not exist, and
+    EventGroupTargetClubMismatchError, persisting nothing, on a Club
     mismatch. The ownership check and the write happen in one
     transaction — see the module docstring for the concurrency
     rationale. Targeting only links Event and Group; it never creates
     or touches EventParticipation.
     """
-    event_club_id = _lock_event_club_id(session, event_id)
-    group_club_id = _lock_group_club_id(session, group_id)
-    if event_club_id != group_club_id:
-        session.rollback()
-        raise EventGroupTargetClubMismatchError(
-            event_club_id=event_club_id, group_club_id=group_club_id
+    try:
+        target = build_event_group_target(
+            session, event_id=event_id, group_id=group_id, valid_from=valid_from, valid_to=valid_to
         )
+    except EventGroupTargetError:
+        session.rollback()
+        raise
 
-    target = EventGroupTarget(
-        event_id=event_id,
-        group_id=group_id,
-        valid_from=valid_from,
-        valid_to=valid_to,
-    )
     session.add(target)
     session.commit()
     return target
@@ -225,9 +319,13 @@ def create_event_group_target(
 __all__ = [
     "EventStaffAssignmentError",
     "EventStaffClubMembershipMissingError",
+    "EventStaffUserNotFoundError",
     "EventStaffAssignmentPrimaryConflictError",
+    "build_event_staff_assignment",
     "create_event_staff_assignment",
     "EventGroupTargetError",
     "EventGroupTargetClubMismatchError",
+    "EventGroupNotFoundError",
+    "build_event_group_target",
     "create_event_group_target",
 ]

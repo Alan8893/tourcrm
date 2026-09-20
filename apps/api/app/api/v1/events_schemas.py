@@ -29,6 +29,12 @@ class EventCreateRequest(BaseModel):
     location_address: Optional[str] = None
     location_latitude: Optional[float] = None
     location_longitude: Optional[float] = None
+    # TH-0108 / ADR-0037 §1-§2, events-api.md §6: 0 groups means this Event
+    # is club-wide; 1+ means it targets exactly those Groups. Both fields
+    # default to empty — omitting them entirely creates a club-wide Event
+    # with no assigned instructor, same as before this Issue.
+    group_ids: list[UUID] = Field(default_factory=list)
+    instructor_ids: list[UUID] = Field(default_factory=list)
 
 
 class EventUpdateRequest(BaseModel):
@@ -50,6 +56,12 @@ class EventUpdateRequest(BaseModel):
     location_address: Optional[str] = None
     location_latitude: Optional[float] = None
     location_longitude: Optional[float] = None
+    # TH-0108: absent (the default) leaves current targeting/assignments
+    # untouched, matching every other field's `exclude_unset` PATCH
+    # semantics here; an explicit list (including `[]`) replaces the
+    # currently active set — see app.events.crud.update_event_with_targeting.
+    group_ids: Optional[list[UUID]] = None
+    instructor_ids: Optional[list[UUID]] = None
 
 
 class EventStatusTransitionRequest(BaseModel):
@@ -77,6 +89,14 @@ class EventOut(BaseModel):
     updated_by: Optional[UUID]
     created_at: datetime
     updated_at: datetime
+    # TH-0108 / ADR-0037 §1-§2: the Event's currently active target Groups
+    # (EventGroupTarget) and responsible instructors/Users
+    # (EventStaffAssignment) — bare UUIDs only, so the frontend can
+    # reconstruct current targeting against the Group list / User
+    # Directory it already has, without this endpoint exposing any extra
+    # User field.
+    group_ids: list[UUID]
+    instructor_ids: list[UUID]
 
 
 class CalendarItemOut(BaseModel):

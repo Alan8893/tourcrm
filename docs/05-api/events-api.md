@@ -76,6 +76,8 @@ Request concept:
 
 Каноническая Event persistence model использует `location_type`, `location_name`, `location_address`, `location_latitude`, `location_longitude`; отдельного поля `location` в физической модели нет (ADR-0019). API implementation must map request representation to the canonical field model.
 
+**TH-0108 / ADR-0037 §1-§2**: `group_ids`/`instructor_ids` — оба опциональны, по умолчанию пустой список. `group_ids: []` (или отсутствие поля) означает club-wide Event; 1+ значений — targeted Event для указанных Groups (`EventGroupTarget`). `instructor_ids` — ответственные instructors/Users (`EventStaffAssignment`); назначение НЕ требует `GroupInstructorAssignment` и не создаёт его. Event и Event создаются атомарно вместе с этими связями в одной транзакции: если валидация любой связи не проходит (Group другого Club, несуществующий Group/User, User без active ClubMembership в Club события), Event не сохраняется вовсе. Group targeting никогда не создаёт `EventParticipation` или `GroupMembership`. Response (`EventOut`) включает `group_ids`/`instructor_ids` — текущие (active) значения этих связей, чтобы клиент мог восстановить состояние формы.
+
 ## 7. Update event
 
 ### PATCH `/api/v1/events/{event_id}`
@@ -89,6 +91,8 @@ Request concept:
 - entire series.
 
 Backend должен отклонять неоднозначные запросы.
+
+**TH-0108**: `group_ids`/`instructor_ids` в PATCH — то же правило `exclude_unset`, что и у остальных полей: поле отсутствует в теле запроса → текущие targeting/assignment не меняются; поле присутствует (включая `[]`) → заменяет текущий активный набор: новые значения добавляются, снятые — переводятся в `ended` (`valid_to = now()`, запись никогда не удаляется — тот же historical-interval паттерн, что и у GroupMembership/GroupInstructorAssignment/UserRoleAssignment), уже активные и всё ещё желаемые — не трогаются (повторный идентичный PATCH идемпотентен, дублей не создаёт). Изменение полей Event и targeting/assignment происходит в одной транзакции.
 
 ## 8. Event status
 
