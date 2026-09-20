@@ -5,23 +5,29 @@ Backs `GET /api/v1/users` — a safe, operational directory used by callers
 full admin User Management API. See docs/05-api/users-api.md for the full
 contract.
 
-Authorization deliberately reuses `app.people.authorization.
-person_visibility_filter` verbatim rather than inventing a parallel model:
-`User` is 1:1 with `Person` (`User.person_id`, unique), and the directory
-only ever displays Person-derived names, so Person's existing `person.read`
-scope policy (all/own_groups/self/none) is the correct policy to reuse.
-This also means an authenticated caller with no applicable `person.read`
-assignment gets an empty page (never a 403) — the exact same convention
-`app.people.queries.list_persons_page` already established for `GET
-/persons`, not a new one invented here.
+Authorization is gated entirely by its own, narrow permission —
+`user.directory.read` (`app.users.authorization`) — deliberately NOT
+`person.read`/`person_visibility_filter`. PO decision (recorded in
+docs/05-api/users-api.md): reusing `person.read` would inherit its
+`own_groups` (`GroupInstructorAssignment`-gated) scope for the `instructor`
+role, which cannot express "instructor A sees instructor B, same Club, no
+shared Group" — and ADR-0035 §11 explicitly rejects bare Club
+co-membership as sufficient grounds for Person access, so that scope
+cannot simply be widened. `user.directory.read` is a standalone permission
+with its own bespoke, narrower policy instead (see
+`app.users.authorization`'s module docstring for the full reasoning).
+Unlike `person.read`'s list-endpoint "silently empty" convention, a
+caller with no `user.directory.read` assignment at all is rejected with a
+hard 403 (`app.api.v1.users.list_users` raises `AuthorizationDenied`
+before this function is ever called) — this module only ever runs for an
+already-confirmed-authorized requester.
 
-`club_id`/`role`/`status` are *results filters*, independent of the
-requester's own authorization reach (`person_visibility_filter`) — both
-apply as separate, AND-ed conditions. In particular the `club_id` filter
-requires an *active* ClubMembership (task requirement), which is stricter
-than `person_visibility_filter`'s own club-scoped `all` predicate (an
-authorization-reach check that intentionally does not look at membership
-status) — the two never conflict because they answer different questions.
+`club_id`/`role`/`status` are *results filters* describing target
+eligibility, independent of the requester's own authorization reach
+(`directory_reach_filter`) — both apply as separate, AND-ed conditions.
+`club_id` requires an *active* ClubMembership (task requirement) and
+deliberately never requires `GroupInstructorAssignment` — Group
+responsibility and directory/Club-roster membership are different facts.
 """
 
 import uuid
@@ -32,7 +38,7 @@ from sqlalchemy.orm import Session, aliased
 
 from app.db.authorization import BASELINE_ROLE_CODES, Role, UserRoleAssignment
 from app.db.identity import ClubMembership, Person, User
-from app.people.authorization import person_visibility_filter
+from app.users.authorization import directory_reach_filter
 
 # Same 6-value vocabulary as the `ck_users_status_valid` CHECK constraint
 # (app.db.identity.User) — whitelisted here rather than trusted from the
@@ -97,7 +103,6 @@ def list_users_page(
     session: Session,
     *,
     user_id: uuid.UUID,
-    permission_code: str,
     page: int,
     page_size: int,
     search: Optional[str] = None,
@@ -105,13 +110,16 @@ def list_users_page(
     role: Optional[str] = None,
     status: Optional[str] = None,
 ) -> tuple[list[User], int]:
+    """Caller must have already confirmed `requester_has_directory_access`
+    (the 403 gate) before calling this — see module docstring.
+    """
     if role is not None and role not in BASELINE_ROLE_CODES:
         raise InvalidRoleError(role)
     if status is not None and status not in VALID_USER_STATUSES:
         raise InvalidUserStatusError(status)
 
     conditions: list[sa.ColumnElement[bool]] = [
-        person_visibility_filter(session, user_id=user_id, permission_code=permission_code)
+        directory_reach_filter(session, user_id=user_id)
     ]
     if search:
         pattern = f"%{search}%"

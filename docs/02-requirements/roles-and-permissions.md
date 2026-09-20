@@ -61,6 +61,13 @@
 
 `person.create` является отдельным каноническим permission и предоставляется только `admin`.
 
+Каталог включает также отдельный, узкий `user.directory.read` (TH-0107) — permission для
+операционного справочника пользователей `GET /api/v1/users` (см. `docs/05-api/users-api.md`).
+Выдаётся `admin` и `instructor`. Это единственный permission, чья policy не использует
+`own_groups`/`self`/`children`/`own_events` — только club-boundary через
+`UserRoleAssignment.club_id` (§11 ниже поясняет, почему это намеренное, ограниченное этим одним
+permission исключение, а не пересмотр общей scope-модели).
+
 Примеры других permissions:
 
 - `group.read`
@@ -255,6 +262,15 @@ GuardianRelationship сам по себе не расширяет доступ g
 Для Event `own_events` означает явное назначение/ответственность за мероприятие; `own_groups` означает ответственность за целевую группу. Инструкторские Event-операции не получают глобальный `all` scope только из роли instructor.
 
 Для People `own_groups` означает цепочку Person → active ClubMembership → active GroupMembership → Group → active GroupInstructorAssignment → requesting User в том же Club; co-membership или одна роль instructor не являются достаточным основанием.
+
+**Явное, единственное исключение (TH-0107, PO-решение):** `user.directory.read` (§4,
+`docs/05-api/users-api.md`) — это НЕ `person.read` и не расширяет `person.read`/`own_groups`.
+Это отдельный permission специально для операционного справочника пользователей
+(`GET /api/v1/users`, используется Calendar), чья policy состоит только из club-boundary
+(`UserRoleAssignment.club_id`) — без проверки `GroupInstructorAssignment`. В рамках именно этого
+одного permission инструктор видит других инструкторов своего клуба; это не отменяет и не
+ослабляет ничего из вышесказанного для `person.read`, `event.read`, `group.read` или любого
+другого permission — co-membership по-прежнему не даёт доступа к Person/Event/Group данным.
 
 ## 12. Event authorization contract
 

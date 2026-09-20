@@ -1,14 +1,16 @@
 """User directory API — /api/v1/users (TH-0107).
 
 Canonical sources: docs/05-api/users-api.md, docs/05-api/api-conventions.md,
-docs/02-requirements/roles-and-permissions.md §7.1, ADR-0035.
+docs/02-requirements/roles-and-permissions.md, ADR-0035.
 
 This is a safe, operational directory endpoint only — not the full admin
 User Management API `docs/05-api/endpoint-inventory.md` §2 describes.
-Authorization reuses the existing `person.read` permission and
-`app.people.authorization.person_visibility_filter` verbatim (see
-app.users.queries module docstring for why): there is no new permission,
-scope, or ADR for this endpoint.
+Authorization uses its own standalone permission, `user.directory.read`
+(`app.users.authorization`) — deliberately not `person.read` (PO
+decision: see that module's docstring for the full reasoning). A
+requester with no `user.directory.read` assignment at all is rejected
+with a hard 403 here, before the query ever runs — unlike `person.read`'s
+list-endpoint "silently empty" convention.
 """
 
 import uuid
@@ -20,8 +22,10 @@ from app.api.deps import CurrentPrincipal, require_authenticated_principal
 from app.api.errors import APIError
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.users_schemas import UserDirectoryOut
+from app.authorization.service import AuthorizationDenied
 from app.db.identity import User
 from app.db.session import get_db
+from app.users.authorization import PERMISSION_CODE, requester_has_directory_access
 from app.users.queries import InvalidRoleError, InvalidUserStatusError, list_users_page
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -48,11 +52,13 @@ def list_users(
     principal: CurrentPrincipal = Depends(require_authenticated_principal),
     db: Session = Depends(get_db),
 ) -> CollectionResponse[UserDirectoryOut]:
+    if not requester_has_directory_access(db, user_id=principal.user_id):
+        raise AuthorizationDenied(PERMISSION_CODE)
+
     try:
         rows, total = list_users_page(
             db,
             user_id=principal.user_id,
-            permission_code="person.read",
             page=page,
             page_size=page_size,
             search=search,

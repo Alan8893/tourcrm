@@ -101,6 +101,16 @@ DOCUMENTED_PERMISSION_CODES = (
     "audit.read",
     "settings.manage",
     "role.manage",
+    # TH-0107 (Users directory API / Calendar instructor filter), PO
+    # decision: a narrow, standalone permission gating GET /api/v1/users.
+    # Deliberately NOT `person.read` — it must not inherit person.read's
+    # own_groups/GroupInstructorAssignment-gated semantics (ADR-0035 §11
+    # explicitly rejects bare Club co-membership as sufficient grounds for
+    # Person access). See app.users.authorization for its own, narrower
+    # policy: any currently-effective assignment of this permission
+    # establishes reach over its own club_id (or globally, if club_id is
+    # NULL) — scope_type is not consulted at all for this permission.
+    "user.directory.read",
 )
 
 

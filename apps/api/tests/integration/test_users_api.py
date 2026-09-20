@@ -2,10 +2,21 @@
 directory endpoint backing the Calendar instructor filter.
 
 Against the REAL shipped app (app.main.app) and a real PostgreSQL
-database, matching tests/integration/test_people_api.py's pattern and
-reusing its exact fixture/factory shapes (this endpoint reuses
-`person.read` + `person_visibility_filter` verbatim, so its authorization
-tests mirror that file's Person-list tests directly).
+database, matching tests/integration/test_people_api.py's pattern for
+fixture/factory shapes.
+
+Authorization here is gated by the standalone `user.directory.read`
+permission (`app.users.authorization`), deliberately NOT `person.read` —
+see that module's docstring, and docs/05-api/users-api.md, for the PO
+decision and full reasoning (ADR-0035 §11 explicitly rejects bare Club
+co-membership as sufficient grounds for Person access, so `person.read`'s
+`own_groups` scope cannot simply be widened for this directory). The
+headline regression test below
+(`test_instructor_requester_sees_instructor_target_with_no_shared_group`)
+exercises the real, migration-seeded `(instructor, user.directory.read)`
+RolePermission grant end-to-end — not just the bespoke resolver in
+isolation — to prove an instructor requester can see a fellow instructor
+in the same Club who shares no Group/GroupInstructorAssignment with them.
 
 Run with a reachable PostgreSQL instance:
 
@@ -86,6 +97,12 @@ def _grant_permission(
     scope_type: str = "all",
     club_id: uuid.UUID | None = None,
 ) -> None:
+    """Ad hoc grant via a throwaway role — used here to test
+    `user.directory.read` in isolation from the real `instructor`/`admin`
+    role wiring. `scope_type` is passed only for readability/convention
+    (e.g. "all"): `app.users.authorization` never inspects it for this
+    permission, only `club_id` matters (see that module's docstring).
+    """
     with session_scope() as session:
         permission = session.execute(
             select(Permission).where(Permission.code == permission_code)
@@ -110,18 +127,22 @@ def _assign_baseline_role(
     user_id: uuid.UUID,
     role_code: str,
     *,
+    club_id: uuid.UUID | None = None,
     valid_from: datetime.datetime | None = None,
     valid_to: datetime.datetime | None = None,
 ) -> None:
     """Assign one of the canonical, migration-seeded baseline roles
-    (admin/instructor/member/guardian) to `user_id` — used here purely as
-    an *effective-role fact about the target user* (task §7's `role=
-    instructor` filter), never to grant `person.read` itself.
+    (admin/instructor/member/guardian) to `user_id`. `club_id` matters
+    here in two ways depending on the test: as an *effective-role fact*
+    about a target user (role=instructor filter, club_id irrelevant to
+    that check), or — when the role itself carries `user.directory.read`
+    via the real migration-seeded RolePermission grant (`instructor`/
+    `admin`) — as the actual authorization boundary for a *requester*.
     """
     with session_scope() as session:
         role = session.execute(select(Role).where(Role.code == role_code)).scalar_one()
         assignment = UserRoleAssignment(
-            user_id=user_id, role_id=role.id, scope_type="self", club_id=None
+            user_id=user_id, role_id=role.id, scope_type="self", club_id=club_id
         )
         if valid_from is not None:
             assignment.valid_from = valid_from
@@ -137,11 +158,11 @@ def _authenticate_as(user_id: uuid.UUID) -> None:
     )
 
 
-# --- authorization / scope --------------------------------------------------
+# --- authorization / permission gate ----------------------------------------
 
 
 @requires_postgres
-def test_list_users_with_all_scope_permission_succeeds(client: TestClient) -> None:
+def test_list_users_with_global_directory_read_grant_succeeds(client: TestClient) -> None:
     with session_scope() as session:
         requester_person = _make_person()
         requester_user = _make_user(requester_person)
@@ -150,7 +171,7 @@ def test_list_users_with_all_scope_permission_succeeds(client: TestClient) -> No
         session.add_all([requester_person, requester_user, target_person, target_user])
         session.commit()
         requester_id, target_id = requester_user.id, target_user.id
-    _grant_permission(requester_id, "person.read", scope_type="all")
+    _grant_permission(requester_id, "user.directory.read", scope_type="all")
     _authenticate_as(requester_id)
 
     response = client.get("/api/v1/users")
@@ -169,7 +190,7 @@ def test_list_users_response_projection_has_no_sensitive_fields(client: TestClie
         session.add_all([person, user])
         session.commit()
         user_id = user.id
-    _grant_permission(user_id, "person.read", scope_type="all")
+    _grant_permission(user_id, "user.directory.read", scope_type="all")
     _authenticate_as(user_id)
 
     response = client.get("/api/v1/users")
@@ -181,30 +202,141 @@ def test_list_users_response_projection_has_no_sensitive_fields(client: TestClie
 
 
 @requires_postgres
-def test_list_users_without_applicable_permission_returns_empty_not_forbidden(
+def test_list_users_without_user_directory_read_permission_is_forbidden(
     client: TestClient,
 ) -> None:
-    """Mirrors test_people_api.py's `test_list_persons_none_scope_returns_
-    empty` — an authenticated caller with no applicable `person.read`
-    assignment (e.g. a bare `member`/`guardian`) gets a silently empty
-    200, not a 403. This is `person.read`'s existing, documented
-    convention (app/api/v1/persons.py's own module docstring), reused
-    verbatim here rather than inventing a different failure mode for this
-    one endpoint.
+    """Unlike `person.read`'s list-endpoint "silently empty" convention
+    (`GET /persons`), `GET /users` is gated by its own standalone
+    permission whose absence is a hard 403 (PO decision — this permission
+    exists specifically to grant/withhold the whole directory capability,
+    not to scope an already-shared resource many other permissions read).
+    A caller holding no `user.directory.read` assignment at all — e.g. a
+    bare `member` — must be rejected outright, never handed a filtered
+    empty page.
     """
     with session_scope() as session:
         person = _make_person()
         user = _make_user(person)
-        other_person = _make_person()
-        other_user = _make_user(other_person)
-        session.add_all([person, user, other_person, other_user])
+        session.add_all([person, user])
         session.commit()
         user_id = user.id
+    _assign_baseline_role(user_id, "member")
     _authenticate_as(user_id)
 
     response = client.get("/api/v1/users")
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
+
+
+# --- headline regression test: instructor sees instructor, no shared group -
+
+
+@requires_postgres
+def test_instructor_requester_sees_instructor_target_with_no_shared_group(
+    client: TestClient,
+) -> None:
+    """THE regression test for this PO decision. Both A and B hold the
+    real, migration-seeded `instructor` role (which now carries
+    `user.directory.read` via `RolePermission` — no ad hoc test grant),
+    both have an active `ClubMembership` in the same Club, and B has NO
+    `GroupInstructorAssignment`/`GroupMembership` relationship with A
+    whatsoever (no Group is even created in this test). Under the old
+    `person.read`/`own_groups` design this would have returned nothing —
+    B is not a member of any group A instructs. Under
+    `user.directory.read`, B must appear.
+    """
+    with session_scope() as session:
+        club = _make_club()
+        a_person = _make_person(last_name="Antonova", first_name="Anna")
+        a_user = _make_user(a_person)
+        b_person = _make_person(last_name="Borisov", first_name="Boris")
+        b_user = _make_user(b_person)
+        session.add_all([club, a_person, a_user, b_person, b_user])
+        session.commit()
+        session.add(_make_club_membership(club, a_person, status="active"))
+        session.add(_make_club_membership(club, b_person, status="active"))
+        session.commit()
+        club_id, a_id, b_id = club.id, a_user.id, b_user.id
+
+    # Both A (requester) and B (target) are plain instructors of the same
+    # Club — the only two facts the new policy is allowed to require.
+    _assign_baseline_role(a_id, "instructor", club_id=club_id)
+    _assign_baseline_role(b_id, "instructor", club_id=club_id)
+    _authenticate_as(a_id)
+
+    response = client.get(
+        "/api/v1/users", params={"role": "instructor", "club_id": str(club_id)}
+    )
     assert response.status_code == 200, response.text
-    assert response.json()["pagination"]["total"] == 0
+    ids = {item["id"] for item in response.json()["items"]}
+    assert str(b_id) in ids
+
+
+@requires_postgres
+def test_instructor_requester_cannot_see_a_different_clubs_instructor(
+    client: TestClient,
+) -> None:
+    """The flip side of the headline test: A's real `instructor`
+    `UserRoleAssignment` is scoped to Club X, so A must not see an
+    instructor C whose only active ClubMembership is in Club Y — even
+    though both A and C hold the `instructor` role. Cross-club isolation
+    must hold through the real RolePermission-granted path, not just the
+    ad hoc `_grant_permission` helper.
+    """
+    with session_scope() as session:
+        club_x = _make_club()
+        club_y = _make_club()
+        a_person = _make_person(last_name="Antonova", first_name="Anna")
+        a_user = _make_user(a_person)
+        c_person = _make_person(last_name="Egorova", first_name="Ekaterina")
+        c_user = _make_user(c_person)
+        session.add_all([club_x, club_y, a_person, a_user, c_person, c_user])
+        session.commit()
+        session.add(_make_club_membership(club_x, a_person, status="active"))
+        session.add(_make_club_membership(club_y, c_person, status="active"))
+        session.commit()
+        club_x_id, a_id, c_id = club_x.id, a_user.id, c_user.id
+
+    _assign_baseline_role(a_id, "instructor", club_id=club_x_id)
+    _assign_baseline_role(c_id, "instructor", club_id=club_x_id)  # role only, no membership in X
+    _authenticate_as(a_id)
+
+    response = client.get(
+        "/api/v1/users", params={"role": "instructor", "club_id": str(club_x_id)}
+    )
+    assert response.status_code == 200, response.text
+    assert str(c_id) not in {item["id"] for item in response.json()["items"]}
+
+
+@requires_postgres
+def test_instructor_requester_reach_is_bounded_by_own_assignment_club_even_without_query_filter(
+    client: TestClient,
+) -> None:
+    """Omitting `club_id` from the query must NOT default to "every
+    club" — the requester's own club-scoped `user.directory.read`
+    assignment is itself the authorization boundary (mirrors how
+    `event_visibility_filter`/`GET /events/calendar` treat filters as
+    narrowing an already-authorized set, never expanding it).
+    """
+    with session_scope() as session:
+        club_x = _make_club()
+        club_y = _make_club()
+        a_person = _make_person(last_name="Antonova", first_name="Anna")
+        a_user = _make_user(a_person)
+        other_person = _make_person(last_name="OnlyClubY", first_name="X")
+        other_user = _make_user(other_person)
+        session.add_all([club_x, club_y, a_person, a_user, other_person, other_user])
+        session.commit()
+        session.add(_make_club_membership(club_y, other_person, status="active"))
+        session.commit()
+        club_x_id, a_id, other_id = club_x.id, a_user.id, other_user.id
+
+    _assign_baseline_role(a_id, "instructor", club_id=club_x_id)
+    _authenticate_as(a_id)
+
+    response = client.get("/api/v1/users")
+    assert response.status_code == 200, response.text
+    assert str(other_id) not in {item["id"] for item in response.json()["items"]}
 
 
 # --- role filter -------------------------------------------------------
@@ -232,7 +364,7 @@ def test_list_users_role_instructor_filter(client: TestClient) -> None:
         session.commit()
         requester_id = requester_user.id
         instructor_id, member_id = instructor_user.id, member_user.id
-    _grant_permission(requester_id, "person.read", scope_type="all")
+    _grant_permission(requester_id, "user.directory.read", scope_type="all")
     _assign_baseline_role(instructor_id, "instructor")
     _assign_baseline_role(member_id, "member")
     _authenticate_as(requester_id)
@@ -261,7 +393,7 @@ def test_list_users_instructor_without_group_instructor_assignment_is_still_incl
         session.add_all([requester_person, requester_user, instructor_person, instructor_user])
         session.commit()
         requester_id, instructor_id = requester_user.id, instructor_user.id
-    _grant_permission(requester_id, "person.read", scope_type="all")
+    _grant_permission(requester_id, "user.directory.read", scope_type="all")
     _assign_baseline_role(instructor_id, "instructor")
     _authenticate_as(requester_id)
 
@@ -278,7 +410,7 @@ def test_list_users_invalid_role_is_rejected(client: TestClient) -> None:
         session.add_all([person, user])
         session.commit()
         user_id = user.id
-    _grant_permission(user_id, "person.read", scope_type="all")
+    _grant_permission(user_id, "user.directory.read", scope_type="all")
     _authenticate_as(user_id)
 
     response = client.get("/api/v1/users", params={"role": "not-a-real-role"})
@@ -306,7 +438,7 @@ def test_list_users_search_matches_all_three_name_fields(client: TestClient) -> 
         requester_id = requester_user.id
         expected_ids = {str(u.id) for u in users[:3]}
         unrelated_id = str(users[3].id)
-    _grant_permission(requester_id, "person.read", scope_type="all")
+    _grant_permission(requester_id, "user.directory.read", scope_type="all")
     _authenticate_as(requester_id)
 
     response = client.get("/api/v1/users", params={"search": "Zvyagints"})
@@ -329,7 +461,7 @@ def test_list_users_pagination(client: TestClient) -> None:
         session.add_all([requester_person, requester_user, *others, *other_users])
         session.commit()
         requester_id = requester_user.id
-    _grant_permission(requester_id, "person.read", scope_type="all")
+    _grant_permission(requester_id, "user.directory.read", scope_type="all")
     _authenticate_as(requester_id)
 
     response = client.get("/api/v1/users", params={"page": 1, "page_size": 2})
@@ -341,7 +473,7 @@ def test_list_users_pagination(client: TestClient) -> None:
     assert body["pagination"]["total"] >= 6
 
 
-# --- club boundary -----------------------------------------------------
+# --- club boundary (target eligibility) -------------------------------
 
 
 @requires_postgres
@@ -359,7 +491,7 @@ def test_list_users_club_filter_shows_active_membership_in_that_club(
         session.add(_make_club_membership(club_a, target_person, status="active"))
         session.commit()
         requester_id, target_id, club_a_id = requester_user.id, target_user.id, club_a.id
-    _grant_permission(requester_id, "person.read", scope_type="all")
+    _grant_permission(requester_id, "user.directory.read", scope_type="all")
     _authenticate_as(requester_id)
 
     response = client.get("/api/v1/users", params={"club_id": str(club_a_id)})
@@ -383,7 +515,7 @@ def test_list_users_same_user_not_visible_for_a_different_club(client: TestClien
         session.add(_make_club_membership(club_a, target_person, status="active"))
         session.commit()
         requester_id, target_id, club_b_id = requester_user.id, target_user.id, club_b.id
-    _grant_permission(requester_id, "person.read", scope_type="all")
+    _grant_permission(requester_id, "user.directory.read", scope_type="all")
     _authenticate_as(requester_id)
 
     response = client.get("/api/v1/users", params={"club_id": str(club_b_id)})
@@ -418,7 +550,7 @@ def test_list_users_instructor_from_another_club_absent(client: TestClient) -> N
             instructor_user.id,
             club_a.id,
         )
-    _grant_permission(requester_id, "person.read", scope_type="all")
+    _grant_permission(requester_id, "user.directory.read", scope_type="all")
     _assign_baseline_role(instructor_id, "instructor")
     _authenticate_as(requester_id)
 
@@ -448,7 +580,7 @@ def test_list_users_inactive_membership_does_not_grant_club_visibility(
         )
         session.commit()
         requester_id, target_id, club_a_id = requester_user.id, target_user.id, club_a.id
-    _grant_permission(requester_id, "person.read", scope_type="all")
+    _grant_permission(requester_id, "user.directory.read", scope_type="all")
     _authenticate_as(requester_id)
 
     response = client.get("/api/v1/users", params={"club_id": str(club_a_id)})
@@ -469,7 +601,7 @@ def test_list_users_person_without_membership_absent_from_club_filtered_results(
         session.add_all([requester_person, requester_user, club_a, target_person, target_user])
         session.commit()
         requester_id, target_id, club_a_id = requester_user.id, target_user.id, club_a.id
-    _grant_permission(requester_id, "person.read", scope_type="all")
+    _grant_permission(requester_id, "user.directory.read", scope_type="all")
     _authenticate_as(requester_id)
 
     response = client.get("/api/v1/users", params={"club_id": str(club_a_id)})
@@ -512,7 +644,7 @@ def test_list_users_multiple_clubs_do_not_cross_leak(client: TestClient) -> None
             club_a.id,
             club_b.id,
         )
-    _grant_permission(requester_id, "person.read", scope_type="all")
+    _grant_permission(requester_id, "user.directory.read", scope_type="all")
     _authenticate_as(requester_id)
 
     resp_a = client.get("/api/v1/users", params={"club_id": str(club_a_id)})
@@ -524,8 +656,8 @@ def test_list_users_multiple_clubs_do_not_cross_leak(client: TestClient) -> None
 @requires_postgres
 def test_list_users_multiple_role_assignments_resolve_correctly(client: TestClient) -> None:
     """A user holding both `instructor` and `member` role assignments must
-    still match `role=instructor` (additive roles — task §7/§12 "multiple
-    role assignments" case), and must not match some other role code.
+    still match `role=instructor` (additive roles), and must not match
+    some other role code.
     """
     with session_scope() as session:
         requester_person = _make_person()
@@ -535,7 +667,7 @@ def test_list_users_multiple_role_assignments_resolve_correctly(client: TestClie
         session.add_all([requester_person, requester_user, dual_person, dual_user])
         session.commit()
         requester_id, dual_id = requester_user.id, dual_user.id
-    _grant_permission(requester_id, "person.read", scope_type="all")
+    _grant_permission(requester_id, "user.directory.read", scope_type="all")
     _assign_baseline_role(dual_id, "instructor")
     _assign_baseline_role(dual_id, "member")
     _authenticate_as(requester_id)
@@ -547,14 +679,15 @@ def test_list_users_multiple_role_assignments_resolve_correctly(client: TestClie
 
 
 @requires_postgres
-def test_list_users_club_scoped_requester_cannot_see_other_club_via_all_scope(
+def test_list_users_club_scoped_requester_cannot_see_other_club(
     client: TestClient,
 ) -> None:
-    """A requester whose `all`-scope `person.read` assignment is itself
+    """A requester whose `user.directory.read` assignment is itself
     club-scoped to Club A must not see a Person whose only ClubMembership
     is in Club B, even without any explicit `club_id` query filter —
-    exercises `person_visibility_filter`'s own club-scoped `all` predicate
-    (reused, not re-derived, by this endpoint).
+    exercises `app.users.authorization.directory_reach_filter`'s club
+    boundary (the requester's own authorized reach, independent of any
+    query-parameter filter).
     """
     with session_scope() as session:
         requester_person = _make_person()
@@ -570,7 +703,7 @@ def test_list_users_club_scoped_requester_cannot_see_other_club_via_all_scope(
         session.add(_make_club_membership(club_b, other_person, status="active"))
         session.commit()
         requester_id, other_id, club_a_id = requester_user.id, other_user.id, club_a.id
-    _grant_permission(requester_id, "person.read", scope_type="all", club_id=club_a_id)
+    _grant_permission(requester_id, "user.directory.read", scope_type="all", club_id=club_a_id)
     _authenticate_as(requester_id)
 
     response = client.get("/api/v1/users")
