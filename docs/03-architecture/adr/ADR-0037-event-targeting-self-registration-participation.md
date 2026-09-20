@@ -96,13 +96,15 @@ Self-registration does not create Attendance.
 For the first implementation slice, self-registration is allowed only for a Person who:
 
 1. has an active ClubMembership in the Event's Club; and
-2. belongs to at least one Group targeted by the Event.
+2. either:
+   - the Event has one or more target Groups and the Person belongs to at least one of them; or
+   - the Event has no target Groups, in which case the Event is club-wide and the Person is an active member of the Event's Club.
 
-This keeps the first workflow deterministic and prevents a generic Club-wide registration mechanism from being invented without a separate product decision.
+An Event with one or more target Groups is visible/registerable only for members of those target Groups.
 
-An Event with no Group target is therefore not self-registerable in the MVP.
+An Event with no target Groups is explicitly a club-wide Event for the Event's Club. It is therefore self-registerable by any active club member, subject to the Event lifecycle and normal authorization rules.
 
-Public/club-wide registration for Events without a matching target Group is deferred.
+Group targeting and club-wide targeting are mutually exclusive states for the intended audience: zero target Groups means club-wide; one or more target Groups means targeted audience.
 
 ### 6. Registration lifecycle
 
@@ -289,7 +291,7 @@ The following invariants are mandatory:
 
 The following remain outside this MVP decision:
 
-- public/club-wide Event registration;
+- public registration outside the Event's Club;
 - Guardian registration for children;
 - participant capacity;
 - waitlists;
