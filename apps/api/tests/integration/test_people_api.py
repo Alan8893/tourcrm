@@ -269,9 +269,15 @@ def test_create_person_without_permission_is_forbidden(client: TestClient) -> No
 
 
 @requires_postgres
-def test_create_person_with_club_scoped_all_assignment_is_forbidden(client: TestClient) -> None:
-    """Person is Club-neutral (ADR-0017): a club-scoped `all` assignment
-    never authorizes Person creation — only a global assignment does.
+def test_create_person_with_club_scoped_all_assignment_succeeds(client: TestClient) -> None:
+    """TH-0106 / Issue #131: a club-scoped `all`-scope `person.create`
+    assignment is exactly as sufficient as a global one. Person is
+    Club-neutral (ADR-0017) and a not-yet-created Person has no target
+    Club to check `assignment.club_id` against at all — this used to be
+    (incorrectly) rejected here, which is precisely the bug that made the
+    bootstrap-created primary administrator (whose own `UserRoleAssignment`
+    is club-scoped, never global — see `app.authentication.bootstrap`)
+    unable to create a Person.
     """
     with session_scope() as session:
         club = _make_club()
@@ -288,7 +294,93 @@ def test_create_person_with_club_scoped_all_assignment_is_forbidden(client: Test
         json={"first_name": "Anna", "last_name": "Petrova"},
         headers=_csrf_headers(client),
     )
+    assert response.status_code == 201, response.text
+
+
+@requires_postgres
+def test_create_person_as_bootstrap_primary_administrator_succeeds(client: TestClient) -> None:
+    """End-to-end regression test for the actual reported bug (TH-0106 /
+    Issue #131): the primary administrator created by
+    `bootstrap_initial_administrator` (TH-0091 / PR #104, unmodified by
+    this fix) holds a club-scoped, never global, `all`-scope assignment —
+    `POST /persons` must succeed for that exact real-world caller, not
+    just for a hand-built test assignment.
+    """
+    from app.authentication.bootstrap import bootstrap_initial_administrator
+
+    with session_scope() as session:
+        result = bootstrap_initial_administrator(
+            session,
+            club_name=f"Bootstrap Club {uuid.uuid4().hex[:8]}",
+            email=f"admin-{uuid.uuid4().hex[:8]}@example.com",
+            password="a-strong-bootstrap-password",
+        )
+        admin_user_id = result.user_id
+    _authenticate_as(admin_user_id)
+
+    response = client.post(
+        "/api/v1/persons",
+        json={"first_name": "Anna", "last_name": "Petrova"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 201, response.text
+
+
+@requires_postgres
+def test_create_person_with_non_all_scope_is_forbidden(client: TestClient) -> None:
+    """TH-0106 / Issue #131 narrows only the club-boundary condition, not
+    the scope requirement: a `person.create` assignment with any
+    `scope_type` other than `all` (e.g. `own_groups`) must still be
+    rejected — this is not a new, broader grant.
+    """
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([person, user])
+        session.commit()
+        user_id = user.id
+    _grant_permission(user_id, "person.create", scope_type="own_groups")
+    _authenticate_as(user_id)
+
+    response = client.post(
+        "/api/v1/persons",
+        json={"first_name": "Anna", "last_name": "Petrova"},
+        headers=_csrf_headers(client),
+    )
     assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
+
+
+@requires_postgres
+def test_create_person_does_not_create_club_membership(client: TestClient) -> None:
+    """Creating a Person and creating a ClubMembership remain distinct
+    domain operations (ADR-0035 §2) — even for a club-scoped admin whose
+    assignment now authorizes Person creation, no ClubMembership row is
+    ever created as a side effect.
+    """
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        user_id, club_id = user.id, club.id
+    _grant_permission(user_id, "person.create", scope_type="all", club_id=club_id)
+    _authenticate_as(user_id)
+
+    response = client.post(
+        "/api/v1/persons",
+        json={"first_name": "Anna", "last_name": "Petrova"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 201, response.text
+    new_person_id = uuid.UUID(response.json()["id"])
+
+    with session_scope() as session:
+        memberships = session.execute(
+            select(ClubMembership).where(ClubMembership.person_id == new_person_id)
+        ).scalars().all()
+        assert memberships == []
 
 
 @requires_postgres

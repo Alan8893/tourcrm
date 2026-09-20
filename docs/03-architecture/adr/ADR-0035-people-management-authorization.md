@@ -22,6 +22,8 @@ Only `admin` receives `person.create` in the current MVP.
 
 `Person` remains a Club-neutral identity. In the current MVP there is one initialized Club and the UI does not offer Club selection. Creating a Person and creating a ClubMembership remain distinct domain operations even if one UI flow performs them sequentially.
 
+Person creation is authorized by an effective `person.create` assignment with `scope_type=all`; `assignment.club_id` does not participate in the authorization decision because Person is Club-neutral and a not-yet-created Person has no target Club to check a boundary against — a club-scoped `all` assignment (e.g. the bootstrap-created primary administrator's own assignment) is exactly as sufficient as a global one (TH-0106 / Issue #131).
+
 ## 3. Person read/update
 
 The existing `person.read` and `person.update` permissions remain the basis of access. No separate `person.contact.read` or `person.contact.update` permissions are introduced.

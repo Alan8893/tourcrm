@@ -42,12 +42,23 @@ predicate (`person_visibility_filter`), the same shape already used for
 list-query filtering — never via `Authorizer.check(ResourceContext(...))`
 with a single shared context. `is_person_visible` reuses the exact same
 predicate for the single-resource case, so the two can never disagree.
-`POST /persons` (create) is the one exception: no Person row exists yet
-to check a relationship against, so it keeps using the generic
-`Authorizer.check(ResourceContext())` — which correctly requires a global
-(`club_id IS NULL`) `all` assignment, matching Issue #62's explicit
-"Creating a Person has no Club relationship yet and therefore requires
-global `all`" decision.
+`POST /persons` (create) is a second exception, resolved by
+`has_person_create_assignment` (TH-0106 / Issue #131): no Person row
+exists yet, and Person is Club-neutral, so there is no target Club to
+check a club-scoped assignment's boundary against at all — not "no Club"
+in the sense of "therefore require a global assignment" (an earlier,
+incorrect reading of Issue #62 that this fixes), but "the Club boundary
+question does not apply to this operation in either direction."
+`assignment.club_id` is not consulted; only `scope_type == "all"` is.
+This is why `create_person` no longer goes through the generic
+`Authorizer.check(ResourceContext())` — that engine's
+`club_boundary_matches` compares one assignment Club against one resource
+Club, and a `ResourceContext()` default (`club_id=None`) made a
+club-scoped `all` assignment (e.g. the bootstrap-created primary
+administrator's own assignment, scoped to the installation's primary
+Club) fail `club_boundary_matches` and be denied — even though the
+canonical decision was always just "an effective `person.create`
+assignment with `scope_type=all`," never "a *global* one."
 
 `is_system_admin_person_update_grant` (ADR-0035 §5, TH-0101) is a second,
 narrower exception: `birth_date` may be changed only by the canonical
@@ -254,6 +265,31 @@ def is_person_visible(
     return bool(session.execute(stmt).scalar())
 
 
+def has_person_create_assignment(session: Session, user_id: uuid.UUID) -> bool:
+    """TH-0106 / Issue #131: is `user_id` authorized to create a Person?
+
+    Person is Club-neutral and a not-yet-created Person has no target Club
+    at all, so `assignment.club_id` must not participate in this decision
+    — neither as a boundary to satisfy nor as a reason to deny. This is
+    narrower than (and does not reuse) the generic
+    `Authorizer`/`club_boundary_matches` engine, which always compares an
+    assignment's Club against a resource's Club and would incorrectly
+    reject a club-scoped `all`-scope assignment here (see module docstring
+    for the bootstrap-administrator scenario this fixes).
+
+    True iff `user_id` holds at least one currently-effective
+    `UserRoleAssignment` granting `person.create` with `scope_type ==
+    "all"` — `club_id` may be `NULL` (global) or any specific Club; both
+    qualify equally. Any other `scope_type` does not qualify: this is not
+    a new, more permissive grant, only the removal of an incorrect extra
+    "must be global" condition that was never part of the canonical
+    decision (only `admin` holds `person.create` at all in the current
+    MVP, and only ever at `all` scope — see roles-and-permissions.md §7.1).
+    """
+    assignments = applicable_assignments(session, user_id, "person.create")
+    return any(assignment.scope_type == "all" for assignment in assignments)
+
+
 def is_system_admin_person_update_grant(session: Session, user_id: uuid.UUID) -> bool:
     """ADR-0035 §5: only the canonical system `admin` role may change
     `birth_date`, including on the admin's own Person. This is a
@@ -362,6 +398,7 @@ def membership_visibility_filter(
 __all__ = [
     "person_visibility_filter",
     "is_person_visible",
+    "has_person_create_assignment",
     "is_system_admin_person_update_grant",
     "build_membership_resource_context",
     "membership_visibility_filter",

@@ -186,7 +186,7 @@ Feature setting не может расширить permissions.
 
 **Person**
 
-- `person.create`: только `admin`.
+- `person.create`: только `admin`. Авторизуется effective `person.create` assignment со `scope_type=all`; `assignment.club_id` не участвует в решении (не обязан быть `NULL`) — у Person ещё нет target Club, относительно которого проверялась бы club boundary (TH-0106 / Issue #131).
 - `person.read`: каждый пользователь может читать собственный Person; `admin` — Persons в authorized `all` scope; `instructor` — Persons только через `own_groups`; `member` и `guardian` не получают общего доступа к другим Persons.
 - `person.update`: каждый пользователь может изменять собственный Person в разрешённых полях; `admin` — Persons в authorized `all` scope; `instructor` — Persons через `own_groups`.
 - `id` неизменяем.
