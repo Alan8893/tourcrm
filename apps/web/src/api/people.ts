@@ -1,24 +1,30 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch, ApiError, type CollectionResponse } from "./client";
 import type { GuardianRelationshipStatus, MembershipStatus } from "../domain/statusMapping";
 
 /**
- * People Core API client (TH-0094). Endpoints and response shapes match
- * the existing, unmodified contract in docs/05-api/people-api.md
- * §4-5/§13/§18 and the real routers (`app/api/v1/persons.py`) — no field
- * or endpoint is invented here.
+ * People API client (TH-0094 read endpoints, TH-0104 mutations). Endpoints
+ * and response shapes match the real routers (`app/api/v1/persons.py`,
+ * `memberships.py`, `guardian_relationships.py`, `me.py`) and
+ * docs/05-api/people-api.md as reconciled to ADR-0035 — no field or
+ * endpoint is invented here.
  */
 
 export type Person = {
   id: string;
   first_name: string;
   last_name: string;
-  // `phone`/`email`/`address` are deliberately absent: ADR-0025 §8
-  // withholds them from the baseline Person API for every requester,
-  // including one holding `person.read` — not a client omission.
   middle_name: string | null;
   birth_date: string | null;
+  // `phone`/`email`/`address`/`photo_file_id` ARE part of `PersonOut` for
+  // an authorized viewer (ADR-0035 §4, people-api.md §5) — an earlier
+  // version of this type omitted them citing a stale ADR-0025 reading;
+  // that was wrong and blocked Person edit (TH-0104) outright.
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  photo_file_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -35,17 +41,54 @@ export type Membership = {
   updated_at: string;
 };
 
+// ADR-0035 §7.2 / app/people/lifecycle.py's ALLOWED_STATUS_TRANSITIONS,
+// reproduced verbatim as a pure UX convenience for populating the
+// status-change picker with only the currently valid next states. This is
+// never a security boundary — the backend re-validates every transition
+// independently and is the sole source of truth; a stale/incorrect copy
+// here can only make the UI *less* permissive than the backend, never
+// more, since the actual POST .../status call is still checked server-side.
+export const MEMBERSHIP_NEXT_STATUSES: Record<MembershipStatus, MembershipStatus[]> = {
+  pending: ["active", "archived"],
+  active: ["suspended", "inactive", "archived"],
+  suspended: ["active", "inactive", "archived"],
+  inactive: ["archived"],
+  archived: [],
+};
+
+export const CANONICAL_MEMBERSHIP_STATUSES: MembershipStatus[] = [
+  "pending",
+  "active",
+  "suspended",
+  "inactive",
+  "archived",
+];
+
 export type GuardianRelationship = {
   id: string;
   guardian_person_id: string;
   child_person_id: string;
   relationship_type: string;
   status: GuardianRelationshipStatus;
-  is_primary_contact: boolean;
+  // TH-0103 (PR #126) removed `is_primary_contact` from the backend
+  // entirely — ADR-0035 §8: no primary/priority concept exists for
+  // GuardianRelationship. Do not reintroduce it here.
   valid_from: string;
   valid_to: string | null;
   created_at: string;
   updated_at: string;
+};
+
+/** `GET /me/children` projection (ADR-0035 §9) — exactly these 6 fields,
+ * never enriched with a `usePerson(child.id)` call: no contacts, no other
+ * GuardianRelationship data. */
+export type Child = {
+  id: string;
+  last_name: string;
+  first_name: string;
+  middle_name: string | null;
+  birth_date: string | null;
+  photo_file_id: string | null;
 };
 
 export function personFullName(person: {
@@ -147,4 +190,204 @@ export function useMembershipPersonName(clubMembershipId: string) {
     isError: membership.isError || person.isError,
     name: person.data ? personFullName(person.data) : null,
   };
+}
+
+/** `GET /api/v1/me/children` (ADR-0035 §9): the authenticated Guardian's
+ * own current children, safe projection only. Identity comes solely from
+ * the session — no id parameter exists to request someone else's. */
+export function useMyChildren() {
+  return useQuery<CollectionResponse<Child>, ApiError>({
+    queryKey: ["me", "children"],
+    queryFn: () => apiFetch<CollectionResponse<Child>>("/me/children"),
+  });
+}
+
+// --- Person mutations (TH-0101/TH-0104) ------------------------------------
+
+export type PersonFields = {
+  first_name?: string;
+  last_name?: string;
+  middle_name?: string | null;
+  birth_date?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  address?: string | null;
+  photo_file_id?: string | null;
+};
+
+/** `POST /api/v1/persons` — `person.create`, admin-only, no `club_id`
+ * (Person is Club-neutral; creating a ClubMembership is a distinct,
+ * separate operation, never bundled into this call). */
+export function useCreatePerson() {
+  const queryClient = useQueryClient();
+  return useMutation<Person, ApiError, PersonFields>({
+    mutationFn: (fields) => apiFetch<Person>("/persons", { method: "POST", body: JSON.stringify(fields) }),
+    onSuccess: (person) => {
+      queryClient.setQueryData(["persons", "detail", person.id], person);
+      void queryClient.invalidateQueries({ queryKey: ["persons", "list"] });
+    },
+  });
+}
+
+/** `PATCH /api/v1/persons/{id}` — `person.update`. Send only the fields
+ * that actually changed (PATCH/`exclude_unset` semantics mirrored
+ * client-side): the caller is responsible for diffing against the loaded
+ * `Person` before calling `mutate`. Sending `birth_date` requires the
+ * caller to hold the system admin role (enforced server-side); this hook
+ * does not gate that itself — the UI decides whether to offer the field
+ * at all (see EditPersonDialog). */
+export function useUpdatePerson() {
+  const queryClient = useQueryClient();
+  return useMutation<Person, ApiError, { personId: string; fields: PersonFields }>({
+    mutationFn: ({ personId, fields }) =>
+      apiFetch<Person>(`/persons/${personId}`, { method: "PATCH", body: JSON.stringify(fields) }),
+    onSuccess: (person) => {
+      queryClient.setQueryData(["persons", "detail", person.id], person);
+      // Name changes affect how this Person renders in the list.
+      void queryClient.invalidateQueries({ queryKey: ["persons", "list"] });
+    },
+  });
+}
+
+// --- ClubMembership mutations (TH-0102/TH-0104) ----------------------------
+
+export type CreateMembershipInput = {
+  person_id: string;
+  club_id: string;
+  membership_type: string;
+  status: MembershipStatus;
+  joined_at: string;
+};
+
+/** `POST /api/v1/memberships` — `membership.manage`, admin-only. Rejoining
+ * after `inactive`/`archived` uses this same call again: it always
+ * creates a brand-new period/row, never reactivates an old one (there is
+ * no such transition). */
+export function useCreateMembership() {
+  const queryClient = useQueryClient();
+  return useMutation<Membership, ApiError, CreateMembershipInput>({
+    mutationFn: (input) =>
+      apiFetch<Membership>("/memberships", { method: "POST", body: JSON.stringify(input) }),
+    onSuccess: (membership) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["persons", "memberships", membership.person_id],
+      });
+    },
+  });
+}
+
+/** `PATCH /api/v1/memberships/{id}` — `membership.manage`, admin-only.
+ * Only `membership_type` is settable here; lifecycle status changes go
+ * through `useTransitionMembershipStatus` exclusively. */
+export function useUpdateMembershipType() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    Membership,
+    ApiError,
+    { membershipId: string; personId: string; membership_type: string }
+  >({
+    mutationFn: ({ membershipId, membership_type }) =>
+      apiFetch<Membership>(`/memberships/${membershipId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ membership_type }),
+      }),
+    onSuccess: (membership, { personId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["persons", "memberships", personId] });
+      // Load-bearing: useMembershipPersonName (consumed by GroupDetailPage's
+      // member list) reads this exact key — without this invalidation a
+      // Group page could keep showing stale membership data after an
+      // admin changes it here.
+      void queryClient.invalidateQueries({ queryKey: ["memberships", "detail", membership.id] });
+    },
+  });
+}
+
+/** `POST /api/v1/memberships/{id}/status` — `membership.manage`,
+ * admin-only. The only lifecycle-changing endpoint; see
+ * `MEMBERSHIP_NEXT_STATUSES` for the allowed graph the UI mirrors. */
+export function useTransitionMembershipStatus() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    Membership,
+    ApiError,
+    { membershipId: string; personId: string; status: MembershipStatus; reason?: string }
+  >({
+    mutationFn: ({ membershipId, status, reason }) =>
+      apiFetch<Membership>(`/memberships/${membershipId}/status`, {
+        method: "POST",
+        body: JSON.stringify(reason ? { status, reason } : { status }),
+      }),
+    onSuccess: (membership, { personId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["persons", "memberships", personId] });
+      void queryClient.invalidateQueries({ queryKey: ["memberships", "detail", membership.id] });
+    },
+  });
+}
+
+// --- GuardianRelationship mutations (TH-0103/TH-0104) ----------------------
+
+/** `POST /api/v1/persons/{person_id}/guardian-relationships` —
+ * `guardian_relationship.manage`, admin-only. `person_id` is the CHILD
+ * side; `status` is always `"active"` (the only value the schema accepts
+ * at create time) and is not client-configurable. */
+export function useCreateGuardianRelationship() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    GuardianRelationship,
+    ApiError,
+    { personId: string; guardian_person_id: string; relationship_type: string }
+  >({
+    mutationFn: ({ personId, guardian_person_id, relationship_type }) =>
+      apiFetch<GuardianRelationship>(`/persons/${personId}/guardian-relationships`, {
+        method: "POST",
+        body: JSON.stringify({ guardian_person_id, relationship_type, status: "active" }),
+      }),
+    onSuccess: (_relationship, { personId }) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["persons", "guardian-relationships", personId],
+      });
+    },
+  });
+}
+
+/** `PATCH /api/v1/guardian-relationships/{id}` —
+ * `guardian_relationship.manage`, admin-only. Only `relationship_type` is
+ * settable — no primary/priority field exists (ADR-0035 §8). */
+export function useUpdateGuardianRelationship() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    GuardianRelationship,
+    ApiError,
+    { relationshipId: string; personId: string; relationship_type: string }
+  >({
+    mutationFn: ({ relationshipId, relationship_type }) =>
+      apiFetch<GuardianRelationship>(`/guardian-relationships/${relationshipId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ relationship_type }),
+      }),
+    onSuccess: (_relationship, { personId }) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["persons", "guardian-relationships", personId],
+      });
+    },
+  });
+}
+
+/** `POST /api/v1/guardian-relationships/{id}/terminate` —
+ * `guardian_relationship.manage`, admin-only. Always sets
+ * `status = "revoked"`, which is terminal — there is no restore
+ * operation, and the UI must never offer one. */
+export function useTerminateGuardianRelationship() {
+  const queryClient = useQueryClient();
+  return useMutation<GuardianRelationship, ApiError, { relationshipId: string; personId: string }>({
+    mutationFn: ({ relationshipId }) =>
+      apiFetch<GuardianRelationship>(`/guardian-relationships/${relationshipId}/terminate`, {
+        method: "POST",
+      }),
+    onSuccess: (_relationship, { personId }) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["persons", "guardian-relationships", personId],
+      });
+    },
+  });
 }
