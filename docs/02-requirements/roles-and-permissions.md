@@ -187,6 +187,7 @@ Feature setting не может расширить permissions.
 **Person**
 
 - `person.create`: только `admin`. Авторизуется effective `person.create` assignment со `scope_type=all`; `assignment.club_id` не участвует в решении (не обязан быть `NULL`) — у Person ещё нет target Club, относительно которого проверялась бы club boundary (TH-0106 / Issue #131).
+- TH-0111 / Issue #140: `POST /api/v1/persons` атомарно создаёт также начальное активное `ClubMembership` для текущего Club (`member`/`active`) в той же транзакции — см. ADR-0035 §2 (amendment) и `people-api.md` §6. Это не новый permission и не требует `membership.manage`: набор полей membership полностью фиксирован политикой, а не является предметом отдельного решения вызывающего.
 - `person.read`: каждый пользователь может читать собственный Person; `admin` — Persons в authorized `all` scope; `instructor` — Persons только через `own_groups`; `member` и `guardian` не получают общего доступа к другим Persons.
 - `person.update`: каждый пользователь может изменять собственный Person в разрешённых полях; `admin` — Persons в authorized `all` scope; `instructor` — Persons через `own_groups`.
 - `id` неизменяем.

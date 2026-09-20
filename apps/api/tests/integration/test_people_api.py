@@ -27,6 +27,7 @@ from app.api.deps import CurrentPrincipal, get_current_principal
 from app.audit.service import record_audit_event
 from app.db.audit import AuditLog
 from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.events import EventParticipation
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 from app.db.identity import Club, ClubMembership, GuardianRelationship, Person, User
 from app.db.session import session_scope
@@ -208,11 +209,12 @@ def _latest_audit_row(*, action: str, resource_id: uuid.UUID) -> AuditLog | None
 @requires_postgres
 def test_create_person_with_global_all_scope_succeeds(client: TestClient) -> None:
     with session_scope() as session:
+        club = _make_club()
         person = _make_person()
         user = _make_user(person)
-        session.add_all([person, user])
+        session.add_all([club, person, user])
         session.commit()
-        user_id = user.id
+        user_id, club_id = user.id, club.id
     _grant_permission(user_id, "person.create", scope_type="all")
     _authenticate_as(user_id)
 
@@ -247,6 +249,16 @@ def test_create_person_with_global_all_scope_succeeds(client: TestClient) -> Non
     assert audit_row.actor_user_id == user_id
     assert audit_row.resource_type == "person"
     assert audit_row.outcome == "success"
+
+    # TH-0111 / Issue #140: since no other qualifying assignment is
+    # club-scoped, `resolve_current_club_id_for_person_create` falls back
+    # to the sole Club row — the ClubMembership auto-created alongside
+    # this Person must land in that Club.
+    with session_scope() as session:
+        membership = session.execute(
+            select(ClubMembership).where(ClubMembership.person_id == uuid.UUID(body["id"]))
+        ).scalar_one()
+        assert membership.club_id == club_id
 
 
 @requires_postgres
@@ -352,11 +364,148 @@ def test_create_person_with_non_all_scope_is_forbidden(client: TestClient) -> No
 
 
 @requires_postgres
-def test_create_person_does_not_create_club_membership(client: TestClient) -> None:
-    """Creating a Person and creating a ClubMembership remain distinct
-    domain operations (ADR-0035 §2) — even for a club-scoped admin whose
-    assignment now authorizes Person creation, no ClubMembership row is
-    ever created as a side effect.
+def test_create_person_also_creates_active_club_membership(client: TestClient) -> None:
+    """TH-0111 / Issue #140 (test A, happy path): `POST /persons` is an
+    atomic "add Person to the current Club" operation — creating a Person
+    without a `ClubMembership` left the club-scoped admin unable to see
+    the very Person they just created (`person_visibility_filter`'s
+    club-scoped `all` predicate requires an actual membership row). This
+    supersedes the old (pre-TH-0111) `does_not_create_club_membership`
+    test, whose premise — that Person and ClubMembership creation must
+    stay decoupled — was the exact fragile design this issue fixes.
+    """
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        user_id, club_id = user.id, club.id
+    _grant_permission(user_id, "person.create", scope_type="all", club_id=club_id)
+    _authenticate_as(user_id)
+
+    before = datetime.datetime.now(datetime.timezone.utc)
+    response = client.post(
+        "/api/v1/persons",
+        json={"first_name": "Anna", "last_name": "Petrova"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 201, response.text
+    new_person_id = uuid.UUID(response.json()["id"])
+
+    with session_scope() as session:
+        membership = session.execute(
+            select(ClubMembership).where(ClubMembership.person_id == new_person_id)
+        ).scalar_one()
+        assert membership.club_id == club_id
+        assert membership.status == "active"
+        assert membership.membership_type == "member"
+        assert membership.joined_at is not None
+        assert membership.joined_at >= before
+        assert membership.left_at is None
+
+    audit_row = _latest_audit_row(action="membership.created", resource_id=membership.id)
+    assert audit_row is not None
+    assert audit_row.actor_type == "user"
+    assert audit_row.actor_user_id == user_id
+    assert audit_row.club_id == club_id
+    assert audit_row.resource_type == "club_membership"
+    assert audit_row.outcome == "success"
+
+
+@requires_postgres
+def test_create_person_new_person_immediately_visible_to_club_scoped_admin(
+    client: TestClient,
+) -> None:
+    """TH-0111 / Issue #140 (test B, visibility): the exact reported bug
+    — a club-scoped admin creates a Person, then cannot find it via
+    either the list or the detail endpoint, because
+    `person_visibility_filter`'s club-scoped `all` predicate requires an
+    actual `ClubMembership` row in that Club. Must now succeed via both.
+    """
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        user_id, club_id = user.id, club.id
+    _grant_permission(user_id, "person.create", scope_type="all", club_id=club_id)
+    _grant_permission(user_id, "person.read", scope_type="all", club_id=club_id)
+    _authenticate_as(user_id)
+
+    response = client.post(
+        "/api/v1/persons",
+        json={"first_name": "Anna", "last_name": "Petrova"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 201, response.text
+    new_person_id = response.json()["id"]
+
+    detail_response = client.get(f"/api/v1/persons/{new_person_id}")
+    assert detail_response.status_code == 200, detail_response.text
+    assert detail_response.json()["id"] == new_person_id
+
+    list_response = client.get("/api/v1/persons")
+    assert list_response.status_code == 200, list_response.text
+    listed_ids = {item["id"] for item in list_response.json()["items"]}
+    assert new_person_id in listed_ids
+
+
+@requires_postgres
+def test_create_person_rolls_back_entirely_on_membership_failure(client: TestClient) -> None:
+    """TH-0111 / Issue #140 (test C, atomicity): if ClubMembership
+    creation fails, the Person must not remain in the database either —
+    no partially-created Person, no orphaned audit rows. Forces the
+    failure with a real DB constraint violation (an invalid `club_id`
+    that cannot satisfy `ClubMembership`'s FK), exercised directly against
+    the service function so the failure happens inside the same
+    transaction boundary `POST /persons` uses.
+    """
+    from app.people.service import create_person_with_membership
+
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([person, user])
+        session.commit()
+        user_id = user.id
+
+    nonexistent_club_id = uuid.uuid4()
+    with session_scope() as session, pytest.raises(IntegrityError):
+        create_person_with_membership(
+            session,
+            first_name="Anna",
+            last_name="Petrova",
+            middle_name=None,
+            birth_date=None,
+            phone=None,
+            email=None,
+            address=None,
+            club_id=nonexistent_club_id,
+            actor_user_id=user_id,
+        )
+
+    with session_scope() as session:
+        orphaned_persons = session.execute(
+            select(Person).where(Person.first_name == "Anna", Person.last_name == "Petrova")
+        ).scalars().all()
+        assert orphaned_persons == []
+        orphaned_memberships = session.execute(
+            select(ClubMembership).where(ClubMembership.club_id == nonexistent_club_id)
+        ).scalars().all()
+        assert orphaned_memberships == []
+        audit_rows = session.execute(
+            select(AuditLog).where(AuditLog.action.in_(["person.created", "membership.created"]))
+        ).scalars().all()
+        assert all(row.actor_user_id != user_id for row in audit_rows)
+
+
+@requires_postgres
+def test_create_person_does_not_create_user_or_role_assignment(client: TestClient) -> None:
+    """TH-0111 / Issue #140 (test D): `POST /persons` never provisions a
+    system account or grants any permission for the new Person — Role
+    assignment stays a separate, later operation (ADR-0005/ADR-0035).
     """
     with session_scope() as session:
         club = _make_club()
@@ -377,10 +526,259 @@ def test_create_person_does_not_create_club_membership(client: TestClient) -> No
     new_person_id = uuid.UUID(response.json()["id"])
 
     with session_scope() as session:
-        memberships = session.execute(
-            select(ClubMembership).where(ClubMembership.person_id == new_person_id)
+        linked_users = session.execute(
+            select(User).where(User.person_id == new_person_id)
         ).scalars().all()
-        assert memberships == []
+        assert linked_users == []
+
+
+@requires_postgres
+def test_create_person_does_not_create_other_domain_relationships(client: TestClient) -> None:
+    """TH-0111 / Issue #140 (test E): no GuardianRelationship,
+    GroupMembership, or EventParticipation is auto-created alongside the
+    new Person and its initial ClubMembership — every such relationship
+    remains a distinct, later operation triggered from Person detail.
+    (GroupInstructorAssignment and RegistrationRequest are not checked
+    directly: the former links a User, not a Person, to a Group — see
+    test D, which confirms no User is ever created here — and the latter
+    has no corresponding table in this codebase yet.)
+    """
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        user_id, club_id = user.id, club.id
+    _grant_permission(user_id, "person.create", scope_type="all", club_id=club_id)
+    _authenticate_as(user_id)
+
+    response = client.post(
+        "/api/v1/persons",
+        json={"first_name": "Anna", "last_name": "Petrova"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 201, response.text
+    new_person_id = uuid.UUID(response.json()["id"])
+
+    with session_scope() as session:
+        guardian_rows = session.execute(
+            select(GuardianRelationship).where(
+                (GuardianRelationship.guardian_person_id == new_person_id)
+                | (GuardianRelationship.child_person_id == new_person_id)
+            )
+        ).scalars().all()
+        assert guardian_rows == []
+
+        membership = session.execute(
+            select(ClubMembership).where(ClubMembership.person_id == new_person_id)
+        ).scalar_one()
+        group_memberships = session.execute(
+            select(GroupMembership).where(GroupMembership.club_membership_id == membership.id)
+        ).scalars().all()
+        assert group_memberships == []
+
+        # GroupInstructorAssignment links a User (not a Person) to a
+        # Group; test D already confirms no User is created for this
+        # Person at all, so no such assignment can exist for them either.
+        event_participations = session.execute(
+            select(EventParticipation).where(EventParticipation.person_id == new_person_id)
+        ).scalars().all()
+        assert event_participations == []
+
+
+@requires_postgres
+def test_create_person_denies_cross_club_scoped_assignment_boundary_still_enforced(
+    client: TestClient,
+) -> None:
+    """TH-0111 / Issue #140 (test F): the compound operation's own Club
+    resolution (`resolve_current_club_id_for_person_create`) must not
+    weaken the existing permission contract — a caller with no qualifying
+    `person.create` assignment at all is still denied, exactly as before
+    TH-0111. (Cross-club *visibility* boundary coverage for the resulting
+    membership already exists in the `Person: read` tests below, e.g.
+    `test_get_person_club_scoped_all_denies_person_without_membership_in_that_club`.)
+    """
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        user_id = user.id
+    _authenticate_as(user_id)
+
+    response = client.post(
+        "/api/v1/persons",
+        json={"first_name": "Anna", "last_name": "Petrova"},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
+
+
+# --- Person: create — single-Club invariant (TH-0111 PO follow-up) ------
+#
+# TourCRM is not, and is not becoming, a multi-club product in the current
+# MVP: `club_id` stays a required technical column everywhere (models,
+# authorization, API) — nothing here removes it or adds Club selection.
+# The only change is that `resolve_current_club_id_for_person_create` no
+# longer silently resolves `.first()`/an unverified assignment `club_id`:
+# it fails closed whenever "exactly one Club" doesn't actually hold.
+
+
+@requires_postgres
+def test_create_person_with_zero_clubs_fails_closed() -> None:
+    """No Club exists at all (should be unreachable via bootstrap in
+    practice) — must not silently proceed; the club-count `SELECT`
+    resolving to nothing surfaces as the canonical, detail-free 500
+    `internal_error` envelope (`app.people.authorization.
+    NoClubConfiguredError`, uncaught by design — see its docstring) rather
+    than a Person being created without any Club context at all.
+
+    Uses a local `raise_server_exceptions=False` client (matching
+    `tests/api/conftest.py`'s `real_client` pattern) instead of this
+    file's shared `client` fixture: with `raise_server_exceptions=True`,
+    an uncaught exception propagates out of Starlette's
+    `BaseHTTPMiddleware` layer before the registered `Exception` handler
+    converts it to a response, which would make this test fail on the
+    raw exception instead of asserting the client-facing contract.
+    """
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        with session_scope() as session:
+            person = _make_person()
+            user = _make_user(person)
+            session.add_all([person, user])
+            session.commit()
+            user_id = user.id
+        _grant_permission(user_id, "person.create", scope_type="all")
+        _authenticate_as(user_id)
+
+        response = client.post(
+            "/api/v1/persons",
+            json={"first_name": "Anna", "last_name": "Petrova"},
+            headers=_csrf_headers(client),
+        )
+        assert response.status_code == 500, response.text
+        assert response.json()["error"]["code"] == "internal_error"
+
+        with session_scope() as session:
+            orphaned = session.execute(
+                select(Person).where(Person.first_name == "Anna", Person.last_name == "Petrova")
+            ).scalars().all()
+            assert orphaned == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+@requires_postgres
+def test_create_person_with_multiple_clubs_fails_closed() -> None:
+    """More than one Club exists — a state the current product/MVP does
+    not support and should never reach in normal usage (there is still no
+    `POST /clubs` endpoint and bootstrap refuses to run twice). A global
+    `person.create` assignment gives no way to disambiguate which Club is
+    "current," so this must fail closed (`MultipleClubsConfiguredError`,
+    surfaced as the generic 500 `internal_error`) rather than silently
+    picking one via `.first()`. Uses a local
+    `raise_server_exceptions=False` client — see
+    `test_create_person_with_zero_clubs_fails_closed`'s docstring.
+    """
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        with session_scope() as session:
+            club_a = _make_club()
+            club_b = _make_club()
+            person = _make_person()
+            user = _make_user(person)
+            session.add_all([club_a, club_b, person, user])
+            session.commit()
+            user_id = user.id
+        _grant_permission(user_id, "person.create", scope_type="all")
+        _authenticate_as(user_id)
+
+        response = client.post(
+            "/api/v1/persons",
+            json={"first_name": "Anna", "last_name": "Petrova"},
+            headers=_csrf_headers(client),
+        )
+        assert response.status_code == 500, response.text
+        assert response.json()["error"]["code"] == "internal_error"
+
+        with session_scope() as session:
+            orphaned = session.execute(
+                select(Person).where(Person.first_name == "Anna", Person.last_name == "Petrova")
+            ).scalars().all()
+            assert orphaned == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+@requires_postgres
+def test_resolve_current_club_id_uses_sole_club_for_club_scoped_assignment() -> None:
+    """Test A precondition, isolated at the resolver level: exactly one
+    Club exists, and the caller's `person.create` assignment is scoped to
+    that same Club — `resolve_current_club_id_for_person_create` must
+    return exactly that Club's id (already exercised end-to-end by
+    `test_create_person_with_club_scoped_all_assignment_succeeds`; this
+    adds direct unit-level coverage of the resolver itself).
+    """
+    from app.people.authorization import resolve_current_club_id_for_person_create
+
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        user_id, club_id = user.id, club.id
+    _grant_permission(user_id, "person.create", scope_type="all", club_id=club_id)
+
+    with session_scope() as session:
+        resolved = resolve_current_club_id_for_person_create(session, user_id)
+        assert resolved == club_id
+
+
+@requires_postgres
+def test_resolve_current_club_id_denies_club_scoped_assignment_pointing_elsewhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A club-scoped `person.create` assignment whose `club_id` does not
+    match the system's sole Club must fail closed rather than being used
+    anyway or silently swapped for the sole Club.
+
+    `UserRoleAssignment.club_id` has a real `FOREIGN KEY ... ON DELETE
+    RESTRICT` to `clubs.id`, so a *persisted* assignment can only ever
+    reference a Club that actually exists — meaning this exact mismatch
+    (one real Club overall, but the assignment points elsewhere) cannot
+    be produced by inserting a second real Club: that would instead make
+    `test_create_person_with_multiple_clubs_fails_closed`'s scenario
+    apply. This test exercises the resolver's own defensive equality
+    check directly by stubbing `applicable_assignments` to return a
+    club-scoped assignment referencing an arbitrary, unpersisted club id
+    — the shape a corrupted/legacy row would have if the FK were ever
+    relaxed — while a single real Club exists in the database.
+    """
+    from app.authorization.service import AuthorizationDenied
+    from app.people import authorization as people_authorization
+
+    with session_scope() as session:
+        club = _make_club()
+        session.add(club)
+        session.commit()
+
+    class _ElsewhereAssignment:
+        scope_type = "all"
+        club_id = uuid.uuid4()
+
+    monkeypatch.setattr(
+        people_authorization,
+        "applicable_assignments",
+        lambda *args, **kwargs: [_ElsewhereAssignment()],
+    )
+
+    with session_scope() as session, pytest.raises(AuthorizationDenied):
+        people_authorization.resolve_current_club_id_for_person_create(session, uuid.uuid4())
 
 
 @requires_postgres
@@ -427,9 +825,10 @@ def test_create_person_with_only_person_update_permission_is_forbidden(client: T
 @requires_postgres
 def test_create_person_accepts_photo_file_id(client: TestClient) -> None:
     with session_scope() as session:
+        club = _make_club()
         person = _make_person()
         user = _make_user(person)
-        session.add_all([person, user])
+        session.add_all([club, person, user])
         session.commit()
         user_id = user.id
     _grant_permission(user_id, "person.create", scope_type="all")

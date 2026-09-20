@@ -65,6 +65,7 @@ from app.people.authorization import (
     has_person_create_assignment,
     is_person_visible,
     is_system_admin_person_update_grant,
+    resolve_current_club_id_for_person_create,
 )
 from app.people.guardian_authorization import build_guardian_relationship_create_context
 from app.people.guardian_lifecycle import (
@@ -198,10 +199,25 @@ def create_person(
     # ADR-0035 §2 introduces `person.create` as its own canonical
     # permission, distinct from `person.update`; only `admin` holds it in
     # the current MVP.
+    #
+    # TH-0111 / Issue #140: this endpoint's actual operation is "add a
+    # person to the current Club," not bare Person creation — a Person
+    # with no ClubMembership is invisible to the club-scoped admin who
+    # just created them (person_visibility_filter's club-scoped `all`
+    # predicate requires one). `person.create` alone remains the
+    # authorization gate: the initial ClubMembership this operation
+    # creates has no discretionary field (membership_type/status/
+    # joined_at are all fixed, see create_person_with_membership) and is
+    # a structural consequence of this one operation, not an independent
+    # act of membership management — so `membership.manage` is
+    # deliberately NOT also required here. `PersonCreateRequest`/
+    # `PersonOut` are unchanged; the target Club is resolved server-side,
+    # never accepted from the client.
     if not has_person_create_assignment(db, principal.user_id):
         raise AuthorizationDenied("person.create")
+    club_id = resolve_current_club_id_for_person_create(db, principal.user_id)
 
-    person = people_service.create_person(
+    person = people_service.create_person_with_membership(
         db,
         first_name=payload.first_name,
         last_name=payload.last_name,
@@ -211,6 +227,7 @@ def create_person(
         email=payload.email,
         address=payload.address,
         photo_file_id=payload.photo_file_id,
+        club_id=club_id,
         actor_user_id=principal.user_id,
         request_id=get_request_id(request),
     )

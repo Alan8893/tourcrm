@@ -132,6 +132,11 @@ def create_person(
 ) -> Person:
     """Create a Person and its `person.created` audit record in one
     transaction (fail-closed — see module docstring).
+
+    Not used by `POST /persons` since TH-0111 (see
+    `create_person_with_membership`) — kept for any future caller that
+    genuinely needs a bare, Club-neutral Person with no membership side
+    effect; the API layer no longer has one.
     """
     person = Person(
         first_name=first_name,
@@ -153,6 +158,111 @@ def create_person(
             actor_user_id=actor_user_id,
             resource_type="person",
             resource_id=person.id,
+            outcome="success",
+            request_id=request_id,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return person
+
+
+# TH-0111 / Issue #140: the initial ClubMembership `create_person_with_
+# membership` creates is never discretionary — every field is fixed. Not a
+# User Role (roles are assigned separately, later, from Person detail).
+_INITIAL_MEMBERSHIP_TYPE = "member"
+_INITIAL_MEMBERSHIP_STATUS = "active"
+
+
+def create_person_with_membership(
+    session: Session,
+    *,
+    first_name: str,
+    last_name: str,
+    middle_name: Optional[str],
+    birth_date,
+    phone: Optional[str],
+    email: Optional[str],
+    address: Optional[str],
+    club_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    request_id: Optional[str] = None,
+    photo_file_id: Optional[uuid.UUID] = None,
+) -> Person:
+    """TH-0111 / Issue #140: `POST /persons`'s actual operation — "add a
+    person to the current Club" — not bare Person creation. Person
+    remains a Club-neutral *entity* (no `club_id` column is added to it,
+    and `PersonCreateRequest`/`PersonOut` are unchanged), but the
+    *application operation* this function backs always also creates the
+    Person's first `ClubMembership` (`membership_type="member"`,
+    `status="active"`, `joined_at=now()`), in the same transaction, so a
+    Person can never exist without the membership that makes them visible
+    to the club-scoped admin who just created them
+    (`person_visibility_filter`'s club-scoped `all` predicate requires an
+    actual `ClubMembership` row — this is the exact bug this function
+    fixes, not a `person_visibility_filter` change).
+
+    Deliberately does not call `create_person()`/`create_membership()`:
+    both commit their own transaction internally (this module's own
+    established pattern — see module docstring), which would make the
+    Person and the ClubMembership independently committable and reopen
+    the same non-atomic gap. This function inlines both inserts behind a
+    single flush/audit/commit — any exception rolls back everything,
+    including both audit rows — the same fail-closed shape every other
+    function in this module already uses, just combining two mutations
+    instead of one (mirroring `transition_membership_status`, which
+    already writes two audit rows atomically in one transaction).
+
+    Never creates a User, UserRoleAssignment, GuardianRelationship,
+    GroupMembership, GroupInstructorAssignment, EventParticipation or
+    RegistrationRequest — Role assignment and every domain relationship
+    built on top of it remain separate operations, triggered later from
+    Person detail.
+    """
+    person = Person(
+        first_name=first_name,
+        last_name=last_name,
+        middle_name=middle_name,
+        birth_date=birth_date,
+        phone=phone,
+        email=email,
+        address=address,
+        photo_file_id=photo_file_id,
+    )
+    session.add(person)
+    try:
+        session.flush()
+
+        membership = ClubMembership(
+            person_id=person.id,
+            club_id=club_id,
+            membership_type=_INITIAL_MEMBERSHIP_TYPE,
+            status=_INITIAL_MEMBERSHIP_STATUS,
+            joined_at=datetime.now(timezone.utc),
+            left_at=None,
+        )
+        session.add(membership)
+        session.flush()
+
+        record_audit_event(
+            session,
+            action="person.created",
+            actor_type="user",
+            actor_user_id=actor_user_id,
+            resource_type="person",
+            resource_id=person.id,
+            outcome="success",
+            request_id=request_id,
+        )
+        record_audit_event(
+            session,
+            action="membership.created",
+            actor_type="user",
+            actor_user_id=actor_user_id,
+            club_id=club_id,
+            resource_type="club_membership",
+            resource_id=membership.id,
             outcome="success",
             request_id=request_id,
         )
@@ -395,6 +505,7 @@ def transition_membership_status(
 __all__ = [
     "UPDATABLE_PERSON_FIELDS",
     "create_person",
+    "create_person_with_membership",
     "update_person",
     "create_membership",
     "update_membership_type",
