@@ -27,6 +27,11 @@ export type Person = {
   photo_file_id: string | null;
   created_at: string;
   updated_at: string;
+  // ADR-0039 §3's canonical role codes currently active for this Person
+  // (TH-0114, people-api.md §4) — resolved server-side from RoleAssignment,
+  // never from `ClubMembership.membership_type`. Render with
+  // `personRoleLabel` below, never as a raw code.
+  role_codes: string[];
 };
 
 export type Membership = {

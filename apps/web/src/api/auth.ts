@@ -115,6 +115,24 @@ export function usePasswordResetConfirm() {
   });
 }
 
+/** `POST /api/v1/auth/logout` (auth-api.md §8) — the ONE canonical logout
+ * mechanism; no separate client-side token/identity store exists to clear
+ * beyond this. Idempotent server-side (a no-op success even with no/an
+ * already-expired session), so this hook always treats the call as
+ * successful and clears the cached `/auth/me` identity — the same query
+ * `useLogin` is the sole other writer of — so a subsequent read (e.g. after
+ * navigating back or reloading) re-derives "signed out" from the backend
+ * rather than from stale cached data. */
+export function useLogout() {
+  const queryClient = useQueryClient();
+  return useMutation<void, ApiError, void>({
+    mutationFn: () => apiFetch<void>("/auth/logout", { method: "POST" }),
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ["auth", "me"] });
+    },
+  });
+}
+
 /** TourCRM serves one club per deployment (business-rules.md §2.1); the
  * frontend has no `/clubs` listing endpoint, so the current club is
  * derived from the signed-in user's own role assignments rather than

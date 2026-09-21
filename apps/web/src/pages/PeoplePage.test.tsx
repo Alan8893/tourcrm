@@ -20,7 +20,13 @@ function meResponse(roleCode: string) {
 }
 
 function peopleResponse(
-  items: Array<{ id: string; first_name: string; last_name: string; birth_date: string | null }>,
+  items: Array<{
+    id: string;
+    first_name: string;
+    last_name: string;
+    birth_date: string | null;
+    role_codes?: string[];
+  }>,
   pagination: { page: number; page_size: number; total: number; pages: number },
 ) {
   return {
@@ -32,6 +38,7 @@ function peopleResponse(
       birth_date: item.birth_date,
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
+      role_codes: item.role_codes ?? [],
     })),
     pagination,
   };
@@ -73,6 +80,79 @@ describe("PeoplePage", () => {
     expect(screen.getByText(/Дата рождения/)).toBeInTheDocument();
   });
 
+  // --- Role display (TH-0114 / ADR-0039) --------------------------------
+
+  it("shows a human-readable label for a person's single active role", async () => {
+    stubFetch([
+      {
+        match: "/persons?page=1",
+        response: peopleResponse(
+          [
+            {
+              id: "p1",
+              first_name: "Анна",
+              last_name: "Иванова",
+              birth_date: null,
+              role_codes: ["instructor"],
+            },
+          ],
+          { page: 1, page_size: 20, total: 1, pages: 1 },
+        ),
+      },
+    ]);
+
+    renderWithProviders(<PeoplePage />);
+
+    expect(await screen.findByRole("link", { name: "Иванова Анна" })).toBeInTheDocument();
+    expect(screen.getByText("Инструктор")).toBeInTheDocument();
+  });
+
+  it("shows every active role when a person has more than one", async () => {
+    stubFetch([
+      {
+        match: "/persons?page=1",
+        response: peopleResponse(
+          [
+            {
+              id: "p1",
+              first_name: "Анна",
+              last_name: "Иванова",
+              birth_date: null,
+              role_codes: ["admin", "guardian"],
+            },
+          ],
+          { page: 1, page_size: 20, total: 1, pages: 1 },
+        ),
+      },
+    ]);
+
+    renderWithProviders(<PeoplePage />);
+
+    await screen.findByRole("link", { name: "Иванова Анна" });
+    expect(screen.getByText("Администратор")).toBeInTheDocument();
+    expect(screen.getByText("Родитель")).toBeInTheDocument();
+  });
+
+  it("renders a person with no active roles without any role label or crash", async () => {
+    stubFetch([
+      {
+        match: "/persons?page=1",
+        response: peopleResponse(
+          [{ id: "p1", first_name: "Анна", last_name: "Иванова", birth_date: null }],
+          { page: 1, page_size: 20, total: 1, pages: 1 },
+        ),
+      },
+    ]);
+
+    renderWithProviders(<PeoplePage />);
+
+    expect(await screen.findByRole("link", { name: "Иванова Анна" })).toBeInTheDocument();
+    expect(screen.queryByText("Администратор")).not.toBeInTheDocument();
+    expect(screen.queryByText("Инструктор")).not.toBeInTheDocument();
+    expect(screen.queryByText("Участник")).not.toBeInTheDocument();
+    expect(screen.queryByText("Родитель")).not.toBeInTheDocument();
+  });
+
   it("shows the empty-people state when there are no people at all", async () => {
     stubFetch([
       { match: "/persons?page=1", response: peopleResponse([], { page: 1, page_size: 20, total: 0, pages: 0 }) },
@@ -93,7 +173,7 @@ describe("PeoplePage", () => {
     await screen.findByRole("link", { name: "Иванова Анна" });
 
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText("Поиск по имени"), "Зз");
+    await user.type(screen.getByLabelText("Поиск по имени или роли"), "Зз");
 
     await waitFor(
       () => {
@@ -104,6 +184,45 @@ describe("PeoplePage", () => {
       { timeout: 2000 },
     );
     expect(await screen.findByText("Ничего не найдено")).toBeInTheDocument();
+  });
+
+  it("sends a role label typed into the single search field to the backend and renders the match (TH-0114)", async () => {
+    const fetchMock = stubFetch([
+      {
+        match: "search=%D0%98%D0%BD%D1%81%D1%82%D1%80%D1%83%D0%BA%D1%82%D0%BE%D1%80",
+        response: peopleResponse(
+          [
+            {
+              id: "p1",
+              first_name: "Пётр",
+              last_name: "Кузнецов",
+              birth_date: null,
+              role_codes: ["instructor"],
+            },
+          ],
+          { page: 1, page_size: 20, total: 1, pages: 1 },
+        ),
+      },
+      { match: "/persons?page=1", response: peopleResponse([], { page: 1, page_size: 20, total: 0, pages: 0 }) },
+    ]);
+
+    renderWithProviders(<PeoplePage />);
+    await screen.findByText("Пока нет ни одного человека");
+
+    const user = userEvent.setup();
+    // Never a separate role dropdown/filter — the same one search field
+    // used for names.
+    await user.type(screen.getByLabelText("Поиск по имени или роли"), "Инструктор");
+
+    expect(await screen.findByRole("link", { name: "Кузнецов Пётр" })).toBeInTheDocument();
+    expect(screen.getByText("Инструктор")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).includes(
+          "search=%D0%98%D0%BD%D1%81%D1%82%D1%80%D1%83%D0%BA%D1%82%D0%BE%D1%80",
+        ),
+      ),
+    ).toBe(true);
   });
 
   it("shows an error state when the request fails", async () => {

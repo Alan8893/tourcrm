@@ -60,7 +60,7 @@ several" shape).
 """
 
 import uuid
-from typing import Optional
+from typing import Optional, Sequence
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
@@ -72,6 +72,35 @@ from app.role_assignments import service as role_assignment_service
 # ADR-0039 §3: the closed MVP role set. Re-exported so callers (the API
 # router) validate against the same single source of truth.
 CANONICAL_PERSON_ROLE_CODES = BASELINE_ROLE_CODES
+
+# ADR-0039 §3's canonical human-readable labels. Kept here, not only in the
+# frontend's own `personRoleLabel` (apps/web/src/api/people.ts), because
+# the People list's backend-authoritative combined search (TH-0114,
+# people-api.md §4) must resolve a Russian role label to a role code
+# itself, server-side, without a second round-trip to the client.
+# Duplicated rather than shared across the two runtimes/languages, per
+# this codebase's own established convention for small cross-boundary
+# constants (e.g. app.api.v1.auth._apply_rate_limit).
+PERSON_ROLE_LABELS: dict[str, str] = {
+    "admin": "Администратор",
+    "instructor": "Инструктор",
+    "member": "Участник",
+    "guardian": "Родитель",
+}
+
+
+def role_codes_matching_search_term(term: str) -> list[str]:
+    """Canonical role codes whose code or ADR-0039 §3 human-readable label
+    contains `term`, case-insensitively (TH-0114: the People list's single
+    combined search field must match a Person's role alongside their
+    name). Purely in-memory — the role catalog is four fixed values, never
+    a database lookup."""
+    lowered = term.casefold()
+    return [
+        code
+        for code in CANONICAL_PERSON_ROLE_CODES
+        if lowered in code.casefold() or lowered in PERSON_ROLE_LABELS[code].casefold()
+    ]
 
 # See module docstring point 2. Uniform across all four canonical roles.
 _PERSON_ROLE_SCOPE_TYPE = "all"
@@ -190,6 +219,42 @@ def list_person_role_assignments(
     return list(rows)
 
 
+def list_active_role_codes_by_person(
+    session: Session, person_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, list[str]]:
+    """Active RoleAssignment role codes for each of `person_ids`, batched
+    into one query (TH-0114: the People list shows every Person's active
+    system roles without an N+1 query per row). Uses the exact same
+    `UserRoleAssignment`/`Role` tables and the same "currently effective"
+    interval check as `list_person_role_assignments` — this is a
+    read/batch-shaped sibling of that function, not a new authorization
+    concept. A Person absent from `person_ids`' role data, or with no
+    User at all, maps to an empty list. Each list is ordered by ADR-0039
+    §3's canonical role order (admin, instructor, member, guardian), never
+    by database insertion order."""
+    result: dict[uuid.UUID, list[str]] = {person_id: [] for person_id in person_ids}
+    if not person_ids:
+        return result
+    now = sa.func.now()
+    rows = session.execute(
+        sa.select(User.person_id, Role.code)
+        .join(UserRoleAssignment, UserRoleAssignment.user_id == User.id)
+        .join(Role, Role.id == UserRoleAssignment.role_id)
+        .where(
+            User.person_id.in_(person_ids),
+            UserRoleAssignment.valid_from <= now,
+            sa.or_(UserRoleAssignment.valid_to.is_(None), now < UserRoleAssignment.valid_to),
+        )
+    ).all()
+    order = {code: index for index, code in enumerate(CANONICAL_PERSON_ROLE_CODES)}
+    codes_by_person: dict[uuid.UUID, set[str]] = {}
+    for person_id, code in rows:
+        codes_by_person.setdefault(person_id, set()).add(code)
+    for person_id, codes in codes_by_person.items():
+        result[person_id] = sorted(codes, key=lambda code: order.get(code, len(order)))
+    return result
+
+
 def add_person_role(
     session: Session,
     *,
@@ -278,6 +343,8 @@ def remove_person_role(
 
 __all__ = [
     "CANONICAL_PERSON_ROLE_CODES",
+    "PERSON_ROLE_LABELS",
+    "role_codes_matching_search_term",
     "PersonRoleAssignmentError",
     "PersonHasNoUserAccountError",
     "NoClubConfiguredError",
@@ -287,6 +354,7 @@ __all__ = [
     "user_id_for_person",
     "resolve_sole_club_id",
     "list_person_role_assignments",
+    "list_active_role_codes_by_person",
     "add_person_role",
     "remove_person_role",
 ]

@@ -1,9 +1,10 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import { Avatar } from "../components/ui/Avatar";
 import { Icon } from "../components/ui/Icon";
-import { useCurrentUser, displayName } from "../api/auth";
+import { useNotify } from "../components/ui/notificationContext";
+import { useCurrentUser, useLogout, displayName } from "../api/auth";
 import styles from "./ProfileMenu.module.css";
 
 /**
@@ -18,9 +19,20 @@ export function ProfileMenu() {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const menuId = useId();
+  const navigate = useNavigate();
+  const notify = useNotify();
+  const logout = useLogout();
 
   const name = data ? displayName(data.user) : undefined;
   const label = name ?? "Гость";
+
+  function handleLogout() {
+    setOpen(false);
+    logout.mutate(undefined, {
+      onSuccess: () => navigate("/login"),
+      onError: (error) => notify("error", error.message),
+    });
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -65,6 +77,17 @@ export function ProfileMenu() {
             <Icon id="nav.settings" size={20} />
             Настройки
           </Link>
+          {data ? (
+            <button
+              type="button"
+              role="menuitem"
+              className={styles.menuItem}
+              disabled={logout.isPending}
+              onClick={handleLogout}
+            >
+              Выйти
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>

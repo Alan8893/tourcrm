@@ -58,3 +58,8 @@ class PersonOut(BaseModel):
     photo_file_id: Optional[UUID]
     created_at: datetime
     updated_at: datetime
+    # ADR-0039 §3's canonical role codes ("admin"/"instructor"/"member"/
+    # "guardian") currently active for this Person, resolved from
+    # RoleAssignment — never from `ClubMembership.membership_type` (TH-0114,
+    # people-api.md §4). Empty for a Person with no active role or no User.
+    role_codes: list[str] = Field(default_factory=list)
