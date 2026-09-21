@@ -510,4 +510,109 @@ describe("PeoplePage", () => {
     expect(await screen.findByLabelText("Поиск ребёнка")).toHaveValue("Кузнецова");
     expect(screen.getByRole("button", { name: "Создать" })).toBeDisabled();
   });
+
+  // --- Wizard: switching role clears stale contextual selections ---------
+
+  it("clears a selected group when switching from Member to Admin before finishing", async () => {
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/persons?page=1", response: peopleResponse([], { page: 1, page_size: 20, total: 0, pages: 0 }) },
+      { match: "/groups?status=active", response: { items: [{ id: "grp1", club_id: "club-1", name: "Юниоры", description: null, status: "active", valid_from: "2025-01-01T00:00:00Z", valid_to: null, created_at: "2025-01-01T00:00:00Z", updated_at: "2025-01-01T00:00:00Z" }], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } } },
+      {
+        match: "/persons/wizard",
+        response: {
+          person: { id: "new-3", first_name: "Ольга", last_name: "Сидорова", middle_name: null, birth_date: null, phone: null, email: null, address: null, photo_file_id: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", role_codes: ["admin"] },
+          temporary_credential: null,
+        },
+      },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people" element={<PeoplePage />} />
+        <Route path="/people/:personId" element={<div>Person detail page</div>} />
+      </Routes>,
+      { route: "/people" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Добавить человека" }));
+    await user.type(screen.getByLabelText("Фамилия"), "Сидорова");
+    await user.type(screen.getByLabelText("Имя"), "Ольга");
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+
+    // 1. select Member, 2. select a group.
+    await user.click(await screen.findByRole("button", { name: "Участник" }));
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+    await user.click(await screen.findByLabelText("Юниоры"));
+
+    // 3. go back, 4. switch to Admin, which has no contextual step at all.
+    await user.click(screen.getByRole("button", { name: "Назад" }));
+    await user.click(await screen.findByRole("button", { name: "Администратор" }));
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    await screen.findByText("Person detail page");
+
+    const wizardCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/persons/wizard"));
+    expect(wizardCall).toBeDefined();
+    const body = JSON.parse(String((wizardCall?.[1] as RequestInit).body));
+    expect(body.role_code).toBe("admin");
+    expect(body.group_ids).toEqual([]);
+    expect(body.child_person_ids).toEqual([]);
+  });
+
+  it("clears a selected child when switching from Guardian to Instructor before finishing", async () => {
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      {
+        match: "/persons?page=1",
+        response: peopleResponse(
+          [{ id: "child-1", first_name: "Иван", last_name: "Волков", birth_date: null }],
+          { page: 1, page_size: 20, total: 1, pages: 1 },
+        ),
+      },
+      { match: "/groups?status=active", response: { items: [], pagination: { page: 1, page_size: 50, total: 0, pages: 0 } } },
+      {
+        match: "/persons/wizard",
+        response: {
+          person: { id: "new-4", first_name: "Анна", last_name: "Волкова", middle_name: null, birth_date: null, phone: null, email: null, address: null, photo_file_id: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", role_codes: ["instructor"] },
+          temporary_credential: null,
+        },
+      },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people" element={<PeoplePage />} />
+        <Route path="/people/:personId" element={<div>Person detail page</div>} />
+      </Routes>,
+      { route: "/people" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Добавить человека" }));
+    await user.type(screen.getByLabelText("Фамилия"), "Волкова");
+    await user.type(screen.getByLabelText("Имя"), "Анна");
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+
+    // 1. select Guardian, 2. select a child.
+    await user.click(await screen.findByRole("button", { name: "Родитель" }));
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+    await user.click(await screen.findByLabelText("Волков Иван"));
+
+    // 3. go back, 4. switch to Instructor, finish with zero groups.
+    await user.click(screen.getByRole("button", { name: "Назад" }));
+    await user.click(await screen.findByRole("button", { name: "Инструктор" }));
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+    await screen.findByLabelText("Поиск группы");
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    await screen.findByText("Person detail page");
+
+    const wizardCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/persons/wizard"));
+    expect(wizardCall).toBeDefined();
+    const body = JSON.parse(String((wizardCall?.[1] as RequestInit).body));
+    expect(body.role_code).toBe("instructor");
+    expect(body.child_person_ids).toEqual([]);
+  });
 });

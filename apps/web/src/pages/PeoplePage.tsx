@@ -184,6 +184,25 @@ function PersonCreationWizard({ open, onClose }: { open: boolean; onClose: () =>
     onClose();
   }
 
+  function handleRoleChange(nextRole: PersonRoleCode) {
+    setRoleCode(nextRole);
+    // Contextual selections belong to a single role's fields (people-api.md
+    // §6.1): switching roles must never leave a stale group/child selection
+    // that the new role doesn't accept, or the backend rejects the payload
+    // with unexpected_contextual_selection.
+    if (nextRole === "admin") {
+      setSelectedGroupIds([]);
+      setSelectedChildIds([]);
+      return;
+    }
+    if (nextRole === "guardian") {
+      setSelectedGroupIds([]);
+      return;
+    }
+    // instructor / member
+    setSelectedChildIds([]);
+  }
+
   const basicsValid = Boolean(firstName.trim() && lastName.trim());
   const needsContextualStep =
     roleCode === "instructor" || roleCode === "member" || roleCode === "guardian";
@@ -323,7 +342,7 @@ function PersonCreationWizard({ open, onClose }: { open: boolean; onClose: () =>
             <Button
               key={code}
               variant={roleCode === code ? "primary" : "secondary"}
-              onClick={() => setRoleCode(code)}
+              onClick={() => handleRoleChange(code)}
             >
               {personRoleLabel(code)}
             </Button>
