@@ -512,7 +512,7 @@ Document.person_id -> Person.id
 
 `EventDocumentRequirement`: `event_id`, `document_type`, `required`.
 
-Проверка требования против документов конкретного участника — read-only вычисление (не persisted запись), дающее один из результатов: `valid`, `missing`, `expired`.
+Проверка требования против документов конкретного участника — read-only вычисление (не persisted запись), дающее один из результатов: `valid`, `missing`, `expired`. Поведение для случая, когда текущая версия документа имеет `status = revoked`, этим ADR не определено — `revoked` остаётся отдельным lifecycle-состоянием (§22.4) и не считается автоматически `expired`; конкретный mapping — отдельное business-решение будущего implementation slice, не введённое здесь.
 
 Перед экспортом пакета документов мероприятия (например, competition document package) пользователь должен получить явное предупреждение о участниках/требованиях, для которых результат — `missing` или `expired`.
 

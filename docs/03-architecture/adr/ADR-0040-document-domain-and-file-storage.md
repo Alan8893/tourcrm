@@ -121,7 +121,9 @@ A uniqueness constraint on `(event_id, document_type)` prevents two contradictor
 
 - `valid` — the participant has a current-version Document of the required `document_type`, with `status` effectively `active` (§4's read-time rule) at the time of the check.
 - `missing` — no Document of the required `document_type` exists for that Person at all. **`missing` is never a persisted `Document.status` value** — it is purely the absence result of this check, exactly as TH-0117 specifies.
-- `expired` — a Document of the required type exists, but its current version is expired (stored `expired`, revoked, or past `expires_at`) at the time of the check.
+- `expired` — a Document of the required type exists, but its current version's stored `status` is `expired`, or its `expires_at` has already elapsed (§4's read-time rule), at the time of the check.
+
+This ADR intentionally leaves the check's result **undefined** for the case where the current version's stored `status` is `revoked`. `revoked` remains its own distinct lifecycle state (§4) — this ADR does not fold it into `expired`, and does not add a fourth result value (`revoked`, `invalid`, `not_applicable`, or otherwise) to the three-value `valid`/`missing`/`expired` result set above. Which of the three values a `revoked` current version maps to (if any) is a business decision for a later TH-0117 implementation slice, made before the validation check itself is implemented — not decided by this documentation-only baseline.
 
 **Competition/event document package export.** Before an export that packages participant documents for an Event (e.g. a competition document package), the exporting user must receive an explicit warning listing any participant/requirement pairs that resolve to `missing` or `expired`. This ADR does not design the export format or UI — only the requirement that the warning must occur before such an export completes.
 
