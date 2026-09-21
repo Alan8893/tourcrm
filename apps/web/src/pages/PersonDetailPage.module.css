@@ -100,3 +100,20 @@
   color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
 }
+
+.credentialCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.credentialValue {
+  font-family: monospace;
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  word-break: break-all;
+  background: var(--color-surface-muted);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+}

@@ -239,7 +239,7 @@ If email delivery is not yet available in the MVP, the system may expose the gen
 
 Permanent passwords and raw credentials must never be returned through ordinary API responses.
 
-The exact administrative endpoint and UI are implementation concerns and must reuse the existing password-reset/security model. A parallel password mechanism must not be introduced.
+**Implemented (TH-0113):** as `POST /api/v1/persons/{person_id}/account` (creates the User and issues the first-access challenge in one step) and `POST /api/v1/persons/{person_id}/account/password-reset` (issues a fresh challenge for an existing User) — see `docs/05-api/people-api.md` §24.2 for the full contract, error mapping and the `account.manage` permission gate. Both reuse this section's own `POST /auth/password-reset/confirm` unchanged as the single mechanism by which the user actually sets their password — no parallel password mechanism was introduced, and no new challenge/token model exists.
 
 See ADR-0038.
 

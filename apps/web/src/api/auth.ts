@@ -93,6 +93,28 @@ export function usePasswordResetRequest() {
   });
 }
 
+export type PasswordResetConfirmPayload = {
+  token: string;
+  new_password: string;
+};
+
+/** `POST /api/v1/auth/password-reset/confirm` — the ONE canonical
+ * mechanism for both self-service password recovery and ADR-0038's
+ * admin-issued first-access/reset setup: the backend has no way to tell
+ * the two apart (and does not need to), so this single hook backs both
+ * the "Сброс пароля" and "Установите пароль" UI labels in
+ * PasswordResetRequestPage — no separate `/first-access`/`/set-password`
+ * flow exists or is introduced here. */
+export function usePasswordResetConfirm() {
+  return useMutation<void, ApiError, PasswordResetConfirmPayload>({
+    mutationFn: (payload) =>
+      apiFetch<void>("/auth/password-reset/confirm", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+  });
+}
+
 /** TourCRM serves one club per deployment (business-rules.md §2.1); the
  * frontend has no `/clubs` listing endpoint, so the current club is
  * derived from the signed-in user's own role assignments rather than

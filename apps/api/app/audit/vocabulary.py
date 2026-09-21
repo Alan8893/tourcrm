@@ -104,5 +104,18 @@ CANONICAL_AUDIT_ACTIONS: frozenset[str] = frozenset(
         "attendance.corrected",
         # Event self-registration (ADR-0037 amendment to ADR-0024 §4, TH-0108.2)
         "event_participation.status_changed",
+        # Admin password reset / first-access setup (ADR-0038 amendment to
+        # ADR-0024 §4, TH-0113): covers both self-service password-reset
+        # requests (app.authentication.service.request_password_reset,
+        # actor_type="system") and administrator-initiated ones (actor_
+        # type="user", via app.authentication.account_provisioning) — the
+        # same underlying PasswordResetChallenge mechanism, one action code
+        # per lifecycle step, not one per initiator. Sessions revoked as a
+        # consequence of a completed reset are recorded as a `details`
+        # field on `password_reset_challenge.completed` rather than a
+        # separate action, mirroring `event_participation.status_changed`'s
+        # "one action, details carry the rest" shape.
+        "password_reset_challenge.created",
+        "password_reset_challenge.completed",
     }
 )

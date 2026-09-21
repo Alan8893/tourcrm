@@ -111,6 +111,14 @@ DOCUMENTED_PERMISSION_CODES = (
     # establishes reach over its own club_id (or globally, if club_id is
     # NULL) — scope_type is not consulted at all for this permission.
     "user.directory.read",
+    # TH-0113 (Admin password reset / first-access setup), ADR-0038, PO
+    # decision: a dedicated, narrow permission for administrative User
+    # account/credential management (create User for a Person, issue a
+    # first-access/reset challenge) — deliberately NOT role.manage,
+    # settings.manage or person.update, per ADR-0038's own framing of this
+    # as a distinct administrative capability. Granted only to `admin` in
+    # this slice (see app.authentication.account_provisioning).
+    "account.manage",
 )
 
 

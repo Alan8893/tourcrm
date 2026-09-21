@@ -91,6 +91,15 @@ permission исключение, а не пересмотр общей scope-м�
 - `audit.read`
 - `settings.manage`
 - `role.manage`
+- `account.manage`
+
+Каталог включает также отдельный `account.manage` (TH-0113, ADR-0038) — permission для
+административного управления User account/credentials из Person Detail: создание User для
+существующего Person и выдача одноразового setup/reset challenge через уже существующий
+`PasswordResetChallenge` (см. `docs/05-api/people-api.md` §24.2). Выдаётся только `admin`.
+Намеренно отдельный от `role.manage`, `settings.manage` и `person.update` (ADR-0038: управление
+credentials — отдельная административная операция, не назначение роли и не редактирование
+профиля). Полная матрица ролей для `account.manage` не заполняется в рамках этой задачи.
 
 `event.archive`, `event.participant.read`, `event.participant.manage`,
 `event.schedule.manage` и `attendance.correct` не являются каноническими
@@ -177,6 +186,7 @@ Feature setting не может расширить permissions.
 | Audit: чтение | ✅ | ❌ по умолчанию | ❌ | ❌ |
 | System settings | ✅ | ❌ | ❌ | ❌ |
 | Roles/permissions | ✅ | ❌ | ❌ | ❌ |
+| Account management (create User, password reset) | ✅ | ❌ | ❌ | ❌ |
 
 Матрица является базовой. Для чувствительных данных действуют дополнительные объектные ограничения.
 

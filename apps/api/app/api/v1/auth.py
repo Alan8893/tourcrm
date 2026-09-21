@@ -23,6 +23,7 @@ from app.api.deps import (
     require_csrf_token,
 )
 from app.api.errors import APIError
+from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.auth_schemas import (
     ChangePasswordRequest,
@@ -356,12 +357,15 @@ def logout_all(
 @router.post("/password-reset/request", response_model=GenericResultResponse)
 def request_password_reset(
     payload: PasswordResetRequestRequest,
+    request: Request,
     db: Session = Depends(get_db),
     limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> GenericResultResponse:
     _apply_rate_limit(limiter, f"password-reset-request:{payload.identifier.strip().lower()}")
     # auth-api.md §13: identical response regardless of account existence.
-    auth_service.request_password_reset(db, payload.identifier)
+    auth_service.request_password_reset(
+        db, payload.identifier, request_id=get_request_id(request)
+    )
     return GenericResultResponse()
 
 
@@ -378,7 +382,10 @@ def confirm_password_reset(
     )
     try:
         auth_service.confirm_password_reset(
-            db, raw_token=payload.token, new_password=payload.new_password
+            db,
+            raw_token=payload.token,
+            new_password=payload.new_password,
+            request_id=get_request_id(request),
         )
     except auth_service.InvalidOrExpiredTokenError as exc:
         raise APIError(

@@ -36,8 +36,11 @@ def test_documented_permission_codes_have_no_invented_entries() -> None:
     # added by ADR-0035 §2 / TH-0101. `user.directory.read` was added by
     # TH-0107 (PO decision) — see docs/05-api/users-api.md §9 and
     # roles-and-permissions.md §11's explicit exception note.
+    # `account.manage` was added by TH-0113 (ADR-0038 PO decision) — see
+    # app.db.authorization.DOCUMENTED_PERMISSION_CODES's own comment.
     assert set(DOCUMENTED_PERMISSION_CODES) == {
         "user.directory.read",
+        "account.manage",
         "person.read",
         "person.create",
         "person.update",
