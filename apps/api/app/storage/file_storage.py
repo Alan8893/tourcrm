@@ -35,6 +35,17 @@ from typing import Protocol
 class FileStorage(Protocol):
     """Contract a concrete storage backend must satisfy."""
 
+    @property
+    def backend_name(self) -> str:
+        """A short, stable identifier for this backend (e.g. `"local"`),
+        persisted verbatim as `File.storage_backend` (ADR-0040 §1) by a
+        caller that creates a `File` row after a successful `put()`. Lets
+        that caller populate the column without hardcoding which concrete
+        adapter is currently wired in — see
+        `app.storage.local.LocalFileStorage.backend_name`.
+        """
+        ...
+
     def put(self, storage_key: str, content: bytes) -> None:
         """Store `content` under `storage_key`.
 

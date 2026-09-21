@@ -70,6 +70,10 @@ class LocalFileStorage:
     def __init__(self, root: str | Path) -> None:
         self._root = Path(root).resolve()
 
+    @property
+    def backend_name(self) -> str:
+        return "local"
+
     def _resolve_path(self, storage_key: str) -> Path:
         _reject_unsafe_key(storage_key)
         candidate = (self._root / storage_key).resolve()

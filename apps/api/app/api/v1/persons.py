@@ -43,9 +43,23 @@ established via the 404 check above, so a 403 there discloses nothing an
 authorized-for-other-fields caller didn't already know.
 """
 
+import re
 import uuid
+from datetime import datetime
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -58,6 +72,7 @@ from app.api.errors import APIError
 from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.account_schemas import PersonAccountCredentialOut, PersonAccountOut
+from app.api.v1.documents_schemas import DocumentOut
 from app.api.v1.groups_schemas import GroupMembershipOut
 from app.api.v1.guardian_relationships import guardian_relationship_out
 from app.api.v1.guardian_relationships_schemas import (
@@ -76,9 +91,13 @@ from app.authentication.rate_limit import RateLimiter, RateLimitExceeded, get_ra
 from app.authorization.context import ResourceContext
 from app.authorization.service import AuthorizationDenied, Authorizer
 from app.db.authorization import UserRoleAssignment
+from app.db.documents import Document
+from app.db.documents import File as FileModel
 from app.db.groups import GroupMembership
 from app.db.identity import Person, User
 from app.db.session import get_db
+from app.documents.queries import get_document_for_person, list_current_documents_for_person
+from app.documents.service import create_document, read_document_content
 from app.groups import service as groups_service
 from app.groups.queries import GROUP_MEMBERSHIP_DEFAULT_SORT, list_person_group_memberships_page
 from app.groups.queries import InvalidSortError as InvalidGroupSortError
@@ -113,6 +132,8 @@ from app.role_assignments.service import (
     DuplicateRoleAssignmentError,
     RoleAssignmentClubMembershipMissingError,
 )
+from app.storage.file_storage import FileStorage
+from app.storage.local import get_file_storage
 
 router = APIRouter(prefix="/persons", tags=["persons"])
 
@@ -625,6 +646,201 @@ def create_person_guardian_relationship(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "guardian_link_not_allowed", str(exc)
         ) from exc
     return guardian_relationship_out(relationship)
+
+
+# --- Participant Documents (TH-0117.3 / Issue #160, ADR-0040) --------------
+#
+# Nested-only in this slice (people-api.md §32): no flat `/documents/{id}`
+# resource exists yet, unlike GuardianRelationship. Authorization reuses
+# this module's own `_get_authorized_person_or_404` — identical existence-
+# hiding for a nonexistent Person and one the caller cannot act on — but
+# parameterized by `document.manage`/`document.read` instead of
+# `person.read`, so ordinary Person visibility is never sufficient on its
+# own (ADR-0040 §6). `Document` has no authorization scope beyond its
+# owning Person (ADR-0040 §2: explicit, non-polymorphic `person_id`
+# association, no other subject), so this one per-Person check is the
+# complete authorization boundary for all four endpoints below.
+
+_DOCUMENT_NOT_FOUND_CODE = "document_not_found"
+_DOCUMENT_NOT_FOUND_DETAIL = "Document not found"
+# CR/LF (header injection), control characters, and the characters that
+# would break a quoted-string (Issue #160 §10) — never let a client-
+# supplied original_name flow unsanitized into a response header.
+_UNSAFE_FILENAME_CHARS = re.compile(r'[\r\n\x00-\x1f\x7f"\\]')
+
+
+def _content_disposition(original_name: str) -> str:
+    """RFC 6266 `attachment` disposition: a sanitized ASCII fallback for
+    legacy clients plus a UTF-8 `filename*` parameter for full fidelity.
+    """
+    sanitized = _UNSAFE_FILENAME_CHARS.sub("", original_name).strip() or "document"
+    ascii_fallback = sanitized.encode("ascii", errors="replace").decode("ascii").replace("?", "_")
+    encoded = quote(sanitized, safe="")
+    return f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{encoded}'
+
+
+def _document_out(document: Document) -> DocumentOut:
+    return DocumentOut(
+        id=document.id,
+        person_id=document.person_id,
+        document_group_id=document.document_group_id,
+        version_number=document.version_number,
+        document_type=document.document_type,
+        status=document.status,
+        issued_at=document.issued_at,
+        expires_at=document.expires_at,
+        file_id=document.file_id,
+        uploaded_by=document.uploaded_by,
+        created_at=document.created_at,
+        updated_at=document.updated_at,
+    )
+
+
+@router.post(
+    "/{person_id}/documents",
+    status_code=status.HTTP_201_CREATED,
+    response_model=DocumentOut,
+)
+def create_person_document(
+    person_id: uuid.UUID,
+    request: Request,
+    file: UploadFile = File(...),
+    document_type: str = Form(..., max_length=64),
+    issued_at: datetime | None = Form(default=None),
+    expires_at: datetime | None = Form(default=None),
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    storage: FileStorage = Depends(get_file_storage),
+    _csrf: None = Depends(require_csrf_token),
+) -> DocumentOut:
+    """Create the first version of a new participant Document
+    (people-api.md §32) — `document.manage`; `person.read`/`document.read`
+    alone are never sufficient (ADR-0040 §6). `storage_key` is always
+    generated server-side (`app.documents.service.create_document`) — the
+    client supplies only the file content and its own metadata.
+    """
+    _get_authorized_person_or_404(
+        db, person_id=person_id, user_id=principal.user_id, permission_code="document.manage"
+    )
+
+    original_name = (file.filename or "").strip()
+    if not original_name:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "filename_required", "A file name is required"
+        )
+    if len(original_name) > 255:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "filename_too_long", "File name is too long"
+        )
+    mime_type = (file.content_type or "application/octet-stream").strip()
+    if len(mime_type) > 255:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "mime_type_too_long", "MIME type is too long"
+        )
+    content = file.file.read()
+
+    document = create_document(
+        db,
+        storage,
+        person_id=person_id,
+        document_type=document_type,
+        content=content,
+        original_name=original_name,
+        mime_type=mime_type,
+        issued_at=issued_at,
+        expires_at=expires_at,
+        actor_user_id=principal.user_id,
+        request_id=get_request_id(request),
+    )
+    return _document_out(document)
+
+
+@router.get("/{person_id}/documents", response_model=CollectionResponse[DocumentOut])
+def list_person_documents(
+    person_id: uuid.UUID,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+) -> CollectionResponse[DocumentOut]:
+    """Current versions only (people-api.md §32) — `document.read`."""
+    _get_authorized_person_or_404(
+        db, person_id=person_id, user_id=principal.user_id, permission_code="document.read"
+    )
+
+    rows, total = list_current_documents_for_person(
+        db, person_id=person_id, page=page, page_size=page_size
+    )
+    pages = (total + page_size - 1) // page_size if total else 0
+    return CollectionResponse(
+        items=[_document_out(document) for document in rows],
+        pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
+    )
+
+
+@router.get("/{person_id}/documents/{document_id}", response_model=DocumentOut)
+def get_person_document(
+    person_id: uuid.UUID,
+    document_id: uuid.UUID,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+) -> DocumentOut:
+    """Metadata for one version, current or historical (people-api.md
+    §32) — `document.read`."""
+    _get_authorized_person_or_404(
+        db, person_id=person_id, user_id=principal.user_id, permission_code="document.read"
+    )
+
+    document = get_document_for_person(db, person_id=person_id, document_id=document_id)
+    if document is None:
+        raise APIError(
+            status.HTTP_404_NOT_FOUND, _DOCUMENT_NOT_FOUND_CODE, _DOCUMENT_NOT_FOUND_DETAIL
+        )
+    return _document_out(document)
+
+
+@router.get("/{person_id}/documents/{document_id}/download")
+def download_person_document(
+    person_id: uuid.UUID,
+    document_id: uuid.UUID,
+    request: Request,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    storage: FileStorage = Depends(get_file_storage),
+) -> Response:
+    """Stream a Document's binary content (people-api.md §32) —
+    `document.read`. `storage_key`/filesystem path never appear in this or
+    any response (ADR-0040 §3): content is read exclusively through the
+    `FileStorage` port, never direct filesystem access. Audited as
+    `document.downloaded` for every document type, not only
+    `medical_certificate` (ADR-0040 §7).
+    """
+    _get_authorized_person_or_404(
+        db, person_id=person_id, user_id=principal.user_id, permission_code="document.read"
+    )
+
+    document = get_document_for_person(db, person_id=person_id, document_id=document_id)
+    if document is None:
+        raise APIError(
+            status.HTTP_404_NOT_FOUND, _DOCUMENT_NOT_FOUND_CODE, _DOCUMENT_NOT_FOUND_DETAIL
+        )
+    file_row = db.get(FileModel, document.file_id)
+    # File is immutable and never deleted while referenced (ADR-0040 §3).
+    assert file_row is not None
+
+    content = read_document_content(
+        db,
+        storage,
+        document=document,
+        file=file_row,
+        actor_user_id=principal.user_id,
+        request_id=get_request_id(request),
+    )
+    return Response(
+        content=content,
+        media_type=file_row.mime_type,
+        headers={"Content-Disposition": _content_disposition(file_row.original_name)},
+    )
 
 
 # --- Person role assignments (TH-0112 / ADR-0039) --------------------------
