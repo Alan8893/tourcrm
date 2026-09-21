@@ -38,9 +38,12 @@ def test_documented_permission_codes_have_no_invented_entries() -> None:
     # roles-and-permissions.md §11's explicit exception note.
     # `account.manage` was added by TH-0113 (ADR-0038 PO decision) — see
     # app.db.authorization.DOCUMENTED_PERMISSION_CODES's own comment.
+    # `document.export` was added by TH-0117.1 (ADR-0040 §6) — see
+    # app.db.authorization.DOCUMENTED_PERMISSION_CODES's own comment.
     assert set(DOCUMENTED_PERMISSION_CODES) == {
         "user.directory.read",
         "account.manage",
+        "document.export",
         "person.read",
         "person.create",
         "person.update",

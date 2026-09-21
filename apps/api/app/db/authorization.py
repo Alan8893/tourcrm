@@ -119,6 +119,15 @@ DOCUMENTED_PERMISSION_CODES = (
     # as a distinct administrative capability. Granted only to `admin` in
     # this slice (see app.authentication.account_provisioning).
     "account.manage",
+    # TH-0117.1 (Document/File persistence foundation), ADR-0040 §6: a
+    # dedicated multi-document/package export permission, distinct from
+    # `document.read` (which already covers metadata, derived validity and
+    # an authorized individual document download per ADR-0040 §6 — there is
+    # no separate `document.download` permission). No validity/check engine
+    # or export/package implementation exists yet (Issue #156 §7); this
+    # permission code exists so future work has a stable, already-seeded
+    # target to gate against.
+    "document.export",
 )
 
 
