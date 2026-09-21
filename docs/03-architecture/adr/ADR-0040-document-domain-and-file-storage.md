@@ -135,11 +135,11 @@ This ADR does not change existing Event or EventParticipation authorization (ADR
 
 Three dedicated permissions govern the Document domain:
 
-- `document.read` — view Document metadata and derived validity (`valid`/`missing`/`expired`); does not by itself grant binary content access.
+- `document.read` — view Document metadata and derived validity (`valid`/`missing`/`expired`), and download the binary content of an individually authorized Document. It does not grant export/package access.
 - `document.manage` — create, replace (new version), and revoke a Document.
-- `document.export` — produce an export that includes Document content or a document package (e.g. the competition package in §5).
+- `document.export` — produce a multi-document/export package that includes Document content (e.g. the competition package in §5). It is distinct from downloading one individually authorized Document.
 
-(`document.read` and `document.manage` already appear as reserved permission-catalog names in `roles-and-permissions.md` §4; `document.export` is new. Wiring the concrete scope/role grants for all three, and adding `document.export` to that catalog, is implementation work for a later TH-0117 slice, not this ADR.)
+(`document.read`, `document.manage`, and `document.export` are the canonical permission names for this domain. Their concrete role/scope grants remain implementation work for a later TH-0117 slice.)
 
 Medical certificates are sensitive documents. Ordinary People/Group views, and an ordinary Group export, must never expose medical-document content or a direct download link to it. An operational workflow (e.g. a roster or an event readiness screen) may show the derived validity (`valid`/`missing`/`expired`) from §5 without exposing the underlying file — the derived status is not itself sensitive content.
 
@@ -167,7 +167,7 @@ No raw document content, checksum-adjacent binary data, or medical content is ev
 - `Person.photo_file_id` gains a concrete target shape to eventually reference (the `files` table this ADR formalizes), but remains an FK-less plain UUID column until a separate implementation task adds the constraint (see "Non-decisions" below).
 - `database-schema.md`'s existing `files` table draft (§11) becomes the canonical File entity, shared by participant documents, routes/GPX (`route_files`), and the eventual `Person.photo_file_id` FK — no second, competing file-metadata table is introduced.
 - `database-schema.md`'s existing generic `documents` table draft (§15) is superseded, for the participant-document case only, by the explicit-FK, versioned shape in §1/§4 of this ADR; the polymorphic-subject question for other domains (Trip, Equipment, Finance, Club-level documents) remains open and unresolved by this ADR.
-- Any future People/Group/Event view or export must be built with the assumption that Document content requires `document.read`/`document.export` in addition to whatever permission governs the surrounding Person/Group/Event resource — `person.read`/`group.read`/`event.read` alone are never sufficient.
+- Any future People/Group/Event view or export must be built with the assumption that Document access requires one of the dedicated Document permissions in addition to whatever permission governs the surrounding Person/Group/Event resource. `document.read` covers individually authorized metadata/content access; `document.export` covers document exports/packages. `person.read`/`group.read`/`event.read` alone are never sufficient.
 - Implementation work following this ADR must add: the `files` and `documents` tables (per §1/§4), the `event_document_requirements` table (per §5), the `FileStorage` port and at least a local-filesystem adapter, the three permissions from §6, the ADR-0024 audit-vocabulary migration, and the `Person.photo_file_id` FK — each as its own reviewable implementation slice.
 
 ## Non-decisions / Out of scope
@@ -187,7 +187,7 @@ This ADR explicitly does **not**:
 - Change existing Event, EventParticipation, or People authorization models.
 - Change Navigation Architecture.
 - Reconcile every aspect of the broader `docs/04-modules/documents-and-consents.md` vision (DocumentType registry, Consent-document linkage, confidentiality-level enum, retention configuration) — only the participant-document slice needed for TH-0117 is resolved here.
-- Wire `document.export` (or the other two permissions) into `roles-and-permissions.md`'s role/scope matrix — that catalog file is not updated by this documentation-only task.
+- Concrete role/scope grants for the three Document permissions remain implementation work and are not assigned by this ADR.
 
 ## Traceability
 
