@@ -316,6 +316,10 @@ Published article version must remain historically identifiable.
 
 ## 18. Documents and consents
 
+**PLANNED — nothing in this section is implemented.** No `documents`/`consents` endpoint exists in current code.
+
+The generic list below predates ADR-0040 and remains an unresolved, broader aspirational sketch (`docs/04-modules/documents-and-consents.md`) for domains other than Person.
+
 - `GET /documents`
 - `POST /documents`
 - `GET /documents/{id}`
@@ -329,6 +333,25 @@ Published article version must remain historically identifiable.
 - `PATCH /consents/{id}`
 - `POST /consents/{id}/revoke`
 - `GET /persons/{id}/consents`
+
+### 18.1 Participant documents — PLANNED (TH-0117 / ADR-0040)
+
+**PLANNED — nothing here is implemented.** The concrete, narrower canonical contract for TH-0117's participant documents (medical certificates and similar Person-owned documents), superseding the generic sketch above for this specific case (ADR-0040 §1/§2). Full concept-level API description: `docs/05-api/people-api.md` §32.
+
+- `GET /persons/{person_id}/documents` (planned)
+- `POST /persons/{person_id}/documents` (planned)
+- `GET /persons/{person_id}/documents/{document_id}` (planned)
+- `GET /persons/{person_id}/documents/{document_id}/download` (planned)
+- `POST /persons/{person_id}/documents/{document_id}/replace` (planned)
+- `POST /persons/{person_id}/documents/{document_id}/revoke` (planned)
+
+### 18.2 Event document requirements — PLANNED (TH-0117 / ADR-0040)
+
+**PLANNED — nothing here is implemented.** Full concept-level API description: `docs/05-api/events-api.md` §31.
+
+- `GET /events/{event_id}/document-requirements` (planned)
+- `POST /events/{event_id}/document-requirements` (planned)
+- a per-participant `valid`/`missing`/`expired` status check (planned; exact endpoint shape not fixed by ADR-0040)
 
 ## 19. Equipment
 

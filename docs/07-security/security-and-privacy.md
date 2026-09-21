@@ -192,6 +192,21 @@ TourCRM должен архитектурно поддерживать допо�
 - хранить метаданные отдельно от бинарного объекта;
 - поддерживать удаление/архивирование согласно retention policy.
 
+### 10.1 Document domain (ADR-0040, TH-0117 — planned)
+
+The following is the security baseline for the participant-document domain fixed by ADR-0040 (TH-0117.0). It is documentation-only: no `File`/`Document` implementation exists in code yet — see `docs/03-architecture/adr/ADR-0040-document-domain-and-file-storage.md` for the full contract.
+
+- Private storage only, outside any public web root — the general rule above, restated as a hard requirement for `File`.
+- `storage_key` is never a public, guessable, or directly browsable URL. It is never returned to a client as an access mechanism; all content access goes through an authorized application endpoint.
+- Object-level authorization applies per Document, not merely per Person: `person.read` does **not** grant Document-content access. Three dedicated permissions govern the domain — `document.read`, `document.manage`, `document.export` — required in addition to whatever permission governs the surrounding Person/Group/Event resource.
+- Upload size limits, MIME/content-type validation, filename sanitization and path-traversal protection (§9/§10 above) apply to Document uploads exactly as to any other file upload; no separate, weaker rule is introduced for documents.
+- Medical certificates (`medical_certificate`) are sensitive documents. An ordinary People/Group view, and an ordinary Group export, must never expose medical-document content or a direct download link to it. An operational workflow may show only the derived validity (`valid`/`missing`/`expired`) without exposing the file.
+- A competition/event document package export (ADR-0040 §5) is an explicit, separate operation from an ordinary Group/People export — it requires `document.export`, and the exporting user must receive an explicit warning naming any participant/requirement pair that resolves to `missing` or `expired` before the export completes.
+- Sensitive document **download** and **export** are both audit-required (`document.downloaded`, `document.exported` — ADR-0024 §4 as amended by ADR-0040 §7), even when only metadata/derived validity would otherwise be visible without triggering audit.
+- No document content — sensitive or otherwise — is ever written to application logs, matching §13's existing rule against logging full document content.
+- Malware/antivirus scanning applies to Document uploads where available, per the general file-upload rule in §10.
+- File storage backup requirements (§15) cover Document's binary content the same as any other stored file.
+
 ## 11. Database security
 
 - приложение использует отдельного DB user;

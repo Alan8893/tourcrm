@@ -548,3 +548,15 @@ Object-level policy is mandatory. A role name alone does not grant unrestricted 
 - `self` — requester's own participation/registration or explicitly self-visible Event data;
 - `children` — data for Persons linked through active GuardianRelationship and otherwise eligible under object policy;
 - `none` — no access.
+
+## 31. Event document requirements — PLANNED (TH-0117 / ADR-0040)
+
+**Nothing in this section is implemented.** This is the canonical planned contract fixed by the documentation-only baseline ADR-0040 (TH-0117.0) — none of the endpoints or concepts below exist in current code. `Document` is not implemented either (see `docs/05-api/people-api.md` §32, also planned).
+
+`Document` is deliberately **not** coupled directly to `Event`. Instead, a separate `EventDocumentRequirement` concept (`event_id`, `document_type`, `required` — ADR-0040 §5) expresses "this Event requires document type X from its participants."
+
+- **List/set requirements** — `GET/POST /events/{event_id}/document-requirements` (planned) — minimal fields `document_type`, `required`; at most one requirement row per `(event_id, document_type)`.
+- **Check a participant's requirement status** — `GET /events/{event_id}/document-requirements/{requirement_id}/status` or an equivalent per-participant projection (exact shape not fixed by this ADR) — a read-only computation, never a persisted row, producing exactly one of `valid`, `missing`, `expired` (ADR-0040 §5) for a given participant. `missing` is never a persisted `Document.status` — it is this check's own result when no Document of the required type exists at all for that Person.
+- **Competition/event document package export** — before any export that packages participant documents for an Event, the exporting user must receive an explicit warning naming every participant/requirement pair that currently resolves to `missing` or `expired`. This ADR does not fix the export's exact endpoint, format, or UI.
+
+This does **not** change existing Event or EventParticipation authorization (§30 above, ADR-0020/ADR-0023/ADR-0037) in any way — `EventDocumentRequirement` management and checking use the dedicated `document.read`/`document.manage`/`document.export` permissions (ADR-0040 §6, `docs/05-api/people-api.md` §32), never `event.read`/`event.manage` alone. An Event permission is necessary to see the Event itself, but not sufficient to see participant document content or a `missing`/`expired` roster derived from it.
