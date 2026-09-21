@@ -75,8 +75,17 @@ _EVENT_PATHS = {
 
 _PERSON_PATHS = {
     "/api/v1/persons",
+    # TH-0116 / GitHub Issue #150: the atomic Person-creation wizard —
+    # Person + account provisioning + initial RoleAssignment + role-
+    # specific contextual setup, all as one operation. Additive: does not
+    # replace or change the bare `POST /persons` contract above.
+    "/api/v1/persons/wizard",
     "/api/v1/persons/{person_id}",
     "/api/v1/persons/{person_id}/memberships",
+    # TH-0116 / GitHub Issue #150: the reverse direction of `GET /groups/
+    # {group_id}/members` — closes a pre-existing documentation-only gap
+    # (people-api.md §17 already described this endpoint).
+    "/api/v1/persons/{person_id}/groups",
     # TH-0112 / ADR-0039: Person-scoped system role management, a
     # canonical-role-code-only view onto the same flat `/role-assignments`
     # resource (see _ROLE_ASSIGNMENT_PATHS below and ADR-0025 §6).

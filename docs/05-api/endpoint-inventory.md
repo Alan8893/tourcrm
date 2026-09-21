@@ -53,8 +53,16 @@ People Management endpoints are governed by ADR-0035 and `docs/05-api/people-api
 - `POST /persons`
 - `PATCH /persons/{id}`
 - `GET /persons/{id}/audit`
+- `POST /persons/wizard`
+- `GET /persons/{id}/groups`
 
 There is no Person archive endpoint in the current MVP. Person archiving is deferred by ADR-0034; related lifecycle entities must not be used to simulate Person archival.
+
+### Person creation wizard (TH-0116 / Issue #150)
+
+`POST /persons/wizard` is additive to `POST /persons` above — it does not replace or change that endpoint's contract. It atomically creates a Person, its technical `ClubMembership`, a `User` (always — active with a first-access challenge if `email` is given, otherwise a login-less `pending` stub, see `people-api.md` §24.2.1), an initial `RoleAssignment` (§24 below) and, depending on the chosen role, `GroupMembership`/`GroupInstructorAssignment`/`GuardianRelationship` records — one business transaction, rolled back entirely on any failure. See `people-api.md` §6.1 for the full contract.
+
+`GET /persons/{id}/groups` returns a Person's current and historical `GroupMembership` records (paginated, same `GroupMembershipOut` shape as `GET /groups/{id}/members`, §7). It was already listed in this inventory and in `people-api.md` §17 before TH-0116 but had no implementation; TH-0116 implements it, backing the Person Detail "Группы" tab that replaces the old, technical "Членство" tab.
 
 ### Person role assignments (TH-0112 / ADR-0039)
 

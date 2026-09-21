@@ -17,6 +17,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
+from app.db.identity import ClubMembership
 from app.groups.authorization import group_visibility_filter
 
 _GROUP_SORT_COLUMNS: dict[str, sa.UnaryExpression] = {
@@ -119,6 +120,52 @@ def list_group_memberships_page(
     return list(rows), total
 
 
+def list_person_group_memberships_page(
+    session: Session,
+    *,
+    person_id: uuid.UUID,
+    page: int,
+    page_size: int,
+    sort: str = GROUP_MEMBERSHIP_DEFAULT_SORT,
+) -> tuple[list[GroupMembership], int]:
+    """people-api.md §17 (TH-0116, GitHub Issue #150): the reverse
+    direction of `list_group_memberships_page` above — every
+    GroupMembership reachable through any of `person_id`'s own
+    ClubMembership rows (current and historical alike, matching that
+    endpoint's own documented scope), across every Club — never
+    fetch-then-filter: the `club_membership_id IN (...)` predicate runs
+    inside the same paginated query. The caller (the API router) is
+    responsible for authorization; this mirrors `list_group_memberships_
+    page`'s own division of responsibility exactly (no `user_id`/
+    `permission_code` here).
+    """
+    if sort not in _GROUP_MEMBERSHIP_SORT_COLUMNS:
+        raise InvalidSortError(sort)
+
+    club_membership_ids = sa.select(ClubMembership.id).where(
+        ClubMembership.person_id == person_id
+    )
+    conditions: list[sa.ColumnElement[bool]] = [
+        GroupMembership.club_membership_id.in_(club_membership_ids)
+    ]
+
+    total = session.execute(
+        sa.select(sa.func.count()).select_from(GroupMembership).where(*conditions)
+    ).scalar_one()
+    rows = (
+        session.execute(
+            sa.select(GroupMembership)
+            .where(*conditions)
+            .order_by(_GROUP_MEMBERSHIP_SORT_COLUMNS[sort])
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows), total
+
+
 def list_group_instructor_assignments_page(
     session: Session,
     *,
@@ -168,5 +215,6 @@ __all__ = [
     "GROUP_INSTRUCTOR_ASSIGNMENT_DEFAULT_SORT",
     "list_groups_page",
     "list_group_memberships_page",
+    "list_person_group_memberships_page",
     "list_group_instructor_assignments_page",
 ]

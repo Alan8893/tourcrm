@@ -54,6 +54,48 @@ export function useGroupMembers(groupId: string | undefined) {
   });
 }
 
+/** `GET /api/v1/persons/{person_id}/groups` (people-api.md §17, TH-0116):
+ * the reverse direction of `useGroupMembers` — every GroupMembership
+ * reachable through this Person's own ClubMembership row(s). Used by
+ * Person Detail's "Группы" tab so `club_membership_id` never becomes a
+ * user-facing concept there. */
+export function usePersonGroupMemberships(personId: string | undefined) {
+  return useQuery<CollectionResponse<GroupMembership>, ApiError>({
+    queryKey: ["persons", "groups", personId],
+    queryFn: () =>
+      apiFetch<CollectionResponse<GroupMembership>>(`/persons/${personId}/groups?page_size=50`),
+    enabled: Boolean(personId),
+  });
+}
+
+/** `POST /api/v1/groups/{group_id}/members` (people-api.md §15) — the
+ * SAME canonical endpoint from both directions this app offers it from:
+ * Person Detail's "Группы" tab ("+ Добавить в группу") and Group
+ * Detail's "Участники" tab ("+ Добавить участника"). Accepts `person_id`
+ * per the existing API contract — the backend resolves the target
+ * Person's active ClubMembership in the Group's Club server-side; this
+ * client never resolves or sends `club_membership_id` itself.
+ * `valid_from` is always "now" (no date picker in this MVP UI, matching
+ * TH-0116 §12's own instruction). */
+export function useAddGroupMember() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    GroupMembership,
+    ApiError,
+    { groupId: string; personId: string }
+  >({
+    mutationFn: ({ groupId, personId }) =>
+      apiFetch<GroupMembership>(`/groups/${groupId}/members`, {
+        method: "POST",
+        body: JSON.stringify({ person_id: personId, valid_from: new Date().toISOString() }),
+      }),
+    onSuccess: (_membership, { groupId, personId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["groups", "members", groupId] });
+      void queryClient.invalidateQueries({ queryKey: ["persons", "groups", personId] });
+    },
+  });
+}
+
 const GROUP_SCHEDULE_HORIZON_DAYS = 180;
 
 export function useGroupSchedule(groupId: string | undefined) {

@@ -14,6 +14,15 @@ into `conditions` as its own OR-of-(name-fields, role-match) predicate —
 this is a strict superset of the previous single-pattern-across-two-fields
 behavior, so an existing single-word name search still matches exactly the
 same rows as before (plus, now, `middle_name`).
+
+TH-0116 / Issue #150: `club_id` is a *results* filter, independent of the
+requester's own authorization reach (`person_visibility_filter`) — both
+apply as separate, AND-ed conditions, mirroring exactly how
+`app.users.queries.list_users_page`'s own `club_id` filter already works
+for the User directory. It requires an *active* `ClubMembership` in that
+Club and is used by the Group participant picker (`people-api.md` §4.1)
+to search only people eligible to be added to a Group in that Club —
+never fetch-all-then-filter-in-Python.
 """
 
 import uuid
@@ -21,12 +30,14 @@ from datetime import datetime
 from typing import Optional
 
 import sqlalchemy as sa
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.db.authorization import Role, UserRoleAssignment
 from app.db.identity import ClubMembership, Person, User
 from app.people.authorization import membership_visibility_filter, person_visibility_filter
 from app.role_assignments.person_roles import role_codes_matching_search_term
+
+_ACTIVE_CLUB_MEMBERSHIP_STATUS = "active"
 
 _PERSON_SORT_COLUMNS: dict[str, sa.UnaryExpression] = {
     "last_name": Person.last_name.asc(),
@@ -80,6 +91,24 @@ def _search_token_condition(token: str) -> sa.ColumnElement[bool]:
     return sa.or_(name_condition, Person.id.in_(_persons_with_active_role_codes(role_codes)))
 
 
+def _has_active_club_membership_condition(club_id: uuid.UUID) -> sa.ColumnElement[bool]:
+    """True if `Person.id` has an *active* ClubMembership in `club_id`.
+
+    Duplicated from app.users.queries's identically-named helper rather
+    than imported — matching that module's own established convention of
+    duplicating this small predicate per module (see also
+    app.people.authorization's `_active_guardian_condition`).
+    """
+    cm = aliased(ClubMembership)
+    return sa.exists(
+        sa.select(cm.id).where(
+            cm.person_id == Person.id,
+            cm.club_id == club_id,
+            cm.status == _ACTIVE_CLUB_MEMBERSHIP_STATUS,
+        )
+    )
+
+
 def list_persons_page(
     session: Session,
     *,
@@ -89,6 +118,7 @@ def list_persons_page(
     page_size: int,
     sort: str = PERSON_DEFAULT_SORT,
     search: Optional[str] = None,
+    club_id: Optional[uuid.UUID] = None,
 ) -> tuple[list[Person], int]:
     if sort not in _PERSON_SORT_COLUMNS:
         raise InvalidSortError(sort)
@@ -98,6 +128,8 @@ def list_persons_page(
     ]
     if search:
         conditions.extend(_search_token_condition(token) for token in search.split())
+    if club_id is not None:
+        conditions.append(_has_active_club_membership_condition(club_id))
 
     total = session.execute(
         sa.select(sa.func.count()).select_from(Person).where(*conditions)

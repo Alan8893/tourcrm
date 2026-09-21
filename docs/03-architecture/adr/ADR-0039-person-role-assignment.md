@@ -115,3 +115,26 @@ This ADR does not change:
 - ClubMembership lifecycle;
 - multi-Club architecture;
 - navigation architecture.
+
+## Amendment (TH-0116 / Issue #150): initial role selection inside the Person creation wizard
+
+### 12. §1's "not part of the initial Add person form" is superseded, narrowly, for the new wizard endpoint only
+
+TH-0116 replaces the plain "Add person" form with a guided, multi-step creation wizard (`POST /api/v1/persons/wizard`, `docs/05-api/people-api.md` §6.1) whose second step is selecting the Person's initial system role, followed by role-specific contextual setup (group selection for instructor/member, child selection for guardian). This is an explicit, scoped PO decision for TH-0116 superseding §1's blanket statement — the same kind of narrow, documented supersession already established by ADR-0035 §8 over ADR-0023's `is_primary_contact` for `GuardianRelationship`.
+
+The supersession is scoped strictly to the new wizard endpoint:
+
+- `POST /api/v1/persons` (the plain, non-wizard Person creation endpoint, §6) is unchanged — it still creates only Person + technical ClubMembership, with no role/group/guardian selection, exactly as before this amendment.
+- Managing roles from Person Detail (§1's first sentence, and the whole of §24.1 `people-api.md` — `GET/POST /persons/{person_id}/role-assignments`, `DELETE .../role-assignments/{role_code}`) is unchanged and remains the only way to add or remove roles **after** creation, including additional roles beyond the one chosen in the wizard.
+- The wizard creates **exactly one** initial `RoleAssignment`, from the same four canonical codes as §3 (`admin`/`instructor`/`member`/`guardian`) — never more than one, and never automatically (§5, §6, §7 below remain intact: no automatic Group, no automatic GuardianRelationship, beyond what the wizard's own contextual step explicitly creates).
+
+### 13. Contextual setup created by the wizard is exactly the same relationship model as manual, post-creation setup
+
+Selecting a role in the wizard does not introduce a new relationship model:
+
+- `instructor` — 0..N `GroupInstructorAssignment` records, same shape as would be created later via `POST /groups/{group_id}/instructors` (§16).
+- `member` — 1..N `GroupMembership` records, same shape as `POST /groups/{group_id}/members` (§15); at least one group is required because, per §8's "no additional relationship configuration" reading in the wizard's synchronous context, a member role without any group would leave the Person's membership contextually meaningless in the guided flow — this is a wizard-level UX requirement, not a change to §8 or to `ClubMembership`, which the wizard still creates automatically and unconditionally regardless of role (§10 above, unchanged).
+- `guardian` — 1..N `GuardianRelationship` records, same shape as `POST /persons/{child_person_id}/guardian-relationships` (§18); §7's guidance to prompt the administrator toward linking children is, for the wizard specifically, made a required part of the same atomic operation rather than a follow-up action, because the wizard is a single guided flow rather than a multi-visit Person Detail workflow.
+- `admin` — no contextual step, matching §9 exactly.
+
+None of this changes `GroupInstructorAssignment`, `GroupMembership`, or `GuardianRelationship` authorization, validation, or lifecycle rules — the wizard is a single atomic transaction composing the same canonical services these endpoints already use (`docs/05-api/people-api.md` §6.1).

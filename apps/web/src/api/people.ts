@@ -113,16 +113,21 @@ const PERSON_SUBLIST_PAGE_SIZE = 50;
 /** `GET /api/v1/persons?page&page_size&search` (people-api.md §4,
  * app/api/v1/persons.py). `search` matches first/last name server-side
  * (app/people/queries.py) — never a client-side filter over one page. */
-export function usePersons(params: { page: number; search: string }) {
+export function usePersons(params: { page: number; search: string; clubId?: string }) {
   const query = new URLSearchParams({
     page: String(params.page),
     page_size: String(PEOPLE_LIST_PAGE_SIZE),
   });
   const trimmedSearch = params.search.trim();
   if (trimmedSearch) query.set("search", trimmedSearch);
+  // TH-0116 / Issue #150: `club_id` is a server-side eligibility filter
+  // (people-api.md §4.1, active ClubMembership required) — never a
+  // client-side fetch-all-then-filter. Used by the Group participant
+  // picker to only offer people eligible to join that Group's Club.
+  if (params.clubId) query.set("club_id", params.clubId);
 
   return useQuery<CollectionResponse<Person>, ApiError>({
-    queryKey: ["persons", "list", params.page, trimmedSearch],
+    queryKey: ["persons", "list", params.page, trimmedSearch, params.clubId],
     queryFn: () => apiFetch<CollectionResponse<Person>>(`/persons?${query.toString()}`),
     placeholderData: keepPreviousData,
   });
@@ -232,6 +237,52 @@ export function useCreatePerson() {
     mutationFn: (fields) => apiFetch<Person>("/persons", { method: "POST", body: JSON.stringify(fields) }),
     onSuccess: (person) => {
       queryClient.setQueryData(["persons", "detail", person.id], person);
+      void queryClient.invalidateQueries({ queryKey: ["persons", "list"] });
+    },
+  });
+}
+
+// --- Person creation wizard (TH-0116 / GitHub Issue #150) -------------------
+//
+// Person + automatic account provisioning (ADR-0038) + initial
+// RoleAssignment (ADR-0039) + role-specific contextual setup
+// (GroupInstructorAssignment/GroupMembership/GuardianRelationship), all as
+// one atomic backend operation (`POST /persons/wizard`) — this client never
+// orchestrates that as several separate requests. Replaces `useCreatePerson`
+// as the People page's "Добавить человека" flow; `useCreatePerson`/
+// `POST /persons` itself is unchanged.
+
+export type PersonWizardCreateInput = {
+  first_name: string;
+  last_name: string;
+  middle_name?: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+  role_code: PersonRoleCode;
+  group_ids: string[];
+  child_person_ids: string[];
+};
+
+export type PersonWizardCreateResult = {
+  person: Person;
+  // Present only when the Person got an active (email-backed) account —
+  // absent for a pending stub account (no email yet). Never persisted by
+  // this client beyond the one navigation that surfaces it once, mirroring
+  // useCreatePersonAccount/useAdminResetPersonPassword's identical rule.
+  temporary_credential: string | null;
+};
+
+export function useCreatePersonWizard() {
+  const queryClient = useQueryClient();
+  return useMutation<PersonWizardCreateResult, ApiError, PersonWizardCreateInput>({
+    mutationFn: (input) =>
+      apiFetch<PersonWizardCreateResult>("/persons/wizard", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: (result) => {
+      queryClient.setQueryData(["persons", "detail", result.person.id], result.person);
       void queryClient.invalidateQueries({ queryKey: ["persons", "list"] });
     },
   });
@@ -509,7 +560,10 @@ export function useRemovePersonRole() {
 export type PersonAccount = {
   id: string;
   person_id: string;
-  login_identifier: string;
+  // TH-0116: null for a pending-stub account (a Person with no email yet
+  // — automatically provisioned by the creation wizard). Never a
+  // placeholder/fake identifier.
+  login_identifier: string | null;
   status: string;
   email_verified_at: string | null;
   last_login_at: string | null;
@@ -517,7 +571,9 @@ export type PersonAccount = {
 
 export type PersonAccountCredential = {
   account: PersonAccount;
-  temporary_credential: string;
+  // TH-0116: null for exactly one outcome of the create endpoint —
+  // provisioning a pending-stub account for a Person with no email.
+  temporary_credential: string | null;
 };
 
 /** `GET /api/v1/persons/{person_id}/account` — `account.manage`. A 404

@@ -58,12 +58,14 @@ from app.api.errors import APIError
 from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.account_schemas import PersonAccountCredentialOut, PersonAccountOut
+from app.api.v1.groups_schemas import GroupMembershipOut
 from app.api.v1.guardian_relationships import guardian_relationship_out
 from app.api.v1.guardian_relationships_schemas import (
     GuardianRelationshipCreateRequest,
     GuardianRelationshipOut,
 )
 from app.api.v1.memberships_schemas import MembershipOut
+from app.api.v1.person_wizard_schemas import PersonWizardCreateRequest, PersonWizardCreateResponse
 from app.api.v1.persons_schemas import PersonCreateRequest, PersonOut, PersonUpdateRequest
 from app.api.v1.role_assignments_schemas import (
     PersonRoleAssignmentCreateRequest,
@@ -74,10 +76,15 @@ from app.authentication.rate_limit import RateLimiter, RateLimitExceeded, get_ra
 from app.authorization.context import ResourceContext
 from app.authorization.service import AuthorizationDenied, Authorizer
 from app.db.authorization import UserRoleAssignment
+from app.db.groups import GroupMembership
 from app.db.identity import Person, User
 from app.db.session import get_db
+from app.groups import service as groups_service
+from app.groups.queries import GROUP_MEMBERSHIP_DEFAULT_SORT, list_person_group_memberships_page
+from app.groups.queries import InvalidSortError as InvalidGroupSortError
 from app.people import guardian_service
 from app.people import service as people_service
+from app.people import wizard as person_wizard_service
 from app.people.authorization import (
     has_person_create_assignment,
     is_person_visible,
@@ -173,6 +180,7 @@ def list_persons(
     page_size: int = Query(default=50, ge=1, le=100),
     sort: str = Query(default=PERSON_DEFAULT_SORT),
     search: str | None = Query(default=None, max_length=255),
+    club_id: uuid.UUID | None = Query(default=None),
     principal: CurrentPrincipal = Depends(require_authenticated_principal),
     db: Session = Depends(get_db),
 ) -> CollectionResponse[PersonOut]:
@@ -185,6 +193,7 @@ def list_persons(
             page_size=page_size,
             sort=sort,
             search=search,
+            club_id=club_id,
         )
     except InvalidSortError as exc:
         raise APIError(
@@ -251,7 +260,7 @@ def create_person(
         raise AuthorizationDenied("person.create")
     club_id = resolve_current_club_id_for_person_create(db, principal.user_id)
 
-    person = people_service.create_person_with_membership(
+    person, _membership = people_service.create_person_with_membership(
         db,
         first_name=payload.first_name,
         last_name=payload.last_name,
@@ -268,6 +277,129 @@ def create_person(
     # ADR-0039 §1: role assignment is not part of Person creation — a
     # freshly created Person always has zero active roles.
     return _person_out(person, role_codes=[])
+
+
+# --- Person creation wizard (TH-0116 / GitHub Issue #150) --------------------
+#
+# ADR-0039 §1 ("Role assignment is not part of the initial Add person
+# form") is superseded for this one endpoint by TH-0116's own explicit,
+# detailed PO decision: the canonical People UX now guides the admin
+# through Person -> initial role -> role-specific contextual setup as a
+# single wizard. `POST /persons` above is unchanged and remains available
+# for a bare Person + ClubMembership; this is an additional endpoint, not
+# a replacement of that contract. See app.people.wizard's own module
+# docstring for the atomicity/authorization rationale.
+
+
+@router.post(
+    "/wizard",
+    status_code=status.HTTP_201_CREATED,
+    response_model=PersonWizardCreateResponse,
+)
+def create_person_via_wizard(
+    payload: PersonWizardCreateRequest,
+    request: Request,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> PersonWizardCreateResponse:
+    """Person + automatic account provisioning (ADR-0038) + initial
+    RoleAssignment (ADR-0039) + role-specific contextual setup, as one
+    atomic operation. Every permission the operation could possibly need
+    is checked upfront, before any write — section 17's "backend
+    authoritative, never trust the frontend's role selection": the
+    request's own `role_code` decides which of `group.manage`/
+    `guardian_relationship.manage` are required, not merely `person.
+    create`/`role.manage`/`account.manage`, which every wizard call needs
+    regardless of role.
+    """
+    if not has_person_create_assignment(db, principal.user_id):
+        raise AuthorizationDenied("person.create")
+    club_id = resolve_current_club_id_for_person_create(db, principal.user_id)
+    resource_context = ResourceContext(club_id=club_id)
+    Authorizer(session=db, user_id=principal.user_id, permission_code="role.manage").check(
+        resource_context
+    )
+    Authorizer(session=db, user_id=principal.user_id, permission_code="account.manage").check(
+        resource_context
+    )
+    if payload.role_code in ("instructor", "member"):
+        Authorizer(session=db, user_id=principal.user_id, permission_code="group.manage").check(
+            resource_context
+        )
+    if payload.role_code == "guardian":
+        Authorizer(
+            session=db, user_id=principal.user_id, permission_code="guardian_relationship.manage"
+        ).check(resource_context)
+
+    try:
+        person, temporary_credential = person_wizard_service.create_person_with_wizard(
+            db,
+            first_name=payload.first_name,
+            last_name=payload.last_name,
+            middle_name=payload.middle_name,
+            birth_date=None,
+            phone=payload.phone,
+            email=payload.email,
+            address=payload.address,
+            role_code=payload.role_code,
+            group_ids=payload.group_ids,
+            child_person_ids=payload.child_person_ids,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
+        )
+    except person_wizard_service.MemberRequiresAtLeastOneGroupError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "member_requires_at_least_one_group", str(exc)
+        ) from exc
+    except person_wizard_service.GuardianRequiresAtLeastOneChildError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "guardian_requires_at_least_one_child", str(exc)
+        ) from exc
+    except person_wizard_service.UnexpectedContextualSelectionError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "unexpected_contextual_selection", str(exc)
+        ) from exc
+    except person_wizard_service.GroupNotFoundError as exc:
+        raise APIError(status.HTTP_404_NOT_FOUND, "group_not_found", str(exc)) from exc
+    except person_wizard_service.ChildPersonNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL
+        ) from exc
+    except account_provisioning.DuplicateLoginIdentifierError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "duplicate_login_identifier", str(exc)) from exc
+    except RoleAssignmentClubMembershipMissingError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "role_assignment_club_membership_missing",
+            str(exc),
+        ) from exc
+    except DuplicateRoleAssignmentError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "duplicate_role_assignment", str(exc)) from exc
+    except groups_service.GroupArchivedError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "group_archived", str(exc)) from exc
+    except groups_service.InstructorClubMembershipMissingError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "instructor_club_membership_missing", str(exc)
+        ) from exc
+    except groups_service.GroupMembershipClubMismatchError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "group_membership_club_mismatch", str(exc)
+        ) from exc
+    except groups_service.DuplicateActiveGroupMembershipError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "duplicate_group_membership", str(exc)) from exc
+    except groups_service.GroupInstructorPrimaryConflictError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "duplicate_primary_instructor", str(exc)) from exc
+    except (SelfLinkNotAllowedError, DuplicateActiveGuardianRelationshipError) as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "guardian_link_not_allowed", str(exc)
+        ) from exc
+
+    role_codes = person_role_service.list_active_role_codes_by_person(db, [person.id])[person.id]
+    return PersonWizardCreateResponse(
+        person=_person_out(person, role_codes=role_codes),
+        temporary_credential=temporary_credential,
+    )
 
 
 @router.patch("/{person_id}", response_model=PersonOut)
@@ -338,6 +470,69 @@ def list_person_memberships(
     pages = (total + page_size - 1) // page_size if total else 0
     return CollectionResponse(
         items=[_membership_out(membership) for membership in rows],
+        pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
+    )
+
+
+def _group_membership_out(membership: GroupMembership) -> GroupMembershipOut:
+    """Mirrors app.api.v1.groups._group_membership_out exactly (duplicated
+    rather than imported across router modules, per this codebase's own
+    convention)."""
+    return GroupMembershipOut(
+        id=membership.id,
+        group_id=membership.group_id,
+        club_membership_id=membership.club_membership_id,
+        valid_from=membership.valid_from,
+        valid_to=membership.valid_to,
+        membership_status=membership.membership_status,
+        created_at=membership.created_at,
+        updated_at=membership.updated_at,
+    )
+
+
+@router.get("/{person_id}/groups", response_model=CollectionResponse[GroupMembershipOut])
+def list_person_groups(
+    person_id: uuid.UUID,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    sort: str = Query(default=GROUP_MEMBERSHIP_DEFAULT_SORT),
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+) -> CollectionResponse[GroupMembershipOut]:
+    """TH-0116 / GitHub Issue #150, implementing an endpoint people-api.md
+    §17 already specified but that had no handler until now: the reverse
+    direction of `GET /groups/{group_id}/members` — every GroupMembership
+    reachable through this Person's own ClubMembership row(s). The
+    frontend's Person Detail "Группы" tab uses this so
+    `club_membership_id` never becomes a user-facing concept there.
+
+    Permission: `group.read`, checked the same admin-only, single-Club-
+    scoped shape as `_check_account_manage`/the role-assignment endpoints
+    above (this endpoint does not attempt to resolve `own_groups`/`self`
+    object-relationship per row — see this module's own docstring
+    conventions for why Person-scoped admin views use this simpler,
+    already-established shape).
+    """
+    if db.get(Person, person_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+
+    club_id = person_role_service.resolve_sole_club_id(db)
+    Authorizer(session=db, user_id=principal.user_id, permission_code="group.read").check(
+        ResourceContext(club_id=club_id)
+    )
+
+    try:
+        rows, total = list_person_group_memberships_page(
+            db, person_id=person_id, page=page, page_size=page_size, sort=sort
+        )
+    except InvalidGroupSortError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_sort", f"Unsupported sort value: {sort}"
+        ) from exc
+
+    pages = (total + page_size - 1) // page_size if total else 0
+    return CollectionResponse(
+        items=[_group_membership_out(membership) for membership in rows],
         pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
     )
 
@@ -730,6 +925,13 @@ def reset_person_account_password(
     except account_provisioning.PersonHasNoAccountError as exc:
         raise APIError(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "person_has_no_account", str(exc)
+        ) from exc
+    except account_provisioning.PersonEmailMissingError as exc:
+        # TH-0116: a pending-stub account exists but has no identifier to
+        # reset yet — `POST .../account` (not this endpoint) is how it
+        # gets activated once the Person has an email.
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "person_email_missing", str(exc)
         ) from exc
     return PersonAccountCredentialOut(
         account=_person_account_out(user), temporary_credential=raw_credential
