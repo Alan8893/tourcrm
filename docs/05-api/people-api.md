@@ -48,6 +48,10 @@ Permission: `person.read` с подходящим scope.
 
 Для участников список не должен превращаться в глобальный каталог персональных данных. Scope определяется ролью и назначением пользователя.
 
+**TH-0114 / Issue #146: `role_codes` в `PersonOut` и роль в `search`.** `PersonOut` (используется этим списком и `GET /api/v1/persons/{person_id}`) содержит поле `role_codes: string[]` — все текущие активные системные роли этого Person согласно ADR-0039 §3, разрешённые из canonical `RoleAssignment` (`app.role_assignments.person_roles.list_active_role_codes_by_person`). Источником никогда не является `ClubMembership.membership_type`; поле пустое для Person без активной роли или вовсе без `User`. Порядок элементов фиксирован (admin, instructor, member, guardian), а не порядок вставки в БД. Human-readable подписи (Администратор/Инструктор/Участник/Родитель) — представление, а не часть контракта; их вычисляет frontend (`personRoleLabel`) из `role_codes`, backend их не возвращает отдельным полем.
+
+Единственный параметр `search` дополнительно матчит по роли: одно слово в `search` матчится либо против `last_name`/`first_name`/`middle_name` (`ILIKE`), либо — если оно совпадает (case-insensitive, по подстроке) с canonical role code или с его ADR-0039 §3 человекочитаемой меткой — против активной `RoleAssignment` этого Person. `search` разбивается на слова по пробелу, и каждое слово обязано совпасть (AND), поэтому `search=Иванов Инструктор` находит Person с фамилией «Иванов», у которого также активна роль `instructor` — а не любого «Иванова» или любого инструктора по отдельности. Отдельного параметра/эндпоинта для фильтра по роли не вводится: это остаётся тем же единственным `search`, backend-authoritative и paginated, как и раньше (`app.people.queries.list_persons_page`) — fetch-all + client-side filtering не используется.
+
 ## 5. Получение Person
 
 ### GET `/api/v1/persons/{person_id}`

@@ -30,6 +30,7 @@ describe("People list -> detail -> back navigation", () => {
               birth_date: null,
               created_at: "2026-01-01T00:00:00Z",
               updated_at: "2026-01-01T00:00:00Z",
+              role_codes: [],
             },
           ],
           pagination: { page: 1, page_size: 20, total: 1, pages: 1 },

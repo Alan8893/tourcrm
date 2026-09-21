@@ -13,7 +13,7 @@ import { ObjectListItem } from "../components/ui/ObjectListItem";
 import { Pagination } from "../components/ui/Pagination";
 import { useNotify } from "../components/ui/notificationContext";
 import { useCurrentUser } from "../api/auth";
-import { usePersons, useCreatePerson, personFullName } from "../api/people";
+import { usePersons, useCreatePerson, personFullName, personRoleLabel } from "../api/people";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import styles from "./PeoplePage.module.css";
 
@@ -63,10 +63,10 @@ export function PeoplePage() {
       <div className={styles.toolbar}>
         <div className={styles.search}>
           <SearchInput
-            label="Поиск по имени"
+            label="Поиск по имени или роли"
             value={search}
             onChange={setSearch}
-            placeholder="Например, «Иванова»"
+            placeholder="Например, «Иванова» или «Инструктор»"
           />
         </div>
       </div>
@@ -102,6 +102,17 @@ export function PeoplePage() {
                   title={personFullName(person)}
                   to={`/people/${person.id}`}
                   description={formatBirthDate(person.birth_date)}
+                  status={
+                    person.role_codes.length > 0 ? (
+                      <div className={styles.roles}>
+                        {person.role_codes.map((roleCode) => (
+                          <span key={roleCode} className={styles.roleBadge}>
+                            {personRoleLabel(roleCode)}
+                          </span>
+                        ))}
+                      </div>
+                    ) : undefined
+                  }
                 />
               </li>
             ))}

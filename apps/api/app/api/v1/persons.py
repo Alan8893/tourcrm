@@ -114,7 +114,7 @@ _ROLE_ASSIGNMENT_NOT_FOUND_CODE = "role_assignment_not_found"
 _ROLE_ASSIGNMENT_NOT_FOUND_MESSAGE = "Role assignment not found"
 
 
-def _person_out(person: Person) -> PersonOut:
+def _person_out(person: Person, *, role_codes: list[str]) -> PersonOut:
     return PersonOut(
         id=person.id,
         first_name=person.first_name,
@@ -127,7 +127,12 @@ def _person_out(person: Person) -> PersonOut:
         photo_file_id=person.photo_file_id,
         created_at=person.created_at,
         updated_at=person.updated_at,
+        role_codes=role_codes,
     )
+
+
+def _role_codes_for_person(db: Session, person_id: uuid.UUID) -> list[str]:
+    return person_role_service.list_active_role_codes_by_person(db, [person_id])[person_id]
 
 
 def _membership_out(membership) -> MembershipOut:
@@ -186,9 +191,14 @@ def list_persons(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_sort", f"Unsupported sort value: {sort}"
         ) from exc
 
+    role_codes_by_person = person_role_service.list_active_role_codes_by_person(
+        db, [person.id for person in rows]
+    )
     pages = (total + page_size - 1) // page_size if total else 0
     return CollectionResponse(
-        items=[_person_out(person) for person in rows],
+        items=[
+            _person_out(person, role_codes=role_codes_by_person[person.id]) for person in rows
+        ],
         pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
     )
 
@@ -202,7 +212,7 @@ def get_person(
     person = _get_authorized_person_or_404(
         db, person_id=person_id, user_id=principal.user_id, permission_code="person.read"
     )
-    return _person_out(person)
+    return _person_out(person, role_codes=_role_codes_for_person(db, person.id))
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=PersonOut)
@@ -255,7 +265,9 @@ def create_person(
         actor_user_id=principal.user_id,
         request_id=get_request_id(request),
     )
-    return _person_out(person)
+    # ADR-0039 §1: role assignment is not part of Person creation — a
+    # freshly created Person always has zero active roles.
+    return _person_out(person, role_codes=[])
 
 
 @router.patch("/{person_id}", response_model=PersonOut)
@@ -287,7 +299,7 @@ def update_person(
         request_id=get_request_id(request),
         **fields,
     )
-    return _person_out(person)
+    return _person_out(person, role_codes=_role_codes_for_person(db, person.id))
 
 
 @router.get("/{person_id}/memberships", response_model=CollectionResponse[MembershipOut])

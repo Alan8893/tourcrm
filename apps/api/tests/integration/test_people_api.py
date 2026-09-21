@@ -3424,3 +3424,296 @@ def test_record_audit_event_used_directly_still_respects_secret_prohibition() ->
                 outcome="success",
                 details={"password": "hunter2"},
             )
+
+
+# --- Person: role projection and role search (TH-0114 / ADR-0039) ----------
+#
+# GitHub Issue #146: the People list must show each Person's active system
+# roles and let the same single `search` field match by role (canonical
+# code or ADR-0039 §3 human-readable label) alongside name — resolved from
+# RoleAssignment, never `ClubMembership.membership_type`, and never
+# computed on the frontend (see app.people.queries._search_token_condition
+# and app.role_assignments.person_roles.list_active_role_codes_by_person).
+
+
+def _assign_canonical_role(
+    user_id: uuid.UUID, role_code: str, *, club_id: uuid.UUID | None = None
+) -> None:
+    """Grants one of ADR-0039 §3's four canonical roles through the real
+    seeded `Role` row (migration e5ae1ad9e1e1) — unlike `_grant_permission`,
+    which always creates a brand-new, non-canonical ad hoc role that
+    `role_codes_matching_search_term`/`list_active_role_codes_by_person`
+    would never match.
+    """
+    with session_scope() as session:
+        role = session.execute(select(Role).where(Role.code == role_code)).scalar_one()
+        session.add(
+            UserRoleAssignment(
+                user_id=user_id, role_id=role.id, scope_type="all", club_id=club_id
+            )
+        )
+        session.commit()
+
+
+@requires_postgres
+def test_list_persons_role_codes_reflect_role_assignment_not_membership_type(
+    client: TestClient,
+) -> None:
+    with session_scope() as session:
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        no_role_person = _make_person(last_name="Bezrolev")
+        no_role_user = _make_user(no_role_person)
+        one_role_person = _make_person(last_name="Odnorolev")
+        one_role_user = _make_user(one_role_person)
+        many_roles_person = _make_person(last_name="Mnogorolev")
+        many_roles_user = _make_user(many_roles_person)
+        session.add_all(
+            [
+                requester_person,
+                requester_user,
+                no_role_person,
+                no_role_user,
+                one_role_person,
+                one_role_user,
+                many_roles_person,
+                many_roles_user,
+            ]
+        )
+        session.commit()
+        requester_id = requester_user.id
+        no_role_id = no_role_person.id
+        one_role_id = one_role_person.id
+        one_role_user_id = one_role_user.id
+        many_roles_id = many_roles_person.id
+        many_roles_user_id = many_roles_user.id
+    _assign_canonical_role(one_role_user_id, "instructor")
+    _assign_canonical_role(many_roles_user_id, "admin")
+    _assign_canonical_role(many_roles_user_id, "guardian")
+    _grant_permission(requester_id, "person.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get("/api/v1/persons", params={"page_size": 100})
+    assert response.status_code == 200, response.text
+    by_id = {item["id"]: item["role_codes"] for item in response.json()["items"]}
+    assert by_id[str(no_role_id)] == []
+    assert by_id[str(one_role_id)] == ["instructor"]
+    # ADR-0039 §3 canonical order: admin, instructor, member, guardian.
+    assert by_id[str(many_roles_id)] == ["admin", "guardian"]
+
+
+@requires_postgres
+def test_list_persons_role_codes_exclude_a_revoked_assignment(client: TestClient) -> None:
+    with session_scope() as session:
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        target_person = _make_person(last_name="Otozvan")
+        target_user = _make_user(target_person)
+        session.add_all([requester_person, requester_user, target_person, target_user])
+        session.commit()
+        requester_id = requester_user.id
+        target_id = target_person.id
+        target_user_id = target_user.id
+    with session_scope() as session:
+        role = session.execute(select(Role).where(Role.code == "instructor")).scalar_one()
+        session.add(
+            UserRoleAssignment(
+                user_id=target_user_id,
+                role_id=role.id,
+                scope_type="all",
+                valid_from=_utc(2020, 1, 1),
+                valid_to=_utc(2021, 1, 1),
+            )
+        )
+        session.commit()
+    _grant_permission(requester_id, "person.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get("/api/v1/persons", params={"page_size": 100})
+    assert response.status_code == 200, response.text
+    by_id = {item["id"]: item["role_codes"] for item in response.json()["items"]}
+    assert by_id[str(target_id)] == []
+
+
+@requires_postgres
+def test_get_person_also_projects_role_codes(client: TestClient) -> None:
+    """`role_codes` is part of the shared `PersonOut` schema — the single-
+    Person detail endpoint must project it identically to the list."""
+    with session_scope() as session:
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        target_person = _make_person(last_name="Detalnyi")
+        target_user = _make_user(target_person)
+        session.add_all([requester_person, requester_user, target_person, target_user])
+        session.commit()
+        requester_id = requester_user.id
+        target_id, target_user_id = target_person.id, target_user.id
+    _assign_canonical_role(target_user_id, "guardian")
+    _grant_permission(requester_id, "person.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get(f"/api/v1/persons/{target_id}")
+    assert response.status_code == 200, response.text
+    assert response.json()["role_codes"] == ["guardian"]
+
+
+@requires_postgres
+def test_search_persons_by_name_matches_first_last_and_middle_name(client: TestClient) -> None:
+    with session_scope() as session:
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        by_last = _make_person(last_name="Уникальнов", first_name="Пётр")
+        by_first = _make_person(last_name="Другой", first_name="Уникальеслав")
+        by_middle = _make_person(
+            last_name="Третий", first_name="Иван", middle_name="Уникальевич"
+        )
+        unrelated = _make_person(last_name="Посторонний", first_name="Никто")
+        session.add_all(
+            [requester_person, requester_user, by_last, by_first, by_middle, unrelated]
+        )
+        session.commit()
+        requester_id = requester_user.id
+        expected_ids = {by_last.id, by_first.id, by_middle.id}
+    _grant_permission(requester_id, "person.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get("/api/v1/persons", params={"search": "Уникаль", "page_size": 100})
+    assert response.status_code == 200, response.text
+    returned_ids = {uuid.UUID(item["id"]) for item in response.json()["items"]}
+    assert returned_ids == expected_ids
+
+
+@requires_postgres
+def test_search_persons_by_role_label_instructor(client: TestClient) -> None:
+    with session_scope() as session:
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        instructor_person = _make_person(last_name="Prepodavatel")
+        instructor_user = _make_user(instructor_person)
+        plain_person = _make_person(last_name="Obychny")
+        session.add_all(
+            [requester_person, requester_user, instructor_person, instructor_user, plain_person]
+        )
+        session.commit()
+        requester_id = requester_user.id
+        instructor_id = instructor_person.id
+        instructor_user_id = instructor_user.id
+    _assign_canonical_role(instructor_user_id, "instructor")
+    _grant_permission(requester_id, "person.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get("/api/v1/persons", params={"search": "Инструктор", "page_size": 100})
+    assert response.status_code == 200, response.text
+    returned_ids = {item["id"] for item in response.json()["items"]}
+    assert returned_ids == {str(instructor_id)}
+
+
+@requires_postgres
+def test_search_persons_by_role_label_guardian(client: TestClient) -> None:
+    with session_scope() as session:
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        guardian_person = _make_person(last_name="Roditel")
+        guardian_user = _make_user(guardian_person)
+        plain_person = _make_person(last_name="Obychny2")
+        session.add_all(
+            [requester_person, requester_user, guardian_person, guardian_user, plain_person]
+        )
+        session.commit()
+        requester_id = requester_user.id
+        guardian_id = guardian_person.id
+        guardian_user_id = guardian_user.id
+    _assign_canonical_role(guardian_user_id, "guardian")
+    _grant_permission(requester_id, "person.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get("/api/v1/persons", params={"search": "Родитель", "page_size": 100})
+    assert response.status_code == 200, response.text
+    returned_ids = {item["id"] for item in response.json()["items"]}
+    assert returned_ids == {str(guardian_id)}
+
+
+@requires_postgres
+def test_search_persons_combines_name_and_role_tokens(client: TestClient) -> None:
+    """"Иванов Инструктор" must match only a Person satisfying BOTH words:
+    the name token against last/first/middle name, and the role token
+    against an active RoleAssignment — never either condition alone."""
+    with session_scope() as session:
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        # Matches both tokens.
+        target_person = _make_person(last_name="Иванов", first_name="Семён")
+        target_user = _make_user(target_person)
+        # Matches the name token only (no instructor role).
+        same_name_person = _make_person(last_name="Иванов", first_name="Другой")
+        # Matches the role token only (different last name).
+        other_instructor_person = _make_person(last_name="Кузнецов")
+        other_instructor_user = _make_user(other_instructor_person)
+        session.add_all(
+            [
+                requester_person,
+                requester_user,
+                target_person,
+                target_user,
+                same_name_person,
+                other_instructor_person,
+                other_instructor_user,
+            ]
+        )
+        session.commit()
+        requester_id = requester_user.id
+        target_id = target_person.id
+        target_user_id = target_user.id
+        other_instructor_user_id = other_instructor_user.id
+    _assign_canonical_role(target_user_id, "instructor")
+    _assign_canonical_role(other_instructor_user_id, "instructor")
+    _grant_permission(requester_id, "person.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get(
+        "/api/v1/persons", params={"search": "Иванов Инструктор", "page_size": 100}
+    )
+    assert response.status_code == 200, response.text
+    returned_ids = {item["id"] for item in response.json()["items"]}
+    assert returned_ids == {str(target_id)}
+
+
+@requires_postgres
+def test_search_persons_by_role_is_paginated_and_reports_correct_total(
+    client: TestClient,
+) -> None:
+    """Role-based search must go through the same backend-authoritative,
+    paginated query as name search — never a fetch-all-then-filter pass:
+    the reported `total`/`pages` must reflect only the role-matching rows,
+    truncated to one page, not the full unfiltered row count."""
+    with session_scope() as session:
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        instructor_people = [_make_person(last_name=f"Instr{i}") for i in range(3)]
+        instructor_users = [_make_user(person) for person in instructor_people]
+        non_instructor_people = [_make_person(last_name=f"Other{i}") for i in range(4)]
+        session.add_all(
+            [
+                requester_person,
+                requester_user,
+                *instructor_people,
+                *instructor_users,
+                *non_instructor_people,
+            ]
+        )
+        session.commit()
+        requester_id = requester_user.id
+        instructor_user_ids = [user.id for user in instructor_users]
+    for user_id in instructor_user_ids:
+        _assign_canonical_role(user_id, "instructor")
+    _grant_permission(requester_id, "person.read", scope_type="all")
+    _authenticate_as(requester_id)
+
+    response = client.get(
+        "/api/v1/persons", params={"search": "instructor", "page": 1, "page_size": 2}
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["pagination"]["total"] == 3
+    assert body["pagination"]["pages"] == 2
+    assert len(body["items"]) == 2
