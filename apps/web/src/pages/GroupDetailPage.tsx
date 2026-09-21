@@ -85,7 +85,7 @@ export function GroupDetailPage() {
           {
             id: "members",
             label: "Участники",
-            content: <MembersTab groupId={group.id} isAdmin={isAdmin} />,
+            content: <MembersTab groupId={group.id} clubId={group.club_id} isAdmin={isAdmin} />,
           },
           {
             id: "schedule",
@@ -145,7 +145,15 @@ function OverviewTab({
   );
 }
 
-function MembersTab({ groupId, isAdmin }: { groupId: string; isAdmin: boolean }) {
+function MembersTab({
+  groupId,
+  clubId,
+  isAdmin,
+}: {
+  groupId: string;
+  clubId: string;
+  isAdmin: boolean;
+}) {
   const membersQuery = useGroupMembers(groupId);
   const [addOpen, setAddOpen] = useState(false);
 
@@ -188,7 +196,12 @@ function MembersTab({ groupId, isAdmin }: { groupId: string; isAdmin: boolean })
         </ul>
       ) : null}
 
-      <AddParticipantDialog open={addOpen} onClose={() => setAddOpen(false)} groupId={groupId} />
+      <AddParticipantDialog
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        groupId={groupId}
+        clubId={clubId}
+      />
     </div>
   );
 }
@@ -197,14 +210,19 @@ function AddParticipantDialog({
   open,
   onClose,
   groupId,
+  clubId,
 }: {
   open: boolean;
   onClose: () => void;
   groupId: string;
+  clubId: string;
 }) {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 300);
-  const searchQuery = usePersons({ page: 1, search: debouncedSearch });
+  // TH-0116 / Issue #150: only people eligible to join this Group's Club
+  // (an active ClubMembership) are offered — server-side filter via
+  // people-api.md §4.1's `club_id`, never fetch-all + client filtering.
+  const searchQuery = usePersons({ page: 1, search: debouncedSearch, clubId });
   const addMember = useAddGroupMember();
   const notify = useNotify();
 

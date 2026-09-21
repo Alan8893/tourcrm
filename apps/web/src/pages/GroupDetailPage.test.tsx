@@ -146,4 +146,42 @@ describe("GroupDetailPage", () => {
       ),
     ).toBe(true);
   });
+
+  it("searches for participants scoped to the group's club, not the whole installation", async () => {
+    // TH-0116 / Issue #150 review follow-up: the participant picker must
+    // ask the backend for only people eligible for this Group's Club
+    // (an active ClubMembership) — server-side, via `club_id` — never
+    // fetch every Person and filter client-side. If the request were
+    // missing `club_id`, this stub would not match and the test would
+    // fail with "No stub registered".
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/groups/g1/members", response: emptyCollection() },
+      { match: "/groups/g1", response: GROUP },
+      {
+        match: "/persons?page=1&page_size=20&club_id=club-1",
+        response: {
+          items: [{ id: "p1", first_name: "Анна", last_name: "Иванова", birth_date: null, role_codes: [] }],
+          pagination: { page: 1, page_size: 20, total: 1, pages: 1 },
+        },
+      },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/groups/:groupId" element={<GroupDetailPage />} />
+      </Routes>,
+      { route: "/groups/g1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Участники" }));
+    await user.click(await screen.findByRole("button", { name: "Добавить участника" }));
+    await user.type(screen.getByLabelText("Поиск человека"), "Ива");
+
+    expect(await screen.findByRole("button", { name: "Иванова Анна" })).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes("club_id=club-1")),
+    ).toBe(true);
+  });
 });

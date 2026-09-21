@@ -113,16 +113,21 @@ const PERSON_SUBLIST_PAGE_SIZE = 50;
 /** `GET /api/v1/persons?page&page_size&search` (people-api.md §4,
  * app/api/v1/persons.py). `search` matches first/last name server-side
  * (app/people/queries.py) — never a client-side filter over one page. */
-export function usePersons(params: { page: number; search: string }) {
+export function usePersons(params: { page: number; search: string; clubId?: string }) {
   const query = new URLSearchParams({
     page: String(params.page),
     page_size: String(PEOPLE_LIST_PAGE_SIZE),
   });
   const trimmedSearch = params.search.trim();
   if (trimmedSearch) query.set("search", trimmedSearch);
+  // TH-0116 / Issue #150: `club_id` is a server-side eligibility filter
+  // (people-api.md §4.1, active ClubMembership required) — never a
+  // client-side fetch-all-then-filter. Used by the Group participant
+  // picker to only offer people eligible to join that Group's Club.
+  if (params.clubId) query.set("club_id", params.clubId);
 
   return useQuery<CollectionResponse<Person>, ApiError>({
-    queryKey: ["persons", "list", params.page, trimmedSearch],
+    queryKey: ["persons", "list", params.page, trimmedSearch, params.clubId],
     queryFn: () => apiFetch<CollectionResponse<Person>>(`/persons?${query.toString()}`),
     placeholderData: keepPreviousData,
   });

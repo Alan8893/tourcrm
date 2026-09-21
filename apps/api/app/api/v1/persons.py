@@ -180,6 +180,7 @@ def list_persons(
     page_size: int = Query(default=50, ge=1, le=100),
     sort: str = Query(default=PERSON_DEFAULT_SORT),
     search: str | None = Query(default=None, max_length=255),
+    club_id: uuid.UUID | None = Query(default=None),
     principal: CurrentPrincipal = Depends(require_authenticated_principal),
     db: Session = Depends(get_db),
 ) -> CollectionResponse[PersonOut]:
@@ -192,6 +193,7 @@ def list_persons(
             page_size=page_size,
             sort=sort,
             search=search,
+            club_id=club_id,
         )
     except InvalidSortError as exc:
         raise APIError(

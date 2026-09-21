@@ -1355,6 +1355,83 @@ def test_list_persons_pagination_reflects_authorization_filtering_not_all_rows(
     assert [item["id"] for item in body["items"]] == [str(own_person_id)]
 
 
+@requires_postgres
+def test_list_persons_club_id_filter_returns_only_eligible_people(client: TestClient) -> None:
+    """TH-0116 / Issue #150: the Group participant picker searches
+    `GET /persons?club_id=...` to get only people eligible to be added to
+    a Group in that Club — an active `ClubMembership` in `club_id`, as a
+    results filter AND'ed with (never a substitute for) the requester's
+    own `person_visibility_filter` scope. A Person with no `ClubMembership`
+    at all, and a Person whose only `ClubMembership` is in a *different*
+    Club, must both be excluded.
+    """
+    with session_scope() as session:
+        club_a = _make_club()
+        club_b = _make_club()
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        eligible_person = _make_person(last_name="Eligible")
+        no_membership_person = _make_person(last_name="NoMembership")
+        other_club_person = _make_person(last_name="OtherClub")
+        session.add_all(
+            [
+                club_a,
+                club_b,
+                requester_person,
+                requester_user,
+                eligible_person,
+                no_membership_person,
+                other_club_person,
+            ]
+        )
+        session.commit()
+        eligible_membership = _make_club_membership(club_a, eligible_person)
+        other_club_membership = _make_club_membership(club_b, other_club_person)
+        session.add_all([eligible_membership, other_club_membership])
+        session.commit()
+        user_id = requester_user.id
+        club_a_id = club_a.id
+        eligible_person_id = eligible_person.id
+    _grant_permission(user_id, "person.read", scope_type="all")
+    _authenticate_as(user_id)
+
+    response = client.get("/api/v1/persons", params={"club_id": str(club_a_id)})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    returned_ids = {item["id"] for item in body["items"]}
+    assert returned_ids == {str(eligible_person_id)}
+
+
+@requires_postgres
+def test_list_persons_club_id_filter_still_respects_visibility_scope(client: TestClient) -> None:
+    """`club_id` is an additional AND'ed results filter, never a way to
+    bypass the requester's own authorization scope: a `self`-scoped
+    requester must not see another eligible Person in the same Club
+    just because `club_id` matches.
+    """
+    with session_scope() as session:
+        club = _make_club()
+        requester_person = _make_person()
+        requester_user = _make_user(requester_person)
+        other_person = _make_person(last_name="Other")
+        session.add_all([club, requester_person, requester_user, other_person])
+        session.commit()
+        requester_membership = _make_club_membership(club, requester_person)
+        other_membership = _make_club_membership(club, other_person)
+        session.add_all([requester_membership, other_membership])
+        session.commit()
+        user_id = requester_user.id
+        club_id = club.id
+        requester_person_id = requester_person.id
+    _grant_permission(user_id, "person.read", scope_type="self")
+    _authenticate_as(user_id)
+
+    response = client.get("/api/v1/persons", params={"club_id": str(club_id)})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [item["id"] for item in body["items"]] == [str(requester_person_id)]
+
+
 # --- Person: update -------------------------------------------------------
 
 
