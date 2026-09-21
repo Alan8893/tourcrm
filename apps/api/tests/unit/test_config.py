@@ -21,3 +21,21 @@ def test_get_settings_uses_only_the_environment_value(monkeypatch) -> None:
     settings = get_settings()
 
     assert settings.database_url == "postgresql+psycopg://u:p@localhost:5432/synthetic_test_db"
+
+
+def test_get_settings_file_storage_root_defaults_when_unset(monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@localhost:5432/synthetic_test_db")
+    monkeypatch.delenv("FILE_STORAGE_ROOT", raising=False)
+
+    settings = get_settings()
+
+    assert settings.file_storage_root == "var/file-storage"
+
+
+def test_get_settings_file_storage_root_uses_the_environment_value(monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@localhost:5432/synthetic_test_db")
+    monkeypatch.setenv("FILE_STORAGE_ROOT", "/srv/tourcrm/file-storage")
+
+    settings = get_settings()
+
+    assert settings.file_storage_root == "/srv/tourcrm/file-storage"

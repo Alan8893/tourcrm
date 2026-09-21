@@ -25,3 +25,6 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# Local FileStorage adapter default root (ADR-0040 §3) — dev-only binary content
+apps/api/var/
