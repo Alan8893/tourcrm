@@ -472,19 +472,55 @@ AchievementAward связывает достижение с человеком �
 
 ## 22. Document
 
-Унифицированный объект документа.
+### 22.1 File vs Document (ADR-0040, TH-0117)
 
-Может относиться к:
+TourCRM разделяет физический бинарный артефакт и бизнес/legal-запись о нём — это не одна сущность:
 
-- Person;
-- GuardianRelationship;
-- Event;
-- Trip;
-- Club;
-- Finance record;
-- Equipment.
+`File` — immutable физический артефакт: `id`, `storage_key`, `original_name`, `mime_type`, `size_bytes`, `checksum`, `storage_backend`, `created_by`, timestamps. После создания не мутируется; замена содержимого не перезаписывает существующую запись — создаётся новая.
 
-Нужны тип документа, владелец, статус, дата выдачи, срок действия и версия.
+`Document` — бизнес/legal-запись об участнике: `person_id`, `document_type`, `status`, `issued_at`, `expires_at`, `file_id`, version/history metadata, `uploaded_by`, timestamps.
+
+Domain/business-код никогда не работает с filesystem/object storage напрямую — только через storage abstraction (`FileStorage`: put/get/exists/revoke), не привязанную к конкретному storage provider. `storage_key` никогда не является публичным URL; доступ к содержимому — только через авторизованный application endpoint.
+
+### 22.2 Document ↔ Person (явная, не polymorphic связь)
+
+Для документов участников (`medical_certificate` и аналогичные) используется явная связь:
+
+```text
+Document.person_id -> Person.id
+```
+
+Свободная polymorphic-модель `subject_type` + `subject_id` НЕ используется как основной механизм для документов участников — это прямо реализует уже принятое ADR-0016 требование (генерическая polymorphic-ссылка не может быть единственным механизмом владения для security-sensitive документа). Обобщённая модель владения документами для других доменов (Trip, Equipment, Finance, Club-level) остаётся отдельным, не решённым здесь вопросом.
+
+### 22.3 Sensitivity — доступ к Person НЕ означает доступ к документам
+
+Медицинские документы — sensitive data. `person.read` НЕ предоставляет доступ к содержимому Document — это отдельные permissions: `document.read`, `document.manage`, `document.export` (ADR-0040 §6).
+
+Это согласуется с уже принятым принципом `roles-and-permissions.md` §8: доступ к Person не означает автоматический доступ ко всем чувствительным дочерним объектам Person. Тот же принцип, что уже применяется к Guardian access (§8 выше), instructor `own_groups` scope и multiple-roles authorization, — ни один из них не меняется этим разделом. Обычные People/Group views и обычный Group export не должны раскрывать содержимое медицинских документов; операционный workflow может показывать производный статус (`valid`/`missing`/`expired`, §22.5) без раскрытия самого файла.
+
+### 22.4 Lifecycle и history
+
+Документы историчны и версионируются: замена файла создаёт новую версию (новый `File` + новая версия `Document`), а не перезаписывает существующую. Для `medical_certificate` исторические сертификаты сохраняются — не удаляются при замене.
+
+Канонические lifecycle-значения `status`: `active`, `expired`, `revoked`. `revoked` — явное действие над текущей версией на месте (не создаёт новую версию), по аналогии с `GuardianRelationship`'s `terminate` (ADR-0025 §3). Текущая валидность вычисляется из `status` + `expires_at` at read time — так же, как read-time expiry у `GuardianRelationship` (§8 выше) — без background job, переводящего `status` в `expired`.
+
+**`missing` не является persisted значением `Document.status`.** Это результат проверки `EventDocumentRequirement` (§22.5) — отсутствие какого-либо `Document` нужного `document_type` у Person, а не lifecycle-состояние самого документа.
+
+### 22.5 EventDocumentRequirement (ADR-0040 §5)
+
+`Document` не связывается напрямую с `Event`. Вместо этого — отдельная сущность:
+
+`EventDocumentRequirement`: `event_id`, `document_type`, `required`.
+
+Проверка требования против документов конкретного участника — read-only вычисление (не persisted запись), дающее один из результатов: `valid`, `missing`, `expired`. Поведение для случая, когда текущая версия документа имеет `status = revoked`, этим ADR не определено — `revoked` остаётся отдельным lifecycle-состоянием (§22.4) и не считается автоматически `expired`; конкретный mapping — отдельное business-решение будущего implementation slice, не введённое здесь.
+
+Перед экспортом пакета документов мероприятия (например, competition document package) пользователь должен получить явное предупреждение о участниках/требованиях, для которых результат — `missing` или `expired`.
+
+Это не меняет существующую Event/EventParticipation authorization (ADR-0020, ADR-0023, ADR-0037, §10 выше) — `EventDocumentRequirement` является дополнительной, отдельно авторизуемой концепцией.
+
+### 22.6 Статус реализации
+
+Полный контракт (поля БД, permissions, audit vocabulary) определён ADR-0040 (TH-0117.0) — documentation-only decision baseline. `Person.photo_file_id` уже существует в коде как поле без FK-ограничения на `files`, поскольку таблица `files` ещё не реализована; добавление constraint — отдельная будущая implementation-задача, не входящая в ADR-0040.
 
 ## 23. Consent
 
@@ -606,3 +642,5 @@ Event field model: ADR-0019.
 Event authorization/participation contract: ADR-0020.
 
 Group persistence: ADR-0021.
+
+Document domain and file storage (File vs Document, Person association, storage abstraction, lifecycle/history, EventDocumentRequirement, permissions, audit): ADR-0040 (TH-0117.0, documentation-only baseline — no application code yet).

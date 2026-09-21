@@ -71,7 +71,7 @@ Constraints:
 - `phone` nullable
 - `email` nullable
 - `address` nullable
-- `photo_file_id` nullable FK to file metadata
+- `photo_file_id` nullable, planned FK to `files.id` (§11) — as of this writing (ADR-0040) it exists in code as a plain nullable UUID column with **no** FK constraint, because the `files` table does not exist yet; adding the constraint is a separate future implementation task, not this ADR
 - `created_at`
 - `updated_at`
 
@@ -392,6 +392,10 @@ polymorphism at all.
 
 No `valid_from`/`valid_to`: unlike `EventGroupTarget`/`EventStaffAssignment`/`EventParticipation`, Attendance is a single current mark per occurrence/Person pair, corrected in place (last-write-wins, ADR-0032 §12) rather than a historical relationship timeline.
 
+### `event_document_requirements` — planned (ADR-0040 §5, TH-0117)
+
+Expresses that an Event requires a document type from its participants, without coupling `Document` directly to `Event`. See §15.2 for the full field list and constraints — listed there alongside `documents` (§15.1) since both are introduced together by ADR-0040.
+
 ## 10. Trips
 
 ### `trips`
@@ -463,7 +467,7 @@ Constraints:
 
 ### `files`
 
-Generic file metadata table.
+Generic, domain-neutral file metadata table — the canonical `File` entity of ADR-0040 §1. Immutable once created: content is never overwritten in place, and no column here is mutated by a document replace (ADR-0040 §4 creates a new `files` row instead).
 
 - `id` PK
 - `storage_key` unique
@@ -475,7 +479,9 @@ Generic file metadata table.
 - `created_by` FK nullable
 - timestamps
 
-Binary payload is stored outside PostgreSQL unless an ADR explicitly chooses otherwise.
+Binary payload is stored outside PostgreSQL unless an ADR explicitly chooses otherwise. Access is only through the `FileStorage` port (ADR-0040 §3) behind an authorized application endpoint; `storage_key` is never a public URL.
+
+Shared by `route_files` below, participant `documents` (§15), and — once a later implementation task adds the FK — `persons.photo_file_id` (§5.2).
 
 ### `route_files`
 
@@ -532,7 +538,7 @@ Association between profile and tourism type.
 - `level`
 - `issued_at`
 - `valid_until` nullable
-- `document_id` FK nullable
+- `document_id` FK nullable, -> `documents.id` (§15.1, ADR-0040)
 - `status`
 - timestamps
 
@@ -610,21 +616,49 @@ Constraints:
 
 ## 15. Documents and consents
 
-### `documents`
+The generic `documents` shape previously sketched here (a single table keyed by a polymorphic `subject_type`/`subject_id` pair) is **superseded for the participant-document case by ADR-0040** — see §15.1 below. That polymorphic shape remains an unresolved question for any other future document-owning domain (Trip, Equipment, Finance, Club-level documents); this document no longer proposes it as the mechanism for Person-owned documents.
+
+### 15.1 `documents` (participant documents — ADR-0040)
+
+Canonical shape for a Person-owned document (e.g. `medical_certificate`), per ADR-0040 §1/§2/§4. Explicit FK association, never polymorphic, for this case:
 
 - `id` PK
-- `document_type`
-- `subject_type`
-- `subject_id`
-- `status`
+- `document_group_id` — stable identity shared by every version of the same logical document; equal to the first version's own `id`
+- `version_number` — positive integer, starts at 1, strictly increasing per replace within a `document_group_id`
+- `person_id` FK -> `persons.id`
+- `document_type` — open string; TH-0117 requires at least `medical_certificate`; no closed vocabulary is introduced
+- `status` — CHECK, closed vocabulary `active` / `expired` / `revoked` (ADR-0040 §4)
 - `issued_at` nullable
 - `expires_at` nullable
-- `file_id` FK
-- `version_label` nullable
-- `uploaded_by` FK
+- `file_id` FK -> `files.id` (§11), `RESTRICT` — a `File` still referenced by document history must not be deleted out from under it
+- `uploaded_by` FK -> `users.id`, nullable
 - timestamps
 
-Polymorphic subject references require application-level integrity; for high-risk/legal documents dedicated association tables may be preferred.
+Constraints:
+
+- `UNIQUE(document_group_id, version_number)`;
+- the **current** version of a logical document is the row with `MAX(version_number)` for its `document_group_id` — no separate "is current" boolean is stored, to avoid a flag that could drift out of sync;
+- replacing a document's file creates a new row (new `file_id`, `version_number = previous + 1`, same `document_group_id`) rather than mutating the prior version's `file_id` in place (ADR-0040 §1/§4);
+- `revoked` is applied to the current version in place and does not create a new version;
+- current validity for `EventDocumentRequirement` checks (§15.2) is computed at read time from `status` + `expires_at`, exactly like `GuardianRelationship`'s read-time expiry (§7) — no background job flips `status` to `expired`.
+
+`missing` is never a value of `status` — it exists only as a possible *result* of the `EventDocumentRequirement` check in §15.2, when no `documents` row of the required `document_type` exists for a Person at all.
+
+### 15.2 `event_document_requirements` (ADR-0040 §5)
+
+Expresses that an Event requires a given document type from its participants. Does **not** associate `documents` directly with `events` — see ADR-0040 §5 for why.
+
+- `id` PK
+- `event_id` FK -> `events.id`
+- `document_type` — open string, matching `documents.document_type`
+- `required` boolean
+- timestamps
+
+Constraints:
+
+- `UNIQUE(event_id, document_type)` — at most one requirement row per Event/document-type pair.
+
+Checking a requirement against a specific Person's documents (`valid` / `missing` / `expired`, ADR-0040 §5) is a read-only query, not a persisted row.
 
 ### `consents`
 
@@ -636,7 +670,7 @@ Polymorphic subject references require application-level integrity; for high-ris
 - `given_by_person_id` FK
 - `given_at`
 - `revoked_at` nullable
-- `document_id` FK nullable
+- `document_id` FK nullable, -> `documents.id` (§15.1, ADR-0040) — Consent's own subject/ownership model (`subject_person_id`) is unaffected; only the type of the referenced evidence document changes
 - timestamps
 
 ## 16. Equipment
@@ -715,7 +749,7 @@ Rules:
 - `category`
 - `vendor` nullable
 - `description`
-- `document_id` FK nullable
+- `document_id` FK nullable — a finance-domain (receipt/invoice) document, not a participant document; the `documents` table defined in §15.1 (ADR-0040) is Person-owned (`person_id` `NOT NULL`) and does not fit this case. Finance document ownership remains an open question, unresolved by ADR-0040 (see its "Non-decisions" section)
 - `status`
 - timestamps
 

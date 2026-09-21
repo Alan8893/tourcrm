@@ -745,3 +745,24 @@ Group/GroupMembership/GroupInstructorAssignment endpoints не вводят proj
 24. Guardian/родитель не становится инструктором группы через `GroupInstructorAssignment`.
 25. Все Group/GroupMembership/GroupInstructorAssignment permissions, scopes и audit action codes взяты из существующих канонических каталогов (`roles-and-permissions.md` §4-5, ADR-0013, ADR-0024) — новые не введены.
 26. `docs/05-api/endpoint-inventory.md` §7 и данный контракт не противоречат друг другу.
+
+## 32. Участники: документы — PLANNED (TH-0117 / ADR-0040)
+
+**Ничего в этом разделе не реализовано.** Это canonical planned API contract, зафиксированный документационным baseline ADR-0040 (TH-0117.0) — ни одного из перечисленных ниже endpoint'ов не существует в текущем коде. Раздел описывает только концептуально необходимый для TH-0117 набор операций и не вводит лишних endpoints.
+
+Полная доменная модель (File vs Document, explicit `person_id` association, storage abstraction, lifecycle/history, `EventDocumentRequirement`, permissions, audit) определена ADR-0040; здесь — только API-проекция.
+
+Permissions: `document.read` (список/метаданные/скачивание), `document.manage` (создание/замена/отзыв), `document.export` (экспорт содержимого/пакета документов). `person.read` не предоставляет доступа к содержимому документов (ADR-0040 §6) — необходим один из трёх permissions выше в дополнение к обычному Person-доступу.
+
+Минимально необходимые для TH-0117 операции:
+
+- **Список документов участника** — `GET /persons/{person_id}/documents` (planned) — метаданные (`document_type`, `status`, `issued_at`, `expires_at`, `file_id`, `version_number`) текущих версий; не раскрывает содержимое файла. Требует `document.read`.
+- **Создание/загрузка документа** — `POST /persons/{person_id}/documents` (planned) — создаёт первую версию (`version_number = 1`, новый `document_group_id`) и связанный `File` через `FileStorage.put`. Требует `document.manage`. Аудируется как `document.created`.
+- **Метаданные документа** — `GET /persons/{person_id}/documents/{document_id}` (planned) — метаданные текущей или конкретной исторической версии; не раскрывает содержимое файла. Требует `document.read`.
+- **Скачивание содержимого** — `GET /persons/{person_id}/documents/{document_id}/download` (planned) — возвращает бинарное содержимое только после авторизации; `storage_key` никогда не передаётся клиенту напрямую (ADR-0040 §3). Требует `document.read`. Аудируется как `document.downloaded` — обязательно для sensitive документов (`medical_certificate`).
+- **Замена/новая версия** — `POST /persons/{person_id}/documents/{document_id}/replace` (planned) — создаёт новую версию (`version_number + 1`, тот же `document_group_id`, новый `File`); не перезаписывает существующую версию/файл. Требует `document.manage`. Аудируется как `document.replaced`.
+- **Отзыв** — `POST /persons/{person_id}/documents/{document_id}/revoke` (planned) — переводит текущую версию в `status = revoked` на месте, без создания новой версии. Требует `document.manage`. Аудируется как `document.revoked`.
+
+Корректировка не-файловых метаданных текущей версии на месте (например, исправление `expires_at`) — не отдельный endpoint из списка выше, а обычная частичная модификация метаданных текущей версии; аудируется как `document.updated`, отличается от `document.replaced` (замена файла, ADR-0040 §7).
+
+`GET /persons/{person_id}/documents` никогда не должен показываться в обычных People/Group views без проверки `document.read` — обычный `person.read`-доступ к Person Detail не подразумевает автоматическое появление этого списка.

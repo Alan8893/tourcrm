@@ -80,6 +80,7 @@ permission исключение, а не пересмотр общей scope-м�
 - `knowledge.manage`
 - `document.read`
 - `document.manage`
+- `document.export`
 - `consent.read`
 - `consent.manage`
 - `equipment.read`
