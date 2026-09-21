@@ -119,6 +119,16 @@ class User(Base):
     ADR-0005. At most one User per Person (unique `person_id`); a Person may
     exist without a User. No plaintext password is modeled — only
     `password_hash`; hashing itself is out of scope for this Issue.
+
+    `login_identifier` is nullable (TH-0116 / GitHub Issue #150): a `User`
+    auto-provisioned for a Person with no email yet is a `pending`
+    "stub" account with no `login_identifier` and no `password_hash` —
+    see `ck_users_login_identifier_required_unless_pending_stub` below
+    and `app.authentication.account_provisioning`'s module docstring for
+    the full invariant (a NULL `login_identifier` is permitted only for
+    that one pending-stub case; every `active`/`locked`/`suspended` row,
+    and self-registration's differently-shaped `pending` row, must still
+    have one).
     """
 
     __tablename__ = "users"
@@ -127,15 +137,18 @@ class User(Base):
     person_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), sa.ForeignKey("persons.id", ondelete="RESTRICT"), nullable=False
     )
-    login_identifier: Mapped[str] = mapped_column(sa.String(255), nullable=False)
+    login_identifier: Mapped[Optional[str]] = mapped_column(sa.String(255), nullable=True)
     # Generated (STORED) so the "normalized identifier is unique" invariant
     # holds at the database level regardless of how a row is written —
     # see normalize_login_identifier() above for the mirrored application-
-    # level rule (trim + lowercase).
-    normalized_login_identifier: Mapped[str] = mapped_column(
+    # level rule (trim + lowercase). Nullable (TH-0116): `lower(trim(NULL))`
+    # is NULL, matching a pending-stub `login_identifier`; multiple NULLs
+    # never violate the unique constraint below (standard SQL NULL
+    # semantics), so any number of pending-stub accounts can coexist.
+    normalized_login_identifier: Mapped[Optional[str]] = mapped_column(
         sa.String(255),
         sa.Computed("lower(trim(login_identifier))", persisted=True),
-        nullable=False,
+        nullable=True,
     )
     password_hash: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
     # Account lifecycle per docs/07-security/security-and-privacy.md §4.1.
@@ -164,6 +177,12 @@ class User(Base):
         sa.CheckConstraint(
             "status IN ('pending','active','locked','suspended','disabled','archived')",
             name="ck_users_status_valid",
+        ),
+        # TH-0116: see this class's own docstring and migration
+        # 9a1c2f5e7b3d for the full invariant/rationale.
+        sa.CheckConstraint(
+            "login_identifier IS NOT NULL OR (status = 'pending' AND password_hash IS NULL)",
+            name="ck_users_login_identifier_required_unless_pending_stub",
         ),
     )
 

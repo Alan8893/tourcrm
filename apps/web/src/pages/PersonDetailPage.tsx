@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useLocation, useParams } from "react-router-dom";
 
 import { PageHeader } from "../components/ui/PageHeader";
 import { Card } from "../components/ui/Card";
@@ -15,7 +15,7 @@ import { Loading } from "../components/ui/Loading";
 import { EmptyState } from "../components/ui/EmptyState";
 import { ErrorState } from "../components/ui/ErrorState";
 import { useNotify } from "../components/ui/notificationContext";
-import { useCurrentUser, currentClubId } from "../api/auth";
+import { useCurrentUser } from "../api/auth";
 import {
   personFullName,
   personRoleLabel,
@@ -23,43 +23,40 @@ import {
   usePersons,
   usePersonAccount,
   usePersonGuardianRelationships,
-  usePersonMemberships,
   usePersonRoleAssignments,
   useAddPersonRole,
   useAdminResetPersonPassword,
   useCreateGuardianRelationship,
-  useCreateMembership,
   useCreatePersonAccount,
   useRemovePersonRole,
   useTerminateGuardianRelationship,
-  useTransitionMembershipStatus,
   useUpdateGuardianRelationship,
-  useUpdateMembershipType,
   useUpdatePerson,
-  CANONICAL_MEMBERSHIP_STATUSES,
   CANONICAL_PERSON_ROLE_CODES,
-  MEMBERSHIP_NEXT_STATUSES,
   type GuardianRelationship,
-  type Membership,
   type Person,
   type PersonFields,
   type PersonRoleCode,
 } from "../api/people";
+import { useGroup, useGroups, useAddGroupMember, usePersonGroupMemberships } from "../api/groups";
 import {
   accountStatusIcon,
   accountStatusLabel,
-  membershipStatusIcon,
-  membershipStatusLabel,
   guardianRelationshipStatusIcon,
   guardianRelationshipStatusLabel,
   type AccountStatus,
-  type MembershipStatus,
 } from "../domain/statusMapping";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import styles from "./PersonDetailPage.module.css";
 
 export function PersonDetailPage() {
   const { personId } = useParams<{ personId: string }>();
+  const location = useLocation();
+  // TH-0116: a credential the creation wizard just issued for this exact
+  // Person, handed down via navigation state — see AccountTab's own
+  // comment on why this exists instead of a second wizard step.
+  const wizardIssuedCredential =
+    (location.state as { issuedCredential?: string } | null)?.issuedCredential ?? null;
   const personQuery = usePerson(personId);
   const [activeTab, setActiveTab] = useState("overview");
   const [editOpen, setEditOpen] = useState(false);
@@ -112,9 +109,9 @@ export function PersonDetailPage() {
             content: <OverviewTab person={person} />,
           },
           {
-            id: "memberships",
-            label: "Членство",
-            content: <MembershipsTab personId={person.id} isAdmin={isAdmin} />,
+            id: "groups",
+            label: "Группы",
+            content: <PersonGroupsTab personId={person.id} isAdmin={isAdmin} />,
           },
           {
             id: "guardians",
@@ -135,6 +132,7 @@ export function PersonDetailPage() {
                 isAdmin={isAdmin}
                 personEmail={person.email}
                 onRequestAddEmail={() => setEditOpen(true)}
+                initialIssuedCredential={wizardIssuedCredential}
               />
             ),
           },
@@ -283,97 +281,72 @@ function EditPersonDialog({
   );
 }
 
-// --- Membership tab ---------------------------------------------------
+// --- Groups tab (TH-0116 / GitHub Issue #150) --------------------------
+//
+// Shows this Person's GroupMembership rows — never ClubMembership,
+// membership_type or membership status (section 14: ClubMembership stays
+// a backend-only technical entity). "+ Добавить в группу" and Group
+// Detail's own "+ Добавить участника" (GroupDetailPage.tsx) both call the
+// same canonical `POST /groups/{group_id}/members` via `useAddGroupMember`.
 
-function MembershipsTab({ personId, isAdmin }: { personId: string; isAdmin: boolean }) {
-  const membershipsQuery = usePersonMemberships(personId);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [typeTarget, setTypeTarget] = useState<Membership | null>(null);
-  const [statusTarget, setStatusTarget] = useState<Membership | null>(null);
+function PersonGroupsTab({ personId, isAdmin }: { personId: string; isAdmin: boolean }) {
+  const groupsQuery = usePersonGroupMemberships(personId);
+  const [addOpen, setAddOpen] = useState(false);
 
   return (
     <div>
       {isAdmin ? (
         <div className={styles.tabActions}>
-          <Button variant="secondary" icon="action.add" onClick={() => setCreateOpen(true)}>
-            Добавить членство
+          <Button variant="secondary" icon="action.add" onClick={() => setAddOpen(true)}>
+            Добавить в группу
           </Button>
         </div>
       ) : null}
 
-      {membershipsQuery.isLoading ? <Loading label="Загружаем членство…" /> : null}
-      {membershipsQuery.isError ? (
+      {groupsQuery.isLoading ? <Loading label="Загружаем группы…" /> : null}
+      {groupsQuery.isError ? (
         <ErrorState
           illustration="error"
-          title="Не удалось загрузить членство"
-          description={membershipsQuery.error.message}
+          title="Не удалось загрузить группы"
+          description={groupsQuery.error.message}
         />
       ) : null}
-      {membershipsQuery.isSuccess && membershipsQuery.data.items.length === 0 ? (
+      {groupsQuery.isSuccess && groupsQuery.data.items.length === 0 ? (
         <EmptyState
-          illustration="empty-people"
-          title="Нет данных о членстве"
-          description="У этого человека пока нет периодов членства в клубе."
+          illustration="empty-groups"
+          title="Человек пока не состоит ни в одной группе"
+          description="Добавьте человека в группу, чтобы он появился здесь."
         />
       ) : null}
-      {membershipsQuery.isSuccess && membershipsQuery.data.items.length > 0 ? (
+      {groupsQuery.isSuccess && groupsQuery.data.items.length > 0 ? (
         <ul className={styles.list}>
-          {membershipsQuery.data.items.map((membership) => (
+          {groupsQuery.data.items.map((membership) => (
             <li key={membership.id} className={styles.row}>
               <div className={styles.rowMain}>
-                <span>{membership.membership_type}</span>
-                <span className={styles.rowSecondary}>
-                  {new Date(membership.joined_at).toLocaleDateString("ru-RU")}
-                  {membership.left_at
-                    ? ` — ${new Date(membership.left_at).toLocaleDateString("ru-RU")}`
-                    : " — по настоящее время"}
-                </span>
+                <PersonGroupName groupId={membership.group_id} />
               </div>
-              <div className={styles.rowActions}>
-                <StatusBadge
-                  status={membershipStatusIcon(membership.status)}
-                  label={membershipStatusLabel(membership.status)}
-                />
-                {isAdmin ? (
-                  <>
-                    <Button variant="secondary" onClick={() => setTypeTarget(membership)}>
-                      Изменить тип
-                    </Button>
-                    {MEMBERSHIP_NEXT_STATUSES[membership.status].length > 0 ? (
-                      <Button variant="secondary" onClick={() => setStatusTarget(membership)}>
-                        Изменить статус
-                      </Button>
-                    ) : null}
-                  </>
-                ) : null}
-              </div>
+              <StatusBadge
+                status={membership.membership_status === "active" ? "status.ongoing" : "status.ended"}
+                label={membership.membership_status === "active" ? "Активно" : "Завершено"}
+              />
             </li>
           ))}
         </ul>
       ) : null}
 
-      <CreateMembershipDialog
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        personId={personId}
-      />
-      <ChangeMembershipTypeDialog
-        key={`type-${typeTarget?.id ?? "none"}`}
-        membership={typeTarget}
-        personId={personId}
-        onClose={() => setTypeTarget(null)}
-      />
-      <ChangeMembershipStatusDialog
-        key={`status-${statusTarget?.id ?? "none"}`}
-        membership={statusTarget}
-        personId={personId}
-        onClose={() => setStatusTarget(null)}
-      />
+      <AddPersonToGroupDialog open={addOpen} onClose={() => setAddOpen(false)} personId={personId} />
     </div>
   );
 }
 
-function CreateMembershipDialog({
+function PersonGroupName({ groupId }: { groupId: string }) {
+  const groupQuery = useGroup(groupId);
+  if (groupQuery.isLoading) return <span>Загрузка…</span>;
+  if (groupQuery.isError || !groupQuery.data) return <span>Группа недоступна</span>;
+  return <span>{groupQuery.data.name}</span>;
+}
+
+function AddPersonToGroupDialog({
   open,
   onClose,
   personId,
@@ -382,38 +355,26 @@ function CreateMembershipDialog({
   onClose: () => void;
   personId: string;
 }) {
-  const meQuery = useCurrentUser();
-  const clubId = currentClubId(meQuery.data);
-  const [membershipType, setMembershipType] = useState("");
-  const [status, setStatus] = useState<MembershipStatus>("active");
-  const [joinedAt, setJoinedAt] = useState(() => new Date().toISOString().slice(0, 10));
-  const createMembership = useCreateMembership();
+  const [search, setSearch] = useState("");
+  const groupsQuery = useGroups({ status: "active" });
+  const addMember = useAddGroupMember();
   const notify = useNotify();
 
-  function reset() {
-    setMembershipType("");
-    setStatus("active");
-    setJoinedAt(new Date().toISOString().slice(0, 10));
-  }
+  const filteredGroups = (groupsQuery.data?.items ?? []).filter((group) =>
+    group.name.toLowerCase().includes(search.trim().toLowerCase()),
+  );
 
   function handleClose() {
-    reset();
+    setSearch("");
     onClose();
   }
 
-  function handleSubmit() {
-    if (!clubId || !membershipType.trim()) return;
-    createMembership.mutate(
-      {
-        person_id: personId,
-        club_id: clubId,
-        membership_type: membershipType.trim(),
-        status,
-        joined_at: new Date(joinedAt).toISOString(),
-      },
+  function handleAdd(groupId: string) {
+    addMember.mutate(
+      { groupId, personId },
       {
         onSuccess: () => {
-          notify("success", "Членство добавлено");
+          notify("success", "Человек добавлен в группу");
           handleClose();
         },
         onError: (error) => notify("error", error.message),
@@ -424,172 +385,48 @@ function CreateMembershipDialog({
   return (
     <Dialog
       open={open}
-      title="Новое членство"
+      title="Добавить в группу"
       onClose={handleClose}
       actions={
-        <>
-          <Button variant="secondary" onClick={handleClose} disabled={createMembership.isPending}>
-            Отмена
-          </Button>
-          <Button
-            variant="primary"
-            onClick={handleSubmit}
-            disabled={!clubId || !membershipType.trim() || createMembership.isPending}
-          >
-            Создать
-          </Button>
-        </>
+        <Button variant="secondary" onClick={handleClose} disabled={addMember.isPending}>
+          Отмена
+        </Button>
       }
     >
       <div className={styles.form}>
-        <Input
-          label="Тип членства"
-          value={membershipType}
-          onChange={(e) => setMembershipType(e.target.value)}
-          placeholder="Например, «участник»"
-          required
+        <SearchInput
+          label="Поиск группы"
+          value={search}
+          onChange={setSearch}
+          placeholder="Например, «Юниоры»"
         />
-        <FilterSelect
-          label="Статус"
-          value={status}
-          options={CANONICAL_MEMBERSHIP_STATUSES.map((value) => ({
-            value,
-            label: membershipStatusLabel(value),
-          }))}
-          onChange={(value) => setStatus(value as MembershipStatus)}
-        />
-        <Input
-          label="Дата вступления"
-          type="date"
-          value={joinedAt}
-          onChange={(e) => setJoinedAt(e.target.value)}
-        />
-      </div>
-    </Dialog>
-  );
-}
-
-function ChangeMembershipTypeDialog({
-  membership,
-  personId,
-  onClose,
-}: {
-  membership: Membership | null;
-  personId: string;
-  onClose: () => void;
-}) {
-  const [membershipType, setMembershipType] = useState(membership?.membership_type ?? "");
-  const updateType = useUpdateMembershipType();
-  const notify = useNotify();
-
-  function handleSubmit() {
-    if (!membership || !membershipType.trim()) return;
-    updateType.mutate(
-      { membershipId: membership.id, personId, membership_type: membershipType.trim() },
-      {
-        onSuccess: () => {
-          notify("success", "Тип членства обновлён");
-          onClose();
-        },
-        onError: (error) => notify("error", error.message),
-      },
-    );
-  }
-
-  return (
-    <Dialog
-      open={Boolean(membership)}
-      title="Изменить тип членства"
-      onClose={onClose}
-      actions={
-        <>
-          <Button variant="secondary" onClick={onClose} disabled={updateType.isPending}>
-            Отмена
-          </Button>
-          <Button
-            variant="primary"
-            onClick={handleSubmit}
-            disabled={!membershipType.trim() || updateType.isPending}
-          >
-            Сохранить
-          </Button>
-        </>
-      }
-    >
-      <div className={styles.form}>
-        <Input
-          label="Тип членства"
-          value={membershipType}
-          onChange={(e) => setMembershipType(e.target.value)}
-          required
-        />
-      </div>
-    </Dialog>
-  );
-}
-
-function ChangeMembershipStatusDialog({
-  membership,
-  personId,
-  onClose,
-}: {
-  membership: Membership | null;
-  personId: string;
-  onClose: () => void;
-}) {
-  const nextStatuses = membership ? MEMBERSHIP_NEXT_STATUSES[membership.status] : [];
-  const [status, setStatus] = useState<MembershipStatus>(nextStatuses[0] ?? "active");
-  const [reason, setReason] = useState("");
-  const transition = useTransitionMembershipStatus();
-  const notify = useNotify();
-
-  function handleClose() {
-    setReason("");
-    onClose();
-  }
-
-  function handleSubmit() {
-    if (!membership) return;
-    transition.mutate(
-      { membershipId: membership.id, personId, status, reason: reason.trim() || undefined },
-      {
-        onSuccess: () => {
-          notify("success", "Статус членства обновлён");
-          handleClose();
-        },
-        onError: (error) => notify("error", error.message),
-      },
-    );
-  }
-
-  return (
-    <Dialog
-      open={Boolean(membership)}
-      title="Изменить статус членства"
-      onClose={handleClose}
-      actions={
-        <>
-          <Button variant="secondary" onClick={handleClose} disabled={transition.isPending}>
-            Отмена
-          </Button>
-          <Button variant="primary" onClick={handleSubmit} disabled={transition.isPending}>
-            Сохранить
-          </Button>
-        </>
-      }
-    >
-      <div className={styles.form}>
-        <FilterSelect
-          label="Новый статус"
-          value={status}
-          options={nextStatuses.map((value) => ({ value, label: membershipStatusLabel(value) }))}
-          onChange={(value) => setStatus(value as MembershipStatus)}
-        />
-        <Input
-          label="Причина (необязательно)"
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-        />
+        {groupsQuery.isLoading ? <Loading label="Загружаем группы…" /> : null}
+        {groupsQuery.isError ? (
+          <ErrorState
+            illustration="error"
+            title="Не удалось загрузить группы"
+            description={groupsQuery.error.message}
+          />
+        ) : null}
+        {groupsQuery.isSuccess ? (
+          <ul className={styles.pickerList}>
+            {filteredGroups.map((group) => (
+              <li key={group.id}>
+                <button
+                  type="button"
+                  className={styles.pickerItem}
+                  disabled={addMember.isPending}
+                  onClick={() => handleAdd(group.id)}
+                >
+                  {group.name}
+                </button>
+              </li>
+            ))}
+            {filteredGroups.length === 0 ? (
+              <li className={styles.pickerEmpty}>Ничего не найдено</li>
+            ) : null}
+          </ul>
+        ) : null}
       </div>
     </Dialog>
   );
@@ -1227,11 +1064,18 @@ function AccountTab({
   isAdmin,
   personEmail,
   onRequestAddEmail,
+  initialIssuedCredential,
 }: {
   personId: string;
   isAdmin: boolean;
   personEmail: string | null;
   onRequestAddEmail: () => void;
+  // TH-0116: a credential issued by the creation wizard for THIS Person,
+  // handed down once from PersonDetailPage's own navigation state — the
+  // wizard never shows a second "account created" step of its own; this
+  // is the same "Одноразовый код доступа" card the create/reset actions
+  // below already render, just seeded from that one-time value instead.
+  initialIssuedCredential?: string | null;
 }) {
   const accountQuery = usePersonAccount(personId);
   const createAccount = useCreatePersonAccount();
@@ -1240,7 +1084,9 @@ function AccountTab({
   // Deliberately plain component state, never written to browser storage
   // and never restored across a reload — see ADR-0038 §3/§8 and this
   // component's own module comment above.
-  const [issuedCredential, setIssuedCredential] = useState<string | null>(null);
+  const [issuedCredential, setIssuedCredential] = useState<string | null>(
+    initialIssuedCredential ?? null,
+  );
 
   function handleCreate() {
     createAccount.mutate(personId, {
@@ -1275,6 +1121,16 @@ function AccountTab({
   const isNoAccount = accountQuery.isError && accountQuery.error.status === 404;
   const isOtherError = accountQuery.isError && accountQuery.error.status !== 404;
   const mutationPending = createAccount.isPending || resetPassword.isPending;
+  // TH-0116: the wizard always creates a User, so "no account" (404) is
+  // now rare (only a Person predating this feature); a pending-stub
+  // account (auto-provisioned for a Person with no email yet) shows up
+  // here instead, as an ordinary successful account read with a null
+  // login_identifier — never confused with self-registration's own,
+  // differently-shaped `pending` (see app.db.identity.User's docstring).
+  const isPendingStub =
+    accountQuery.isSuccess &&
+    accountQuery.data.status === "pending" &&
+    !accountQuery.data.login_identifier;
 
   return (
     <div>
@@ -1325,7 +1181,28 @@ function AccountTab({
         />
       ) : null}
 
-      {accountQuery.isSuccess ? (
+      {isPendingStub ? (
+        <EmptyState
+          illustration="empty-people"
+          title="Учётная запись создана автоматически"
+          description="Для активации учётной записи необходимо добавить email."
+          action={
+            isAdmin ? (
+              personEmail ? (
+                <Button variant="primary" onClick={handleCreate} disabled={mutationPending}>
+                  {createAccount.isPending ? "Активация…" : "Активировать доступ"}
+                </Button>
+              ) : (
+                <Button variant="secondary" onClick={onRequestAddEmail}>
+                  Добавить email
+                </Button>
+              )
+            ) : null
+          }
+        />
+      ) : null}
+
+      {accountQuery.isSuccess && !isPendingStub ? (
         <>
           <dl className={styles.metaRow}>
             <div>

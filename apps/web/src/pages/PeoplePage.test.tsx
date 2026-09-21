@@ -281,7 +281,7 @@ describe("PeoplePage", () => {
     expect(screen.queryByRole("button", { name: "Добавить человека" })).not.toBeInTheDocument();
   });
 
-  it("shows the create button for an admin and validates required fields", async () => {
+  it("shows the create button for an admin and validates required fields on the first wizard step", async () => {
     stubFetch([
       { match: "/auth/me", response: meResponse("admin") },
       { match: "/persons?page=1", response: peopleResponse([], { page: 1, page_size: 20, total: 0, pages: 0 }) },
@@ -291,33 +291,37 @@ describe("PeoplePage", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Добавить человека" }));
 
-    expect(screen.getByRole("dialog", { name: "Новый человек" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Создать" })).toBeDisabled();
+    expect(screen.getByRole("dialog", { name: /Новый человек/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Далее" })).toBeDisabled();
 
     await user.type(screen.getByLabelText("Фамилия"), "Смирнова");
-    expect(screen.getByRole("button", { name: "Создать" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Далее" })).toBeDisabled();
     await user.type(screen.getByLabelText("Имя"), "Мария");
-    expect(screen.getByRole("button", { name: "Создать" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Далее" })).toBeEnabled();
   });
 
-  it("creates a Person and navigates to its detail page on success", async () => {
+  it("creates a Person via the wizard (admin role, no contextual step) and navigates to its detail page", async () => {
     stubFetch([
       { match: "/auth/me", response: meResponse("admin") },
       { match: "/persons?page=1", response: peopleResponse([], { page: 1, page_size: 20, total: 0, pages: 0 }) },
       {
-        match: "/persons",
+        match: "/persons/wizard",
         response: {
-          id: "new-1",
-          first_name: "Мария",
-          last_name: "Смирнова",
-          middle_name: null,
-          birth_date: null,
-          phone: null,
-          email: null,
-          address: null,
-          photo_file_id: null,
-          created_at: "2026-01-01T00:00:00Z",
-          updated_at: "2026-01-01T00:00:00Z",
+          person: {
+            id: "new-1",
+            first_name: "Мария",
+            last_name: "Смирнова",
+            middle_name: null,
+            birth_date: null,
+            phone: null,
+            email: null,
+            address: null,
+            photo_file_id: null,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+            role_codes: ["admin"],
+          },
+          temporary_credential: null,
         },
       },
     ]);
@@ -334,33 +338,38 @@ describe("PeoplePage", () => {
     await user.click(await screen.findByRole("button", { name: "Добавить человека" }));
     await user.type(screen.getByLabelText("Фамилия"), "Смирнова");
     await user.type(screen.getByLabelText("Имя"), "Мария");
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+    await user.click(await screen.findByRole("button", { name: "Администратор" }));
     await user.click(screen.getByRole("button", { name: "Создать" }));
 
     expect(await screen.findByText("Person detail page")).toBeInTheDocument();
   });
 
-  it("calls only POST /persons — never a separate /memberships request — and refreshes the list (TH-0111)", async () => {
-    // TH-0111 / Issue #140: `POST /persons` now atomically creates the
-    // Person's initial active ClubMembership on the backend, so the
-    // frontend must perform exactly one mutation and must never call
-    // `/memberships` itself to "finish" what the backend already did.
+  it("calls only POST /persons/wizard — never separate group/role requests — and refreshes the list", async () => {
+    // TH-0116 / Issue #150: Person + account provisioning + initial role
+    // is one atomic backend operation; the frontend must never orchestrate
+    // it as several separate requests.
     const fetchMock = stubFetch([
       { match: "/auth/me", response: meResponse("admin") },
       { match: "/persons?page=1", response: peopleResponse([], { page: 1, page_size: 20, total: 0, pages: 0 }) },
       {
-        match: "/persons",
+        match: "/persons/wizard",
         response: {
-          id: "new-1",
-          first_name: "Мария",
-          last_name: "Смирнова",
-          middle_name: null,
-          birth_date: null,
-          phone: null,
-          email: null,
-          address: null,
-          photo_file_id: null,
-          created_at: "2026-01-01T00:00:00Z",
-          updated_at: "2026-01-01T00:00:00Z",
+          person: {
+            id: "new-1",
+            first_name: "Мария",
+            last_name: "Смирнова",
+            middle_name: null,
+            birth_date: null,
+            phone: null,
+            email: null,
+            address: null,
+            photo_file_id: null,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+            role_codes: ["admin"],
+          },
+          temporary_credential: null,
         },
       },
     ]);
@@ -377,26 +386,30 @@ describe("PeoplePage", () => {
     await user.click(await screen.findByRole("button", { name: "Добавить человека" }));
     await user.type(screen.getByLabelText("Фамилия"), "Смирнова");
     await user.type(screen.getByLabelText("Имя"), "Мария");
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+    await user.click(await screen.findByRole("button", { name: "Администратор" }));
     await user.click(screen.getByRole("button", { name: "Создать" }));
 
     await screen.findByText("Person detail page");
 
-    const personCreateCalls = fetchMock.mock.calls.filter(([input, init]) => {
-      const url = String(input);
-      return url.includes("/persons") && !url.includes("/persons?") && init?.method === "POST";
-    });
-    expect(personCreateCalls).toHaveLength(1);
+    const wizardCalls = fetchMock.mock.calls.filter(
+      ([input, init]) => String(input).endsWith("/persons/wizard") && init?.method === "POST",
+    );
+    expect(wizardCalls).toHaveLength(1);
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/memberships"))).toBe(
       false,
     );
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes("/role-assignments")),
+    ).toBe(false);
   });
 
-  it("shows an API error via toast and keeps the create dialog open", async () => {
+  it("shows an API error via toast and keeps the wizard open", async () => {
     stubFetch([
       { match: "/auth/me", response: meResponse("admin") },
       { match: "/persons?page=1", response: peopleResponse([], { page: 1, page_size: 20, total: 0, pages: 0 }) },
       {
-        match: "/persons",
+        match: "/persons/wizard",
         response: { error: { code: "validation_error", message: "Некорректные данные", details: {}, request_id: "r1" } },
         status: 422,
       },
@@ -407,9 +420,94 @@ describe("PeoplePage", () => {
     await user.click(await screen.findByRole("button", { name: "Добавить человека" }));
     await user.type(screen.getByLabelText("Фамилия"), "Смирнова");
     await user.type(screen.getByLabelText("Имя"), "Мария");
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+    await user.click(await screen.findByRole("button", { name: "Администратор" }));
     await user.click(screen.getByRole("button", { name: "Создать" }));
 
     expect(await screen.findByText("Некорректные данные")).toBeInTheDocument();
-    expect(screen.getByRole("dialog", { name: "Новый человек" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: /Новый человек/ })).toBeInTheDocument();
+  });
+
+  // --- Wizard: role-specific contextual setup (TH-0116 / Issue #150) -----
+
+  it("allows an instructor to finish the wizard with zero groups selected", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/persons?page=1", response: peopleResponse([], { page: 1, page_size: 20, total: 0, pages: 0 }) },
+      { match: "/groups?status=active", response: { items: [], pagination: { page: 1, page_size: 50, total: 0, pages: 0 } } },
+      {
+        match: "/persons/wizard",
+        response: {
+          person: { id: "new-2", first_name: "Пётр", last_name: "Кузнецов", middle_name: null, birth_date: null, phone: null, email: null, address: null, photo_file_id: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", role_codes: ["instructor"] },
+          temporary_credential: null,
+        },
+      },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people" element={<PeoplePage />} />
+        <Route path="/people/:personId" element={<div>Person detail page</div>} />
+      </Routes>,
+      { route: "/people" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Добавить человека" }));
+    await user.type(screen.getByLabelText("Фамилия"), "Кузнецов");
+    await user.type(screen.getByLabelText("Имя"), "Пётр");
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+    await user.click(await screen.findByRole("button", { name: "Инструктор" }));
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+
+    expect(await screen.findByLabelText("Поиск группы")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Создать" }));
+
+    expect(await screen.findByText("Person detail page")).toBeInTheDocument();
+  });
+
+  it("blocks finishing the wizard for a member with no group selected", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/persons?page=1", response: peopleResponse([], { page: 1, page_size: 20, total: 0, pages: 0 }) },
+      { match: "/groups?status=active", response: { items: [{ id: "grp1", club_id: "club-1", name: "Юниоры", description: null, status: "active", valid_from: "2025-01-01T00:00:00Z", valid_to: null, created_at: "2025-01-01T00:00:00Z", updated_at: "2025-01-01T00:00:00Z" }], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } } },
+    ]);
+
+    renderWithProviders(<PeoplePage />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Добавить человека" }));
+    await user.type(screen.getByLabelText("Фамилия"), "Сидорова");
+    await user.type(screen.getByLabelText("Имя"), "Ольга");
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+    await user.click(await screen.findByRole("button", { name: "Участник" }));
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+
+    await screen.findByText("Юниоры");
+    expect(screen.getByRole("button", { name: "Создать" })).toBeDisabled();
+
+    await user.click(screen.getByLabelText("Юниоры"));
+    expect(screen.getByRole("button", { name: "Создать" })).toBeEnabled();
+  });
+
+  it("blocks finishing the wizard for a guardian with no child selected", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/persons?page=1", response: peopleResponse([], { page: 1, page_size: 20, total: 0, pages: 0 }) },
+      { match: "/persons?page=1&search=", response: peopleResponse([], { page: 1, page_size: 20, total: 0, pages: 0 }) },
+    ]);
+
+    renderWithProviders(<PeoplePage />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Добавить человека" }));
+    await user.type(screen.getByLabelText("Фамилия"), "Кузнецова");
+    await user.type(screen.getByLabelText("Имя"), "Мария");
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+    await user.click(await screen.findByRole("button", { name: "Родитель" }));
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+
+    // Section 11: the search field is pre-filled with the guardian's own
+    // surname as a search convenience only.
+    expect(await screen.findByLabelText("Поиск ребёнка")).toHaveValue("Кузнецова");
+    expect(screen.getByRole("button", { name: "Создать" })).toBeDisabled();
   });
 });

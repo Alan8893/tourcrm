@@ -189,7 +189,7 @@ def create_person_with_membership(
     actor_user_id: uuid.UUID,
     request_id: Optional[str] = None,
     photo_file_id: Optional[uuid.UUID] = None,
-) -> Person:
+) -> tuple[Person, ClubMembership]:
     """TH-0111 / Issue #140: `POST /persons`'s actual operation — "add a
     person to the current Club" — not bare Person creation. Person
     remains a Club-neutral *entity* (no `club_id` column is added to it,
@@ -219,6 +219,13 @@ def create_person_with_membership(
     RegistrationRequest — Role assignment and every domain relationship
     built on top of it remain separate operations, triggered later from
     Person detail.
+
+    TH-0116: returns `(person, membership)` (was `person` alone) — the
+    Person-creation wizard (app.people.wizard) needs the freshly-created
+    ClubMembership's own id to create a `member` role's GroupMembership
+    row(s) in the same transaction, and the ORM `person.memberships`
+    relationship is not reliably populated in-session without a fresh
+    query. The one existing caller (`POST /persons`) is updated to match.
     """
     person = Person(
         first_name=first_name,
@@ -270,7 +277,7 @@ def create_person_with_membership(
     except Exception:
         session.rollback()
         raise
-    return person
+    return person, membership
 
 
 def update_person(

@@ -67,17 +67,31 @@ function accountResponse(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function membership(overrides: Record<string, unknown> = {}) {
+function groupMembership(overrides: Record<string, unknown> = {}) {
   return {
-    id: "m1",
-    club_id: "club-1",
-    person_id: "p1",
-    membership_type: "student",
-    status: "active",
-    joined_at: "2025-09-01T00:00:00Z",
-    left_at: null,
+    id: "gm1",
+    group_id: "grp1",
+    club_membership_id: "cm1",
+    valid_from: "2025-09-01T00:00:00Z",
+    valid_to: null,
+    membership_status: "active",
     created_at: "2025-09-01T00:00:00Z",
     updated_at: "2025-09-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function groupFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "grp1",
+    club_id: "club-1",
+    name: "Юниоры",
+    description: null,
+    status: "active",
+    valid_from: "2025-01-01T00:00:00Z",
+    valid_to: null,
+    created_at: "2025-01-01T00:00:00Z",
+    updated_at: "2025-01-01T00:00:00Z",
     ...overrides,
   };
 }
@@ -102,10 +116,10 @@ afterEach(() => {
 });
 
 describe("PersonDetailPage", () => {
-  it("shows identity, contact fields and a back link, and renders membership periods", async () => {
+  it("shows identity, contact fields and a back link", async () => {
     stubFetch([
       { match: "/auth/me", response: meResponse("member") },
-      { match: "/persons/p1/memberships", response: { items: [membership()], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } } },
+      { match: "/persons/p1/groups", response: emptyCollection() },
       { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
       { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1/account", response: accountNotFoundResponse(), status: 404 },
@@ -123,12 +137,6 @@ describe("PersonDetailPage", () => {
     expect(screen.getByRole("link", { name: /Все люди/ })).toHaveAttribute("href", "/people");
     expect(screen.getByText("+79990001122")).toBeInTheDocument();
     expect(screen.getByText("anna@example.com")).toBeInTheDocument();
-
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("tab", { name: "Членство" }));
-
-    expect(await screen.findByText("student")).toBeInTheDocument();
-    expect(screen.getByText("Активно")).toBeInTheDocument();
   });
 
   it("resolves and renders guardian relationships without any primary-contact control", async () => {
@@ -319,12 +327,13 @@ describe("PersonDetailPage", () => {
     expect(screen.getByRole("dialog", { name: "Редактировать данные" })).toBeInTheDocument();
   });
 
-  // --- Membership management (admin-only controls) --------------------
+  // --- Groups tab (TH-0116 / GitHub Issue #150) ------------------------
 
-  it("hides all membership mutation controls for a non-admin role", async () => {
+  it("renders the person's group memberships without exposing ClubMembership", async () => {
     stubFetch([
       { match: "/auth/me", response: meResponse("member") },
-      { match: "/persons/p1/memberships", response: { items: [membership()], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } } },
+      { match: "/persons/p1/groups", response: { items: [groupMembership()], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } } },
+      { match: "/groups/grp1", response: groupFixture() },
       { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
       { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1/account", response: accountNotFoundResponse(), status: 404 },
@@ -339,18 +348,18 @@ describe("PersonDetailPage", () => {
     );
 
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: "Членство" }));
-    await screen.findByText("student");
+    await user.click(await screen.findByRole("tab", { name: "Группы" }));
 
-    expect(screen.queryByRole("button", { name: "Добавить членство" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Изменить тип" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Изменить статус" })).not.toBeInTheDocument();
+    expect(await screen.findByText("Юниоры")).toBeInTheDocument();
+    expect(screen.getByText("Активно")).toBeInTheDocument();
+    // Never a technical ClubMembership id/type/status concept.
+    expect(screen.queryByText("cm1")).not.toBeInTheDocument();
   });
 
-  it("shows admin membership controls and limits status choices to the allowed transition graph", async () => {
+  it("hides the add-to-group control for a non-admin role", async () => {
     stubFetch([
-      { match: "/auth/me", response: meResponse("admin") },
-      { match: "/persons/p1/memberships", response: { items: [membership({ status: "active" })], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } } },
+      { match: "/auth/me", response: meResponse("member") },
+      { match: "/persons/p1/groups", response: emptyCollection() },
       { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
       { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1/account", response: accountNotFoundResponse(), status: 404 },
@@ -365,53 +374,22 @@ describe("PersonDetailPage", () => {
     );
 
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: "Членство" }));
-    await screen.findByText("student");
+    await user.click(await screen.findByRole("tab", { name: "Группы" }));
+    await screen.findByText("Человек пока не состоит ни в одной группе");
 
-    expect(screen.getByRole("button", { name: "Добавить членство" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Изменить статус" }));
-
-    const select = screen.getByLabelText("Новый статус") as HTMLSelectElement;
-    const options = within(select).getAllByRole("option").map((o) => (o as HTMLOptionElement).value);
-    // active -> suspended | inactive | archived (never "pending", never "active" itself).
-    expect(options.sort()).toEqual(["archived", "inactive", "suspended"]);
+    expect(screen.queryByRole("button", { name: "Добавить в группу" })).not.toBeInTheDocument();
   });
 
-  it("hides the status action entirely for an archived (terminal) membership", async () => {
-    stubFetch([
-      { match: "/auth/me", response: meResponse("admin") },
-      { match: "/persons/p1/memberships", response: { items: [membership({ status: "archived" })], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } } },
-      { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
-      { match: "/persons/p1/role-assignments", response: emptyCollection() },
-      { match: "/persons/p1/account", response: accountNotFoundResponse(), status: 404 },
-      { match: "/persons/p1", response: PERSON },
-    ]);
-
-    renderWithProviders(
-      <Routes>
-        <Route path="/people/:personId" element={<PersonDetailPage />} />
-      </Routes>,
-      { route: "/people/p1" },
-    );
-
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: "Членство" }));
-    await screen.findByText("student");
-
-    expect(screen.queryByRole("button", { name: "Изменить статус" })).not.toBeInTheDocument();
-    // The type action remains available regardless of status.
-    expect(screen.getByRole("button", { name: "Изменить тип" })).toBeInTheDocument();
-  });
-
-  it("creates a new membership as admin (rejoin flow) and closes the dialog on success", async () => {
+  it("lets an admin add the person to a group by searching and selecting it", async () => {
     const fetchMock = stubFetch([
       { match: "/auth/me", response: meResponse("admin") },
-      { match: "/persons/p1/memberships", response: emptyCollection() },
+      { match: "/persons/p1/groups", response: emptyCollection() },
       { match: "/persons/p1/guardian-relationships", response: emptyCollection() },
       { match: "/persons/p1/role-assignments", response: emptyCollection() },
       { match: "/persons/p1/account", response: accountNotFoundResponse(), status: 404 },
       { match: "/persons/p1", response: PERSON },
-      { match: "/memberships", response: membership({ status: "active" }) },
+      { match: "/groups?status=active", response: { items: [groupFixture()], pagination: { page: 1, page_size: 50, total: 1, pages: 1 } } },
+      { match: "/groups/grp1/members", response: groupMembership() },
     ]);
 
     renderWithProviders(
@@ -422,15 +400,20 @@ describe("PersonDetailPage", () => {
     );
 
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: "Членство" }));
-    await user.click(await screen.findByRole("button", { name: "Добавить членство" }));
-    await user.type(screen.getByLabelText("Тип членства"), "student");
-    await user.click(screen.getByRole("button", { name: "Создать" }));
+    await user.click(await screen.findByRole("tab", { name: "Группы" }));
+    await user.click(await screen.findByRole("button", { name: "Добавить в группу" }));
+    await user.type(screen.getByLabelText("Поиск группы"), "Юни");
+    await user.click(await screen.findByRole("button", { name: "Юниоры" }));
 
     await waitFor(() => {
-      expect(screen.queryByRole("dialog", { name: "Новое членство" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog", { name: "Добавить в группу" })).not.toBeInTheDocument();
     });
-    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/memberships"))).toBe(true);
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).endsWith("/groups/grp1/members") && init?.method === "POST",
+      ),
+    ).toBe(true);
   });
 
   // --- Guardian relationship management (admin-only controls) ---------

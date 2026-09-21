@@ -23,7 +23,10 @@ from pydantic import BaseModel
 class PersonAccountOut(BaseModel):
     id: UUID
     person_id: UUID
-    login_identifier: str
+    # TH-0116: NULL for a pending-stub account (a Person with no email
+    # yet) — see app.authentication.account_provisioning's module
+    # docstring. Never a placeholder/fake identifier.
+    login_identifier: Optional[str]
     status: str
     email_verified_at: Optional[datetime]
     last_login_at: Optional[datetime]
@@ -38,7 +41,14 @@ class PersonAccountCredentialOut(BaseModel):
     generated (app.authentication.tokens.hash_token stores only its
     hash), and the server has no way to recover it once this response has
     been sent.
+
+    TH-0116: `temporary_credential` is `None` for exactly one outcome of
+    `POST .../account` — creating a pending-stub account for a Person
+    with no email, where there is no identifier to issue a challenge to.
+    `POST .../account/password-reset` never returns `None` here (it
+    rejects a pending-stub account outright — see
+    `admin_reset_password_for_person`).
     """
 
     account: PersonAccountOut
-    temporary_credential: str
+    temporary_credential: Optional[str] = None

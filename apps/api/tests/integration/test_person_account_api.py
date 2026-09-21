@@ -174,15 +174,21 @@ def test_admin_can_create_account_for_person_with_email(client: TestClient) -> N
 
 
 @requires_postgres
-def test_person_without_email_cannot_create_account(client: TestClient) -> None:
+def test_person_without_email_creates_pending_stub_account(client: TestClient) -> None:
+    """TH-0116: email is no longer required to provision an account — a
+    Person with none gets a `pending` stub (no `login_identifier`, no
+    `password_hash`, no challenge issued) rather than a 422 rejection."""
     club_id, admin_id, target_person_id = _setup_admin_and_target(target_email=None)
     _authenticate_as(admin_id)
 
     response = client.post(
         f"/api/v1/persons/{target_person_id}/account", headers=_csrf_headers(client)
     )
-    assert response.status_code == 422, response.text
-    assert response.json()["error"]["code"] == "person_email_missing"
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["account"]["login_identifier"] is None
+    assert body["account"]["status"] == "pending"
+    assert body["temporary_credential"] is None
 
 
 # --- 3. Person with existing User cannot create second account ---------------
@@ -803,3 +809,81 @@ def test_self_service_password_reset_request_is_unaffected(client: TestClient) -
         json={"identifier": "unaffected@example.com"},
     )
     assert response.status_code == 200, response.text
+
+
+# --- Pending-stub activation (TH-0116 / GitHub Issue #150) ------------------
+#
+# A User auto-provisioned by the Person-creation wizard for a Person with
+# no email yet is a `pending` stub (no login_identifier, no
+# password_hash). Adding an email later and calling the SAME
+# `POST /persons/{id}/account` endpoint again must activate it in place
+# — never a second create-account mechanism, never
+# `account_already_exists`.
+
+
+@requires_postgres
+def test_pending_stub_account_is_activated_once_person_gets_an_email(
+    client: TestClient,
+) -> None:
+    club_id, admin_id, target_person_id = _setup_admin_and_target(target_email=None)
+    with session_scope() as session:
+        target_person = session.get(Person, target_person_id)
+        assert target_person is not None
+        session.add(User(person_id=target_person_id, login_identifier=None, status="pending"))
+        session.commit()
+    _authenticate_as(admin_id)
+
+    # Still no email: calling the account endpoint again must not
+    # succeed as if there were something to activate.
+    still_pending_response = client.post(
+        f"/api/v1/persons/{target_person_id}/account", headers=_csrf_headers(client)
+    )
+    assert still_pending_response.status_code == 422, still_pending_response.text
+    assert still_pending_response.json()["error"]["code"] == "person_email_missing"
+
+    with session_scope() as session:
+        person = session.get(Person, target_person_id)
+        assert person is not None
+        person.email = "activated@example.com"
+        session.commit()
+
+    response = client.post(
+        f"/api/v1/persons/{target_person_id}/account", headers=_csrf_headers(client)
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["account"]["login_identifier"] == "activated@example.com"
+    assert body["account"]["status"] == "active"
+    assert isinstance(body["temporary_credential"], str) and len(body["temporary_credential"]) > 0
+
+    with session_scope() as session:
+        user = session.execute(
+            select(User).where(User.person_id == target_person_id)
+        ).scalar_one()
+        assert user.login_identifier == "activated@example.com"
+        assert user.status == "active"
+
+    with session_scope() as session:
+        audit_row = session.execute(
+            select(AuditLog).where(
+                AuditLog.action == "user.status_changed", AuditLog.resource_id == user.id
+            )
+        ).scalar_one()
+        assert audit_row.details["changes"]["status"] == {"from": "pending", "to": "active"}
+        assert audit_row.details["changes"]["login_identifier"] == {"changed": True}
+
+
+@requires_postgres
+def test_admin_reset_password_rejects_pending_stub_account(client: TestClient) -> None:
+    club_id, admin_id, target_person_id = _setup_admin_and_target(target_email=None)
+    with session_scope() as session:
+        session.add(User(person_id=target_person_id, login_identifier=None, status="pending"))
+        session.commit()
+    _authenticate_as(admin_id)
+
+    response = client.post(
+        f"/api/v1/persons/{target_person_id}/account/password-reset",
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "person_email_missing"

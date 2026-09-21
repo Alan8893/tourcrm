@@ -74,9 +74,53 @@ Person является Club-neutral identity: сама схема `Person`/`Per
 
 **TH-0111 / Issue #140**: тем не менее, application-операция `POST /api/v1/persons` атомарно создаёт Person и его начальное активное `ClubMembership` для текущего Club — в одной транзакции: `person.created` + `membership.created` либо оба фиксируются, либо оба откатываются. Это необходимо, чтобы созданный Person сразу был виден создавшему его club-scoped admin (`person_visibility_filter`'s club-scoped `all` предикат требует реальной строки `ClubMembership`) — до TH-0111 Person без ClubMembership был невидим для своего создателя сразу после создания. Membership создаётся с `membership_type="member"`, `status="active"`, `joined_at` = момент создания; `membership_type` не является User Role и не требует отдельного выбора в форме. Текущий Club определяется через существующий канонический механизм — `person.create`-предоставляющий assignment вызывающего (если он club-scoped) либо единственный существующий Club в MVP (если assignment глобальный) — без введения нового current-club механизма и без изменения общего authorization engine. Авторизация остаётся прежней: только `person.create`; `membership.manage` для этой compound-операции не требуется, поскольку все поля создаваемого membership фиксированы и не являются предметом отдельного discretionary-решения. Ни User, ни UserRoleAssignment, ни GuardianRelationship, ни GroupMembership, ни GroupInstructorAssignment, ни EventParticipation этой операцией не создаются — назначение роли и все прочие доменные связи остаются отдельными операциями, инициируемыми позже со страницы Person.
 
-Никакого нового или отдельного endpoint для этого не вводится: `POST /api/v1/persons` остаётся единственным способом добавить человека.
+Никакого нового или отдельного endpoint для этого не вводится: `POST /api/v1/persons` остаётся единственным способом добавить человека без немедленной contextual-настройки (роль/группа/представитель) — см. §6.1 для полного, атомарного альтернативного пути.
 
 ADR-0025 §9: heuristic duplicate detection (similarity/fuzzy matching, email/phone scoring, автоматическое объединение) не реализуется в текущем MVP slice. `DUPLICATE_PERSON` остаётся зарезервированным error-кодом для потенциального будущего использования, а не требованием текущего slice.
+
+### 6.1. Person creation wizard (TH-0116, Issue #150)
+
+### POST `/api/v1/persons/wizard`
+
+Аддитивный endpoint: не заменяет и не изменяет контракт `POST /api/v1/persons` (§6) — оба сосуществуют. Предназначен для frontend-мастера создания человека (Обзор → базовые данные → начальная роль → contextual-настройка), который атомарно выполняет то, что вручную потребовало бы нескольких последовательных операций (Person, User, RoleAssignment, GroupMembership/GroupInstructorAssignment/GuardianRelationship).
+
+`email` — необязательное поле, как и в `PersonCreateRequest` (§6): создание человека без email не блокируется ни на бэкенде, ни этим endpoint'ом.
+
+Permission: `person.create` (как §6) — всегда; `role.manage` — всегда, поскольку endpoint создаёт начальный `RoleAssignment`; `account.manage` — всегда, поскольку endpoint всегда создаёт `User` (см. §24.2.1); `group.manage` — только при `role_code` = `instructor` или `member`; `guardian_relationship.manage` — только при `role_code` = `guardian`. Frontend-выбор роли не является источником авторизации — все проверки выполняются backend'ом по фактическому `role_code`/`group_ids`/`child_person_ids` запроса.
+
+Request:
+
+```json
+{
+  "first_name": "...",
+  "last_name": "...",
+  "middle_name": null,
+  "birth_date": null,
+  "phone": null,
+  "email": null,
+  "address": null,
+  "role_code": "member",
+  "group_ids": ["..."],
+  "child_person_ids": []
+}
+```
+
+`role_code` — один из четырёх канонических кодов ADR-0039 §3: `admin`, `instructor`, `member`, `guardian`. Ровно одна начальная роль назначается этим endpoint'ом; множественные роли для одного Person остаются доступны позже через существующий `POST /persons/{person_id}/role-assignments` (§24.1) — этот endpoint не расширяется для приёма списка ролей.
+
+`group_ids`/`child_person_ids` — contextual-поля, значение которых зависит от `role_code`:
+
+- `admin` — оба списка должны быть пустыми; непустой список отклоняется с `422 unexpected_contextual_selection`.
+- `instructor` — `group_ids`: 0..N существующих `Group`; `child_person_ids` должен быть пустым (`422 unexpected_contextual_selection` иначе). Для каждой группы создаётся `GroupInstructorAssignment` (§16) с `role_in_group = "instructor"`, `valid_from` = момент выполнения операции.
+- `member` — `group_ids`: **обязательно 1..N** существующих `Group`; пустой список отклоняется с `422 member_requires_at_least_one_group`. `child_person_ids` должен быть пустым. Для каждой группы создаётся `GroupMembership` (§15) с `valid_from` = момент выполнения операции; выбор конкретной даты начала клиентом в этом MVP не поддерживается.
+- `guardian` — `child_person_ids`: **обязательно 1..N** существующих Person; пустой список отклоняется с `422 guardian_requires_at_least_one_child`. `group_ids` должен быть пустым. Для каждого ребёнка создаётся `GuardianRelationship` (§18) с `relationship_type = "parent"`, `status = active`. Primary guardian/contact концепция по-прежнему не вводится (§18) — несколько representatives равноправны.
+
+Атомарность: Person, техническое начальное `ClubMembership` (§6), `User` (§24.2.1), начальный `RoleAssignment` (§24.1) и все contextual-записи (`GroupMembership`/`GroupInstructorAssignment`/`GuardianRelationship`) создаются в одной транзакции. Если любой обязательный шаг завершается ошибкой (несуществующая группа/ребёнок, конфликт constraint'а и т.п.) — откатывается вся операция целиком; частично созданный Person без соответствующих User/Role/contextual-записей никогда не сохраняется.
+
+`ClubMembership` остаётся исключительно техническим backend-инвариантом (§6, §14 people-api.md; см. также §24.2.1) — этот endpoint никогда не возвращает `club_membership_id` и не принимает от клиента ни `club_id`, ни выбор клуба: единственный существующий Club определяется backend'ом тем же механизмом, что и в §6 (fail-closed: 0 клубов или >1 клубов — ошибка сервера, TourCRM работает как single-club система).
+
+Response: `201 Created`, `{"person": PersonOut, "temporary_credential": "..." | null}`. `temporary_credential` присутствует, только если `email` был передан (см. §24.2.1); при отсутствии email — `null`, и второй отдельный шаг "создать учётную запись" не требуется и не предоставляется этим или каким-либо иным endpoint'ом (см. §24.2.1).
+
+Ошибки (в дополнение к `person_email_missing`/`duplicate_login_identifier` и т.п. из §24.2): `404 group_not_found` / `404 person_not_found` (для несуществующего `child_person_id` из `child_person_ids`) — существующие коды, не новые; `422 unexpected_contextual_selection`; `422 member_requires_at_least_one_group`; `422 guardian_requires_at_least_one_child`; прочие ошибки создания contextual-записей (`group_archived`, `duplicate_group_membership`, `instructor_club_membership_missing`, `duplicate_primary_instructor`, `role_assignment_club_membership_missing`, `duplicate_role_assignment`, `guardian_link_not_allowed`) — те же коды/HTTP статусы, что у соответствующих canonical endpoint'ов (§15, §16, §18, §24.1).
 
 ## 7. Обновление Person
 
@@ -387,7 +431,9 @@ Permission: `group.manage` + scope + object relationship.
 
 ### GET `/api/v1/persons/{person_id}/groups`
 
-Возвращает текущую и историческую принадлежность человека к группам.
+Возвращает текущую и историческую принадлежность человека к группам — постранично, `GroupMembershipOut` (§15), тот же shape, что и `GET /api/v1/groups/{group_id}/members` (§15). Permission: `group.read` + scope (как в §15 item-level GET) в пределах Club, к которому принадлежит `Person` через его `ClubMembership`.
+
+**TH-0116 / Issue #150**: этот endpoint был описан здесь и в `endpoint-inventory.md` §7 с самого начала People API, но не имел реализации до TH-0116, где он реализован (`app.groups.queries.list_person_group_memberships_page`) как часть переработки Person Detail — новая user-facing вкладка «Группы» (заменяет технический термин «Членство») использует именно этот endpoint, никогда не показывая `club_membership_id`, `membership_type` или статус членства в клубе.
 
 ## 18. Guardians
 
@@ -538,6 +584,19 @@ Person Detail управляет системными ролями челове�
 Назначение/снятие роли никогда не создаёт и не изменяет: Person, ClubMembership, membership_type/status, GroupMembership, GroupInstructorAssignment, EventStaffAssignment, EventParticipation, GuardianRelationship (ADR-0039 §5-§9). Guardian-роль не создаёт GuardianRelationship автоматически — Person Detail лишь предлагает переход в уже существующий workflow `POST /persons/{child_person_id}/guardian-relationships` (§18) с текущим Person как `guardian_person_id`.
 
 Аудит — существующие `role_assignment.created`/`role_assignment.revoked` (ADR-0024/ADR-0026); новый audit action не вводится.
+
+### 24.2.1 Автоматическое создание учётной записи (TH-0116, ADR-0038 amendment)
+
+**TH-0116 / Issue #150**: `POST /api/v1/persons/wizard` (§6.1) всегда создаёт `User` для нового Person автоматически — отдельного действия администратора «Создать учётную запись» для этого пути не требуется и не предлагается. Ровно два исхода, в зависимости от наличия `email` в запросе:
+
+- **`email` присутствует** — тот же путь, что и существующий `POST /persons/{person_id}/account` (§24.2): `login_identifier = email`, `status = active`, `password_hash = NULL`, немедленно выдаётся one-time first-access challenge тем же `request_password_reset` (`temporary_credential` в ответе).
+- **`email` отсутствует** — создаётся **pending-stub** `User`: `login_identifier = NULL`, `password_hash = NULL`, `status = pending`. First-access challenge не выдаётся (`temporary_credential = null` в ответе wizard'а). Вход для такого User невозможен: `app.authentication.service.login` ищет по `normalized_login_identifier`, которое для pending-stub равно `NULL` и никогда не совпадёт ни с одним client-supplied значением (`=` в SQL с `NULL` всегда ложно) — отдельная проверка в `login()` не потребовалась.
+
+Это единственный случай во всей People/Auth API, где `User.login_identifier` может быть `NULL` — существующий self-registration `pending` (`docs/03-architecture/adr/ADR-0038-account-provisioning-password-lifecycle.md` §5.1) сохраняет прежнюю форму (`login_identifier` и `password_hash` уже установлены, ожидается только admin approval) и не путается с pending-stub: обе ветки различаются по фактическому состоянию `login_identifier`/`password_hash`, а не только по `status`.
+
+**Активация pending-stub при последующем добавлении email.** Когда у Person, чей `User` является pending-stub, впоследствии появляется `email` (через обычный `PATCH /api/v1/persons/{person_id}`, §7, либо повторный вызов `POST /persons/{person_id}/account`, §24.2, который теперь также активирует, а не только создаёт), `POST /persons/{person_id}/account` устанавливает `login_identifier = email`, переводит `status: pending → active` и выдаёт first-access challenge — тот же endpoint, что и «создание» аккаунта, теперь дополнительно умеет активировать уже существующий pending-stub; второй, отдельный endpoint для этого не вводится. Аудируется как `user.status_changed` (существующий ADR-0024 код, не новый); `login_identifier` в audit details фиксируется как `{"changed": true}`, а не raw-значением (та же политика маскирования, что и для `phone`/`email` в `app.people.service`).
+
+`POST /persons/{person_id}/account/password-reset` (§24.2) для pending-stub User отклоняется с `422 person_email_missing` (тем же кодом, что и «email отсутствует» при создании) — выдавать reset-challenge некуда, пока не установлен `login_identifier`.
 
 ### 24.2 Person-scoped account management (TH-0113, ADR-0038)
 

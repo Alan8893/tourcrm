@@ -94,3 +94,30 @@ This ADR does not define:
 - account creation UI;
 - exact administrative reset endpoint name;
 - automatic role assignment.
+
+## Amendment (TH-0116 / Issue #150): pending-stub accounts for a Person created without email
+
+### 9. Account provisioning is now always automatic, and email is optional at Person creation
+
+The Person creation wizard (`POST /api/v1/persons/wizard`, `docs/05-api/people-api.md` §6.1) always creates a `User` for a new Person — there is no longer a separate administrator action to "create an account" for this path. `email` is optional at Person creation (it always was at the `PersonCreateRequest` schema level; TH-0116 makes the wizard's own UX and this ADR consistent with that).
+
+Two outcomes, decided solely by whether `email` was supplied:
+
+- **`email` supplied** — unchanged from §1-§3 above: active `User`, `login_identifier = email`, one-time first-access challenge issued immediately.
+- **`email` not supplied** — a **pending-stub** `User` is created: `login_identifier = NULL`, `password_hash = NULL`, `status = "pending"`. No first-access challenge is issued (there is no identifier to send it to), and no placeholder/fake identifier is invented to satisfy the previous NOT NULL constraint.
+
+### 10. `User.login_identifier` and `normalized_login_identifier` become nullable
+
+Both columns are relaxed from `NOT NULL` to nullable, with a new database-level invariant added as a `CHECK` constraint: a `User` row must have a non-null `login_identifier` **unless** it is a pending stub (`status = 'pending' AND password_hash IS NULL`). This is the minimal canonical schema change needed to represent "a Person exists, has no email yet, and therefore has no way to log in" without a fake login identifier.
+
+This does not change the pre-existing self-registration `pending` status (`docs/02-requirements/auth-and-authorization.md` §5.1), which already has both `login_identifier` and `password_hash` set while awaiting admin approval — the two `pending` shapes are distinguished by the actual state of `login_identifier`/`password_hash`, not by `status` alone, and the constraint is written to accept both.
+
+Login remains fail-closed for a pending-stub `User` with no code change to the login path itself: `app.authentication.service.login` looks up `User.normalized_login_identifier == normalized`, where `normalized` is always a non-null string derived from client input; SQL `=` against a `NULL` column value is never true, so a pending-stub row can never match, and `verify_password_or_dummy` is never reached with a real hash to compare against.
+
+### 11. Activation when email is added later
+
+When a Person whose `User` is a pending stub is later given an `email` (via the existing `PATCH /api/v1/persons/{person_id}` Person-update flow, or a repeat call to `POST /persons/{person_id}/account`), the same `POST /persons/{person_id}/account` endpoint (`docs/05-api/people-api.md` §24.2) now also activates an existing pending stub in place: it sets `login_identifier = email`, transitions `status: pending → active`, and issues a first-access challenge through the existing `request_password_reset` mechanism — no new challenge/token mechanism, no second "activate account" endpoint. This is audited as the existing `user.status_changed` action (ADR-0024), not a new audit code.
+
+`POST /persons/{person_id}/account/password-reset` continues to require an existing, addressable account: for a pending stub it is rejected with `422 person_email_missing` (the same code used when creation itself lacks an email), since there is no `login_identifier` yet to send a reset challenge to.
+
+See `docs/05-api/people-api.md` §24.2.1 for the full endpoint-level contract.

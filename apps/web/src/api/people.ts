@@ -237,6 +237,52 @@ export function useCreatePerson() {
   });
 }
 
+// --- Person creation wizard (TH-0116 / GitHub Issue #150) -------------------
+//
+// Person + automatic account provisioning (ADR-0038) + initial
+// RoleAssignment (ADR-0039) + role-specific contextual setup
+// (GroupInstructorAssignment/GroupMembership/GuardianRelationship), all as
+// one atomic backend operation (`POST /persons/wizard`) — this client never
+// orchestrates that as several separate requests. Replaces `useCreatePerson`
+// as the People page's "Добавить человека" flow; `useCreatePerson`/
+// `POST /persons` itself is unchanged.
+
+export type PersonWizardCreateInput = {
+  first_name: string;
+  last_name: string;
+  middle_name?: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+  role_code: PersonRoleCode;
+  group_ids: string[];
+  child_person_ids: string[];
+};
+
+export type PersonWizardCreateResult = {
+  person: Person;
+  // Present only when the Person got an active (email-backed) account —
+  // absent for a pending stub account (no email yet). Never persisted by
+  // this client beyond the one navigation that surfaces it once, mirroring
+  // useCreatePersonAccount/useAdminResetPersonPassword's identical rule.
+  temporary_credential: string | null;
+};
+
+export function useCreatePersonWizard() {
+  const queryClient = useQueryClient();
+  return useMutation<PersonWizardCreateResult, ApiError, PersonWizardCreateInput>({
+    mutationFn: (input) =>
+      apiFetch<PersonWizardCreateResult>("/persons/wizard", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: (result) => {
+      queryClient.setQueryData(["persons", "detail", result.person.id], result.person);
+      void queryClient.invalidateQueries({ queryKey: ["persons", "list"] });
+    },
+  });
+}
+
 /** `PATCH /api/v1/persons/{id}` — `person.update`. Send only the fields
  * that actually changed (PATCH/`exclude_unset` semantics mirrored
  * client-side): the caller is responsible for diffing against the loaded
@@ -509,7 +555,10 @@ export function useRemovePersonRole() {
 export type PersonAccount = {
   id: string;
   person_id: string;
-  login_identifier: string;
+  // TH-0116: null for a pending-stub account (a Person with no email yet
+  // — automatically provisioned by the creation wizard). Never a
+  // placeholder/fake identifier.
+  login_identifier: string | null;
   status: string;
   email_verified_at: string | null;
   last_login_at: string | null;
@@ -517,7 +566,9 @@ export type PersonAccount = {
 
 export type PersonAccountCredential = {
   account: PersonAccount;
-  temporary_credential: string;
+  // TH-0116: null for exactly one outcome of the create endpoint —
+  // provisioning a pending-stub account for a Person with no email.
+  temporary_credential: string | null;
 };
 
 /** `GET /api/v1/persons/{person_id}/account` — `account.manage`. A 404

@@ -67,6 +67,13 @@ def _person_out(person: Person) -> PersonOut:
 
 
 def _user_out(user: User) -> UserOut:
+    # TH-0116: `login_identifier` is nullable only for a pending-stub
+    # account (app.db.identity.User's own docstring); this is only ever
+    # called for a session-resolved, currently-`active` User (see
+    # app.authentication.service.resolve_session), which the
+    # `ck_users_login_identifier_required_unless_pending_stub` constraint
+    # guarantees has one.
+    assert user.login_identifier is not None
     return UserOut(
         id=user.id,
         login_identifier=user.login_identifier,

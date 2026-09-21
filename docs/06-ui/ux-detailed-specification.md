@@ -357,6 +357,31 @@ Screens:
 - group schedule;
 - membership history.
 
+### 9.6 Person creation wizard and current Person Detail tabs (TH-0116, Issue #150)
+
+§9.1-9.5 above describe the target People architecture; this subsection documents the currently implemented creation flow and Person Detail tab set, which realizes a subset of it while keeping technical entities (`ClubMembership`) out of the UI.
+
+**Creation wizard.** "Добавить человека" opens a guided, multi-step dialog built from existing TourCRM UI primitives (`Dialog`, `Input`, `SearchInput`, existing button styles) — no generic third-party wizard/stepper library, calendar picker, or icon set is introduced (§2 UX principles, existing Visual Foundation).
+
+1. **Basic data** — Фамилия и Имя обязательны; Отчество, Email, Телефон, Адрес — необязательны. Entered values persist across step navigation (back/forward does not lose data).
+2. **Initial role** — one of Администратор / Инструктор / Участник / Родитель. Exactly one role; additional roles are added later from the Роли tab (§9.6 below), not in the wizard.
+3. **Contextual step** — shown only for Инструктор/Участник/Родитель, skipped entirely for Администратор:
+   - Инструктор — group picker (checkbox multi-select over active groups), 0..N selectable, may finish empty;
+   - Участник — group picker, **at least one group required** to finish; the primary "Создать" action stays disabled until one is checked;
+   - Родитель — child picker (searchable, paginated over Persons), **at least one child required** to finish; the search field is pre-filled with the new Person's own last name as a search-value convenience only — it never pre-selects a child.
+
+Validation errors from the backend (e.g. a conflict) surface as an inline/toast error and keep the wizard open with entered data intact, rather than discarding progress.
+
+On success: the wizard closes, the People list refreshes, and the browser navigates to the new Person's detail page — there is no second "account created" screen; if a one-time first-access credential was issued (Person had an email), it is shown on the Учётная запись tab using the same "Одноразовый код доступа" presentation already used for admin-initiated account creation (TH-0113), not a new UI element.
+
+**Person Detail tabs**: Обзор | Группы | Представители | Роли | Учётная запись.
+
+- **Группы** replaces the earlier user-facing "Членство" tab. It lists current `GroupMembership` records with a "+ Добавить в группу" action (group search + single-click add); it never displays `club_membership_id`, `membership_type`, or a club-membership status — those remain purely backend/technical.
+- **Представители**, **Роли** — unchanged from their existing implementations (ADR-0025, ADR-0039/TH-0112).
+- **Учётная запись** — shows the account's real state: an active login for a Person with email, or, for a Person created without email, an empty-state card reading exactly "Для активации учётной записи необходимо добавить email." with a call to action leading to adding an email (existing Person edit) or activating once email is present — reusing the existing account tab and endpoints (TH-0113/ADR-0038 amendment), not a second, parallel account-creation UI.
+
+**Group Detail → Участники** gains the mirror-image action: "+ Добавить участника" opens a Person search dialog and adds the selected Person to the group via the same canonical group-membership creation used by the Группы tab above — both directions use one shared endpoint/hook, not two independent implementations.
+
 ---
 
 ## 10. Events and Calendar UX
