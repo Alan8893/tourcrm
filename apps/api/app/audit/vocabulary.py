@@ -117,5 +117,23 @@ CANONICAL_AUDIT_ACTIONS: frozenset[str] = frozenset(
         # "one action, details carry the rest" shape.
         "password_reset_challenge.created",
         "password_reset_challenge.completed",
+        # Participant Document domain (ADR-0040 §7 amendment to ADR-0024
+        # §4, TH-0117.1): `document.replaced` is distinct from
+        # `document.updated` — replacing a document's underlying file
+        # creates a new version (ADR-0040 §4) and is `document.replaced`;
+        # correcting non-file metadata on the current version in place is
+        # `document.updated`. `document.downloaded`/`document.exported`
+        # cover reading/exporting document content (including a sensitive
+        # medical certificate) and are audit-required even when the
+        # surrounding operation also touches non-sensitive documents. No
+        # runtime caller emits any of these six actions yet (Issue #156 is
+        # persistence-foundation only) — this amendment only makes the
+        # vocabulary/schema ready for the API work that follows.
+        "document.created",
+        "document.updated",
+        "document.replaced",
+        "document.revoked",
+        "document.downloaded",
+        "document.exported",
     }
 )
