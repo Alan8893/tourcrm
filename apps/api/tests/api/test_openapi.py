@@ -4,7 +4,6 @@ _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
     "trip",
     "route",
     "achievement",
-    "document",
     "equipment",
     "payment",
     "finance",
@@ -31,7 +30,11 @@ _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
 # endpoint, `GET /users` (see _USER_PATHS below) — not the full admin User
 # Management API endpoint-inventory.md §2 documents; the rest of that
 # section (`GET/PATCH /users/{id}`, `POST /users`, block/disable/activate/
-# archive, sessions) remains unimplemented.
+# archive, sessions) remains unimplemented. "document" is no longer
+# forbidden either: TH-0117.3 / Issue #160 adds the real participant
+# Document API foundation (see _DOCUMENT_PATHS below) — create/list/
+# detail/download only; replace/revoke/EventDocumentRequirement remain
+# unimplemented (people-api.md §32).
 
 
 def test_openapi_schema_is_served(real_client) -> None:
@@ -95,6 +98,16 @@ _PERSON_PATHS = {
     # password reset/first-access setup for a Person.
     "/api/v1/persons/{person_id}/account",
     "/api/v1/persons/{person_id}/account/password-reset",
+}
+
+_DOCUMENT_PATHS = {
+    # TH-0117.3 / Issue #160, ADR-0040: participant Document API
+    # foundation. Nested-only — no flat `/documents/{id}` resource in this
+    # slice. No replace/revoke/EventDocumentRequirement endpoints
+    # (people-api.md §32, Issue #160 §11).
+    "/api/v1/persons/{person_id}/documents",
+    "/api/v1/persons/{person_id}/documents/{document_id}",
+    "/api/v1/persons/{person_id}/documents/{document_id}/download",
 }
 
 _MEMBERSHIP_PATHS = {
@@ -168,9 +181,10 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
     # slice (Issue #40), the Person/ClubMembership API (Issue #62), the
     # GuardianRelationship API (Issue #64), the Group/GroupMembership/
     # GroupInstructorAssignment API (Issue #71), the RoleAssignment API
-    # (Issue #74), the Event recurrence API (Issue #79), and the read-only
-    # User directory (TH-0107) are the only domain endpoints so far — no
-    # Trip/etc. CRUD endpoints have been added under /api/v1.
+    # (Issue #74), the Event recurrence API (Issue #79), the read-only
+    # User directory (TH-0107), and the participant Document API
+    # foundation (TH-0117.3 / Issue #160) are the only domain endpoints so
+    # far — no Trip/etc. CRUD endpoints have been added under /api/v1.
     assert (
         set(schema["paths"].keys())
         == {"/health/live", "/health/ready"}
@@ -184,6 +198,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _USER_PATHS
         | _ROLE_ASSIGNMENT_PATHS
         | _EVENT_RECURRENCE_PATHS
+        | _DOCUMENT_PATHS
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()

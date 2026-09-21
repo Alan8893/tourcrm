@@ -17,6 +17,15 @@ from app.storage.file_storage import (
 )
 from app.storage.local import LocalFileStorage, get_file_storage
 
+# --- backend identity (TH-0117.3 / Issue #160) ------------------------
+
+
+def test_local_file_storage_reports_local_as_its_backend_name(tmp_path) -> None:
+    storage = LocalFileStorage(root=tmp_path)
+
+    assert storage.backend_name == "local"
+
+
 # --- basic storage -----------------------------------------------------
 
 

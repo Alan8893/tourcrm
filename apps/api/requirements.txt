@@ -5,3 +5,4 @@ alembic==1.14.0
 psycopg[binary]==3.2.3
 argon2-cffi==23.1.0
 python-dateutil==2.9.0.post0
+python-multipart==0.0.32
