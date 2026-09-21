@@ -19,11 +19,13 @@ independent of authorization (what they may do), per ADR-0005/ADR-0009.
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from typing import Literal, Optional
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.audit.service import record_audit_event
 from app.authentication.passwords import (
     hash_password,
     validate_password_policy,
@@ -421,9 +423,30 @@ def list_sessions_page(
 # --- Password reset / change --------------------------------------------
 
 
-def request_password_reset(session: Session, identifier: str) -> str | None:
+def request_password_reset(
+    session: Session,
+    identifier: str,
+    *,
+    actor_type: Literal["user", "system"] = "system",
+    actor_user_id: Optional[uuid.UUID] = None,
+    request_id: Optional[str] = None,
+) -> str | None:
     """auth-api.md §13: the caller MUST return an identical generic
-    response whether or not this returns a token."""
+    response whether or not this returns a token.
+
+    `actor_type`/`actor_user_id` default to the self-service caller's own
+    shape (`"system"`, no actor — no authenticated principal exists yet
+    at this point of the flow). ADR-0038's administrator-initiated first-
+    access/reset operations (app.authentication.account_provisioning)
+    call this same function with `actor_type="user"` and the acting
+    admin's own id instead — the challenge-issuance mechanism itself is
+    identical either way (ADR-0038 §7: "reuse the existing password-reset/
+    security model rather than introduce a parallel password mechanism").
+    Records `password_reset_challenge.created` (ADR-0038 §8) in the same
+    transaction as the challenge row; never for an unknown identifier
+    (nothing was actually created, and auditing a lookup miss would leak
+    exactly the account-existence signal auth-api.md §13 forbids).
+    """
     normalized = normalize_login_identifier(identifier)
     user = session.execute(
         select(User).where(User.normalized_login_identifier == normalized)
@@ -441,19 +464,40 @@ def request_password_reset(session: Session, identifier: str) -> str | None:
         .values(revoked_at=_utcnow())
     )
     raw_token = generate_token()
-    session.add(
-        PasswordResetChallenge(
-            id=uuid.uuid4(),
-            user_id=user.id,
-            token_hash=hash_token(raw_token),
-            expires_at=_utcnow() + PASSWORD_RESET_TTL,
-        )
+    challenge = PasswordResetChallenge(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        token_hash=hash_token(raw_token),
+        expires_at=_utcnow() + PASSWORD_RESET_TTL,
+    )
+    session.add(challenge)
+    record_audit_event(
+        session,
+        action="password_reset_challenge.created",
+        actor_type=actor_type,
+        actor_user_id=actor_user_id,
+        resource_type="password_reset_challenge",
+        resource_id=challenge.id,
+        outcome="success",
+        request_id=request_id,
     )
     session.commit()
     return raw_token
 
 
-def confirm_password_reset(session: Session, *, raw_token: str, new_password: str) -> None:
+def confirm_password_reset(
+    session: Session, *, raw_token: str, new_password: str, request_id: Optional[str] = None
+) -> None:
+    """Records `password_reset_challenge.completed` (ADR-0038 §8) in the
+    same transaction as the password change, with `actor_type="user"` —
+    the caller has just proven possession of a valid one-time challenge
+    for this specific User, which is the relevant "who" for this event
+    even though no full authenticated session exists yet. `details`
+    carries only the count of sessions revoked as a consequence (a plain
+    int, never a session id/token/hash) rather than a separate audit
+    action — mirrors `event_participation.status_changed`'s "one action,
+    details carry the rest" shape.
+    """
     challenge = session.execute(
         select(PasswordResetChallenge).where(
             PasswordResetChallenge.token_hash == hash_token(raw_token)
@@ -478,10 +522,21 @@ def confirm_password_reset(session: Session, *, raw_token: str, new_password: st
     user.password_hash = hash_password(new_password)
     # authentication-persistence.md §5 / auth-api.md §14: invalidate
     # previously active sessions.
-    session.execute(
+    result = session.execute(
         update(AuthenticatedSession)
         .where(AuthenticatedSession.user_id == user.id, AuthenticatedSession.status == "active")
         .values(status="revoked", revoked_at=now, revoked_reason="password_reset")
+    )
+    record_audit_event(
+        session,
+        action="password_reset_challenge.completed",
+        actor_type="user",
+        actor_user_id=user.id,
+        resource_type="password_reset_challenge",
+        resource_id=challenge.id,
+        outcome="success",
+        request_id=request_id,
+        details={"sessions_revoked": result.rowcount},
     )
     session.commit()
 

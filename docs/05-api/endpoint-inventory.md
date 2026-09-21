@@ -64,6 +64,14 @@ There is no Person archive endpoint in the current MVP. Person archiving is defe
 
 A `role.manage`-gated, canonical-role-code-only view onto the same `RoleAssignment` resource `/role-assignments` (§24) already owns — see `people-api.md` §24 and ADR-0025 §6 (the flat `/role-assignments` collection remains the canonical resource identity; this is a Person-scoped convenience entry point, not a second model or a second API).
 
+### Person account management (TH-0113 / ADR-0038)
+
+- `GET /persons/{person_id}/account`
+- `POST /persons/{person_id}/account`
+- `POST /persons/{person_id}/account/password-reset`
+
+Administrative User account creation and password reset/first-access setup, gated by the dedicated `account.manage` permission (§24). Reuses the existing `PasswordResetChallenge` mechanism and `POST /auth/password-reset/confirm` (§1) unchanged — no parallel password mechanism. See `people-api.md` §24.2.
+
 ## 4. Club memberships
 
 - `GET /memberships`
@@ -423,6 +431,8 @@ Large exports are asynchronous.
 Security-sensitive settings require elevated permission and audit.
 
 TH-0112 / ADR-0039 adds `GET/POST /persons/{person_id}/role-assignments` and `DELETE /persons/{person_id}/role-assignments/{role_code}` (§3) as a Person Detail-facing, canonical-role-code-only entry point onto this same resource — it does not replace or duplicate the endpoints above.
+
+TH-0113 / ADR-0038 adds the `account.manage` permission and `GET/POST /persons/{person_id}/account` + `POST /persons/{person_id}/account/password-reset` (§3) for administrative User account/credential management — a dedicated permission, never `role.manage`/`settings.manage`/`person.update`.
 
 ## 25. Integrations
 

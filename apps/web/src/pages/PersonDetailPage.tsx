@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { PageHeader } from "../components/ui/PageHeader";
+import { Card } from "../components/ui/Card";
 import { Tabs } from "../components/ui/Tabs";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { Button } from "../components/ui/Button";
@@ -20,12 +21,15 @@ import {
   personRoleLabel,
   usePerson,
   usePersons,
+  usePersonAccount,
   usePersonGuardianRelationships,
   usePersonMemberships,
   usePersonRoleAssignments,
   useAddPersonRole,
+  useAdminResetPersonPassword,
   useCreateGuardianRelationship,
   useCreateMembership,
+  useCreatePersonAccount,
   useRemovePersonRole,
   useTerminateGuardianRelationship,
   useTransitionMembershipStatus,
@@ -42,10 +46,13 @@ import {
   type PersonRoleCode,
 } from "../api/people";
 import {
+  accountStatusIcon,
+  accountStatusLabel,
   membershipStatusIcon,
   membershipStatusLabel,
   guardianRelationshipStatusIcon,
   guardianRelationshipStatusLabel,
+  type AccountStatus,
   type MembershipStatus,
 } from "../domain/statusMapping";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
@@ -118,6 +125,18 @@ export function PersonDetailPage() {
             id: "roles",
             label: "Роли",
             content: <RolesTab personId={person.id} isAdmin={isAdmin} />,
+          },
+          {
+            id: "account",
+            label: "Учётная запись",
+            content: (
+              <AccountTab
+                personId={person.id}
+                isAdmin={isAdmin}
+                personEmail={person.email}
+                onRequestAddEmail={() => setEditOpen(true)}
+              />
+            ),
           },
         ]}
       />
@@ -1192,5 +1211,158 @@ function LinkChildDialog({
         />
       </div>
     </Dialog>
+  );
+}
+
+// --- Account tab (TH-0113 / ADR-0038) ---------------------------------------
+//
+// Administrative User account/credential management, gated by
+// `account.manage` backend-side. `isAdmin` only decides whether the CTAs
+// render here — the same UX-only convention already used by every other
+// tab in this file; the actual authorization decision is always made by
+// the backend on each request.
+
+function AccountTab({
+  personId,
+  isAdmin,
+  personEmail,
+  onRequestAddEmail,
+}: {
+  personId: string;
+  isAdmin: boolean;
+  personEmail: string | null;
+  onRequestAddEmail: () => void;
+}) {
+  const accountQuery = usePersonAccount(personId);
+  const createAccount = useCreatePersonAccount();
+  const resetPassword = useAdminResetPersonPassword();
+  const notify = useNotify();
+  // Deliberately plain component state, never written to browser storage
+  // and never restored across a reload — see ADR-0038 §3/§8 and this
+  // component's own module comment above.
+  const [issuedCredential, setIssuedCredential] = useState<string | null>(null);
+
+  function handleCreate() {
+    createAccount.mutate(personId, {
+      onSuccess: (result) => {
+        setIssuedCredential(result.temporary_credential);
+        notify("success", "Учётная запись создана");
+      },
+      onError: (error) => notify("error", error.message),
+    });
+  }
+
+  function handleReset() {
+    resetPassword.mutate(personId, {
+      onSuccess: (result) => {
+        setIssuedCredential(result.temporary_credential);
+        notify("success", "Создан новый одноразовый код доступа");
+      },
+      onError: (error) => notify("error", error.message),
+    });
+  }
+
+  async function handleCopy() {
+    if (!issuedCredential) return;
+    try {
+      await navigator.clipboard.writeText(issuedCredential);
+      notify("success", "Скопировано");
+    } catch {
+      notify("error", "Не удалось скопировать код");
+    }
+  }
+
+  const isNoAccount = accountQuery.isError && accountQuery.error.status === 404;
+  const isOtherError = accountQuery.isError && accountQuery.error.status !== 404;
+  const mutationPending = createAccount.isPending || resetPassword.isPending;
+
+  return (
+    <div>
+      {issuedCredential ? (
+        <Card className={styles.credentialCard}>
+          <strong>Одноразовый код доступа</strong>
+          <p className={styles.credentialValue}>{issuedCredential}</p>
+          <p className={styles.rowSecondary}>
+            Используйте этот код для установки пароля. Он действует ограниченное время и может
+            быть использован один раз.
+          </p>
+          <div>
+            <Button variant="secondary" onClick={handleCopy}>
+              Скопировать
+            </Button>
+          </div>
+        </Card>
+      ) : null}
+
+      {accountQuery.isLoading ? <Loading label="Загружаем данные учётной записи…" /> : null}
+
+      {isOtherError ? (
+        <ErrorState
+          illustration="error"
+          title="Не удалось загрузить учётную запись"
+          description={accountQuery.error.message}
+        />
+      ) : null}
+
+      {isNoAccount ? (
+        <EmptyState
+          illustration="empty-people"
+          title="Учётная запись не создана"
+          description={personEmail ? undefined : "Для создания доступа сначала укажите email."}
+          action={
+            isAdmin ? (
+              personEmail ? (
+                <Button variant="primary" onClick={handleCreate} disabled={mutationPending}>
+                  {createAccount.isPending ? "Создание…" : "Создать доступ"}
+                </Button>
+              ) : (
+                <Button variant="secondary" onClick={onRequestAddEmail}>
+                  Добавить email
+                </Button>
+              )
+            ) : null
+          }
+        />
+      ) : null}
+
+      {accountQuery.isSuccess ? (
+        <>
+          <dl className={styles.metaRow}>
+            <div>
+              <dt className={styles.metaLabel}>Логин</dt>
+              <dd>{accountQuery.data.login_identifier}</dd>
+            </div>
+            <div>
+              <dt className={styles.metaLabel}>Статус</dt>
+              <dd>
+                <StatusBadge
+                  status={accountStatusIcon(accountQuery.data.status as AccountStatus)}
+                  label={accountStatusLabel(accountQuery.data.status as AccountStatus)}
+                />
+              </dd>
+            </div>
+            <div>
+              <dt className={styles.metaLabel}>Email подтверждён</dt>
+              <dd>{accountQuery.data.email_verified_at ? "Да" : "Нет"}</dd>
+            </div>
+            <div>
+              <dt className={styles.metaLabel}>Последний вход</dt>
+              <dd>
+                {accountQuery.data.last_login_at
+                  ? new Date(accountQuery.data.last_login_at).toLocaleString("ru-RU")
+                  : "Ещё не выполнялся"}
+              </dd>
+            </div>
+          </dl>
+          {isAdmin ? (
+            <div className={styles.tabActions}>
+              <Button variant="secondary" onClick={handleReset} disabled={mutationPending}>
+                {resetPassword.isPending ? "Отправка…" : "Сбросить пароль"}
+              </Button>
+            </div>
+          ) : null}
+        </>
+      ) : null}
+    </div>
   );
 }

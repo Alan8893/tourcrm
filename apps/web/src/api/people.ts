@@ -490,3 +490,75 @@ export function useRemovePersonRole() {
     },
   });
 }
+
+// --- Account management (TH-0113 / ADR-0038) --------------------------------
+//
+// Administrative User account/credential management for a Person, gated
+// by `account.manage`. The server always resolves identity from the
+// path (`person_id`) — this client never sends a `user_id`, `password`,
+// or `role`. `temporary_credential` appears ONLY in the create/reset
+// mutation responses below (ADR-0038 §3/§8) — never in `PersonAccount`
+// itself, never persisted by this client, and never re-derivable after
+// the response that carried it.
+
+export type PersonAccount = {
+  id: string;
+  person_id: string;
+  login_identifier: string;
+  status: string;
+  email_verified_at: string | null;
+  last_login_at: string | null;
+};
+
+export type PersonAccountCredential = {
+  account: PersonAccount;
+  temporary_credential: string;
+};
+
+/** `GET /api/v1/persons/{person_id}/account` — `account.manage`. A 404
+ * means "this Person has no User yet" (`account_not_found`) — the
+ * caller renders that as the "no account" state, not as a system error;
+ * see `ApiError.status` handling in the pages that use this. */
+export function usePersonAccount(personId: string | undefined) {
+  return useQuery<PersonAccount, ApiError>({
+    queryKey: ["persons", "account", personId],
+    queryFn: () => apiFetch<PersonAccount>(`/persons/${personId}/account`),
+    enabled: Boolean(personId),
+    retry: false,
+  });
+}
+
+/** `POST /api/v1/persons/{person_id}/account` — `account.manage`. No
+ * request body: `login_identifier` is always `Person.email` server-side.
+ * Rejects with `person_email_missing` (422) when the Person has no
+ * email, or `account_already_exists`/`duplicate_login_identifier` (409)
+ * — ordinary `ApiError`s for the caller to surface. */
+export function useCreatePersonAccount() {
+  const queryClient = useQueryClient();
+  return useMutation<PersonAccountCredential, ApiError, string>({
+    mutationFn: (personId) =>
+      apiFetch<PersonAccountCredential>(`/persons/${personId}/account`, { method: "POST" }),
+    onSuccess: (_result, personId) => {
+      void queryClient.invalidateQueries({ queryKey: ["persons", "account", personId] });
+    },
+  });
+}
+
+/** `POST /api/v1/persons/{person_id}/account/password-reset` —
+ * `account.manage`. Issues a fresh one-time reset challenge for an
+ * existing account; never creates a User and never accepts a new
+ * password from the admin. Rejects with `person_has_no_account` (422)
+ * when the Person has no User yet — use `useCreatePersonAccount`
+ * first. */
+export function useAdminResetPersonPassword() {
+  const queryClient = useQueryClient();
+  return useMutation<PersonAccountCredential, ApiError, string>({
+    mutationFn: (personId) =>
+      apiFetch<PersonAccountCredential>(`/persons/${personId}/account/password-reset`, {
+        method: "POST",
+      }),
+    onSuccess: (_result, personId) => {
+      void queryClient.invalidateQueries({ queryKey: ["persons", "account", personId] });
+    },
+  });
+}

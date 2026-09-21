@@ -33,6 +33,44 @@ export function groupStatusLabel(status: GroupStatus): string {
   }
 }
 
+/** `User.status` (TH-0113 / ADR-0038) — the same canonical account-
+ * lifecycle vocabulary auth-and-authorization.md §4 documents; never a
+ * new invented value. */
+export type AccountStatus = "pending" | "active" | "locked" | "suspended" | "disabled" | "archived";
+
+export function accountStatusIcon(status: AccountStatus): StatusIconId {
+  switch (status) {
+    case "pending":
+      return "status.planned";
+    case "active":
+      return "status.success";
+    case "locked":
+    case "suspended":
+      return "status.warning";
+    case "disabled":
+      return "status.error";
+    case "archived":
+      return "status.archived";
+  }
+}
+
+export function accountStatusLabel(status: AccountStatus): string {
+  switch (status) {
+    case "pending":
+      return "Ожидает активации";
+    case "active":
+      return "Активна";
+    case "locked":
+      return "Заблокирована";
+    case "suspended":
+      return "Приостановлена";
+    case "disabled":
+      return "Отключена";
+    case "archived":
+      return "Архивная";
+  }
+}
+
 export type EventStatus =
   | "draft"
   | "published"

@@ -12,7 +12,9 @@ Group/Invitation/RegistrationRequest/Import API, and
 role-assignments` and `DELETE .../role-assignments/{role_code}` were
 added later by TH-0112 / ADR-0039 — see that section below; the
 canonical RoleAssignment resource itself remains the flat
-`/api/v1/role-assignments`, ADR-0025 §6.) The archive endpoint is
+`/api/v1/role-assignments`, ADR-0025 §6. `GET/POST /persons/{person_id}/
+account` and `POST .../account/password-reset` were added later still by
+TH-0113 / ADR-0038 — see that section below.) The archive endpoint is
 formally deferred by
 ADR-0034, not an open gap: `Person` has no `status`/`archived_at`/
 soft-delete field, physical deletion is not part of the domain contract,
@@ -44,6 +46,7 @@ authorized-for-other-fields caller didn't already know.
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
@@ -54,6 +57,7 @@ from app.api.deps import (
 from app.api.errors import APIError
 from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
+from app.api.v1.account_schemas import PersonAccountCredentialOut, PersonAccountOut
 from app.api.v1.guardian_relationships import guardian_relationship_out
 from app.api.v1.guardian_relationships_schemas import (
     GuardianRelationshipCreateRequest,
@@ -65,10 +69,11 @@ from app.api.v1.role_assignments_schemas import (
     PersonRoleAssignmentCreateRequest,
     PersonRoleAssignmentOut,
 )
+from app.authentication import account_provisioning
 from app.authorization.context import ResourceContext
 from app.authorization.service import AuthorizationDenied, Authorizer
 from app.db.authorization import UserRoleAssignment
-from app.db.identity import Person
+from app.db.identity import Person, User
 from app.db.session import get_db
 from app.people import guardian_service
 from app.people import service as people_service
@@ -569,3 +574,128 @@ def remove_person_role_assignment(
             _ROLE_ASSIGNMENT_NOT_FOUND_CODE,
             _ROLE_ASSIGNMENT_NOT_FOUND_MESSAGE,
         ) from exc
+
+
+# --- Person account management (TH-0113 / ADR-0038) -------------------------
+#
+# Administrative User-account provisioning for a Person, gated by the
+# dedicated `account.manage` permission (never `role.manage`, `settings.
+# manage`, or `person.update` — ADR-0038's own framing). Mirrors the exact
+# `resolve_sole_club_id` + `Authorizer.check(ResourceContext(club_id=...))`
+# shape TH-0112's role-assignment endpoints already established for an
+# admin-only, single-Club-scoped permission.
+
+_ACCOUNT_NOT_FOUND_CODE = "account_not_found"
+_ACCOUNT_NOT_FOUND_MESSAGE = "Account not found"
+
+
+def _person_account_out(user: User) -> PersonAccountOut:
+    return PersonAccountOut(
+        id=user.id,
+        person_id=user.person_id,
+        login_identifier=user.login_identifier,
+        status=user.status,
+        email_verified_at=user.email_verified_at,
+        last_login_at=user.last_login_at,
+    )
+
+
+def _check_account_manage(db: Session, *, user_id: uuid.UUID) -> None:
+    club_id = account_provisioning.resolve_sole_club_id(db)
+    Authorizer(session=db, user_id=user_id, permission_code="account.manage").check(
+        ResourceContext(club_id=club_id)
+    )
+
+
+@router.get("/{person_id}/account", response_model=PersonAccountOut)
+def get_person_account(
+    person_id: uuid.UUID,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+) -> PersonAccountOut:
+    """Safe account metadata only — never `password_hash`, any token/
+    hash, or session data (docs/07-security/security-and-privacy.md §2.6).
+    """
+    if db.get(Person, person_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+    _check_account_manage(db, user_id=principal.user_id)
+
+    user = db.execute(select(User).where(User.person_id == person_id)).scalar_one_or_none()
+    if user is None:
+        raise APIError(
+            status.HTTP_404_NOT_FOUND, _ACCOUNT_NOT_FOUND_CODE, _ACCOUNT_NOT_FOUND_MESSAGE
+        )
+    return _person_account_out(user)
+
+
+@router.post(
+    "/{person_id}/account",
+    status_code=status.HTTP_201_CREATED,
+    response_model=PersonAccountCredentialOut,
+)
+def create_person_account(
+    person_id: uuid.UUID,
+    request: Request,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> PersonAccountCredentialOut:
+    """Create a User for `person_id` and issue a one-time first-access
+    setup challenge (ADR-0038 §2). Accepts no request body: `person_id`
+    is the path, `login_identifier` is always `Person.email`, and no
+    password/role/club_id is ever accepted from the client.
+    """
+    if db.get(Person, person_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+    _check_account_manage(db, user_id=principal.user_id)
+
+    try:
+        user, raw_credential = account_provisioning.create_user_for_person(
+            db,
+            person_id=person_id,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
+        )
+    except account_provisioning.PersonEmailMissingError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "person_email_missing", str(exc)
+        ) from exc
+    except account_provisioning.PersonAlreadyHasAccountError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "account_already_exists", str(exc)) from exc
+    except account_provisioning.DuplicateLoginIdentifierError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "duplicate_login_identifier", str(exc)) from exc
+    return PersonAccountCredentialOut(
+        account=_person_account_out(user), temporary_credential=raw_credential
+    )
+
+
+@router.post("/{person_id}/account/password-reset", response_model=PersonAccountCredentialOut)
+def reset_person_account_password(
+    person_id: uuid.UUID,
+    request: Request,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> PersonAccountCredentialOut:
+    """Issue a fresh one-time reset challenge for `person_id`'s existing
+    User (ADR-0038 §7) — never sets a password directly, never creates a
+    User. Use `POST .../account` first if `person_id` has no User yet.
+    """
+    if db.get(Person, person_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+    _check_account_manage(db, user_id=principal.user_id)
+
+    try:
+        user, raw_credential = account_provisioning.admin_reset_password_for_person(
+            db,
+            person_id=person_id,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
+        )
+    except account_provisioning.PersonHasNoAccountError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "person_has_no_account", str(exc)
+        ) from exc
+    return PersonAccountCredentialOut(
+        account=_person_account_out(user), temporary_credential=raw_credential
+    )

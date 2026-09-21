@@ -535,6 +535,20 @@ Person Detail управляет системными ролями челове�
 
 Аудит — существующие `role_assignment.created`/`role_assignment.revoked` (ADR-0024/ADR-0026); новый audit action не вводится.
 
+### 24.2 Person-scoped account management (TH-0113, ADR-0038)
+
+Административное управление User account/credentials для Person, через отдельный permission `account.manage` (никогда не `role.manage`, `settings.manage` или `person.update`). Identity разрешается backend строго через Person → User; клиент никогда не передаёт `user_id`, `password`, `role` или `club_id`.
+
+- `GET /api/v1/persons/{person_id}/account` — безопасная проекция User (`id`, `person_id`, `login_identifier`, `status`, `email_verified_at`, `last_login_at`) — никогда `password_hash`, токен или его hash. `404 account_not_found`, если у Person ещё нет User (неразличимо с «Person не найден», который также `404`, но с другим `detail`).
+- `POST /api/v1/persons/{person_id}/account` — создаёт User для Person и немедленно выдаёт one-time first-access challenge через уже существующий `app.authentication.service.request_password_reset` (тот же механизм, что и self-service «Забыли пароль?»; новый challenge/token не изобретается). `login_identifier = Person.email` через существующую `normalize_login_identifier()`; `Person.email` не копируется в новое поле User, и `User.login_identifier` не синхронизируется автоматически при последующем изменении `Person.email`. `password_hash = NULL`; `status = active` (см. ниже). Тело запроса не принимается. Ответ — `201` с `{"account": PersonAccountOut, "temporary_credential": "..."}` — единственный endpoint (вместе с password-reset ниже), где сервер вообще возвращает raw credential, согласно ADR-0038 §3/§8. Ошибки: `404` (Person не найден), `422 person_email_missing` (у Person нет email — создать login identifier не из чего; фронтенд предлагает сначала добавить email через существующий Person edit flow), `409 account_already_exists` (у Person уже есть User), `409 duplicate_login_identifier` (email уже занят другим User — authoritative проверка через существующий unique constraint).
+- `POST /api/v1/persons/{person_id}/account/password-reset` — для Person с уже существующим User: выдаёт новый one-time reset challenge тем же `request_password_reset`, замещая (revoke) любой ранее выданный неиспользованный challenge — существующая, неизменённая политика. Не создаёт User и не принимает новый пароль от администратора. Ответ — `200` с той же формой `{"account": ..., "temporary_credential": "..."}`. Ошибка: `422 person_has_no_account`, если у Person ещё нет User (сначала вызвать `POST .../account`).
+
+**Начальный `status` нового User — `active`.** Пароль ещё не установлен (`password_hash = NULL`), поэтому вход невозможен независимо от `status`: `app.authentication.passwords.verify_password_or_dummy` детерминированно отклоняет попытку входа при отсутствующем hash. `pending` здесь не используется: это состояние в auth-and-authorization.md §5.1 обозначает self-registration, ожидающую отдельного admin approval шага, которого в этом административном флоу уже не требуется — создание User администратором само по себе уже является этим одобрением.
+
+**Единый flow установки пароля.** Пользователь устанавливает пароль тем же самым `POST /api/v1/auth/password-reset/confirm` (§14), который уже используется для self-service восстановления — второй механизм не вводится. После успешного `confirm`: `password_hash` установлен, challenge consumed, ранее активные сессии инвалидированы согласно существующей policy (§14) — ничего из этого не меняется для admin-инициированного challenge.
+
+Аудит — `user.created` (существующий, ранее не использовавшийся в People API) и новые `password_reset_challenge.created`/`password_reset_challenge.completed` (ADR-0038 amendment к ADR-0024 §4) — единые действия для self-service и admin-инициированного flow; `details` никогда не содержит raw credential/hash (проверяется `app.audit.security.assert_safe_audit_details`).
+
 ## 25. Instructor assignment
 
 Инструктор — Person/User с соответствующим role assignment. Само наличие роли не означает ответственность за конкретную группу или Event.

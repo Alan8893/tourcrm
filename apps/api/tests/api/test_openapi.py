@@ -82,6 +82,10 @@ _PERSON_PATHS = {
     # resource (see _ROLE_ASSIGNMENT_PATHS below and ADR-0025 §6).
     "/api/v1/persons/{person_id}/role-assignments",
     "/api/v1/persons/{person_id}/role-assignments/{role_code}",
+    # TH-0113 / ADR-0038: administrative User account creation and
+    # password reset/first-access setup for a Person.
+    "/api/v1/persons/{person_id}/account",
+    "/api/v1/persons/{person_id}/account/password-reset",
 }
 
 _MEMBERSHIP_PATHS = {
