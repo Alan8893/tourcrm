@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.api.deps import CurrentPrincipal, get_current_principal
+from app.authentication.rate_limit import RateLimitExceeded, get_rate_limiter
 from app.authentication.tokens import hash_token
 from app.db.audit import AuditLog
 from app.db.authentication import PasswordResetChallenge
@@ -664,3 +665,141 @@ def test_account_endpoints_404_for_nonexistent_person(client: TestClient) -> Non
 
     response = client.get(f"/api/v1/persons/{uuid.uuid4()}/account")
     assert response.status_code == 404, response.text
+
+
+# --- Rate limiting (follow-up to PR #149 review) -----------------------------
+#
+# Both admin mutation endpoints depend on the same
+# app.authentication.rate_limit.RateLimiter seam the self-service
+# `/auth/password-reset/request` endpoint already uses (auth-api.md §18 /
+# ADR-0038 §8) — no new limiter, no new security service.
+
+
+class _AlwaysExceededRateLimiter:
+    def check(self, key: str) -> None:
+        raise RateLimitExceeded()
+
+
+class _RecordingRateLimiter:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def check(self, key: str) -> None:
+        self.calls.append(key)
+
+
+@requires_postgres
+def test_create_account_is_rejected_when_rate_limited_before_provisioning(
+    client: TestClient,
+) -> None:
+    club_id, admin_id, target_person_id = _setup_admin_and_target(
+        target_email="limited@example.com"
+    )
+    _authenticate_as(admin_id)
+    app.dependency_overrides[get_rate_limiter] = lambda: _AlwaysExceededRateLimiter()
+
+    response = client.post(
+        f"/api/v1/persons/{target_person_id}/account", headers=_csrf_headers(client)
+    )
+    assert response.status_code == 429, response.text
+    assert response.json()["error"]["code"] == "too_many_requests"
+
+    # The rate limit fired before app.authentication.account_provisioning.
+    # create_user_for_person ever ran — no User was created.
+    with session_scope() as session:
+        created_user = session.execute(
+            select(User).where(User.person_id == target_person_id)
+        ).scalar_one_or_none()
+        assert created_user is None
+
+
+@requires_postgres
+def test_admin_password_reset_is_rejected_when_rate_limited_before_provisioning(
+    client: TestClient,
+) -> None:
+    club_id, admin_id, target_person_id = _setup_admin_and_target(
+        target_email="limited2@example.com", target_has_user=True
+    )
+    with session_scope() as session:
+        challenge_count_before = len(
+            session.execute(
+                select(PasswordResetChallenge.id).where(
+                    PasswordResetChallenge.user_id
+                    == session.execute(
+                        select(User.id).where(User.person_id == target_person_id)
+                    ).scalar_one()
+                )
+            ).all()
+        )
+    _authenticate_as(admin_id)
+    app.dependency_overrides[get_rate_limiter] = lambda: _AlwaysExceededRateLimiter()
+
+    response = client.post(
+        f"/api/v1/persons/{target_person_id}/account/password-reset",
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 429, response.text
+    assert response.json()["error"]["code"] == "too_many_requests"
+
+    # No new challenge was issued — admin_reset_password_for_person (and
+    # therefore request_password_reset) never ran.
+    with session_scope() as session:
+        user_id = session.execute(
+            select(User.id).where(User.person_id == target_person_id)
+        ).scalar_one()
+        challenge_count_after = len(
+            session.execute(
+                select(PasswordResetChallenge.id).where(PasswordResetChallenge.user_id == user_id)
+            ).all()
+        )
+        assert challenge_count_after == challenge_count_before
+
+
+@requires_postgres
+def test_create_account_still_succeeds_within_the_rate_limit(client: TestClient) -> None:
+    club_id, admin_id, target_person_id = _setup_admin_and_target(
+        target_email="allowed@example.com"
+    )
+    _authenticate_as(admin_id)
+    recorder = _RecordingRateLimiter()
+    app.dependency_overrides[get_rate_limiter] = lambda: recorder
+
+    response = client.post(
+        f"/api/v1/persons/{target_person_id}/account", headers=_csrf_headers(client)
+    )
+    assert response.status_code == 201, response.text
+    assert recorder.calls == [f"account-create:{target_person_id}"]
+
+
+@requires_postgres
+def test_admin_password_reset_still_succeeds_within_the_rate_limit(client: TestClient) -> None:
+    club_id, admin_id, target_person_id = _setup_admin_and_target(
+        target_email="allowed2@example.com", target_has_user=True
+    )
+    _authenticate_as(admin_id)
+    recorder = _RecordingRateLimiter()
+    app.dependency_overrides[get_rate_limiter] = lambda: recorder
+
+    response = client.post(
+        f"/api/v1/persons/{target_person_id}/account/password-reset",
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 200, response.text
+    assert recorder.calls == [f"account-password-reset:{target_person_id}"]
+
+
+@requires_postgres
+def test_self_service_password_reset_request_is_unaffected(client: TestClient) -> None:
+    """The existing self-service flow (a completely separate endpoint,
+    with its own independent rate-limit key) must keep working exactly
+    as before this follow-up — it is untouched by this change."""
+    club_id, admin_id, target_person_id = _setup_admin_and_target(
+        target_email="unaffected@example.com", target_has_user=True
+    )
+    app.dependency_overrides.clear()
+
+    response = client.post(
+        "/api/v1/auth/password-reset/request",
+        json={"identifier": "unaffected@example.com"},
+    )
+    assert response.status_code == 200, response.text

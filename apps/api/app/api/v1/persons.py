@@ -70,6 +70,7 @@ from app.api.v1.role_assignments_schemas import (
     PersonRoleAssignmentOut,
 )
 from app.authentication import account_provisioning
+from app.authentication.rate_limit import RateLimiter, RateLimitExceeded, get_rate_limiter
 from app.authorization.context import ResourceContext
 from app.authorization.service import AuthorizationDenied, Authorizer
 from app.db.authorization import UserRoleAssignment
@@ -589,6 +590,24 @@ _ACCOUNT_NOT_FOUND_CODE = "account_not_found"
 _ACCOUNT_NOT_FOUND_MESSAGE = "Account not found"
 
 
+def _apply_rate_limit(limiter: RateLimiter, key: str) -> None:
+    """Mirrors app.api.v1.auth._apply_rate_limit exactly (duplicated
+    rather than imported across router modules, per this codebase's own
+    convention) — auth-api.md §18 / ADR-0038 §8 require rate limiting for
+    these admin account-provisioning/reset operations, the same posture
+    already applied to the self-service `/auth/password-reset/request`
+    endpoint that calls the identical underlying
+    app.authentication.service.request_password_reset."""
+    try:
+        limiter.check(key)
+    except RateLimitExceeded as exc:
+        raise APIError(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "too_many_requests",
+            "Too many requests, please try again later",
+        ) from exc
+
+
 def _person_account_out(user: User) -> PersonAccountOut:
     return PersonAccountOut(
         id=user.id,
@@ -639,12 +658,14 @@ def create_person_account(
     principal: CurrentPrincipal = Depends(require_authenticated_principal),
     db: Session = Depends(get_db),
     _csrf: None = Depends(require_csrf_token),
+    limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> PersonAccountCredentialOut:
     """Create a User for `person_id` and issue a one-time first-access
     setup challenge (ADR-0038 §2). Accepts no request body: `person_id`
     is the path, `login_identifier` is always `Person.email`, and no
     password/role/club_id is ever accepted from the client.
     """
+    _apply_rate_limit(limiter, f"account-create:{person_id}")
     if db.get(Person, person_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
     _check_account_manage(db, user_id=principal.user_id)
@@ -676,11 +697,13 @@ def reset_person_account_password(
     principal: CurrentPrincipal = Depends(require_authenticated_principal),
     db: Session = Depends(get_db),
     _csrf: None = Depends(require_csrf_token),
+    limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> PersonAccountCredentialOut:
     """Issue a fresh one-time reset challenge for `person_id`'s existing
     User (ADR-0038 §7) — never sets a password directly, never creates a
     User. Use `POST .../account` first if `person_id` has no User yet.
     """
+    _apply_rate_limit(limiter, f"account-password-reset:{person_id}")
     if db.get(Person, person_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
     _check_account_manage(db, user_id=principal.user_id)
