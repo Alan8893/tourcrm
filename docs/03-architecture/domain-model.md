@@ -74,7 +74,7 @@ TourCRM разделяет четыре понятия:
 
 - id;
 - person_id;
-- login/email/identifier;
+- login/email/identifier (nullable only for the canonical login-less pending-stub created when a Person has no email);
 - password credential metadata;
 - status;
 - email_verified_at;
@@ -83,6 +83,8 @@ TourCRM разделяет четыре понятия:
 - updated_at.
 
 Пароли в открытом виде никогда не хранятся.
+
+Для поддерживаемых participant-creation/import flows User создаётся вместе с Person: при наличии email — `active` с `login_identifier`; без email — `pending` с `login_identifier = NULL` и без password credential. Такой pending-stub не может выполнять вход до явной активации через account-management flow.
 
 ## 6. ClubMembership
 
