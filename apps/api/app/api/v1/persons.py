@@ -98,10 +98,12 @@ from app.db.identity import Person, User
 from app.db.session import get_db
 from app.documents.queries import get_document_for_person, list_current_documents_for_person
 from app.documents.service import (
+    AlreadyRevokedError,
     NotCurrentVersionError,
     create_document,
     read_document_content,
     replace_document,
+    revoke_document,
 )
 from app.groups import service as groups_service
 from app.groups.queries import GROUP_MEMBERSHIP_DEFAULT_SORT, list_person_group_memberships_page
@@ -930,6 +932,55 @@ def replace_person_document(
             status.HTTP_404_NOT_FOUND, _DOCUMENT_NOT_FOUND_CODE, _DOCUMENT_NOT_FOUND_DETAIL
         ) from exc
     return _document_out(new_document)
+
+
+@router.post("/{person_id}/documents/{document_id}/revoke", response_model=DocumentOut)
+def revoke_person_document(
+    person_id: uuid.UUID,
+    document_id: uuid.UUID,
+    request: Request,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> DocumentOut:
+    """Revoke `document_id`'s current version in place (people-api.md
+    §32) — `document.manage`; `person.read`/`document.read` alone are
+    never sufficient (ADR-0040 §6). No request body: the mutation is a
+    fixed `status -> revoked` transition, nothing is accepted from the
+    client. `File`/`file_id`/`document_group_id`/`version_number` are
+    never changed and `FileStorage` is never called (Issue #168 §mutation).
+
+    Only the current version of its `document_group_id` may be revoked
+    (ADR-0040 §4); a historical version, like a nonexistent one, receives
+    the same existence-hiding 404 as `get_person_document`/
+    `replace_person_document`. An already-revoked current version is
+    rejected with 409, mirroring `POST /guardian-relationships/{id}/
+    terminate`'s identical already-terminal precedent (ADR-0025 §3).
+    """
+    _get_authorized_person_or_404(
+        db, person_id=person_id, user_id=principal.user_id, permission_code="document.manage"
+    )
+
+    document = get_document_for_person(db, person_id=person_id, document_id=document_id)
+    if document is None:
+        raise APIError(
+            status.HTTP_404_NOT_FOUND, _DOCUMENT_NOT_FOUND_CODE, _DOCUMENT_NOT_FOUND_DETAIL
+        )
+
+    try:
+        document = revoke_document(
+            db,
+            document=document,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
+        )
+    except NotCurrentVersionError as exc:
+        raise APIError(
+            status.HTTP_404_NOT_FOUND, _DOCUMENT_NOT_FOUND_CODE, _DOCUMENT_NOT_FOUND_DETAIL
+        ) from exc
+    except AlreadyRevokedError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "document_already_revoked", str(exc)) from exc
+    return _document_out(document)
 
 
 # --- Person role assignments (TH-0112 / ADR-0039) --------------------------
