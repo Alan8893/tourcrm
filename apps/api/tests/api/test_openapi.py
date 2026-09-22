@@ -81,6 +81,9 @@ _EVENT_PATHS = {
     # EventDocumentRequirement records themselves (list/create/update/delete).
     "/api/v1/events/{event_id}/document-requirements",
     "/api/v1/events/{event_id}/document-requirements/{requirement_id}",
+    # TH-0117.9 / Issue #172, ADR-0040 §5/§6/§7, events-api.md §31.5: the
+    # synchronous competition document package export.
+    "/api/v1/events/{event_id}/document-package",
 }
 
 _PERSON_PATHS = {
