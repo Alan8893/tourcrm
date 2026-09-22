@@ -547,7 +547,30 @@ ADR-0025 §5: самостоятельная регистрация — отде
 
 ### POST `/api/v1/memberships/imports`
 
-Создаёт import job для загрузки участников из согласованного формата.
+Создаёт import job для загрузки участников из согласованных форматов CSV/XLSX.
+
+Импорт является отдельным административным workflow:
+
+```text
+upload
+→ parse
+→ validate
+→ preview
+→ approve
+→ apply
+→ report
+```
+
+Upload не применяет изменения автоматически. До `apply` пользователь должен получить результат предварительной валидации и явно подтвердить применение.
+
+При применении import batch создаются/обновляются согласованные доменные записи участника. Для нового участника User создаётся всегда:
+
+- email есть → `User.status = active`, `login_identifier = normalized(email)`;
+- email нет → `User.status = pending`, `login_identifier = NULL`, без password credential и без first-access credential.
+
+Фиктивные login/email значения для строк без email запрещены.
+
+Импорт может создавать предусмотренные импортом связи `RoleAssignment`, `GroupMembership` и `GuardianRelationship`. Один guardian может быть связан с несколькими детьми. Точные mapping/column rules являются частью отдельного implementation contract и не могут быть придуманы frontend'ом.
 
 Import должен быть асинхронным, если размер превышает синхронный лимит.
 
@@ -559,7 +582,27 @@ Import должен быть асинхронным, если размер пр�
 
 Возвращает строки/ошибки импорта без раскрытия чужих конфиденциальных данных сверх прав requester.
 
-Import должен поддерживать dry-run до применения изменений.
+### Import security and audit
+
+Import execution requires administrative authorization and is audited. Preview/dry-run does not create the final participant changes.
+
+Import must preserve the duplicate-detection and fail-closed rules defined in `docs/04-modules/people-and-membership.md §11`.
+
+## 22.1 Participant export
+
+Participant export is a separate operational workflow from import.
+
+Product-supported output modes for participant lists are:
+
+- Excel — editable working list;
+- PDF — distribution/print-ready list;
+- print — direct printable representation.
+
+Primary scenarios are school-trip/competition lists and instructor/club-leader working lists.
+
+Ordinary participant/group export must not include medical documents or sensitive document binaries. The protected TH-0117 competition-document package is a separate workflow and permission path.
+
+The exact export endpoint, columns, filters, permissions, and UI are defined by a dedicated implementation contract; no frontend may invent a parallel export API.
 
 ## 23. Invitation
 
