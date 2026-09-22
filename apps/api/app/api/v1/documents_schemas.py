@@ -16,13 +16,20 @@ carry only the derived, operational information ADR-0040 §5/events-api.md
 `valid`/`missing`/`expired` result — never a `file_id`, `document_id`, or
 any other Document/File-internal reference (Issue #162 §6: no unnecessary
 metadata beyond what the check itself produces).
+
+`EventDocumentRequirementOut`/`*CreateRequest`/`*UpdateRequest`
+(TH-0117.5 / Issue #164) mirror the persisted `EventDocumentRequirement`
+field set exactly (`id`, `event_id`, `document_type`, `required`,
+events-api.md §31.1) — again no Document/File/storage detail of any
+kind, since this entity never references one directly (ADR-0040 §5:
+Document remains not directly coupled to Event).
 """
 
 from datetime import datetime
 from typing import Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DocumentOut(BaseModel):
@@ -53,3 +60,23 @@ class EventDocumentRequirementCheckListOut(BaseModel):
     event_id: UUID
     person_id: UUID
     requirements: list[EventDocumentRequirementCheckOut]
+
+
+class EventDocumentRequirementOut(BaseModel):
+    id: UUID
+    event_id: UUID
+    document_type: str
+    required: bool
+
+
+class EventDocumentRequirementCreateRequest(BaseModel):
+    document_type: str = Field(min_length=1, max_length=64)
+    required: bool
+
+
+class EventDocumentRequirementUpdateRequest(BaseModel):
+    """PATCH may change only `required` — `document_type` is immutable
+    (events-api.md §31.1); changing it means DELETE the existing
+    requirement and POST a new one, never a second mutation model."""
+
+    required: bool
