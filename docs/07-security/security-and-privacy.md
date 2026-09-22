@@ -194,7 +194,7 @@ TourCRM должен архитектурно поддерживать допо�
 
 ### 10.1 Document domain (ADR-0040, TH-0117 — planned)
 
-The following is the security baseline for the participant-document domain fixed by ADR-0040 (TH-0117.0). It is documentation-only: no `File`/`Document` implementation exists in code yet — see `docs/03-architecture/adr/ADR-0040-document-domain-and-file-storage.md` for the full contract.
+The following is the security baseline for the participant-document domain fixed by ADR-0040 (TH-0117.0). The TH-0117 backend implementation is now present through the competition-package export slice; the rules below remain the canonical security contract.
 
 - Private storage only, outside any public web root — the general rule above, restated as a hard requirement for `File`.
 - `storage_key` is never a public, guessable, or directly browsable URL. It is never returned to a client as an access mechanism; all content access goes through an authorized application endpoint.
