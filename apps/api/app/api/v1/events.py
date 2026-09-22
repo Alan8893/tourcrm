@@ -58,6 +58,10 @@ from app.api.deps import (
 from app.api.errors import APIError
 from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
+from app.api.v1.documents_schemas import (
+    EventDocumentRequirementCheckListOut,
+    EventDocumentRequirementCheckOut,
+)
 from app.api.v1.events_schemas import (
     AttendanceBulkMarkOut,
     AttendanceBulkMarkRequest,
@@ -84,8 +88,9 @@ from app.authorization.service import Authorizer
 from app.db.attendance import Attendance
 from app.db.event_recurrence import EventOccurrence
 from app.db.events import Event, EventParticipation
-from app.db.identity import Club
+from app.db.identity import Club, Person
 from app.db.session import get_db
+from app.documents.event_requirements import check_person_document_requirements
 from app.events import attendance
 from app.events import crud as events_crud
 from app.events import participation as event_participation
@@ -118,6 +123,7 @@ from app.events.service import (
     EventStaffAssignmentPrimaryConflictError,
     EventStaffUserNotFoundError,
 )
+from app.people.authorization import is_person_visible
 
 logger = logging.getLogger("tourcrm.api")
 
@@ -940,4 +946,72 @@ def correct_attendance(
         reason=payload.reason,
         actor_user_id=principal.user_id,
         corrected_at=row.updated_at,
+    )
+
+
+# --- Event document requirements check (TH-0117.4 / Issue #162, ADR-0040 §5) -
+#
+# Read-only: a computed result, never a persisted row (ADR-0040 §5). Two
+# independent authorizations are required, per events-api.md §31's own
+# rule ("An Event permission is necessary to see the Event itself, but
+# not sufficient to see participant document content... derived from
+# it"): `event.read` on the Event (via the same `_get_authorized_event_
+# or_404` every other single-Event endpoint already uses) AND
+# `document.read` on the Person (via `is_person_visible`, the same
+# generic Person-scope engine app.api.v1.persons reuses for the
+# Participant Document API — never `person.read`). Both checks
+# existence-hide identically (404) on denial; there is no `document.
+# export` requirement (this is a single-participant check, not an
+# export/package).
+
+_PERSON_NOT_FOUND_DETAIL = "Person not found"
+
+
+def _get_authorized_person_for_document_check_or_404(
+    db: Session, *, person_id: uuid.UUID, user_id: uuid.UUID
+) -> Person:
+    person = db.get(Person, person_id)
+    if person is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_PERSON_NOT_FOUND_DETAIL)
+    if not is_person_visible(
+        db, person_id=person.id, user_id=user_id, permission_code="document.read"
+    ):
+        # Deliberately the same detail/status as "does not exist" above.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_PERSON_NOT_FOUND_DETAIL)
+    return person
+
+
+@router.get(
+    "/{event_id}/document-requirements/{person_id}",
+    response_model=EventDocumentRequirementCheckListOut,
+)
+def get_event_document_requirements_for_person(
+    event_id: uuid.UUID,
+    person_id: uuid.UUID,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+) -> EventDocumentRequirementCheckListOut:
+    """For every `EventDocumentRequirement` declared on `event_id`,
+    compute `person_id`'s `valid`/`missing`/`expired` result (ADR-0040
+    §5). Never returns binary content, `storage_key`, a filesystem path,
+    `storage_backend`, or any other File/FileStorage internal — the
+    response carries only `document_type`/`required`/`result`.
+    """
+    event = _get_authorized_event_or_404(
+        db, event_id=event_id, user_id=principal.user_id, permission_code="event.read"
+    )
+    _get_authorized_person_for_document_check_or_404(
+        db, person_id=person_id, user_id=principal.user_id
+    )
+
+    checks = check_person_document_requirements(db, event_id=event.id, person_id=person_id)
+    return EventDocumentRequirementCheckListOut(
+        event_id=event.id,
+        person_id=person_id,
+        requirements=[
+            EventDocumentRequirementCheckOut(
+                document_type=check.document_type, required=check.required, result=check.result
+            )
+            for check in checks
+        ],
     )

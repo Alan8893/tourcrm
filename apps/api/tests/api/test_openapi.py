@@ -74,6 +74,9 @@ _EVENT_PATHS = {
     "/api/v1/events/{event_id}/attendance/{person_id}/corrections",
     # TH-0108.2 / ADR-0037: participant self-registration/withdrawal.
     "/api/v1/events/{event_id}/participation",
+    # TH-0117.4 / Issue #162, ADR-0040 §5: read-only participant Document
+    # requirement check (valid/missing/expired) for one Event/Person pair.
+    "/api/v1/events/{event_id}/document-requirements/{person_id}",
 }
 
 _PERSON_PATHS = {
