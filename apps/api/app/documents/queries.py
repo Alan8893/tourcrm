@@ -100,6 +100,22 @@ def list_current_documents_for_person_by_type(
     return list(session.execute(stmt).scalars().all())
 
 
+def get_current_document_version(session: Session, *, document_group_id: uuid.UUID) -> Document:
+    """The row with `MAX(version_number)` for `document_group_id`
+    (ADR-0040 §4) — used by `app.documents.service.replace_document` to
+    determine whether a given Document is still the current version of
+    its group before replacing it. Assumes at least one version already
+    exists for `document_group_id`; callers only ever reach this with an
+    already-loaded Document belonging to that group.
+    """
+    return session.execute(
+        sa.select(Document)
+        .where(Document.document_group_id == document_group_id)
+        .order_by(Document.version_number.desc())
+        .limit(1)
+    ).scalar_one()
+
+
 def get_document_for_person(
     session: Session, *, person_id: uuid.UUID, document_id: uuid.UUID
 ) -> Document | None:
@@ -116,5 +132,6 @@ def get_document_for_person(
 __all__ = [
     "list_current_documents_for_person",
     "list_current_documents_for_person_by_type",
+    "get_current_document_version",
     "get_document_for_person",
 ]
