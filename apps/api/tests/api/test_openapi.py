@@ -110,7 +110,7 @@ _PERSON_PATHS = {
 _DOCUMENT_PATHS = {
     # TH-0117.3 / Issue #160, ADR-0040: participant Document API
     # foundation. Nested-only — no flat `/documents/{id}` resource in this
-    # slice. No revoke/EventDocumentRequirement endpoints
+    # slice. No EventDocumentRequirement endpoints here
     # (people-api.md §32, Issue #160 §11).
     "/api/v1/persons/{person_id}/documents",
     "/api/v1/persons/{person_id}/documents/{document_id}",
@@ -118,6 +118,9 @@ _DOCUMENT_PATHS = {
     # TH-0117.6 / Issue #166, ADR-0040 §4: participant Document
     # replacement / new version.
     "/api/v1/persons/{person_id}/documents/{document_id}/replace",
+    # TH-0117.7 / Issue #168, ADR-0040 §4: participant Document
+    # revocation.
+    "/api/v1/persons/{person_id}/documents/{document_id}/revoke",
 }
 
 _MEMBERSHIP_PATHS = {

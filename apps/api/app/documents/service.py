@@ -1,5 +1,6 @@
-"""Create, replace, and read participant Documents + their Files
-(TH-0117.3 / Issue #160; TH-0117.6 / Issue #166 adds `replace_document`).
+"""Create, replace, revoke, and read participant Documents + their Files
+(TH-0117.3 / Issue #160; TH-0117.6 / Issue #166 adds `replace_document`;
+TH-0117.7 / Issue #168 adds `revoke_document`).
 
 Canonical sources: ADR-0040 §1/§3/§4/§7, docs/05-api/people-api.md §32.
 
@@ -42,12 +43,20 @@ database work fails — needs cleanup, and it is bounded to a single
 `uq_documents_group_id_version_number` concurrency backstop documented
 on `NotCurrentVersionError` below — no new locking or transaction
 architecture is introduced for it.
+
+`revoke_document` never touches `FileStorage` at all (ADR-0040 §4: revoke
+is a Document lifecycle mutation in place, not a storage operation) and
+has no orphaned-binary case to clean up. Its own concurrency backstop —
+combining the current-version check and the write into a single atomic
+UPDATE rather than `replace_document`'s separate check-then-insert — is
+documented on `revoke_document` itself.
 """
 
 import hashlib
 import uuid
 from datetime import datetime
 
+import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -57,28 +66,44 @@ from app.documents.queries import get_current_document_version
 from app.storage.file_storage import FileStorage, FileStorageError
 
 _INITIAL_DOCUMENT_STATUS = "active"
+_REVOKED_DOCUMENT_STATUS = "revoked"
 _VERSION_UNIQUE_CONSTRAINT = "uq_documents_group_id_version_number"
 
 
-class DocumentReplacementError(Exception):
-    """Base class for this module's typed, expected failures."""
+class DocumentLifecycleError(Exception):
+    """Base class for this module's typed, expected failures — shared by
+    `replace_document` and `revoke_document` (both are Document lifecycle
+    mutations, ADR-0040 §4)."""
 
 
-class NotCurrentVersionError(DocumentReplacementError):
+class NotCurrentVersionError(DocumentLifecycleError):
     """`document` is not the current version of its `document_group_id`
-    (ADR-0040 §4) — replacement is only ever allowed on the current
-    version (Issue #166 §3). Also raised when a concurrent replacement
-    wins the race and creates a newer version between this call's
-    initial check and its write (Issue #166 §8, caught via the
-    `uq_documents_group_id_version_number` constraint): from the
-    caller's perspective the two cases are indistinguishable — by the
-    time the write was attempted, `document` was not the current
-    version — so both map to the same typed error and the same
-    existence-hiding response at the API layer.
+    (ADR-0040 §4) — both replacement and revocation are only ever allowed
+    on the current version (Issue #166 §3, Issue #168 §current-version
+    rule). Also raised when a concurrent mutation wins the race and
+    creates a newer version between this call's initial check and its
+    write: from the caller's perspective the two cases are
+    indistinguishable — by the time the write was attempted, `document`
+    was not the current version — so both map to the same typed error and
+    the same existence-hiding response at the API layer.
     """
 
     def __init__(self, *, document_id: uuid.UUID) -> None:
         super().__init__(f"Document {document_id} is not the current version of its group")
+        self.document_id = document_id
+
+
+class AlreadyRevokedError(DocumentLifecycleError):
+    """`document`'s current version is already `revoked` — mirrors
+    `app.people.guardian_service.terminate_guardian_relationship`'s own
+    already-terminal precedent (ADR-0025 §3), the same precedent ADR-0040
+    §4 itself cites for Document `revoked`: `revoked` is a terminal
+    stored state, so revoking it again is rejected rather than silently
+    treated as a no-op success.
+    """
+
+    def __init__(self, *, document_id: uuid.UUID) -> None:
+        super().__init__(f"Document {document_id} is already revoked")
         self.document_id = document_id
 
 
@@ -281,6 +306,88 @@ def replace_document(
     return new_document
 
 
+def revoke_document(
+    session: Session,
+    *,
+    document: Document,
+    actor_user_id: uuid.UUID,
+    request_id: str | None = None,
+) -> Document:
+    """Revoke the current version of `document`'s logical document group
+    in place (ADR-0040 §4): sets `status = 'revoked'` on that one row.
+    `Document.id`/`file_id`/`document_group_id`/`version_number` are all
+    left unchanged, no new Document version or File is created, and
+    `FileStorage` is never called — revoke is strictly a Document
+    lifecycle mutation, not a storage operation.
+
+    The current-version check and the write are combined into a single
+    atomic `UPDATE ... WHERE version_number = (SELECT MAX(...))` rather
+    than `replace_document`'s separate check-then-insert (Issue #168
+    §concurrency): a plain check-then-write here would leave a window in
+    which a concurrent `replace_document` call creates a newer version
+    between this call's check and its write, letting a stale check
+    authorize revoking a document that is no longer current by the time
+    the write actually happens. Combining them into one statement means
+    the "is `document` still current" condition is re-evaluated against a
+    fresh snapshot at write time, so the UPDATE can only ever succeed
+    against whatever version is genuinely current at that instant — this
+    reuses the same `MAX(version_number)` current-version definition
+    `get_current_document_version` already expresses (no new locking
+    architecture), made atomic with its own write via a single statement
+    instead of a separate read.
+
+    Raises `NotCurrentVersionError`, mutating nothing, if `document` is
+    not the current version of its group (including the checked-then-
+    write race above) — a historical version can never be revoked
+    (ADR-0040 §4), the same rule `replace_document` enforces for
+    replacement. Raises `AlreadyRevokedError`, also mutating nothing, if
+    the current version's stored status is already `revoked`.
+    """
+    current_version_number = (
+        sa.select(sa.func.max(Document.version_number))
+        .where(Document.document_group_id == document.document_group_id)
+        .scalar_subquery()
+    )
+    result = session.execute(
+        sa.update(Document)
+        .where(
+            Document.id == document.id,
+            Document.version_number == current_version_number,
+            Document.status != _REVOKED_DOCUMENT_STATUS,
+        )
+        .values(status=_REVOKED_DOCUMENT_STATUS, updated_at=sa.func.now())
+    )
+    if result.rowcount == 0:
+        current = get_current_document_version(
+            session, document_group_id=document.document_group_id
+        )
+        if current.id != document.id:
+            raise NotCurrentVersionError(document_id=document.id)
+        raise AlreadyRevokedError(document_id=document.id)
+
+    session.refresh(document)
+    try:
+        record_audit_event(
+            session,
+            action="document.revoked",
+            actor_type="user",
+            actor_user_id=actor_user_id,
+            resource_type="document",
+            resource_id=document.id,
+            outcome="success",
+            request_id=request_id,
+            # Never storage_key/filesystem path/binary/medical content
+            # (Issue #168 §audit) — only correlation identifiers already
+            # visible to an authorized document.read/manage caller anyway.
+            details={"document_type": document.document_type, "file_id": str(document.file_id)},
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return document
+
+
 def read_document_content(
     session: Session,
     storage: FileStorage,
@@ -320,9 +427,11 @@ def read_document_content(
 
 
 __all__ = [
-    "DocumentReplacementError",
+    "DocumentLifecycleError",
     "NotCurrentVersionError",
+    "AlreadyRevokedError",
     "create_document",
     "replace_document",
+    "revoke_document",
     "read_document_content",
 ]
