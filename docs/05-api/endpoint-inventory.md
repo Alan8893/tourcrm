@@ -339,7 +339,14 @@ The generic list below predates ADR-0040 and remains an unresolved, broader aspi
 
 **PLANNED — nothing here is implemented.** The concrete, narrower canonical contract for TH-0117's participant documents (medical certificates and similar Person-owned documents), superseding the generic sketch above for this specific case (ADR-0040 §1/§2). Full concept-level API description: `docs/05-api/people-api.md` §32.
 
-- `GET /persons/{person_id}/documents` (planned)
+- `GET /persons/{person_id}/documents` (implemented, TH-0117.3)
+- `POST /persons/{person_id}/documents` (implemented, TH-0117.3)
+- `GET /persons/{person_id}/documents/{document_id}` (implemented, TH-0117.3)
+- `GET /persons/{person_id}/documents/{document_id}/download` (implemented, TH-0117.3)
+- `POST /persons/{person_id}/documents/{document_id}/replace` (implemented, TH-0117.6)
+- `POST /persons/{person_id}/documents/{document_id}/revoke` (implemented, TH-0117.7)
+- `PATCH /persons/{person_id}/documents/{document_id}` (implemented, TH-0117.8)
+- `POST /events/{event_id}/document-package` (planned, TH-0117.9)
 - `POST /persons/{person_id}/documents` (planned)
 - `GET /persons/{person_id}/documents/{document_id}` (planned)
 - `GET /persons/{person_id}/documents/{document_id}/download` (planned)
