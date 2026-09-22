@@ -15,6 +15,7 @@ Every implementation feature must be traceable through this chain where the arti
 | Domain | Primary requirements | Domain contract | Data contract | API contract | UX contract | Main Epic |
 |---|---|---|---|---|---|---|
 | Identity | FR-AUTH, FR-USER | People & Membership | Database schema | Auth + People API | UX | EPIC-01 |
+| Profile Avatar | TH-0119 | Person identity/profile | `Person.photo_file_id` + FileStorage | Profile Photo API | Avatar Photo UX | EPIC-01 |
 | Guardians | FR-GUARD | People & Membership | Database schema | People API | UX | EPIC-01 |
 | Groups | FR-GROUP | People & Membership | Database schema | People API | UX | EPIC-01 |
 | Events | FR-EVENT | Events & Schedule | Database schema | Events API | UX | EPIC-02 |
