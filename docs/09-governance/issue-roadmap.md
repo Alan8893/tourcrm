@@ -51,6 +51,7 @@ Candidate Issues:
 - guardian relationships;
 - groups and group history;
 - participant profile;
+- profile photo upload/replacement/deletion and Avatar crop (TH-0119);
 - audit events for identity changes;
 - import participants.
 
