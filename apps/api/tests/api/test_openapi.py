@@ -113,6 +113,9 @@ _DOCUMENT_PATHS = {
     # slice. No EventDocumentRequirement endpoints here
     # (people-api.md §32, Issue #160 §11).
     "/api/v1/persons/{person_id}/documents",
+    # Also carries PATCH (TH-0117.8 / Issue #170, ADR-0040 §4/§7):
+    # non-file metadata correction of the current version, in place —
+    # the path string itself is unchanged, only its method set grows.
     "/api/v1/persons/{person_id}/documents/{document_id}",
     "/api/v1/persons/{person_id}/documents/{document_id}/download",
     # TH-0117.6 / Issue #166, ADR-0040 §4: participant Document
@@ -215,6 +218,36 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()
+
+
+def test_document_metadata_patch_endpoint_and_schemas_are_exact(real_client) -> None:
+    """TH-0117.8 / Issue #170: the PATCH method on the existing
+    `/persons/{person_id}/documents/{document_id}` path, its request
+    body schema (`DocumentMetadataUpdateRequest` — only `issued_at`/
+    `expires_at`), and its 200 response schema (the existing
+    `DocumentOut`, shared with the GET on the same path)."""
+    schema = real_client.get("/openapi.json").json()
+    path_item = schema["paths"]["/api/v1/persons/{person_id}/documents/{document_id}"]
+
+    assert "patch" in path_item
+    patch_operation = path_item["patch"]
+
+    request_schema_ref = patch_operation["requestBody"]["content"]["application/json"]["schema"][
+        "$ref"
+    ]
+    request_schema_name = request_schema_ref.rsplit("/", 1)[-1]
+    request_schema = schema["components"]["schemas"][request_schema_name]
+    assert set(request_schema.get("properties", {})) == {"issued_at", "expires_at"}
+
+    response_schema_ref = patch_operation["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ]["$ref"]
+    assert response_schema_ref.rsplit("/", 1)[-1] == "DocumentOut"
+
+    get_response_schema_ref = path_item["get"]["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ]["$ref"]
+    assert get_response_schema_ref == response_schema_ref
 
 
 def test_swagger_ui_is_served(real_client) -> None:

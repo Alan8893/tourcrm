@@ -72,7 +72,7 @@ from app.api.errors import APIError
 from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.account_schemas import PersonAccountCredentialOut, PersonAccountOut
-from app.api.v1.documents_schemas import DocumentOut
+from app.api.v1.documents_schemas import DocumentMetadataUpdateRequest, DocumentOut
 from app.api.v1.groups_schemas import GroupMembershipOut
 from app.api.v1.guardian_relationships import guardian_relationship_out
 from app.api.v1.guardian_relationships_schemas import (
@@ -99,11 +99,13 @@ from app.db.session import get_db
 from app.documents.queries import get_document_for_person, list_current_documents_for_person
 from app.documents.service import (
     AlreadyRevokedError,
+    InvalidDocumentDatesError,
     NotCurrentVersionError,
     create_document,
     read_document_content,
     replace_document,
     revoke_document,
+    update_document_metadata,
 )
 from app.groups import service as groups_service
 from app.groups.queries import GROUP_MEMBERSHIP_DEFAULT_SORT, list_person_group_memberships_page
@@ -803,6 +805,71 @@ def get_person_document(
         raise APIError(
             status.HTTP_404_NOT_FOUND, _DOCUMENT_NOT_FOUND_CODE, _DOCUMENT_NOT_FOUND_DETAIL
         )
+    return _document_out(document)
+
+
+@router.patch("/{person_id}/documents/{document_id}", response_model=DocumentOut)
+def update_person_document_metadata(
+    person_id: uuid.UUID,
+    document_id: uuid.UUID,
+    payload: DocumentMetadataUpdateRequest,
+    request: Request,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> DocumentOut:
+    """Correct non-file metadata (`issued_at`/`expires_at`) of
+    `document_id`'s current version in place (people-api.md §32) —
+    `document.manage`; `person.read`/`document.read` alone are never
+    sufficient (ADR-0040 §6). No file upload, no new version, no new
+    File, and `FileStorage` is never called (Issue #170 §mutation) —
+    `document_type`/`person_id`/`document_group_id`/`version_number`/
+    `status`/`file_id` are never accepted or changed by this endpoint.
+
+    Only fields actually present in the request body are applied
+    (`exclude_unset=True`, Issue #170 §request): a PATCH with neither
+    field present is rejected as invalid, distinct from a PATCH that
+    explicitly sets a field to `null`.
+
+    Only the current version of its `document_group_id` may be updated
+    (ADR-0040 §4); a historical version, like a nonexistent one,
+    receives the same existence-hiding 404 as `get_person_document`/
+    `replace_person_document`/`revoke_person_document`.
+    """
+    _get_authorized_person_or_404(
+        db, person_id=person_id, user_id=principal.user_id, permission_code="document.manage"
+    )
+
+    document = get_document_for_person(db, person_id=person_id, document_id=document_id)
+    if document is None:
+        raise APIError(
+            status.HTTP_404_NOT_FOUND, _DOCUMENT_NOT_FOUND_CODE, _DOCUMENT_NOT_FOUND_DETAIL
+        )
+
+    fields = payload.model_dump(exclude_unset=True)
+    if not fields:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "empty_document_update",
+            "At least one of issued_at/expires_at must be supplied",
+        )
+
+    try:
+        document = update_document_metadata(
+            db,
+            document=document,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
+            **fields,
+        )
+    except NotCurrentVersionError as exc:
+        raise APIError(
+            status.HTTP_404_NOT_FOUND, _DOCUMENT_NOT_FOUND_CODE, _DOCUMENT_NOT_FOUND_DETAIL
+        ) from exc
+    except InvalidDocumentDatesError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_document_dates", str(exc)
+        ) from exc
     return _document_out(document)
 
 
