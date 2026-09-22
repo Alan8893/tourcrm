@@ -61,6 +61,9 @@ from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.documents_schemas import (
     EventDocumentRequirementCheckListOut,
     EventDocumentRequirementCheckOut,
+    EventDocumentRequirementCreateRequest,
+    EventDocumentRequirementOut,
+    EventDocumentRequirementUpdateRequest,
 )
 from app.api.v1.events_schemas import (
     AttendanceBulkMarkOut,
@@ -84,13 +87,22 @@ from app.api.v1.events_schemas import (
 )
 from app.api.v1.schedule_params import parse_schedule_range
 from app.authorization.context import ResourceContext
-from app.authorization.service import Authorizer
+from app.authorization.service import AuthorizationDenied, Authorizer
 from app.db.attendance import Attendance
+from app.db.documents import EventDocumentRequirement
 from app.db.event_recurrence import EventOccurrence
 from app.db.events import Event, EventParticipation
 from app.db.identity import Club, Person
 from app.db.session import get_db
 from app.documents.event_requirements import check_person_document_requirements
+from app.documents.requirement_management import (
+    DuplicateEventDocumentRequirementError,
+    create_event_document_requirement,
+    delete_event_document_requirement,
+    get_event_document_requirement,
+    list_event_document_requirements,
+    update_event_document_requirement,
+)
 from app.events import attendance
 from app.events import crud as events_crud
 from app.events import participation as event_participation
@@ -1015,3 +1027,191 @@ def get_event_document_requirements_for_person(
             for check in checks
         ],
     )
+
+
+# --- Event document requirements management (TH-0117.5 / Issue #164, -----
+# events-api.md §31.1/§31.2) ------------------------------------------------
+#
+# Every operation below requires BOTH the Event object authorization
+# (`event.read`/`event.manage`, via the same `_get_authorized_event_or_404`
+# every other single-Event endpoint uses) AND the dedicated Document
+# permission (`document.read`/`document.manage`) — neither is
+# individually sufficient, and `person.read` grants nothing here.
+# Unlike the per-participant check above, these four endpoints have no
+# Person in their path to anchor a `is_person_visible` check against
+# (they operate on the Event's own requirement declarations, not on any
+# specific participant's documents) — `document.read`/`document.manage`
+# is therefore checked as a plain, club-scoped permission grant via the
+# generic `Authorizer`, the same shape already used elsewhere in this
+# codebase for a flat, non-object-scoped permission (e.g. `account.
+# manage`/`role.manage` in app.api.v1.persons). A denial on either half
+# produces the same existence-hiding 404 as a nonexistent/inaccessible
+# Event — never a 403 that would disclose which half failed.
+#
+# No `record_audit_event` call: events-api.md §31.4 is explicit that no
+# dedicated audit action exists for this concept and none may be
+# invented or repurposed from `document.*` here — mirroring the
+# identical, already-shipped precedent in app.events.service (creating
+# an EventStaffAssignment/EventGroupTarget, a sibling Event-relationship
+# entity, has no audit call either).
+
+_REQUIREMENT_NOT_FOUND_DETAIL = "Event document requirement not found"
+
+
+def _require_document_permission_for_event_or_404(
+    db: Session, *, event: Event, user_id: uuid.UUID, permission_code: str
+) -> None:
+    try:
+        Authorizer(session=db, user_id=user_id, permission_code=permission_code).check(
+            ResourceContext(club_id=event.club_id)
+        )
+    except AuthorizationDenied as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL
+        ) from exc
+
+
+def _get_authorized_requirement_or_404(
+    db: Session, *, event: Event, requirement_id: uuid.UUID
+) -> EventDocumentRequirement:
+    requirement = get_event_document_requirement(
+        db, event_id=event.id, requirement_id=requirement_id
+    )
+    if requirement is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_REQUIREMENT_NOT_FOUND_DETAIL
+        )
+    return requirement
+
+
+def _requirement_out(requirement: EventDocumentRequirement) -> EventDocumentRequirementOut:
+    return EventDocumentRequirementOut(
+        id=requirement.id,
+        event_id=requirement.event_id,
+        document_type=requirement.document_type,
+        required=requirement.required,
+    )
+
+
+@router.get(
+    "/{event_id}/document-requirements",
+    response_model=CollectionResponse[EventDocumentRequirementOut],
+)
+def list_event_document_requirements_endpoint(
+    event_id: uuid.UUID,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+) -> CollectionResponse[EventDocumentRequirementOut]:
+    """`event.read` + `document.read` (events-api.md §31.2)."""
+    event = _get_authorized_event_or_404(
+        db, event_id=event_id, user_id=principal.user_id, permission_code="event.read"
+    )
+    _require_document_permission_for_event_or_404(
+        db, event=event, user_id=principal.user_id, permission_code="document.read"
+    )
+
+    rows, total = list_event_document_requirements(
+        db, event_id=event.id, page=page, page_size=page_size
+    )
+    pages = (total + page_size - 1) // page_size if total else 0
+    return CollectionResponse(
+        items=[_requirement_out(row) for row in rows],
+        pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
+    )
+
+
+@router.post(
+    "/{event_id}/document-requirements",
+    status_code=status.HTTP_201_CREATED,
+    response_model=EventDocumentRequirementOut,
+)
+def create_event_document_requirement_endpoint(
+    event_id: uuid.UUID,
+    payload: EventDocumentRequirementCreateRequest,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> EventDocumentRequirementOut:
+    """`event.manage` + `document.manage` (events-api.md §31.2).
+    `document_type` remains an open string (ADR-0040 §1) — no closed
+    vocabulary/registry is enforced beyond length. `required` is
+    persisted exactly as supplied, never inferred.
+    """
+    event = _get_authorized_event_or_404(
+        db, event_id=event_id, user_id=principal.user_id, permission_code="event.manage"
+    )
+    _require_document_permission_for_event_or_404(
+        db, event=event, user_id=principal.user_id, permission_code="document.manage"
+    )
+
+    try:
+        requirement = create_event_document_requirement(
+            db,
+            event_id=event.id,
+            document_type=payload.document_type,
+            required=payload.required,
+        )
+    except DuplicateEventDocumentRequirementError as exc:
+        raise APIError(
+            status.HTTP_409_CONFLICT, "duplicate_document_requirement", str(exc)
+        ) from exc
+    return _requirement_out(requirement)
+
+
+@router.patch(
+    "/{event_id}/document-requirements/{requirement_id}",
+    response_model=EventDocumentRequirementOut,
+)
+def update_event_document_requirement_endpoint(
+    event_id: uuid.UUID,
+    requirement_id: uuid.UUID,
+    payload: EventDocumentRequirementUpdateRequest,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> EventDocumentRequirementOut:
+    """`event.manage` + `document.manage` (events-api.md §31.2). Changes
+    only `required` — `document_type` is immutable; changing it means
+    DELETE the existing requirement and POST a new one.
+    """
+    event = _get_authorized_event_or_404(
+        db, event_id=event_id, user_id=principal.user_id, permission_code="event.manage"
+    )
+    _require_document_permission_for_event_or_404(
+        db, event=event, user_id=principal.user_id, permission_code="document.manage"
+    )
+    requirement = _get_authorized_requirement_or_404(
+        db, event=event, requirement_id=requirement_id
+    )
+
+    requirement = update_event_document_requirement(
+        db, requirement=requirement, required=payload.required
+    )
+    return _requirement_out(requirement)
+
+
+@router.delete(
+    "/{event_id}/document-requirements/{requirement_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_event_document_requirement_endpoint(
+    event_id: uuid.UUID,
+    requirement_id: uuid.UUID,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> None:
+    """`event.manage` + `document.manage` (events-api.md §31.2)."""
+    event = _get_authorized_event_or_404(
+        db, event_id=event_id, user_id=principal.user_id, permission_code="event.manage"
+    )
+    _require_document_permission_for_event_or_404(
+        db, event=event, user_id=principal.user_id, permission_code="document.manage"
+    )
+    requirement = _get_authorized_requirement_or_404(
+        db, event=event, requirement_id=requirement_id
+    )
+
+    delete_event_document_requirement(db, requirement=requirement)

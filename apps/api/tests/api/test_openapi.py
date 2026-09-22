@@ -77,6 +77,10 @@ _EVENT_PATHS = {
     # TH-0117.4 / Issue #162, ADR-0040 §5: read-only participant Document
     # requirement check (valid/missing/expired) for one Event/Person pair.
     "/api/v1/events/{event_id}/document-requirements/{person_id}",
+    # TH-0117.5 / Issue #164, ADR-0040 §5, events-api.md §31.1: manage the
+    # EventDocumentRequirement records themselves (list/create/update/delete).
+    "/api/v1/events/{event_id}/document-requirements",
+    "/api/v1/events/{event_id}/document-requirements/{requirement_id}",
 }
 
 _PERSON_PATHS = {
