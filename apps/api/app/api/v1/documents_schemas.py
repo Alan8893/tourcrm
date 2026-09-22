@@ -32,6 +32,20 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+class DocumentMetadataUpdateRequest(BaseModel):
+    """PATCH: only fields actually present in the request body are
+    applied (`exclude_unset=True`, mirroring `PersonUpdateRequest`/
+    `GroupUpdateRequest`) — an omitted field leaves the current value
+    untouched, while an explicit `null` clears it (TH-0117.8 / Issue
+    #170). Only non-file metadata is accepted: `document_type`/
+    `person_id`/`document_group_id`/`version_number`/`status`/`file_id`
+    are never part of this request (ADR-0040 §4).
+    """
+
+    issued_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+
+
 class DocumentOut(BaseModel):
     id: UUID
     person_id: UUID

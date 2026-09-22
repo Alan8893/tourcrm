@@ -1,6 +1,7 @@
-"""Create, replace, revoke, and read participant Documents + their Files
-(TH-0117.3 / Issue #160; TH-0117.6 / Issue #166 adds `replace_document`;
-TH-0117.7 / Issue #168 adds `revoke_document`).
+"""Create, replace, revoke, update metadata of, and read participant
+Documents + their Files (TH-0117.3 / Issue #160; TH-0117.6 / Issue #166
+adds `replace_document`; TH-0117.7 / Issue #168 adds `revoke_document`;
+TH-0117.8 / Issue #170 adds `update_document_metadata`).
 
 Canonical sources: ADR-0040 §1/§3/§4/§7, docs/05-api/people-api.md §32.
 
@@ -49,7 +50,9 @@ is a Document lifecycle mutation in place, not a storage operation) and
 has no orphaned-binary case to clean up. Its own concurrency backstop —
 combining the current-version check and the write into a single atomic
 UPDATE rather than `replace_document`'s separate check-then-insert — is
-documented on `revoke_document` itself.
+documented on `revoke_document` itself. `update_document_metadata`
+reuses this identical atomic-UPDATE concurrency backstop and likewise
+never touches `FileStorage`.
 """
 
 import hashlib
@@ -68,6 +71,10 @@ from app.storage.file_storage import FileStorage, FileStorageError
 _INITIAL_DOCUMENT_STATUS = "active"
 _REVOKED_DOCUMENT_STATUS = "revoked"
 _VERSION_UNIQUE_CONSTRAINT = "uq_documents_group_id_version_number"
+# Issue #170 §request: only these two non-file fields are accepted by
+# `update_document_metadata` — never `document_type`/`person_id`/
+# `document_group_id`/`version_number`/`status`/`file_id`.
+_UPDATABLE_DOCUMENT_METADATA_FIELDS = frozenset({"issued_at", "expires_at"})
 
 
 class DocumentLifecycleError(Exception):
@@ -105,6 +112,17 @@ class AlreadyRevokedError(DocumentLifecycleError):
     def __init__(self, *, document_id: uuid.UUID) -> None:
         super().__init__(f"Document {document_id} is already revoked")
         self.document_id = document_id
+
+
+class InvalidDocumentDatesError(DocumentLifecycleError):
+    """The *resulting* `issued_at`/`expires_at` — after merging
+    `update_document_metadata`'s supplied fields onto the document's
+    existing stored values — would have `expires_at` before
+    `issued_at` (Issue #170 §date validation). Distinct from
+    `replace_person_document`'s own inline router-level check (Issue
+    #166), which validates a wholly new pair of dates supplied together
+    and has no existing stored state to merge against.
+    """
 
 
 def _is_version_conflict(exc: IntegrityError) -> bool:
@@ -388,6 +406,109 @@ def revoke_document(
     return document
 
 
+def update_document_metadata(
+    session: Session,
+    *,
+    document: Document,
+    actor_user_id: uuid.UUID,
+    request_id: str | None = None,
+    **fields: datetime | None,
+) -> Document:
+    """Update only the supplied non-file metadata fields of `document`'s
+    current version in place (ADR-0040 §4/§7, Issue #170). Only
+    `issued_at`/`expires_at` are ever accepted (`_UPDATABLE_DOCUMENT_
+    METADATA_FIELDS`) — `document_type`/`person_id`/`document_group_id`/
+    `version_number`/`status`/`file_id` are never touched. Creates no
+    new Document version, no new File, and never calls `FileStorage` —
+    a plain, in-place, DB-only metadata correction, distinct from
+    `replace_document` (new file/version) and `revoke_document`
+    (lifecycle status transition).
+
+    `fields` must be exactly the fields the caller actually supplied
+    (the API layer's `exclude_unset=True`, Issue #170 §request) — an
+    absent field leaves the document's current value untouched, while
+    an explicit `None` present in `fields` clears it; `{}` and
+    `{"expires_at": None}` are different requests, and the caller (not
+    this function) is responsible for rejecting the empty-`fields` case
+    as invalid, since that check needs no document state at all.
+
+    Raises `InvalidDocumentDatesError`, mutating nothing, if the
+    *resulting* `issued_at`/`expires_at` — after merging `fields` onto
+    `document`'s current stored values — would have `expires_at` before
+    `issued_at`; this validates the merged result, not just the
+    supplied fields, so a PATCH of only one field is checked against
+    the other field's existing stored value too (Issue #170 §date
+    validation).
+
+    The current-version check and the write are combined into a single
+    atomic UPDATE, the same pattern `revoke_document` uses and for the
+    same reason (Issue #170 §concurrency): a plain check-then-write
+    would leave a window in which a concurrent `replace_document` call
+    creates a newer version between this call's check and its write,
+    letting a stale check authorize updating a document that is no
+    longer current by the time the write actually happens. Raises
+    `NotCurrentVersionError`, mutating nothing, if `document` is not the
+    current version of its group (including that race) — a historical
+    version can never be updated (ADR-0040 §4), the same rule
+    `replace_document`/`revoke_document` enforce.
+    """
+    unknown_fields = set(fields) - _UPDATABLE_DOCUMENT_METADATA_FIELDS
+    if unknown_fields:
+        raise ValueError(
+            f"Fields not updatable via update_document_metadata: {sorted(unknown_fields)}"
+        )
+    if not fields:
+        raise ValueError("update_document_metadata requires at least one field")
+
+    resulting_issued_at = fields["issued_at"] if "issued_at" in fields else document.issued_at
+    resulting_expires_at = fields["expires_at"] if "expires_at" in fields else document.expires_at
+    if (
+        resulting_issued_at is not None
+        and resulting_expires_at is not None
+        and resulting_expires_at < resulting_issued_at
+    ):
+        raise InvalidDocumentDatesError("expires_at must not be before issued_at")
+
+    current_version_number = (
+        sa.select(sa.func.max(Document.version_number))
+        .where(Document.document_group_id == document.document_group_id)
+        .scalar_subquery()
+    )
+    result = session.execute(
+        sa.update(Document)
+        .where(
+            Document.id == document.id,
+            Document.version_number == current_version_number,
+        )
+        .values(**fields, updated_at=sa.func.now())
+    )
+    if result.rowcount == 0:
+        raise NotCurrentVersionError(document_id=document.id)
+
+    session.refresh(document)
+    try:
+        record_audit_event(
+            session,
+            action="document.updated",
+            actor_type="user",
+            actor_user_id=actor_user_id,
+            resource_type="document",
+            resource_id=document.id,
+            outcome="success",
+            request_id=request_id,
+            # Never storage_key/filesystem path/binary/medical content
+            # (Issue #170 §audit) — only the names of the fields changed
+            # and the document_type, already visible to an authorized
+            # document.read/manage caller anyway.
+            details={"document_type": document.document_type, "fields_updated": sorted(fields)},
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return document
+
+
 def read_document_content(
     session: Session,
     storage: FileStorage,
@@ -430,8 +551,10 @@ __all__ = [
     "DocumentLifecycleError",
     "NotCurrentVersionError",
     "AlreadyRevokedError",
+    "InvalidDocumentDatesError",
     "create_document",
     "replace_document",
     "revoke_document",
+    "update_document_metadata",
     "read_document_content",
 ]
