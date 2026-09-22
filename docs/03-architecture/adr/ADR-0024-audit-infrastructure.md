@@ -10,7 +10,7 @@ Accepted. Closes ODR-015. Closes the audit-record-shape portion of ODR-013; **re
 
 **Amended by ADR-0028:** extends the closed vocabulary with recurrence/occurrence business actions defined below.
 
-**Amended by ADR-0040 §7 (TH-0117.0):** extends the closed vocabulary with `document.created`, `document.updated`, `document.replaced`, `document.revoked`, `document.downloaded`, `document.exported` for the participant-document domain. Documentation-only at this stage — the corresponding migration is implementation work for a later TH-0117 slice, not yet created.
+**Amended by ADR-0040 §7 (TH-0117.0):** extends the closed vocabulary with `document.created`, `document.updated`, `document.replaced`, `document.revoked`, `document.downloaded`, `document.exported` for the participant-document domain. The corresponding audit vocabulary migration and document-domain audit usage are implemented by the completed TH-0117 backend slices.
 
 ## Context
 
