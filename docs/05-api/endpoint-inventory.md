@@ -55,6 +55,7 @@ People Management endpoints are governed by ADR-0035 and `docs/05-api/people-api
 - `GET /persons/{id}/audit`
 - `POST /persons/wizard`
 - `GET /persons/{id}/groups`
+- `PATCH /persons/{person_id}/documents/{document_id}` — planned (TH-0117.8), correction of non-file metadata of current Document version.
 
 There is no Person archive endpoint in the current MVP. Person archiving is deferred by ADR-0034; related lifecycle entities must not be used to simulate Person archival.
 
