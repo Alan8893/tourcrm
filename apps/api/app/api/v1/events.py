@@ -41,12 +41,14 @@ hide) uses the generic 403 AuthorizationDenied contract.
 """
 
 import logging
+import re
 import uuid
 from datetime import datetime
 from datetime import timezone as dt_timezone
 from typing import NoReturn
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -59,6 +61,7 @@ from app.api.errors import APIError
 from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.documents_schemas import (
+    DocumentPackageRequest,
     EventDocumentRequirementCheckListOut,
     EventDocumentRequirementCheckOut,
     EventDocumentRequirementCreateRequest,
@@ -95,6 +98,7 @@ from app.db.events import Event, EventParticipation
 from app.db.identity import Club, Person
 from app.db.session import get_db
 from app.documents.event_requirements import check_person_document_requirements
+from app.documents.package import DocumentPackageIncompleteError, generate_event_document_package
 from app.documents.requirement_management import (
     DuplicateEventDocumentRequirementError,
     create_event_document_requirement,
@@ -136,6 +140,8 @@ from app.events.service import (
     EventStaffUserNotFoundError,
 )
 from app.people.authorization import is_person_visible
+from app.storage.file_storage import FileStorage
+from app.storage.local import get_file_storage
 
 logger = logging.getLogger("tourcrm.api")
 
@@ -1215,3 +1221,94 @@ def delete_event_document_requirement_endpoint(
     )
 
     delete_event_document_requirement(db, requirement=requirement)
+
+
+# --- Event competition document package export (TH-0117.9 / Issue #172, --
+# ADR-0040 §5/§6/§7, events-api.md §31.5) -----------------------------------
+#
+# The explicit Document export path: `event.read` (via the same
+# `_get_authorized_event_or_404` every other single-Event endpoint uses)
+# AND `document.export` (via the same flat, club-scoped
+# `_require_document_permission_for_event_or_404` helper the requirement-
+# management endpoints above already use) — neither alone is sufficient,
+# and `document.read`/`person.read` grant nothing here. The participant
+# set and requirement set are always resolved server-side by
+# app.documents.package (EventParticipation + EventDocumentRequirement);
+# no person_id/document_id/file_id is ever accepted from the client.
+
+_UNSAFE_FILENAME_CHARS = re.compile(r'[\r\n\x00-\x1f\x7f"\\]')
+
+
+def _package_content_disposition(event_title: str) -> str:
+    """Mirrors `app.api.v1.persons._content_disposition`'s exact RFC 6266
+    shape (duplicated rather than imported across router modules, per
+    this codebase's own established convention) — applied to a fixed,
+    event-derived name rather than a client-supplied one. Never contains
+    the Event's internal UUID."""
+    sanitized = _UNSAFE_FILENAME_CHARS.sub("", event_title).strip() or "event"
+    base_name = f"competition-documents-{sanitized}.zip"
+    ascii_fallback = base_name.encode("ascii", errors="replace").decode("ascii").replace("?", "_")
+    encoded = quote(base_name, safe="")
+    return f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{encoded}'
+
+
+@router.post("/{event_id}/document-package")
+def export_event_document_package(
+    event_id: uuid.UUID,
+    request: Request,
+    payload: DocumentPackageRequest | None = None,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    storage: FileStorage = Depends(get_file_storage),
+    _csrf: None = Depends(require_csrf_token),
+) -> Response:
+    """The synchronous competition document package export
+    (events-api.md §31.5) — `event.read` + `document.export`. Only
+    current, valid participant Documents are included; any `missing`/
+    `expired` participant/requirement pair blocks the export with a 409
+    unless `confirm_incomplete=True` is supplied. Never touches the
+    filesystem directly — every binary is read through `FileStorage`
+    (`app.documents.package`).
+    """
+    event = _get_authorized_event_or_404(
+        db, event_id=event_id, user_id=principal.user_id, permission_code="event.read"
+    )
+    _require_document_permission_for_event_or_404(
+        db, event=event, user_id=principal.user_id, permission_code="document.export"
+    )
+
+    confirm_incomplete = payload.confirm_incomplete if payload is not None else False
+
+    try:
+        archive_bytes = generate_event_document_package(
+            db,
+            storage,
+            event=event,
+            actor_user_id=principal.user_id,
+            confirm_incomplete=confirm_incomplete,
+            request_id=get_request_id(request),
+        )
+    except DocumentPackageIncompleteError as exc:
+        incomplete = [
+            {
+                "participant_display_name": entry.display_name,
+                "document_type": entry.document_type,
+                "result": entry.result,
+                "required": entry.required,
+            }
+            for entry in exc.entries
+            if entry.result in ("missing", "expired")
+        ]
+        raise APIError(
+            status.HTTP_409_CONFLICT,
+            "document_package_incomplete",
+            "The document package is incomplete: some participants are missing a "
+            "valid required document. Pass confirm_incomplete=true to export anyway.",
+            details={"incomplete": incomplete},
+        ) from exc
+
+    return Response(
+        content=archive_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": _package_content_disposition(event.title)},
+    )

@@ -94,3 +94,15 @@ class EventDocumentRequirementUpdateRequest(BaseModel):
     requirement and POST a new one, never a second mutation model."""
 
     required: bool
+
+
+class DocumentPackageRequest(BaseModel):
+    """`POST /events/{event_id}/document-package`'s optional body
+    (TH-0117.9 / Issue #172, events-api.md §31.5): the only accepted
+    field is `confirm_incomplete`. No `person_id`/`document_id`/
+    `file_id`/document-type filter is ever accepted here — the
+    participant set and requirement set are always derived server-side
+    (from `EventParticipation` and `EventDocumentRequirement`), never
+    from client input."""
+
+    confirm_incomplete: bool = False
