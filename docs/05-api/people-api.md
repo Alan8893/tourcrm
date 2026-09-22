@@ -763,6 +763,13 @@ Permissions: `document.read` (список/метаданные/скачиван
 - **Замена/новая версия** — `POST /persons/{person_id}/documents/{document_id}/replace` (planned) — создаёт новую версию (`version_number + 1`, тот же `document_group_id`, новый `File`); не перезаписывает существующую версию/файл. Требует `document.manage`. Аудируется как `document.replaced`.
 - **Отзыв** — `POST /persons/{person_id}/documents/{document_id}/revoke` (planned) — переводит текущую версию в `status = revoked` на месте, без создания новой версии. Требует `document.manage`. Аудируется как `document.revoked`.
 
-Корректировка не-файловых метаданных текущей версии на месте (например, исправление `expires_at`) — не отдельный endpoint из списка выше, а обычная частичная модификация метаданных текущей версии; аудируется как `document.updated`, отличается от `document.replaced` (замена файла, ADR-0040 §7).
+Корректировка не-файловых метаданных текущей версии выполняется через:
+- **PATCH `/persons/{person_id}/documents/{document_id}`** (planned, TH-0117.8) — изменяет только не-файловые метаданные текущей версии на месте; новая версия и новый File не создаются. Требует `document.manage`. В MVP изменяемые поля: `issued_at`, `expires_at`. `document_type`, `person_id`, `document_group_id`, `version_number`, `status` и `file_id` этим endpoint'ом не изменяются.
+- Endpoint принимает только поля, присутствующие в request body; отсутствие обоих поддерживаемых полей — ошибка валидации. `expires_at`, если передан вместе с `issued_at`, не может быть раньше `issued_at`.
+- Операция разрешена только для текущей версии (`max(version_number)`). Историческая версия возвращает существующий для Document API not-found/existence-hiding результат.
+- Аудируется как `document.updated`; запись аудита и изменение метаданных фиксируются одной DB-транзакцией.
+- FileStorage не используется: существующий File и его бинарное содержимое остаются неизменными.
+
+Это отличается от `document.replaced`, где меняется файл и создаётся новая версия (ADR-0040 §7).
 
 `GET /persons/{person_id}/documents` никогда не должен показываться в обычных People/Group views без проверки `document.read` — обычный `person.read`-доступ к Person Detail не подразумевает автоматическое появление этого списка.
