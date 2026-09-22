@@ -81,6 +81,14 @@ A `role.manage`-gated, canonical-role-code-only view onto the same `RoleAssignme
 
 Administrative User account creation and password reset/first-access setup, gated by the dedicated `account.manage` permission (§24). Reuses the existing `PasswordResetChallenge` mechanism and `POST /auth/password-reset/confirm` (§1) unchanged — no parallel password mechanism. See `people-api.md` §24.2.
 
+### Person profile photo (TH-0119)
+
+- `GET /persons/{person_id}/photo`
+- `PUT /persons/{person_id}/photo`
+- `DELETE /persons/{person_id}/photo`
+
+These endpoints are authenticated and use the existing Person authorization model; no avatar-specific permission is introduced. Full contract: `docs/05-api/profile-photo-api.md`.
+
 ## 4. Club memberships
 
 - `GET /memberships`
