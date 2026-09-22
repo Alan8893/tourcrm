@@ -92,6 +92,18 @@ Administrative User account creation and password reset/first-access setup, gate
 
 Membership lifecycle is exposed through the canonical `/status` operation. The older separate `/activate`, `/suspend` and `/end` endpoints are not part of the current contract.
 
+### 4.1 Participant import
+
+- `POST /memberships/imports` — import job creation (CSV/XLSX; preview/dry-run before apply).
+- `GET /memberships/imports/{import_id}` — import job status/statistics.
+- `GET /memberships/imports/{import_id}/errors` — import validation/application errors.
+
+The detailed import workflow and account semantics are defined in `docs/05-api/people-api.md §22` and `docs/04-modules/people-and-membership.md §11`.
+
+### 4.2 Participant export
+
+Participant list export is a separate operational workflow. Product-supported output modes are Excel, PDF and print. The exact export endpoint and detailed filter/column contract require a dedicated implementation Issue; no endpoint is invented here before that contract exists.
+
 ## 5. Guardians
 
 Canonical resource is `guardian-relationships`, not `guardians` (ADR-0025 §4).
@@ -335,9 +347,9 @@ The generic list below predates ADR-0040 and remains an unresolved, broader aspi
 - `POST /consents/{id}/revoke`
 - `GET /persons/{id}/consents`
 
-### 18.1 Participant documents — PLANNED (TH-0117 / ADR-0040)
+### 18.1 Participant documents — IMPLEMENTED (TH-0117 / ADR-0040)
 
-**PLANNED — nothing here is implemented.** The concrete, narrower canonical contract for TH-0117's participant documents (medical certificates and similar Person-owned documents), superseding the generic sketch above for this specific case (ADR-0040 §1/§2). Full concept-level API description: `docs/05-api/people-api.md` §32.
+The participant-document endpoints below are implemented. The concrete, narrower canonical contract for TH-0117's participant documents (medical certificates and similar Person-owned documents), superseding the generic sketch above for this specific case (ADR-0040 §1/§2). Full concept-level API description: `docs/05-api/people-api.md` §32.
 
 - `GET /persons/{person_id}/documents` (implemented, TH-0117.3)
 - `POST /persons/{person_id}/documents` (implemented, TH-0117.3)
@@ -346,21 +358,16 @@ The generic list below predates ADR-0040 and remains an unresolved, broader aspi
 - `POST /persons/{person_id}/documents/{document_id}/replace` (implemented, TH-0117.6)
 - `POST /persons/{person_id}/documents/{document_id}/revoke` (implemented, TH-0117.7)
 - `PATCH /persons/{person_id}/documents/{document_id}` (implemented, TH-0117.8)
-- `POST /events/{event_id}/document-package` (planned, TH-0117.9)
-- `POST /persons/{person_id}/documents` (planned)
-- `GET /persons/{person_id}/documents/{document_id}` (planned)
-- `GET /persons/{person_id}/documents/{document_id}/download` (planned)
-- `POST /persons/{person_id}/documents/{document_id}/replace` (planned)
-- `POST /persons/{person_id}/documents/{document_id}/revoke` (planned)
+- `POST /events/{event_id}/document-package` (implemented, TH-0117.9)
 
-### 18.2 Event document requirements — PLANNED (TH-0117.5 / ADR-0040)
+### 18.2 Event document requirements — IMPLEMENTED (TH-0117.4–.5 / ADR-0040)
 
-**PLANNED — implementation is tracked by TH-0117.5 / Issue #164.** Persistence and the read-only participant requirement check are already implemented; management endpoints below are the next implementation slice. Full contract: `docs/05-api/events-api.md §31`.
+Persistence, participant requirement checks, and management endpoints are implemented. Full contract: `docs/05-api/events-api.md §31`.
 
-- `GET /events/{event_id}/document-requirements` (planned)
-- `POST /events/{event_id}/document-requirements` (planned)
-- `PATCH /events/{event_id}/document-requirements/{requirement_id}` (planned)
-- `DELETE /events/{event_id}/document-requirements/{requirement_id}` (planned)
+- `GET /events/{event_id}/document-requirements` (implemented, TH-0117.5)
+- `POST /events/{event_id}/document-requirements` (implemented, TH-0117.5)
+- `PATCH /events/{event_id}/document-requirements/{requirement_id}` (implemented, TH-0117.5)
+- `DELETE /events/{event_id}/document-requirements/{requirement_id}` (implemented, TH-0117.5)
 - `GET /events/{event_id}/document-requirements/{person_id}` (implemented, TH-0117.4)
 
 ## 19. Equipment
