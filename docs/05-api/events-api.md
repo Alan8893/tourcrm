@@ -625,6 +625,99 @@ The evaluator continues to evaluate every persisted requirement row. The meaning
 
 EventDocumentRequirement management must use the existing canonical audit infrastructure and **must not invent or repurpose a Document/File audit action**. A dedicated audit vocabulary for this concept is not currently defined by ADR-0040; therefore TH-0117.5 must not silently add one. If implementation discovers an existing canonical requirement that mandates a dedicated action, Claude Code must stop and report the contradiction rather than modifying the vocabulary or canonical documentation.
 
-### 31.5 Competition package
+### 31.5 Competition document package export — TH-0117.9
 
-Before a future Event document package export completes, the exporter must receive an explicit warning for participant/requirement pairs resolving to `missing` or `expired`. Package endpoint, format, and UI remain outside TH-0117.5.
+The competition document package is an explicit operational export of current participant documents required/optionally associated with an Event.
+
+#### Endpoint
+
+`POST /api/v1/events/{event_id}/document-package`
+
+Authorization requires both:
+- `event.read` with the normal Event object/scope authorization;
+- `document.export`.
+
+`document.read` is not a substitute for `document.export`, and `document.export` alone does not bypass Event authorization.
+
+The endpoint uses the Event's current participant set from `EventParticipation`. The client does not submit arbitrary `person_id` values.
+
+#### Request
+
+Optional JSON body:
+
+```json
+{
+  "confirm_incomplete": false
+}
+```
+
+If omitted, `confirm_incomplete` is `false`.
+
+#### Requirement evaluation
+
+For every Event participant and every persisted `EventDocumentRequirement`:
+- current-version status is evaluated using the existing TH-0117.4 evaluator;
+- `valid` current documents are eligible for the package;
+- `missing` and `expired` (including current `revoked`) are never substituted by historical versions.
+
+`required=true` means the participant is expected to have a valid document for package readiness.
+
+`required=false` is optional: a valid current document is included when present; `missing`/`expired` does not prevent the package after the warning/confirmation rule below.
+
+#### Incomplete package warning
+
+If any participant/requirement pair resolves to `missing` or `expired`, the endpoint MUST NOT silently produce the package.
+
+When `confirm_incomplete=false`, return:
+- HTTP `409 Conflict`;
+- error code `document_package_incomplete`;
+- safe structured details containing the affected participant display name, document type, requirement state (`missing`/`expired`), and whether the requirement is required.
+
+No Person UUID, Document UUID, File UUID, `storage_key`, filesystem path, or medical content is returned.
+
+When `confirm_incomplete=true`, the package may be generated despite the warnings. Missing/expired documents are not included; valid current documents are included.
+
+If there are no missing/expired pairs, `confirm_incomplete` has no effect.
+
+#### Package format
+
+The successful response is a synchronous ZIP archive:
+- HTTP `200 OK`;
+- `Content-Type: application/zip`;
+- no internal database UUIDs or storage keys in archive paths or manifest;
+- UTF-8 `manifest.json` at the archive root;
+- document files stored below participant folders using a deterministic ordinal assigned for this export, not an internal ID.
+
+Manifest contains:
+- export generation timestamp;
+- Event display name/date;
+- participant ordinal;
+- participant display name;
+- document type;
+- requirement `required`;
+- result (`valid`, `missing`, `expired`);
+- package-relative filename for included valid documents.
+
+Only current valid document files are included. Historical versions are never included.
+
+The download filename is a sanitized event-derived name; it must not contain internal IDs.
+
+#### Audit
+
+A successful package export is audited as:
+
+`document.exported`
+
+The audit record contains only safe correlation/summary metadata. It MUST NOT contain document content, medical data, storage paths/keys, or internal identifiers exposed to the export consumer.
+
+No `document.exported` audit is committed when package generation fails or is rejected by the incomplete-package warning.
+
+#### Storage/security
+
+Document binaries are read exclusively through `FileStorage`.
+
+Ordinary Person/Group exports remain unchanged and must continue to exclude medical document content.
+
+The package endpoint is intentionally explicit and is the only TH-0117 MVP path that combines multiple participant Document binaries into one export.
+
+The MVP package is synchronous. If package size/performance later requires asynchronous processing, that is a separate export-infrastructure decision and implementation slice.
