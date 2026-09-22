@@ -345,13 +345,15 @@ The generic list below predates ADR-0040 and remains an unresolved, broader aspi
 - `POST /persons/{person_id}/documents/{document_id}/replace` (planned)
 - `POST /persons/{person_id}/documents/{document_id}/revoke` (planned)
 
-### 18.2 Event document requirements — PLANNED (TH-0117 / ADR-0040)
+### 18.2 Event document requirements — PLANNED (TH-0117.5 / ADR-0040)
 
-**PLANNED — nothing here is implemented.** Full concept-level API description: `docs/05-api/events-api.md` §31.
+**PLANNED — implementation is tracked by TH-0117.5 / Issue #164.** Persistence and the read-only participant requirement check are already implemented; management endpoints below are the next implementation slice. Full contract: `docs/05-api/events-api.md §31`.
 
 - `GET /events/{event_id}/document-requirements` (planned)
 - `POST /events/{event_id}/document-requirements` (planned)
-- a per-participant `valid`/`missing`/`expired` status check (planned; exact endpoint shape not fixed by ADR-0040)
+- `PATCH /events/{event_id}/document-requirements/{requirement_id}` (planned)
+- `DELETE /events/{event_id}/document-requirements/{requirement_id}` (planned)
+- `GET /events/{event_id}/document-requirements/{person_id}` (implemented, TH-0117.4)
 
 ## 19. Equipment
 
