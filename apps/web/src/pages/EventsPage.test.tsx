@@ -1596,3 +1596,261 @@ describe("EventsPage — responsive composition", () => {
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
+
+// --- Competition document package workflow (TH-0117 / Issue #175) ---------
+
+function requirementFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "req1",
+    event_id: "ev-1",
+    document_type: "medical_certificate",
+    required: true,
+    ...overrides,
+  };
+}
+
+function requirementsCollection(items: Array<Record<string, unknown>>) {
+  return { items, pagination: { page: 1, page_size: 50, total: items.length, pages: items.length ? 1 : 0 } };
+}
+
+async function openDocumentPackageDialog(
+  user: ReturnType<typeof userEvent.setup>,
+): Promise<HTMLElement> {
+  await user.click(await screen.findByText("Ориентирование"));
+  await user.click(await screen.findByRole("button", { name: "Документы для соревнования" }));
+  return screen.findByRole("dialog", { name: "Документы для соревнования" });
+}
+
+describe("EventsPage — «Документы для соревнования» (Issue #175)", () => {
+  it("offers the workflow to any signed-in viewer regardless of role — the backend, not a role check, is the authorization boundary", async () => {
+    const range = fixedRange();
+    stubFetch([
+      { match: "/auth/me", response: meResponse({ roleCode: "member" }) },
+      { match: "/groups?status=active", response: groupsResponse() },
+      {
+        match: encodeURIComponent(range.from),
+        response: calendarResponse([calendarItem({ id: "ev-1", title: "Ориентирование", start_at: "2026-03-15T17:00:00+03:00", end_at: "2026-03-15T19:00:00+03:00" })]),
+      },
+      { match: "/events/ev-1/document-requirements", response: requirementsCollection([]) },
+      { match: "/events/ev-1", response: eventDetailResponse() },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    const dialog = await openDocumentPackageDialog(user);
+
+    expect(dialog).toBeInTheDocument();
+  });
+
+  it("does not offer the workflow for a single recurring occurrence (EventDocumentRequirement is Event-scoped, not per-occurrence)", async () => {
+    const range = fixedRange();
+    stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      {
+        match: encodeURIComponent(range.from),
+        response: calendarResponse([
+          calendarItem({
+            id: "occ-1",
+            kind: "occurrence",
+            title: "Ориентирование",
+            start_at: "2026-03-15T17:00:00+03:00",
+            end_at: "2026-03-15T19:00:00+03:00",
+            series_id: "series-1",
+          }),
+        ]),
+      },
+      {
+        match: "/events/occurrences/occ-1",
+        response: {
+          id: "occ-1",
+          series_id: "series-1",
+          club_id: "club-1",
+          name: "Ориентирование",
+          description: null,
+          event_type: "lesson",
+          starts_at: "2026-03-15T17:00:00+03:00",
+          ends_at: "2026-03-15T19:00:00+03:00",
+          timezone: "Europe/Moscow",
+          status: "published",
+          cancellation_reason: null,
+        },
+      },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("Ориентирование"));
+
+    expect(screen.queryByRole("button", { name: "Документы для соревнования" })).not.toBeInTheDocument();
+  });
+
+  it("lists existing document requirements and lets an admin add one", async () => {
+    const range = fixedRange();
+    let requirements = [requirementFixture()];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/auth/me")) return jsonResponse(meResponse());
+      if (url.includes("/groups?status=active")) return jsonResponse(groupsResponse());
+      if (url.includes(encodeURIComponent(range.from))) {
+        return jsonResponse(
+          calendarResponse([
+            calendarItem({ id: "ev-1", title: "Ориентирование", start_at: "2026-03-15T17:00:00+03:00", end_at: "2026-03-15T19:00:00+03:00" }),
+          ]),
+        );
+      }
+      if (url.endsWith("/events/ev-1")) return jsonResponse(eventDetailResponse());
+      if (url.includes("/events/ev-1/document-requirements") && method === "POST") {
+        const body = JSON.parse(String(init!.body));
+        const created = requirementFixture({ id: "req2", document_type: body.document_type, required: body.required });
+        requirements = [...requirements, created];
+        return jsonResponse(created, 201);
+      }
+      if (url.includes("/events/ev-1/document-requirements") && method === "GET") {
+        return jsonResponse(requirementsCollection(requirements));
+      }
+      throw new Error(`Unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    const dialog = await openDocumentPackageDialog(user);
+
+    expect(await within(dialog).findByText("Медицинская справка")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Добавить требование" }));
+    const addDialog = await screen.findByRole("dialog", { name: "Добавить требование" });
+    await user.type(within(addDialog).getByLabelText("Тип документа"), "insurance_waiver");
+    await user.click(within(addDialog).getByRole("button", { name: "Добавить" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Добавить требование" })).not.toBeInTheDocument();
+    });
+    expect(await within(dialog).findByText("insurance_waiver")).toBeInTheDocument();
+  });
+
+  it("deletes a requirement through the confirm dialog", async () => {
+    const range = fixedRange();
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      { match: encodeURIComponent(range.from), response: calendarResponse([calendarItem({ id: "ev-1", title: "Ориентирование", start_at: "2026-03-15T17:00:00+03:00", end_at: "2026-03-15T19:00:00+03:00" })]) },
+      { match: "/events/ev-1/document-requirements", response: requirementsCollection([requirementFixture()]) },
+      { match: "/events/ev-1", response: eventDetailResponse() },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    const dialog = await openDocumentPackageDialog(user);
+    await within(dialog).findByText("Медицинская справка");
+
+    await user.click(within(dialog).getByRole("button", { name: "Удалить" }));
+    const confirmDialog = screen.getByRole("dialog", { name: "Удалить требование?" });
+    await user.click(within(confirmDialog).getByRole("button", { name: "Удалить" }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([input, init]) =>
+            String(input).includes("/events/ev-1/document-requirements/req1") &&
+            (init as RequestInit)?.method === "DELETE",
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("checks one participant's document readiness with backend-derived results only", async () => {
+    const range = fixedRange();
+    stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      { match: encodeURIComponent(range.from), response: calendarResponse([calendarItem({ id: "ev-1", title: "Ориентирование", start_at: "2026-03-15T17:00:00+03:00", end_at: "2026-03-15T19:00:00+03:00" })]) },
+      { match: "/events/ev-1/document-requirements/person-1", response: { event_id: "ev-1", person_id: "person-1", requirements: [{ document_type: "medical_certificate", required: true, result: "missing" }] } },
+      { match: "/events/ev-1/document-requirements", response: requirementsCollection([requirementFixture()]) },
+      { match: "/events/ev-1", response: eventDetailResponse() },
+      { match: "/persons?", response: { items: [{ id: "person-1", first_name: "Иван", last_name: "Петров", middle_name: null, birth_date: null, phone: null, email: null, address: null, photo_file_id: null, created_at: "2020-01-01T00:00:00Z", updated_at: "2020-01-01T00:00:00Z", role_codes: [] }], pagination: { page: 1, page_size: 20, total: 1, pages: 1 } } },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    const dialog = await openDocumentPackageDialog(user);
+
+    await user.type(within(dialog).getByLabelText("Поиск участника"), "Петров");
+    await user.click(await within(dialog).findByRole("button", { name: "Петров Иван" }));
+
+    expect(await within(dialog).findByText("Отсутствует")).toBeInTheDocument();
+  });
+
+  it("handles the 409 incomplete-package response and requires explicit confirmation before retrying", async () => {
+    const range = fixedRange();
+    let confirmedIncomplete = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/auth/me")) return jsonResponse(meResponse());
+      if (url.includes("/groups?status=active")) return jsonResponse(groupsResponse());
+      if (url.includes(encodeURIComponent(range.from))) {
+        return jsonResponse(
+          calendarResponse([
+            calendarItem({ id: "ev-1", title: "Ориентирование", start_at: "2026-03-15T17:00:00+03:00", end_at: "2026-03-15T19:00:00+03:00" }),
+          ]),
+        );
+      }
+      if (url.endsWith("/events/ev-1")) return jsonResponse(eventDetailResponse());
+      if (url.includes("/events/ev-1/document-requirements")) return jsonResponse(requirementsCollection([requirementFixture()]));
+      if (url.endsWith("/events/ev-1/document-package") && method === "POST") {
+        const body = JSON.parse(String(init!.body));
+        if (!body.confirm_incomplete) {
+          return jsonResponse(
+            {
+              error: {
+                code: "document_package_incomplete",
+                message: "The document package is incomplete",
+                details: {
+                  incomplete: [
+                    { participant_display_name: "Петров Иван", document_type: "medical_certificate", result: "missing", required: true },
+                  ],
+                },
+                request_id: "r1",
+              },
+            },
+            409,
+          );
+        }
+        confirmedIncomplete = true;
+        return new Response(new Blob(["zip content"]), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/zip",
+            "Content-Disposition": 'attachment; filename="competition-documents-event.zip"',
+          },
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    (URL as unknown as { createObjectURL: () => string }).createObjectURL = vi.fn(() => "blob:mock-url");
+    (URL as unknown as { revokeObjectURL: () => void }).revokeObjectURL = vi.fn();
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    const dialog = await openDocumentPackageDialog(user);
+
+    await user.click(within(dialog).getByRole("button", { name: "Экспортировать пакет документов" }));
+
+    const warningDialog = await screen.findByRole("dialog", { name: "Пакет документов неполный" });
+    expect(within(warningDialog).getByText("Петров Иван")).toBeInTheDocument();
+    expect(within(warningDialog).getByText("Отсутствует")).toBeInTheDocument();
+
+    await user.click(within(warningDialog).getByRole("button", { name: "Всё равно сформировать пакет" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Пакет документов неполный" })).not.toBeInTheDocument();
+    });
+    expect(confirmedIncomplete).toBe(true);
+    anchorClick.mockRestore();
+  });
+});

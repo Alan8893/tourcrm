@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useLocation, useParams } from "react-router-dom";
 
 import { PageHeader } from "../components/ui/PageHeader";
@@ -16,6 +16,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { ErrorState } from "../components/ui/ErrorState";
 import { useNotify } from "../components/ui/notificationContext";
 import { useCurrentUser } from "../api/auth";
+import { saveBlob } from "../api/client";
 import {
   personFullName,
   personRoleLabel,
@@ -40,13 +41,26 @@ import {
 } from "../api/people";
 import { useGroup, useGroups, useAddGroupMember, usePersonGroupMemberships } from "../api/groups";
 import {
+  usePersonDocuments,
+  useCreatePersonDocument,
+  useUpdatePersonDocumentDates,
+  useReplacePersonDocument,
+  useRevokePersonDocument,
+  useDownloadPersonDocument,
+  type Document as PersonDocument,
+} from "../api/documents";
+import {
   accountStatusIcon,
   accountStatusLabel,
+  documentStatusIcon,
+  documentStatusLabel,
+  documentTypeLabel,
   guardianRelationshipStatusIcon,
   guardianRelationshipStatusLabel,
   type AccountStatus,
 } from "../domain/statusMapping";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import inputStyles from "../components/ui/Input.module.css";
 import styles from "./PersonDetailPage.module.css";
 
 export function PersonDetailPage() {
@@ -122,6 +136,11 @@ export function PersonDetailPage() {
             id: "roles",
             label: "Роли",
             content: <RolesTab personId={person.id} isAdmin={isAdmin} />,
+          },
+          {
+            id: "documents",
+            label: "Документы",
+            content: <PersonDocumentsTab personId={person.id} />,
           },
           {
             id: "account",
@@ -1048,6 +1067,456 @@ function LinkChildDialog({
         />
       </div>
     </Dialog>
+  );
+}
+
+// --- Documents tab (TH-0117 / Issue #175, ADR-0040) -------------------------
+//
+// Participant Documents (medical certificates and similar Person-owned
+// documents, people-api.md §32). This tab never guesses who holds
+// `document.read`/`document.manage` from `role_assignments` — this
+// codebase's `isAdmin` role check is a correct proxy only where a
+// permission is actually documented as admin-only (e.g. `role.manage`/
+// `account.manage`, per this file's own RolesTab/AccountTab comments);
+// nothing in roles-and-permissions.md or ADR-0040 states that
+// `document.*` is admin-only, so gating on `isAdmin` here would assert
+// an authorization rule this frontend has no basis for. Every control is
+// therefore always rendered for any signed-in viewer, and the backend
+// remains the sole enforcement point: a viewer without `document.read`
+// sees the 403 branch below when the list loads, and a mutation attempt
+// without `document.manage` surfaces the backend's rejection through the
+// existing `ApiError` → toast handling on that action, exactly as for
+// every other mutation in this app.
+//
+// KNOWN CONTRACT GAP — "History" (Issue #175 DoD): people-api.md §32
+// defines no endpoint that lists every historical version of a
+// `document_group_id`, only the current-versions list and a by-id lookup
+// for an already-known version. A prior revision of this tab attempted
+// to work around that by remembering, client-side, whichever version a
+// `replace` call in the current browser session had just superseded —
+// that is not "document history", only a fragile, incomplete echo of
+// one session's own actions, and presenting it as history would be
+// misleading. It has been removed. Full version history is NOT
+// implemented in this PR; it requires a backend endpoint this contract
+// does not yet expose (e.g. a `document_group_id`-scoped version list).
+
+function PersonDocumentsTab({ personId }: { personId: string }) {
+  const documentsQuery = usePersonDocuments(personId);
+  const download = useDownloadPersonDocument();
+  const notify = useNotify();
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<PersonDocument | null>(null);
+  const [replaceTarget, setReplaceTarget] = useState<PersonDocument | null>(null);
+  const [revokeTarget, setRevokeTarget] = useState<PersonDocument | null>(null);
+
+  function handleDownload(doc: PersonDocument) {
+    download.mutate(
+      { personId, documentId: doc.id },
+      {
+        onSuccess: ({ blob, filename }) =>
+          saveBlob(blob, filename ?? `${documentTypeLabel(doc.document_type)}`),
+        onError: (error) => notify("error", error.message),
+      },
+    );
+  }
+
+  return (
+    <div>
+      <div className={styles.tabActions}>
+        <Button variant="secondary" icon="action.upload" onClick={() => setCreateOpen(true)}>
+          Загрузить документ
+        </Button>
+      </div>
+
+      {documentsQuery.isLoading ? <Loading label="Загружаем документы…" /> : null}
+      {documentsQuery.isError ? (
+        <ErrorState
+          illustration={documentsQuery.error.status === 403 ? "403" : "error"}
+          title={
+            documentsQuery.error.status === 403
+              ? "Недостаточно прав для просмотра документов"
+              : "Не удалось загрузить документы"
+          }
+          description={documentsQuery.error.message}
+        />
+      ) : null}
+      {documentsQuery.isSuccess && documentsQuery.data.items.length === 0 ? (
+        <EmptyState
+          illustration="empty-people"
+          title="Документы не загружены"
+          description="Загрузите документ, например медицинскую справку, чтобы он появился здесь."
+        />
+      ) : null}
+      {documentsQuery.isSuccess && documentsQuery.data.items.length > 0 ? (
+        <ul className={styles.list}>
+          {documentsQuery.data.items.map((doc) => {
+            const isDownloading = download.isPending && download.variables?.documentId === doc.id;
+            return (
+              <li key={doc.id} className={styles.row}>
+                <div className={styles.rowMain}>
+                  <span>{documentTypeLabel(doc.document_type)}</span>
+                  <span className={styles.rowSecondary}>
+                    Версия {doc.version_number} · Выдан:{" "}
+                    {doc.issued_at ? new Date(doc.issued_at).toLocaleDateString("ru-RU") : "не указано"}{" "}
+                    · Действителен до:{" "}
+                    {doc.expires_at
+                      ? new Date(doc.expires_at).toLocaleDateString("ru-RU")
+                      : "бессрочно"}
+                  </span>
+                </div>
+                <div className={styles.rowActions}>
+                  <StatusBadge status={documentStatusIcon(doc.status)} label={documentStatusLabel(doc.status)} />
+                  <Button
+                    variant="secondary"
+                    icon="action.download"
+                    disabled={isDownloading}
+                    onClick={() => handleDownload(doc)}
+                  >
+                    {isDownloading ? "Скачивание…" : "Скачать"}
+                  </Button>
+                  <Button variant="secondary" icon="action.edit" onClick={() => setEditTarget(doc)}>
+                    Изменить даты
+                  </Button>
+                  {doc.status !== "revoked" ? (
+                    <>
+                      <Button
+                        variant="secondary"
+                        icon="action.upload"
+                        onClick={() => setReplaceTarget(doc)}
+                      >
+                        Заменить версию
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        icon="action.archive"
+                        onClick={() => setRevokeTarget(doc)}
+                      >
+                        Отозвать
+                      </Button>
+                    </>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+
+      <CreatePersonDocumentDialog open={createOpen} onClose={() => setCreateOpen(false)} personId={personId} />
+      <EditDocumentDatesDialog
+        key={editTarget?.id ?? "none"}
+        doc={editTarget}
+        personId={personId}
+        onClose={() => setEditTarget(null)}
+      />
+      <ReplaceDocumentDialog doc={replaceTarget} personId={personId} onClose={() => setReplaceTarget(null)} />
+      <RevokeDocumentDialog
+        doc={revokeTarget}
+        personId={personId}
+        onClose={() => setRevokeTarget(null)}
+      />
+    </div>
+  );
+}
+
+function DocumentFileField({
+  label,
+  file,
+  onChange,
+}: {
+  label: string;
+  file: File | null;
+  onChange: (file: File | null) => void;
+}) {
+  const inputId = useId();
+  return (
+    <div className={inputStyles.field}>
+      <label className={inputStyles.label} htmlFor={inputId}>
+        {label}
+      </label>
+      <input
+        id={inputId}
+        type="file"
+        className={inputStyles.input}
+        onChange={(event) => onChange(event.target.files?.[0] ?? null)}
+      />
+      {file ? <span className={styles.rowSecondary}>{file.name}</span> : null}
+    </div>
+  );
+}
+
+function CreatePersonDocumentDialog({
+  open,
+  onClose,
+  personId,
+}: {
+  open: boolean;
+  onClose: () => void;
+  personId: string;
+}) {
+  const [documentType, setDocumentType] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [issuedAt, setIssuedAt] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
+  const createDocument = useCreatePersonDocument();
+  const notify = useNotify();
+
+  function reset() {
+    setDocumentType("");
+    setFile(null);
+    setIssuedAt("");
+    setExpiresAt("");
+  }
+
+  function handleClose() {
+    reset();
+    onClose();
+  }
+
+  function handleSubmit() {
+    if (!documentType.trim() || !file) return;
+    createDocument.mutate(
+      {
+        personId,
+        file,
+        document_type: documentType.trim(),
+        issued_at: issuedAt || undefined,
+        expires_at: expiresAt || undefined,
+      },
+      {
+        onSuccess: () => {
+          notify("success", "Документ загружен");
+          handleClose();
+        },
+        onError: (error) => notify("error", error.message),
+      },
+    );
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title="Загрузить документ"
+      onClose={handleClose}
+      actions={
+        <>
+          <Button variant="secondary" onClick={handleClose} disabled={createDocument.isPending}>
+            Отмена
+          </Button>
+          <Button
+            variant="primary"
+            onClick={handleSubmit}
+            disabled={!documentType.trim() || !file || createDocument.isPending}
+          >
+            {createDocument.isPending ? "Загрузка…" : "Загрузить"}
+          </Button>
+        </>
+      }
+    >
+      <div className={styles.form}>
+        <Input
+          label="Тип документа"
+          value={documentType}
+          onChange={(e) => setDocumentType(e.target.value)}
+          placeholder="medical_certificate"
+          hint={`«medical_certificate» отображается как «${documentTypeLabel("medical_certificate")}»`}
+          required
+        />
+        <DocumentFileField label="Файл" file={file} onChange={setFile} />
+        <Input label="Дата выдачи" type="date" value={issuedAt} onChange={(e) => setIssuedAt(e.target.value)} />
+        <Input
+          label="Действителен до"
+          type="date"
+          value={expiresAt}
+          onChange={(e) => setExpiresAt(e.target.value)}
+        />
+      </div>
+    </Dialog>
+  );
+}
+
+function EditDocumentDatesDialog({
+  doc,
+  personId,
+  onClose,
+}: {
+  doc: PersonDocument | null;
+  personId: string;
+  onClose: () => void;
+}) {
+  const [issuedAt, setIssuedAt] = useState(doc?.issued_at?.slice(0, 10) ?? "");
+  const [expiresAt, setExpiresAt] = useState(doc?.expires_at?.slice(0, 10) ?? "");
+  const updateDates = useUpdatePersonDocumentDates();
+  const notify = useNotify();
+
+  function handleSubmit() {
+    if (!doc) return;
+    const fields: { issued_at?: string | null; expires_at?: string | null } = {};
+    const currentIssuedAt = doc.issued_at?.slice(0, 10) ?? "";
+    const currentExpiresAt = doc.expires_at?.slice(0, 10) ?? "";
+    if (issuedAt !== currentIssuedAt) fields.issued_at = issuedAt || null;
+    if (expiresAt !== currentExpiresAt) fields.expires_at = expiresAt || null;
+    if (Object.keys(fields).length === 0) {
+      onClose();
+      return;
+    }
+    updateDates.mutate(
+      { personId, documentId: doc.id, fields },
+      {
+        onSuccess: () => {
+          notify("success", "Даты документа обновлены");
+          onClose();
+        },
+        onError: (error) => notify("error", error.message),
+      },
+    );
+  }
+
+  return (
+    <Dialog
+      open={Boolean(doc)}
+      title="Изменить даты документа"
+      onClose={onClose}
+      actions={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={updateDates.isPending}>
+            Отмена
+          </Button>
+          <Button variant="primary" onClick={handleSubmit} disabled={updateDates.isPending}>
+            Сохранить
+          </Button>
+        </>
+      }
+    >
+      <div className={styles.form}>
+        <Input label="Дата выдачи" type="date" value={issuedAt} onChange={(e) => setIssuedAt(e.target.value)} />
+        <Input
+          label="Действителен до"
+          type="date"
+          value={expiresAt}
+          onChange={(e) => setExpiresAt(e.target.value)}
+        />
+      </div>
+    </Dialog>
+  );
+}
+
+function ReplaceDocumentDialog({
+  doc,
+  personId,
+  onClose,
+}: {
+  doc: PersonDocument | null;
+  personId: string;
+  onClose: () => void;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [issuedAt, setIssuedAt] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
+  const replaceDocument = useReplacePersonDocument();
+  const notify = useNotify();
+
+  function reset() {
+    setFile(null);
+    setIssuedAt("");
+    setExpiresAt("");
+  }
+
+  function handleClose() {
+    reset();
+    onClose();
+  }
+
+  function handleSubmit() {
+    if (!doc || !file) return;
+    replaceDocument.mutate(
+      {
+        personId,
+        documentId: doc.id,
+        file,
+        issued_at: issuedAt || undefined,
+        expires_at: expiresAt || undefined,
+      },
+      {
+        onSuccess: () => {
+          notify("success", "Загружена новая версия документа");
+          handleClose();
+        },
+        onError: (error) => notify("error", error.message),
+      },
+    );
+  }
+
+  return (
+    <Dialog
+      open={Boolean(doc)}
+      title="Заменить версию документа"
+      description="Текущая версия станет историей и будет доступна только для просмотра."
+      onClose={handleClose}
+      actions={
+        <>
+          <Button variant="secondary" onClick={handleClose} disabled={replaceDocument.isPending}>
+            Отмена
+          </Button>
+          <Button variant="primary" onClick={handleSubmit} disabled={!file || replaceDocument.isPending}>
+            {replaceDocument.isPending ? "Загрузка…" : "Заменить"}
+          </Button>
+        </>
+      }
+    >
+      <div className={styles.form}>
+        <DocumentFileField label="Новый файл" file={file} onChange={setFile} />
+        <Input label="Дата выдачи" type="date" value={issuedAt} onChange={(e) => setIssuedAt(e.target.value)} />
+        <Input
+          label="Действителен до"
+          type="date"
+          value={expiresAt}
+          onChange={(e) => setExpiresAt(e.target.value)}
+        />
+      </div>
+    </Dialog>
+  );
+}
+
+function RevokeDocumentDialog({
+  doc,
+  personId,
+  onClose,
+}: {
+  doc: PersonDocument | null;
+  personId: string;
+  onClose: () => void;
+}) {
+  const revoke = useRevokePersonDocument();
+  const notify = useNotify();
+
+  return (
+    <ConfirmDialog
+      open={Boolean(doc)}
+      title="Отозвать документ?"
+      description={
+        doc
+          ? `«${documentTypeLabel(doc.document_type)}» (версия ${doc.version_number}) будет отмечена как отозванная.`
+          : undefined
+      }
+      confirmLabel="Отозвать"
+      destructive
+      pending={revoke.isPending}
+      onCancel={onClose}
+      onConfirm={() => {
+        if (!doc) return;
+        revoke.mutate(
+          { personId, documentId: doc.id },
+          {
+            onSuccess: () => {
+              notify("success", "Документ отозван");
+              onClose();
+            },
+            onError: (error) => notify("error", error.message),
+          },
+        );
+      }}
+    />
   );
 }
 

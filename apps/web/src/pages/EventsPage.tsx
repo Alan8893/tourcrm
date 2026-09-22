@@ -7,14 +7,27 @@ import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { SearchInput } from "../components/ui/SearchInput";
 import { Dialog } from "../components/ui/Dialog";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { Loading } from "../components/ui/Loading";
 import { EmptyState } from "../components/ui/EmptyState";
 import { ErrorState } from "../components/ui/ErrorState";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { useNotify } from "../components/ui/notificationContext";
 import { useCurrentUser, currentClubId, displayName } from "../api/auth";
+import { saveBlob } from "../api/client";
 import { useGroups } from "../api/groups";
 import { useUsers, userFullName } from "../api/users";
+import { personFullName, usePersons } from "../api/people";
+import {
+  useCreateEventDocumentRequirement,
+  useDeleteEventDocumentRequirement,
+  useEventDocumentRequirementCheck,
+  useEventDocumentRequirements,
+  useExportEventDocumentPackage,
+  useUpdateEventDocumentRequirement,
+  type DocumentPackageIncompleteEntry,
+  type EventDocumentRequirement,
+} from "../api/documents";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import {
   useCalendarRange,
@@ -30,6 +43,9 @@ import {
   type EventFields,
 } from "../api/events";
 import {
+  documentRequirementResultIcon,
+  documentRequirementResultLabel,
+  documentTypeLabel,
   eventStatusIcon,
   eventStatusLabel,
   eventTypeLabel,
@@ -832,6 +848,7 @@ function EventDetailDialog({
   const occurrenceQuery = useOccurrence(item.kind === "occurrence" ? item.id : undefined);
   const query = item.kind === "event" ? eventQuery : occurrenceQuery;
   const cancelled = item.status === "cancelled";
+  const [documentsOpen, setDocumentsOpen] = useState(false);
 
   return (
     <Dialog open title={item.title} description={eventTypeLabel(item.event_type)} onClose={onClose}>
@@ -875,8 +892,439 @@ function EventDetailDialog({
         <Button variant="primary" icon="action.edit" onClick={onEdit}>
           Редактировать
         </Button>
+        {item.kind === "event" ? (
+          <Button variant="secondary" onClick={() => setDocumentsOpen(true)}>
+            Документы для соревнования
+          </Button>
+        ) : null}
+      </div>
+      {item.kind === "event" ? (
+        <EventDocumentPackageDialog
+          open={documentsOpen}
+          eventId={item.id}
+          eventTitle={item.title}
+          onClose={() => setDocumentsOpen(false)}
+        />
+      ) : null}
+    </Dialog>
+  );
+}
+
+// --- Competition document package workflow (TH-0117 / Issue #175) ---------
+//
+// «Документы для соревнования» — the explicit Event-scoped workflow for
+// managing EventDocumentRequirement rows, checking one participant's
+// document readiness, and exporting the protected competition document
+// package. Every control here is always rendered for any signed-in
+// viewer — this file never guesses who holds `event.manage`/
+// `document.manage`/`document.export` from `role_assignments`; nothing
+// in roles-and-permissions.md or ADR-0040 documents `document.*` as
+// admin-only, so an `isAdmin` role check would assert an authorization
+// rule this frontend has no basis for. The backend remains the sole
+// enforcement point: a read (list requirements, check a participant)
+// without the right permission surfaces its own 403 via the existing
+// `ApiError` → `ErrorState`/toast handling below, and a mutation without
+// it is rejected the same way, exactly like every other action in this
+// app.
+//
+// KNOWN CONTRACT GAP: there is no implemented endpoint that lists an
+// Event's participants (see api/documents.ts's `useEventDocument
+// RequirementCheck` module comment) — the "participant requirement
+// results" view here is therefore a deliberate, on-demand per-participant
+// lookup (search a Person, then check their readiness for this Event),
+// not an auto-loaded roster. The competition package export itself does
+// not depend on this: it resolves the participant set entirely
+// server-side.
+
+function EventDocumentPackageDialog({
+  open,
+  eventId,
+  eventTitle,
+  onClose,
+}: {
+  open: boolean;
+  eventId: string;
+  eventTitle: string;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog
+      open={open}
+      title="Документы для соревнования"
+      description={eventTitle}
+      onClose={onClose}
+      actions={
+        <Button variant="secondary" onClick={onClose}>
+          Закрыть
+        </Button>
+      }
+    >
+      <div className={styles.documentPackageBody}>
+        <EventDocumentRequirementsSection eventId={eventId} />
+        <ParticipantDocumentCheckSection eventId={eventId} />
+        <DocumentPackageExportSection eventId={eventId} eventTitle={eventTitle} />
       </div>
     </Dialog>
+  );
+}
+
+function EventDocumentRequirementsSection({ eventId }: { eventId: string }) {
+  const requirementsQuery = useEventDocumentRequirements(eventId);
+  const deleteRequirement = useDeleteEventDocumentRequirement();
+  const notify = useNotify();
+  const [addOpen, setAddOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<EventDocumentRequirement | null>(null);
+
+  return (
+    <section>
+      <div className={styles.documentSectionHeader}>
+        <h3>Требования к документам</h3>
+        <Button variant="secondary" icon="action.add" onClick={() => setAddOpen(true)}>
+          Добавить требование
+        </Button>
+      </div>
+
+      {requirementsQuery.isLoading ? <Loading label="Загружаем требования…" /> : null}
+      {requirementsQuery.isError ? (
+        <ErrorState
+          illustration={requirementsQuery.error.status === 403 ? "403" : "error"}
+          title="Не удалось загрузить требования"
+          description={requirementsQuery.error.message}
+        />
+      ) : null}
+      {requirementsQuery.isSuccess && requirementsQuery.data.items.length === 0 ? (
+        <EmptyState illustration="no-results" title="Требования к документам не заданы" />
+      ) : null}
+      {requirementsQuery.isSuccess && requirementsQuery.data.items.length > 0 ? (
+        <ul className={styles.documentList}>
+          {requirementsQuery.data.items.map((requirement) => (
+            <RequirementRow
+              key={requirement.id}
+              eventId={eventId}
+              requirement={requirement}
+              onDelete={() => setDeleteTarget(requirement)}
+            />
+          ))}
+        </ul>
+      ) : null}
+
+      <AddRequirementDialog
+        open={addOpen}
+        eventId={eventId}
+        existingTypes={requirementsQuery.data?.items.map((r) => r.document_type) ?? []}
+        onClose={() => setAddOpen(false)}
+      />
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="Удалить требование?"
+        description={
+          deleteTarget ? `Требование «${documentTypeLabel(deleteTarget.document_type)}» будет удалено.` : undefined
+        }
+        confirmLabel="Удалить"
+        destructive
+        pending={deleteRequirement.isPending}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (!deleteTarget) return;
+          deleteRequirement.mutate(
+            { eventId, requirementId: deleteTarget.id },
+            {
+              onSuccess: () => {
+                notify("success", "Требование удалено");
+                setDeleteTarget(null);
+              },
+              onError: (error) => notify("error", error.message),
+            },
+          );
+        }}
+      />
+    </section>
+  );
+}
+
+function RequirementRow({
+  eventId,
+  requirement,
+  onDelete,
+}: {
+  eventId: string;
+  requirement: EventDocumentRequirement;
+  onDelete: () => void;
+}) {
+  const updateRequirement = useUpdateEventDocumentRequirement();
+  const notify = useNotify();
+
+  function toggleRequired() {
+    updateRequirement.mutate(
+      { eventId, requirementId: requirement.id, required: !requirement.required },
+      { onError: (error) => notify("error", error.message) },
+    );
+  }
+
+  return (
+    <li className={styles.documentRow}>
+      <div className={styles.documentRowMain}>
+        <span>{documentTypeLabel(requirement.document_type)}</span>
+      </div>
+      <div className={styles.documentRowActions}>
+        <label className={styles.mineToggle}>
+          <input
+            type="checkbox"
+            checked={requirement.required}
+            disabled={updateRequirement.isPending}
+            onChange={toggleRequired}
+          />
+          Обязательно
+        </label>
+        <Button variant="destructive" icon="action.delete" onClick={onDelete}>
+          Удалить
+        </Button>
+      </div>
+    </li>
+  );
+}
+
+function AddRequirementDialog({
+  open,
+  eventId,
+  existingTypes,
+  onClose,
+}: {
+  open: boolean;
+  eventId: string;
+  existingTypes: string[];
+  onClose: () => void;
+}) {
+  const [documentType, setDocumentType] = useState("");
+  const [required, setRequired] = useState(true);
+  const createRequirement = useCreateEventDocumentRequirement();
+  const notify = useNotify();
+
+  function reset() {
+    setDocumentType("");
+    setRequired(true);
+  }
+
+  function handleClose() {
+    reset();
+    onClose();
+  }
+
+  const isDuplicate = existingTypes.includes(documentType.trim());
+
+  function handleSubmit() {
+    if (!documentType.trim() || isDuplicate) return;
+    createRequirement.mutate(
+      { eventId, document_type: documentType.trim(), required },
+      {
+        onSuccess: () => {
+          notify("success", "Требование добавлено");
+          handleClose();
+        },
+        onError: (error) => notify("error", error.message),
+      },
+    );
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title="Добавить требование"
+      onClose={handleClose}
+      actions={
+        <>
+          <Button variant="secondary" onClick={handleClose} disabled={createRequirement.isPending}>
+            Отмена
+          </Button>
+          <Button
+            variant="primary"
+            onClick={handleSubmit}
+            disabled={!documentType.trim() || isDuplicate || createRequirement.isPending}
+          >
+            Добавить
+          </Button>
+        </>
+      }
+    >
+      <div className={styles.form}>
+        <Input
+          label="Тип документа"
+          value={documentType}
+          onChange={(e) => setDocumentType(e.target.value)}
+          placeholder="medical_certificate"
+          hint={
+            isDuplicate
+              ? "Требование для этого типа документа уже существует"
+              : `«medical_certificate» отображается как «${documentTypeLabel("medical_certificate")}»`
+          }
+          required
+        />
+        <label className={styles.mineToggle}>
+          <input type="checkbox" checked={required} onChange={(e) => setRequired(e.target.checked)} />
+          Обязательно для допуска
+        </label>
+      </div>
+    </Dialog>
+  );
+}
+
+function ParticipantDocumentCheckSection({ eventId }: { eventId: string }) {
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
+  const [selected, setSelected] = useState<{ id: string; name: string } | null>(null);
+  const searchQuery = usePersons({ page: 1, search: debouncedSearch });
+  const checkQuery = useEventDocumentRequirementCheck(eventId, selected?.id);
+
+  return (
+    <section>
+      <h3>Проверка документов участника</h3>
+      {selected ? (
+        <div className={styles.selectedInstructor}>
+          <span>{selected.name}</span>
+          <Button variant="secondary" onClick={() => setSelected(null)}>
+            Изменить выбор
+          </Button>
+        </div>
+      ) : (
+        <>
+          <SearchInput
+            label="Поиск участника"
+            value={search}
+            onChange={setSearch}
+            placeholder="Например, «Иванова»"
+          />
+          {searchQuery.isSuccess && debouncedSearch ? (
+            <ul className={styles.pickerList}>
+              {searchQuery.data.items.map((candidate) => (
+                <li key={candidate.id}>
+                  <button
+                    type="button"
+                    className={styles.pickerItem}
+                    onClick={() => setSelected({ id: candidate.id, name: personFullName(candidate) })}
+                  >
+                    {personFullName(candidate)}
+                  </button>
+                </li>
+              ))}
+              {searchQuery.data.items.length === 0 ? (
+                <li className={styles.pickerEmpty}>Ничего не найдено</li>
+              ) : null}
+            </ul>
+          ) : null}
+        </>
+      )}
+
+      {selected && checkQuery.isLoading ? <Loading label="Проверяем документы…" /> : null}
+      {selected && checkQuery.isError ? (
+        <ErrorState
+          illustration={checkQuery.error.status === 403 ? "403" : checkQuery.error.status === 404 ? "404" : "error"}
+          title="Не удалось проверить документы"
+          description={checkQuery.error.message}
+        />
+      ) : null}
+      {selected && checkQuery.isSuccess && checkQuery.data.requirements.length === 0 ? (
+        <EmptyState illustration="no-results" title="Требования к документам не заданы" />
+      ) : null}
+      {selected && checkQuery.isSuccess && checkQuery.data.requirements.length > 0 ? (
+        <ul className={styles.documentList}>
+          {checkQuery.data.requirements.map((check) => (
+            <li key={check.document_type} className={styles.documentRow}>
+              <div className={styles.documentRowMain}>
+                <span>{documentTypeLabel(check.document_type)}</span>
+                <span className={styles.rowSecondary}>{check.required ? "Обязательно" : "Опционально"}</span>
+              </div>
+              <StatusBadge
+                status={documentRequirementResultIcon(check.result)}
+                label={documentRequirementResultLabel(check.result)}
+              />
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
+function DocumentPackageExportSection({ eventId, eventTitle }: { eventId: string; eventTitle: string }) {
+  const notify = useNotify();
+  const exportPackage = useExportEventDocumentPackage();
+  const [incomplete, setIncomplete] = useState<DocumentPackageIncompleteEntry[] | null>(null);
+
+  function runExport(confirmIncomplete: boolean) {
+    exportPackage.mutate(
+      { eventId, confirmIncomplete },
+      {
+        onSuccess: ({ blob, filename }) => {
+          saveBlob(blob, filename ?? `competition-documents-${eventTitle}.zip`);
+          setIncomplete(null);
+          notify("success", "Пакет документов сформирован");
+        },
+        onError: (error) => {
+          if (error.status === 409 && error.code === "document_package_incomplete") {
+            const details = error.details as { incomplete?: DocumentPackageIncompleteEntry[] } | undefined;
+            setIncomplete(details?.incomplete ?? []);
+            return;
+          }
+          notify("error", error.message);
+        },
+      },
+    );
+  }
+
+  return (
+    <section>
+      <h3>Экспорт пакета документов</h3>
+      <div className={styles.tabActions}>
+        <Button
+          variant="primary"
+          icon="action.download"
+          disabled={exportPackage.isPending}
+          onClick={() => runExport(false)}
+        >
+          {exportPackage.isPending ? "Формирование…" : "Экспортировать пакет документов"}
+        </Button>
+      </div>
+
+      <Dialog
+        open={incomplete !== null}
+        title="Пакет документов неполный"
+        description="У части участников отсутствует или истёк обязательный документ."
+        onClose={() => setIncomplete(null)}
+        actions={
+          <>
+            <Button variant="secondary" onClick={() => setIncomplete(null)} disabled={exportPackage.isPending}>
+              Отмена
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={exportPackage.isPending}
+              onClick={() => runExport(true)}
+            >
+              {exportPackage.isPending ? "Формирование…" : "Всё равно сформировать пакет"}
+            </Button>
+          </>
+        }
+      >
+        {incomplete && incomplete.length > 0 ? (
+          <ul className={styles.documentList}>
+            {incomplete.map((entry, index) => (
+              <li key={index} className={styles.documentRow}>
+                <div className={styles.documentRowMain}>
+                  <span>{entry.participant_display_name}</span>
+                  <span className={styles.rowSecondary}>
+                    {documentTypeLabel(entry.document_type)} · {entry.required ? "Обязательно" : "Опционально"}
+                  </span>
+                </div>
+                <StatusBadge
+                  status={documentRequirementResultIcon(entry.result)}
+                  label={documentRequirementResultLabel(entry.result)}
+                />
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </Dialog>
+    </section>
   );
 }
 
