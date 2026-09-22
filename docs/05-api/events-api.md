@@ -549,14 +549,82 @@ Object-level policy is mandatory. A role name alone does not grant unrestricted 
 - `children` — data for Persons linked through active GuardianRelationship and otherwise eligible under object policy;
 - `none` — no access.
 
-## 31. Event document requirements — PLANNED (TH-0117 / ADR-0040)
+## 31. Event document requirements — PLANNED (TH-0117.5 / ADR-0040)
 
-**Nothing in this section is implemented.** This is the canonical planned contract fixed by the documentation-only baseline ADR-0040 (TH-0117.0) — none of the endpoints or concepts below exist in current code. `Document` is not implemented either (see `docs/05-api/people-api.md` §32, also planned).
+**PLANNED — implementation is tracked by TH-0117.5 / Issue #164.** The persistence and read-only requirement-check foundation already exists; this section fixes the management API contract before implementation.
 
-`Document` is deliberately **not** coupled directly to `Event`. Instead, a separate `EventDocumentRequirement` concept (`event_id`, `document_type`, `required` — ADR-0040 §5) expresses "this Event requires document type X from its participants."
+`Document` is deliberately **not** coupled directly to `Event`. `EventDocumentRequirement` remains the separate concept with exactly these persisted fields:
 
-- **List/set requirements** — `GET/POST /events/{event_id}/document-requirements` (planned) — minimal fields `document_type`, `required`; at most one requirement row per `(event_id, document_type)`.
-- **Check a participant's requirement status** — `GET /events/{event_id}/document-requirements/{requirement_id}/status` or an equivalent per-participant projection (exact shape not fixed by this ADR) — a read-only computation, never a persisted row, producing exactly one of `valid`, `missing`, `expired` (ADR-0040 §5) for a given participant. `missing` is never a persisted `Document.status` — it is this check's own result when no Document of the required type exists at all for that Person. A current Document version with stored `status = 'revoked'` maps to the derived result `expired`; `revoked` remains a distinct persisted Document lifecycle state and is not exposed as a fourth requirement-check result. Historical valid versions do not override a current revoked version.
-- **Competition/event document package export** — before any export that packages participant documents for an Event, the exporting user must receive an explicit warning naming every participant/requirement pair that currently resolves to `missing` or `expired`. This ADR does not fix the export's exact endpoint, format, or UI.
+- `id`
+- `event_id`
+- `document_type`
+- `required`
 
-This does **not** change existing Event or EventParticipation authorization (§30 above, ADR-0020/ADR-0023/ADR-0037) in any way — `EventDocumentRequirement` management and checking use the dedicated `document.read`/`document.manage`/`document.export` permissions (ADR-0040 §6, `docs/05-api/people-api.md` §32), never `event.read`/`event.manage` alone. An Event permission is necessary to see the Event itself, but not sufficient to see participant document content or a `missing`/`expired` roster derived from it.
+A uniqueness constraint on `(event_id, document_type)` prevents duplicate requirement rows for the same Event/document type.
+
+### 31.1 Requirement management
+
+Canonical endpoints:
+
+- `GET /api/v1/events/{event_id}/document-requirements`
+- `POST /api/v1/events/{event_id}/document-requirements`
+- `PATCH /api/v1/events/{event_id}/document-requirements/{requirement_id}`
+- `DELETE /api/v1/events/{event_id}/document-requirements/{requirement_id}`
+
+Create request:
+
+```json
+{
+  "document_type": "medical_certificate",
+  "required": true
+}
+```
+
+Create validation:
+
+- `document_type` is a non-empty string;
+- document types remain an open string vocabulary; `medical_certificate` is the canonical TH-0117 type;
+- duplicate `(event_id, document_type)` is rejected;
+- `required` is an explicit boolean and is never inferred.
+
+Response projection:
+
+- `id`
+- `event_id`
+- `document_type`
+- `required`
+
+No Document/File/storage internals are returned.
+
+`PATCH` may change **only** `required`. `document_type` is immutable; changing it means deleting the existing requirement and creating a new one.
+
+### 31.2 Authorization
+
+Requirement access requires both the applicable Event object authorization and the dedicated Document permission:
+
+| Operation | Permissions |
+|---|---|
+| List requirements | `event.read` + `document.read` |
+| Create requirement | `event.manage` + `document.manage` |
+| Update requirement | `event.manage` + `document.manage` |
+| Delete requirement | `event.manage` + `document.manage` |
+
+`event.manage` alone is insufficient for requirement management. `person.read` does not grant requirement access. Authorization is fail-closed and follows the existing Event existence-hiding conventions.
+
+### 31.3 Requirement status check
+
+The already implemented read-only participant check remains:
+
+`GET /api/v1/events/{event_id}/document-requirements/{person_id}`
+
+It requires `event.read` + `document.read` and returns only the derived values `valid`, `missing`, `expired`. A current persisted `revoked` Document maps to derived `expired`; `revoked` is never exposed as a fourth check result.
+
+The evaluator continues to evaluate every persisted requirement row. The meaning of `required=false` for competition-package inclusion/blocking is deferred to the package/export slice; this management task does not alter the evaluator.
+
+### 31.4 Audit
+
+EventDocumentRequirement management must use the existing canonical audit infrastructure and **must not invent or repurpose a Document/File audit action**. A dedicated audit vocabulary for this concept is not currently defined by ADR-0040; therefore TH-0117.5 must not silently add one. If implementation discovers an existing canonical requirement that mandates a dedicated action, Claude Code must stop and report the contradiction rather than modifying the vocabulary or canonical documentation.
+
+### 31.5 Competition package
+
+Before a future Event document package export completes, the exporter must receive an explicit warning for participant/requirement pairs resolving to `missing` or `expired`. Package endpoint, format, and UI remain outside TH-0117.5.
