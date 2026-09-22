@@ -97,7 +97,12 @@ from app.db.groups import GroupMembership
 from app.db.identity import Person, User
 from app.db.session import get_db
 from app.documents.queries import get_document_for_person, list_current_documents_for_person
-from app.documents.service import create_document, read_document_content
+from app.documents.service import (
+    NotCurrentVersionError,
+    create_document,
+    read_document_content,
+    replace_document,
+)
 from app.groups import service as groups_service
 from app.groups.queries import GROUP_MEMBERSHIP_DEFAULT_SORT, list_person_group_memberships_page
 from app.groups.queries import InvalidSortError as InvalidGroupSortError
@@ -841,6 +846,90 @@ def download_person_document(
         media_type=file_row.mime_type,
         headers={"Content-Disposition": _content_disposition(file_row.original_name)},
     )
+
+
+@router.post(
+    "/{person_id}/documents/{document_id}/replace",
+    status_code=status.HTTP_201_CREATED,
+    response_model=DocumentOut,
+)
+def replace_person_document(
+    person_id: uuid.UUID,
+    document_id: uuid.UUID,
+    request: Request,
+    file: UploadFile = File(...),
+    issued_at: datetime | None = Form(default=None),
+    expires_at: datetime | None = Form(default=None),
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    storage: FileStorage = Depends(get_file_storage),
+    _csrf: None = Depends(require_csrf_token),
+) -> DocumentOut:
+    """Create a new version of `document_id`'s logical document
+    (people-api.md §32) — `document.manage`; `person.read`/`document.read`
+    alone are never sufficient (ADR-0040 §6). `document_type` is never
+    accepted from the client: the new version always copies it from the
+    version being replaced (Issue #166 §4). `storage_key` is always
+    generated server-side — the old `File`/`Document` are never mutated.
+
+    Only the current version of its `document_group_id` may be replaced
+    (ADR-0040 §4); a historical version, like a nonexistent one, receives
+    the same existence-hiding 404 as `get_person_document`/
+    `download_person_document` (Issue #166 §3) — never a distinct error
+    that would disclose which case applied.
+    """
+    _get_authorized_person_or_404(
+        db, person_id=person_id, user_id=principal.user_id, permission_code="document.manage"
+    )
+
+    document = get_document_for_person(db, person_id=person_id, document_id=document_id)
+    if document is None:
+        raise APIError(
+            status.HTTP_404_NOT_FOUND, _DOCUMENT_NOT_FOUND_CODE, _DOCUMENT_NOT_FOUND_DETAIL
+        )
+
+    if issued_at is not None and expires_at is not None and expires_at < issued_at:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "invalid_document_dates",
+            "expires_at must not be before issued_at",
+        )
+
+    original_name = (file.filename or "").strip()
+    if not original_name:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "filename_required", "A file name is required"
+        )
+    if len(original_name) > 255:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "filename_too_long", "File name is too long"
+        )
+    mime_type = (file.content_type or "application/octet-stream").strip()
+    if len(mime_type) > 255:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "mime_type_too_long", "MIME type is too long"
+        )
+    content = file.file.read()
+
+    try:
+        new_document = replace_document(
+            db,
+            storage,
+            document=document,
+            person_id=person_id,
+            content=content,
+            original_name=original_name,
+            mime_type=mime_type,
+            issued_at=issued_at,
+            expires_at=expires_at,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
+        )
+    except NotCurrentVersionError as exc:
+        raise APIError(
+            status.HTTP_404_NOT_FOUND, _DOCUMENT_NOT_FOUND_CODE, _DOCUMENT_NOT_FOUND_DETAIL
+        ) from exc
+    return _document_out(new_document)
 
 
 # --- Person role assignments (TH-0112 / ADR-0039) --------------------------

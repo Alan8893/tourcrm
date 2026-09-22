@@ -1,12 +1,12 @@
-"""Create and read participant Documents + their Files (TH-0117.3 /
-Issue #160).
+"""Create, replace, and read participant Documents + their Files
+(TH-0117.3 / Issue #160; TH-0117.6 / Issue #166 adds `replace_document`).
 
 Canonical sources: ADR-0040 §1/§3/§4/§7, docs/05-api/people-api.md §32.
 
 Authorization is not decided here (see package docstring) — by the time
-`create_document` is called, the caller (the API router) has already
-established that `person_id` is an existing Person the acting user is
-authorized to manage documents for.
+`create_document`/`replace_document` is called, the caller (the API
+router) has already established that `person_id` is an existing Person
+the acting user is authorized to manage documents for.
 
 Transaction/fail-closed shape, adapted from app.people.service's own
 documented pattern for a business mutation combined with an audit record
@@ -38,19 +38,61 @@ never touches the database at all: there is nothing to roll back. Only
 the reverse case — the binary is safely stored but the subsequent
 database work fails — needs cleanup, and it is bounded to a single
 `storage.delete` call on the one key this same call just created.
+`replace_document` follows this identical shape, plus the additional
+`uq_documents_group_id_version_number` concurrency backstop documented
+on `NotCurrentVersionError` below — no new locking or transaction
+architecture is introduced for it.
 """
 
 import hashlib
 import uuid
 from datetime import datetime
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit_event
 from app.db.documents import Document, File
+from app.documents.queries import get_current_document_version
 from app.storage.file_storage import FileStorage, FileStorageError
 
 _INITIAL_DOCUMENT_STATUS = "active"
+_VERSION_UNIQUE_CONSTRAINT = "uq_documents_group_id_version_number"
+
+
+class DocumentReplacementError(Exception):
+    """Base class for this module's typed, expected failures."""
+
+
+class NotCurrentVersionError(DocumentReplacementError):
+    """`document` is not the current version of its `document_group_id`
+    (ADR-0040 §4) — replacement is only ever allowed on the current
+    version (Issue #166 §3). Also raised when a concurrent replacement
+    wins the race and creates a newer version between this call's
+    initial check and its write (Issue #166 §8, caught via the
+    `uq_documents_group_id_version_number` constraint): from the
+    caller's perspective the two cases are indistinguishable — by the
+    time the write was attempted, `document` was not the current
+    version — so both map to the same typed error and the same
+    existence-hiding response at the API layer.
+    """
+
+    def __init__(self, *, document_id: uuid.UUID) -> None:
+        super().__init__(f"Document {document_id} is not the current version of its group")
+        self.document_id = document_id
+
+
+def _is_version_conflict(exc: IntegrityError) -> bool:
+    constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+    return constraint_name == _VERSION_UNIQUE_CONSTRAINT
+
+
+def _rollback_and_cleanup_storage(session: Session, storage: FileStorage, storage_key: str) -> None:
+    session.rollback()
+    try:
+        storage.delete(storage_key)
+    except FileStorageError:
+        pass
 
 
 def _storage_key_for(person_id: uuid.UUID, file_id: uuid.UUID) -> str:
@@ -137,13 +179,106 @@ def create_document(
         )
         session.commit()
     except Exception:
-        session.rollback()
-        try:
-            storage.delete(storage_key)
-        except FileStorageError:
-            pass
+        _rollback_and_cleanup_storage(session, storage, storage_key)
         raise
     return document
+
+
+def replace_document(
+    session: Session,
+    storage: FileStorage,
+    *,
+    document: Document,
+    person_id: uuid.UUID,
+    content: bytes,
+    original_name: str,
+    mime_type: str,
+    issued_at: datetime | None,
+    expires_at: datetime | None,
+    actor_user_id: uuid.UUID,
+    request_id: str | None = None,
+) -> Document:
+    """Create a new version of `document`'s logical document (`version_
+    number = current + 1`, same `document_group_id`/`document_type`/
+    `person_id`) with a new `File`, auditing the mutation as
+    `document.replaced` (ADR-0040 §7). The new version's `status` is
+    always `active`, regardless of the replaced version's own status
+    (Issue #166 §3).
+
+    Raises `NotCurrentVersionError`, touching neither storage nor the
+    database, if `document` is not the current version of its group —
+    a historical version can never be replaced (ADR-0040 §4). The old
+    `File`/`Document` row are never mutated or deleted; only a new pair
+    is created, mirroring `create_document`'s own storage-before-database
+    ordering and cleanup-on-failure shape (see module docstring).
+    """
+    current = get_current_document_version(session, document_group_id=document.document_group_id)
+    if current.id != document.id:
+        raise NotCurrentVersionError(document_id=document.id)
+
+    file_id = uuid.uuid4()
+    storage_key = _storage_key_for(person_id, file_id)
+    checksum = hashlib.sha256(content).hexdigest()
+    new_version_number = current.version_number + 1
+
+    storage.put(storage_key, content)
+    try:
+        file_row = File(
+            id=file_id,
+            storage_key=storage_key,
+            original_name=original_name,
+            mime_type=mime_type,
+            size_bytes=len(content),
+            checksum=checksum,
+            storage_backend=storage.backend_name,
+            created_by=actor_user_id,
+        )
+        session.add(file_row)
+        session.flush()
+
+        new_document = Document(
+            person_id=person_id,
+            document_group_id=current.document_group_id,
+            version_number=new_version_number,
+            document_type=current.document_type,
+            status=_INITIAL_DOCUMENT_STATUS,
+            issued_at=issued_at,
+            expires_at=expires_at,
+            file_id=file_row.id,
+            uploaded_by=actor_user_id,
+        )
+        session.add(new_document)
+        session.flush()
+
+        record_audit_event(
+            session,
+            action="document.replaced",
+            actor_type="user",
+            actor_user_id=actor_user_id,
+            resource_type="document",
+            resource_id=new_document.id,
+            outcome="success",
+            request_id=request_id,
+            # Never storage_key/filesystem path/binary/medical content
+            # (Issue #166 §9) — only correlation identifiers already
+            # visible to an authorized document.read/manage caller anyway.
+            details={
+                "document_type": current.document_type,
+                "file_id": str(file_row.id),
+                "previous_document_id": str(current.id),
+                "version_number": new_version_number,
+            },
+        )
+        session.commit()
+    except IntegrityError as exc:
+        _rollback_and_cleanup_storage(session, storage, storage_key)
+        if _is_version_conflict(exc):
+            raise NotCurrentVersionError(document_id=document.id) from exc
+        raise
+    except Exception:
+        _rollback_and_cleanup_storage(session, storage, storage_key)
+        raise
+    return new_document
 
 
 def read_document_content(
@@ -184,4 +319,10 @@ def read_document_content(
     return content
 
 
-__all__ = ["create_document", "read_document_content"]
+__all__ = [
+    "DocumentReplacementError",
+    "NotCurrentVersionError",
+    "create_document",
+    "replace_document",
+    "read_document_content",
+]
