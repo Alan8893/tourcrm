@@ -85,7 +85,7 @@ Sensitive/optional health data must not be placed here unless explicitly defined
 
 - `id` PK
 - `person_id` unique nullable/required depending on service-account policy
-- `login_identifier` required, normalized
+- `login_identifier` nullable only for the canonical login-less pending-stub (`status = 'pending'` and `password_hash IS NULL`); otherwise required and normalized
 - `password_hash` nullable for future external-auth providers
 - `status` required
 - `email_verified_at` nullable
