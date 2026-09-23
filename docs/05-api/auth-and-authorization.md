@@ -6,6 +6,10 @@
 
 ## 2. Identity model
 
+TourCRM работает в одноклубной модели: в системе существует ровно один `Club`. Мультиклубность, выбор/переключение клуба и пользователи, одновременно состоящие в нескольких клубах, не входят в продуктовую и архитектурную модель.
+
+`ClubMembership` сохраняется как доменная запись членства `Person` в этом единственном клубе; `club_id` не является механизмом выбора клуба или tenant-switching.
+
 Система разделяет:
 
 - `Person` — физическое лицо;
@@ -82,7 +86,18 @@ Invitation token:
 
 ### 5.3 Import
 
-Импорт может предварительно создать Person/ClubMembership без активного User. Далее пользователь приглашается отдельно.
+Импорт всегда создаёт `Person` вместе с `User` в рамках подтверждённого применения import batch.
+
+Правила account provisioning:
+
+- если в импортируемой строке есть `email`, создаётся `User.status = active` с `login_identifier = normalized(email)`; выдача first-access credential выполняется по каноническому account-provisioning flow;
+- если `email` отсутствует, создаётся `pending-stub User`: `status = pending`, `login_identifier = NULL`, `password_hash = NULL`, без first-access credential;
+- фиктивные login/email значения для обхода отсутствующего email запрещены;
+- отсутствие email не является основанием для создания `Person` без `User`;
+- `duplicate_exact` из preview не означает merge, update, overwrite или автоматическое переиспользование существующего `Person`/`User`;
+- добавление email и последующая активация `pending-stub` выполняются существующим account-management flow.
+
+Импорт не создаёт `User` отдельно от `Person`: эти identity/account изменения применяются согласованно в рамках import execution transaction.
 
 ## 6. Login
 
