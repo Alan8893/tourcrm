@@ -106,8 +106,10 @@ Membership lifecycle is exposed through the canonical `/status` operation. The o
 - `GET /memberships/imports/{import_id}` — import job status/statistics; protected by `membership.import` and ImportJob object policy.
 - `GET /memberships/imports/{import_id}/errors` — paginated import errors and warnings (optional `severity=error|warning` filter); protected by `membership.import` and ImportJob object policy.
 - `POST /memberships/imports/{import_id}/preview` — explicit, synchronous parsing/validation/exact duplicate detection (dry-run) for an `uploaded` job: `200` → `preview_ready`, `404` hidden/nonexistent job, `409` job not in `uploaded`, `422 import_validation_failed` → job `failed`; protected by `membership.import` and ImportJob object policy.
+- `POST /memberships/imports/{import_id}/approve` — explicit approval of a `preview_ready` job: `200` → `approved`, `404` hidden/nonexistent job, `409` invalid status; no domain mutation.
+- `POST /memberships/imports/{import_id}/apply` — synchronous application of an `approved` job: `200` → terminal status (`completed`, `partially_completed` or `failed`), `404` hidden/nonexistent job, `409` invalid status; creates only Person + User + ClubMembership for valid non-duplicate rows; protected by `membership.import` and ImportJob object policy.
 
-Import jobs are Club-bound and retain `created_by_user_id` and `source_file_id`. Upload never starts parsing; preview never creates or changes domain entities. Creation and preview are not audit-required; import application/execution is audit-required and requires a future ADR amendment for its action code.
+Import jobs are Club-bound and retain `created_by_user_id` and `source_file_id`. Upload never starts parsing; preview never creates or changes domain entities. Creation and preview are not audit-required; import application/execution is audit-required and uses membership.import.applied plus existing domain audit actions.
 
 The detailed import workflow, lifecycle, authorization and account semantics are defined in `docs/05-api/people-api.md §22` and `docs/04-modules/people-and-membership.md §11`.
 
