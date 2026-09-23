@@ -24,9 +24,26 @@
   overflow-y: auto;
 }
 
+/* TH-0089: larger brand treatment and a clear, standard close control in
+   the drawer's top-right corner. */
 .header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: var(--space-3);
+  padding-bottom: var(--space-4);
   margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.logo {
+  display: block;
+  height: 96px;
+  width: auto;
+}
+
+.close {
+  flex-shrink: 0;
+  height: 44px;
+  padding: 0 var(--space-3);
 }

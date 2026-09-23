@@ -31,10 +31,9 @@ export type MeResponse = {
   role_assignments: RoleAssignmentSummary[];
 };
 
-/** `GET /api/v1/auth/me`. A 401 (no session yet — this Issue does not add
- * a login screen) is treated as "signed out", not a hard failure: callers
- * check `isError` and render a guest state rather than surfacing a system
- * error page for the expected unauthenticated case. */
+/** `GET /api/v1/auth/me`. A 401 means "signed out", not a hard failure:
+ * AppShell (TH-0089) routes it to `/login` — there is no Guest state — while
+ * any other failure is surfaced as an error rather than as a logout. */
 export function useCurrentUser() {
   return useQuery<MeResponse, ApiError>({
     queryKey: ["auth", "me"],

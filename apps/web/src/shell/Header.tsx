@@ -9,7 +9,10 @@ export type HeaderProps = {
   onOpenMobileNav: () => void;
 };
 
-/** Top brand/header zone with the approved decorative daily illustration. */
+/** Top brand/header zone (compact single row) with the approved decorative
+ * daily illustration as a restrained, secondary accent (TH-0089). Desktop
+ * and mobile use distinct compositions via Header.module.css /
+ * HeaderScene.module.css — the mobile header is not a scaled-down desktop. */
 export function Header({ onOpenMobileNav }: HeaderProps) {
   return (
     <header className={styles.header}>
@@ -23,8 +26,8 @@ export function Header({ onOpenMobileNav }: HeaderProps) {
         >
           Меню
         </button>
-        <Link to="/" aria-label="TourCRM — на главную">
-          <BrandLogo />
+        <Link to="/" className={styles.brand} aria-label="TourCRM — на главную">
+          <BrandLogo height={68} className={styles.logo} />
         </Link>
       </div>
       <div className={styles.profile}>

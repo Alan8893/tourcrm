@@ -2,12 +2,20 @@
   position: absolute;
   inset: 0;
   /*
-   * Reserve room for the ProfileMenu's name label (visible from 640px up,
+   * TH-0089: keep the artwork clear of the brand zone so the official logo
+   * always sits on a plain surface, and soften both edges so the scene
+   * reads as an atmospheric, secondary accent rather than a banner strip.
+   */
+  left: 160px;
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 18%, #000 72%, transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 18%, #000 72%, transparent 100%);
+  /*
+   * Reserve room for the ProfileMenu's name label (visible from 768px up,
    * see ProfileMenu.module.css `.name` breakpoint), which has no background
    * of its own. Without this the artwork's right edge can render directly
    * under the label and wash out its contrast.
    */
-  right: 112px;
+  right: 200px;
   z-index: 0;
   display: block;
   overflow: hidden;
@@ -15,11 +23,13 @@
   user-select: none;
 }
 
-@media (max-width: 639.98px) {
+@media (max-width: 767.98px) {
   .scene {
-    /* Below 640px the name label is hidden and only the avatar remains,
-       which carries its own solid background, so no reserve is needed. */
-    right: 0;
+    /* TH-0089 mobile: only a very light accent in the gap between the
+       logo and the profile control; content keeps its vertical space. */
+    left: 136px;
+    right: 56px;
+    opacity: 0.3;
   }
 }
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 
@@ -70,11 +70,13 @@ describe("ProfileMenu", () => {
     expect(screen.queryByRole("menu", { name: "Профиль" })).not.toBeInTheDocument();
   });
 
-  it("shows a neutral Гость state for an unauthenticated visitor", async () => {
-    stubFetch([{ match: "/auth/me", response: {}, status: 401 }]);
+  it("never renders a Гость pseudo-profile without a resolved identity (TH-0089)", async () => {
+    const fetchMock = stubFetch([{ match: "/auth/me", response: {}, status: 401 }]);
     renderWithProviders(<ProfileMenu />);
 
-    expect(await screen.findByRole("button", { name: /Гость/ })).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(screen.queryByText(/Гость/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
   // --- Logout (TH-0114 / GitHub Issue #146) -------------------------------
@@ -87,16 +89,6 @@ describe("ProfileMenu", () => {
     await user.click(await screen.findByRole("button", { name: /Иванова Анна/ }));
 
     expect(screen.getByRole("menuitem", { name: "Выйти" })).toBeInTheDocument();
-  });
-
-  it("never offers Выйти for an unauthenticated guest", async () => {
-    stubFetch([{ match: "/auth/me", response: {}, status: 401 }]);
-    renderWithProviders(<ProfileMenu />);
-    const user = userEvent.setup();
-
-    await user.click(await screen.findByRole("button", { name: /Гость/ }));
-
-    expect(screen.queryByRole("menuitem", { name: "Выйти" })).not.toBeInTheDocument();
   });
 
   it("calls the canonical POST /auth/logout endpoint and navigates to /login on success", async () => {
@@ -126,7 +118,7 @@ describe("ProfileMenu", () => {
     ).toBe(true);
   });
 
-  it("clears the cached identity so a reload after logout shows a guest, never the previous session", async () => {
+  it("clears the cached identity so a reload after logout never shows the previous session", async () => {
     // TH-0114 requirement: the user must not remain authenticated after a
     // reload following logout — modeled here as unmounting and remounting
     // ProfileMenu against the SAME React Query cache the logout mutation
@@ -156,10 +148,14 @@ describe("ProfileMenu", () => {
     );
     renderWithProviders(<ProfileMenu />, { client });
 
-    expect(await screen.findByRole("button", { name: /Гость/ })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/auth/me"))).toHaveLength(2),
+    );
+    expect(screen.queryByRole("button", { name: /Иванова Анна/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Гость/)).not.toBeInTheDocument();
   });
 
-  it("shows a notification and keeps the guest unauthenticated on a logout failure", async () => {
+  it("shows a notification on a logout failure", async () => {
     stubFetch([
       { match: "/auth/me", response: meResponse() },
       {

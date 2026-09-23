@@ -35,11 +35,29 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
+}
+
+/* TH-0089: the official logo at a clearly readable size. Only the height
+   is set; width follows the master asset's own aspect ratio. */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+}
+
+.logo {
+  display: block;
+  height: 68px;
+  width: auto;
 }
 
 .menuButton {
   display: none;
-  height: 40px;
+  align-items: center;
+  flex-shrink: 0;
+  height: 44px;
   padding: 0 var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border-strong);
@@ -52,9 +70,20 @@
   background: var(--color-surface-muted);
 }
 
+/* Mobile: dedicated compact composition — menu control, larger logo,
+   profile — not the desktop row scaled down. */
 @media (max-width: 767.98px) {
   .header {
+    gap: var(--space-2);
     padding: 0 var(--space-3);
+  }
+
+  .start {
+    gap: var(--space-3);
+  }
+
+  .logo {
+    height: 56px;
   }
 
   .menuButton {
