@@ -143,7 +143,7 @@ Invitation secrets are never returned after creation.
 - `POST /groups`
 - `PATCH /groups/{id}`
 - `POST /groups/{id}/archive`
-- `DELETE /groups/{id}` — permanent delete, Administrator only; destructive operation, detailed contract pending canonical specification.
+- `DELETE /groups/{id}` — permanent delete, Administrator only; explicit destructive confirmation; atomic deletion of Group + historical GroupMembership/GroupInstructorAssignment + removable EventGroupTarget/SeriesGroupTarget relationships; rejected if the Group is the sole remaining target of an affected targeted Event/EventSeries; Events/EventSeries/EventOccurrences are never cascade-deleted or converted to club-wide; detailed contract in `docs/05-api/people-api.md`.
 - `GET /groups/{id}/members`
 - `POST /groups/{id}/members`
 - `POST /groups/{id}/members/bulk`
