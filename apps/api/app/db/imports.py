@@ -10,12 +10,13 @@ docs/05-api/endpoint-inventory.md §4.1.
 the existing, domain-neutral `files` table (`source_file_id`, ADR-0040
 §1/§3) — the binary itself lives in `FileStorage`, never inline here.
 
-`ImportJobError` is the validation/application error storage foundation
-behind `GET /memberships/imports/{import_id}/errors`: every row belongs to
-exactly one job (`import_job_id`), which is what keeps one job's errors
-from ever being listed under another. No parser/validator/apply stage
-writes rows yet (Issue #185 scope) — this slice only establishes the
-storage and its read path.
+`ImportJobError` holds a job's file-level and row-level errors and
+warnings, behind `GET /memberships/imports/{import_id}/errors`: every row
+belongs to exactly one job (`import_job_id`), which is what keeps one
+job's entries from ever being listed under another. TH-0118.2 added
+`severity` (`error`/`warning`) and `matched_person_id` (duplicate against
+an existing Person) — the preview is these rows plus the job's counters,
+not a separate preview entity.
 
 Shape mirrors app.db.documents/app.db.groups: plain FK columns, no ORM
 `relationship()` objects, RESTRICT foreign keys, closed status
@@ -49,12 +50,19 @@ CANONICAL_IMPORT_JOB_STATUSES: frozenset[str] = frozenset(
     }
 )
 
+# people-api.md §22 "Preview": an error makes its row invalid; a warning
+# (e.g. `duplicate_exact`) does not.
+CANONICAL_IMPORT_ISSUE_SEVERITIES: frozenset[str] = frozenset({"error", "warning"})
+
 # people-api.md §22 "Import job model": `source_format` — `csv` or `xlsx`
 # (people-and-membership.md §11.1: the first version's formats).
 CANONICAL_IMPORT_SOURCE_FORMATS: frozenset[str] = frozenset({"csv", "xlsx"})
 
 _IMPORT_JOB_STATUS_VALUES = ",".join(
     f"'{value}'" for value in sorted(CANONICAL_IMPORT_JOB_STATUSES)
+)
+_IMPORT_ISSUE_SEVERITY_VALUES = ",".join(
+    f"'{value}'" for value in sorted(CANONICAL_IMPORT_ISSUE_SEVERITIES)
 )
 _IMPORT_SOURCE_FORMAT_VALUES = ",".join(
     f"'{value}'" for value in sorted(CANONICAL_IMPORT_SOURCE_FORMATS)
@@ -135,13 +143,17 @@ class ImportJob(Base):
 
 
 class ImportJobError(Base):
-    """One validation/application error recorded against an ImportJob
-    (people-api.md §22 `GET .../errors`).
+    """One error or warning recorded against an ImportJob (people-api.md
+    §22 `GET .../errors`).
 
-    `row_number` (1-based source record) and `field` (source column) are
-    both optional: an error need not be tied to one row or one column
-    (e.g. a file-level failure). `code` is a machine-readable error code;
-    `message` is the human-readable text.
+    `row_number` (1-based row in the source file; the header is row 1) and
+    `field` (source column) are both optional: an entry need not be tied to
+    one row or one column (e.g. a file-level failure). `code` is a
+    machine-readable code; `message` is the human-readable text and never
+    echoes cell values. `severity` is `error` (the row is invalid, or the
+    file failed) or `warning` (the row stays valid). `matched_person_id` is
+    set only for a `duplicate_exact` warning against an existing Person —
+    only that id, never the Person's data.
     """
 
     __tablename__ = "import_job_errors"
@@ -154,6 +166,12 @@ class ImportJobError(Base):
     field: Mapped[Optional[str]] = mapped_column(sa.String(255), nullable=True)
     code: Mapped[str] = mapped_column(sa.String(64), nullable=False)
     message: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    severity: Mapped[str] = mapped_column(sa.String(16), nullable=False)
+    # SET NULL: a reference only — deleting the matched Person keeps this
+    # historical entry and clears the reference rather than blocking it.
+    matched_person_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("persons.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
     )
@@ -163,6 +181,10 @@ class ImportJobError(Base):
             "row_number IS NULL OR row_number >= 1",
             name="ck_import_job_errors_row_number_positive",
         ),
+        sa.CheckConstraint(
+            f"severity IN ({_IMPORT_ISSUE_SEVERITY_VALUES})",
+            name="ck_import_job_errors_severity_valid",
+        ),
         sa.Index("ix_import_job_errors_import_job_id", "import_job_id"),
     )
 
@@ -170,6 +192,7 @@ class ImportJobError(Base):
 __all__ = [
     "CANONICAL_IMPORT_JOB_STATUSES",
     "CANONICAL_IMPORT_SOURCE_FORMATS",
+    "CANONICAL_IMPORT_ISSUE_SEVERITIES",
     "IMPORT_JOB_RECORD_COUNTERS",
     "ImportJob",
     "ImportJobError",

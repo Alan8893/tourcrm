@@ -148,6 +148,9 @@ _MEMBERSHIP_IMPORT_PATHS = {
     "/api/v1/memberships/imports",
     "/api/v1/memberships/imports/{import_id}",
     "/api/v1/memberships/imports/{import_id}/errors",
+    # TH-0118.2: explicit, synchronous parse/validate/duplicate-check
+    # dry-run (people-api.md §22 "POST .../preview").
+    "/api/v1/memberships/imports/{import_id}/preview",
 }
 
 _GUARDIAN_RELATIONSHIP_PATHS = {
@@ -242,13 +245,23 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
 
 def test_membership_import_endpoints_expose_only_their_canonical_methods(real_client) -> None:
     """TH-0118.1 / Issue #185: POST (multipart) creates a job; the job and
-    its errors are read-only — no endpoint changes a job's status directly.
+    its errors are read-only. TH-0118.2 adds only POST .../preview — no
+    endpoint sets a job's status directly.
     """
     paths = real_client.get("/openapi.json").json()["paths"]
 
     assert set(paths["/api/v1/memberships/imports"]) == {"post"}
     assert set(paths["/api/v1/memberships/imports/{import_id}"]) == {"get"}
     assert set(paths["/api/v1/memberships/imports/{import_id}/errors"]) == {"get"}
+    assert set(paths["/api/v1/memberships/imports/{import_id}/preview"]) == {"post"}
+    severity = next(
+        parameter
+        for parameter in paths["/api/v1/memberships/imports/{import_id}/errors"]["get"][
+            "parameters"
+        ]
+        if parameter["name"] == "severity"
+    )
+    assert "error" in str(severity["schema"]) and "warning" in str(severity["schema"])
     request_body = paths["/api/v1/memberships/imports"]["post"]["requestBody"]
     assert set(request_body["content"]) == {"multipart/form-data"}
     assert "201" in paths["/api/v1/memberships/imports"]["post"]["responses"]

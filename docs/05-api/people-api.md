@@ -697,9 +697,105 @@ The requester must have `membership.import` for the job's Club and satisfy the I
 
 ### GET `/api/v1/memberships/imports/{import_id}/errors`
 
-Returns a paginated list of validation/application errors belonging to the requested import job.
+Returns a paginated list of the errors and warnings belonging to the requested import job (the preview's row-level results, see "Preview" below).
 
-The response must not disclose errors from another import job or confidential data outside the requester's authorized scope.
+Query parameters:
+
+- `page`, `page_size` — the standard collection pagination;
+- `severity` — optional, `error` or `warning`; without it both severities are returned. Any other value is a `422` request validation error.
+
+Each item contains `id`, `row_number`, `field`, `code`, `message`, `severity`, `matched_person_id` and `created_at`.
+
+The response must not disclose errors from another import job or confidential data outside the requester's authorized scope. `matched_person_id` is only the identifier of a matched existing Person — no name, email, phone or any other personal data of that Person is returned through the import API.
+
+### POST `/api/v1/memberships/imports/{import_id}/preview`
+
+Explicitly starts parsing, validation and duplicate detection for an `uploaded` job (TH-0118.2, PO decision). `POST /api/v1/memberships/imports` never starts it by itself.
+
+The preview runs synchronously within this request; no queue, background worker or other infrastructure is involved. The request has no body.
+
+Authorization: the same `membership.import` + `all` requirement and ImportJob object-access policy as the other import job endpoints (see "Import authorization and object access").
+
+Lifecycle:
+
+```text
+uploaded → parsing → validating → preview_ready
+uploaded → parsing → failed                 (the source file cannot be read/parsed)
+uploaded → parsing → validating → failed    (validation cannot be completed)
+```
+
+Responses:
+
+- `200 OK` — the preview was produced; the body is the import job status representation (as `GET /api/v1/memberships/imports/{import_id}`) with `status = preview_ready` and the aggregate statistics;
+- `404` — the job does not exist or is not accessible to the requester (existence-hiding, same as the other import job endpoints);
+- `409` `invalid_import_job_status_transition` — the job exists but is not in `uploaded`;
+- `422` `import_validation_failed` — the file could not be parsed/validated; the job is now `failed` and the reason is available through `GET .../errors`.
+
+Row-level validation errors do **not** fail the job: they make their rows invalid and the job still reaches `preview_ready`.
+
+### Source file format
+
+Only canonical machine-readable column names are accepted in the header — no aliases, no guessing of other names, no user-defined column mapping:
+
+- required: `first_name`, `last_name`;
+- optional: `middle_name`, `birth_date`, `phone`, `email`, `external_id`.
+
+For both formats the first row is the header and every following row is a record. Surrounding whitespace in a header cell is ignored. An unknown column (including a blank column name), a repeated column, or a missing required column is a header error. A row whose cells are all empty is not a record. `row_number` in errors/warnings is the 1-based row number in the source file (the header is row 1).
+
+CSV: UTF-8 (a leading BOM is allowed), comma-delimited. A missing/invalid header, undecodable content, malformed quoting or a value outside the header's columns fails the job.
+
+XLSX: read-only; only the first worksheet is imported — further worksheets are never imported automatically. An empty or invalid first worksheet, or an unreadable workbook, fails the job.
+
+No file-size or row-count limit is defined by this contract.
+
+File-level failure codes (severity `error`, recorded on the failed job): `import_file_unreadable`, `import_file_malformed`, `import_header_missing`, `import_header_unknown_column`, `import_header_duplicate_column`, `import_header_missing_required_column`, `import_validation_failed`.
+
+### Row normalization and validation
+
+Normalization runs before validation:
+
+- text values are trimmed; a blank value becomes `null`;
+- `email` is normalized with the existing `normalize_login_identifier()` (trim + lowercase);
+- `phone` is only trimmed — no canonical phone normalization exists (`Person.phone` is free text of at most 32 characters);
+- `birth_date`: in CSV only `YYYY-MM-DD` is accepted; in XLSX only a native date/datetime cell is accepted. No other format (`DD.MM.YYYY`, `MM/DD/YYYY`, ...) is guessed.
+
+Validation (severity `error`; several errors per row are allowed; an error makes its row invalid):
+
+- `first_name`, `last_name` are required (`required_field_missing`);
+- `email`, when present, must have the minimal `local@domain` form (`invalid_email`) and at most 255 characters;
+- `birth_date` must be valid per the rules above (`invalid_birth_date`);
+- text lengths follow the Person contract — names and email 255, phone 32 (`value_too_long`);
+- an XLSX cell of a non-text type in a text column is `invalid_value_type`.
+
+A missing email is not an error; no substitute email or login is ever generated. Error/warning messages never echo cell values.
+
+### Duplicate detection
+
+Exact rules, in canonical order (`docs/04-modules/people-and-membership.md §11.4`):
+
+1. exact `external_id` — only between rows of the current file (no persisted external identifier exists; `external_id` is never compared with existing data);
+2. exact normalized `email` — against existing `Person.email` and `User` login identifiers, and between rows of the file;
+3. exact normalized (trimmed) `phone` — against existing `Person.phone` and between rows of the file;
+4. exact normalized (trimmed) `first_name` + `last_name` + `birth_date` — against existing Persons and between rows of the file.
+
+Fuzzy matching is **deferred**: no algorithm, fields or threshold are defined, and none is performed.
+
+Every match is reported as `duplicate_exact` with severity **`warning`** — never an error: the row stays valid. A duplicate never means merge, update, overwrite, or reuse/automatic selection of an existing Person or User.
+
+- Against an existing Person: `matched_person_id` is that Person's id.
+- Inside the file: **every** conflicting row is marked (e.g. both row 10 and row 25), with `matched_person_id = null`.
+
+For one counterpart only the first matching rule (canonical order) is reported.
+
+### Preview
+
+The preview is not a separate entity: it is the job's aggregate statistics plus its errors/warnings (`GET .../errors`).
+
+- `total_records` — the number of records; `invalid_records` — records with at least one `error`; `valid_records` — the rest (a record with only warnings is valid; a record with an error and a warning is invalid);
+- `error_count` counts `error` entries only — warnings are not errors;
+- `created_records`, `updated_records`, `skipped_records` stay `null` until apply.
+
+The preview is a dry-run: until `approved`/`applying`, no Person, User, ClubMembership, RoleAssignment, GroupMembership, GroupInstructorAssignment, GuardianRelationship, EventParticipation or any other domain entity is created or changed; existing Persons/Users are only read.
 
 ### Import authorization and object access
 
@@ -724,7 +820,7 @@ Creating an ImportJob is **not** an audit-required business action under ADR-002
 
 The later `apply`/import-execution operation and its material results are audit-required. Its action code will be added to the closed audit vocabulary by a separate ADR amendment before the apply slice is implemented.
 
-Preview/dry-run does not create final participant changes.
+Preview/dry-run does not create final participant changes and is not audit-required.
 
 Import must preserve the duplicate-detection and fail-closed rules defined in `docs/04-modules/people-and-membership.md §11`.
 
@@ -863,7 +959,9 @@ Audit обязателен для создания/изменения Person, me
 - `GUARDIAN_LINK_NOT_ALLOWED` (реализовано как `guardian_link_not_allowed`);
 - `INSUFFICIENT_SCOPE`;
 - `ROLE_ASSIGNMENT_NOT_ALLOWED`;
-- `IMPORT_VALIDATION_FAILED`.
+- `IMPORT_VALIDATION_FAILED` (реализовано как `import_validation_failed`, HTTP 422 — `POST /memberships/imports/{import_id}/preview`, когда файл не удалось разобрать/проверить и job переведён в `failed`, §22).
+
+Import-специфичные machine-readable коды (§22): `unsupported_import_format` (HTTP 422, upload), `invalid_import_job_status_transition` (HTTP 409, preview для job не в `uploaded`); file-level и row-level коды ошибок/предупреждений перечислены в §22 и возвращаются через `GET /memberships/imports/{import_id}/errors`, а не как HTTP-ошибки.
 
 Group/GroupMembership/GroupInstructorAssignment-специфичные machine-readable коды (§14–§16), все — lowercase snake_case, согласно установленной конвенции:
 
