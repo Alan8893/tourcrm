@@ -279,7 +279,13 @@ Concurrency/idempotency: как и `PATCH /api/v1/persons/{person_id}` (§7), в
 
 Permission: `group.manage` + scope + object relationship.
 
-Выполняет единственный допустимый переход `active → archived` (§14.1). Повторный вызов для уже `archived` группы отклоняется с кодом `invalid_group_status_transition`, HTTP 409. История группы (её `GroupMembership`/`GroupInstructorAssignment`) не уничтожается.
+Выполняет единственный допустимый переход `active → archived` (§14.1). Повторный вызов для уже `archived` группы отклоняется с кодом `invalid_group_status_transition`, HTTP 409.
+
+Архивация группы также прекращает/отменяет её будущую событийную активность. Прошедшие Events/Occurrences, GroupMembership и GroupInstructorAssignment не удаляются и сохраняются для истории.
+
+Архивная группа доступна только Administrator. Non-administrator requesters не должны получать её через list/item API.
+
+Архивную группу можно окончательно удалить отдельной явной destructive-операцией Administrator. До принятия отдельного API-контракта endpoint физического удаления не считается реализованным и не должен додумываться frontend/backend implementation task.
 
 ## 15. Group membership (GroupMembership)
 
