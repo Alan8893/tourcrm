@@ -14,8 +14,10 @@ entity — so `import_job_errors` is minimally extended with:
   Rows that already exist were all errors (TH-0118.1 wrote no warnings),
   so they are backfilled as `error` through a temporary server default
   that is dropped again: every new row must state its severity explicitly.
-- `matched_person_id` — nullable FK to `persons` (RESTRICT), set only for
-  a `duplicate_exact` warning against an existing Person.
+- `matched_person_id` — nullable FK to `persons` (ON DELETE SET NULL), set
+  only for a `duplicate_exact` warning against an existing Person. It is a
+  reference only: deleting that Person keeps the historical error/warning
+  row and clears the reference, instead of the row blocking the delete.
 
 ## Rollback
 
@@ -49,7 +51,7 @@ def upgrade() -> None:
         'persons',
         ['matched_person_id'],
         ['id'],
-        ondelete='RESTRICT',
+        ondelete='SET NULL',
     )
     op.create_check_constraint(
         'ck_import_job_errors_severity_valid',

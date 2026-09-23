@@ -167,8 +167,10 @@ class ImportJobError(Base):
     code: Mapped[str] = mapped_column(sa.String(64), nullable=False)
     message: Mapped[str] = mapped_column(sa.Text, nullable=False)
     severity: Mapped[str] = mapped_column(sa.String(16), nullable=False)
+    # SET NULL: a reference only — deleting the matched Person keeps this
+    # historical entry and clears the reference rather than blocking it.
     matched_person_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), sa.ForeignKey("persons.id", ondelete="RESTRICT"), nullable=True
+        UUID(as_uuid=True), sa.ForeignKey("persons.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False

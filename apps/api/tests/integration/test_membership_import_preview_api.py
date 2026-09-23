@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 import app.imports.preview as preview_module
 from app.api.deps import CurrentPrincipal, get_current_principal
@@ -724,3 +724,35 @@ def test_import_job_error_rows_belong_only_to_their_job(client: TestClient) -> N
     assert sorted((str(job_id), field) for job_id, field in rows) == sorted(
         [(first, "first_name"), (second, "last_name")]
     )
+
+
+def test_deleting_matched_person_keeps_the_warning_and_clears_the_reference(
+    client: TestClient,
+) -> None:
+    """`matched_person_id` is a reference only (ON DELETE SET NULL): the
+    historical preview entry survives the matched Person's deletion."""
+    _setup(client)
+    existing = _make_person(email="match@example.com")
+    import_id = _upload(
+        client, _csv("first_name,last_name,email", "Anna,Ivanova,match@example.com")
+    )
+    assert _preview(client, import_id).status_code == 200
+    with session_scope() as session:
+        warning_id = session.execute(
+            select(ImportJobError.id).where(ImportJobError.matched_person_id == existing)
+        ).scalar_one()
+
+    with session_scope() as session:
+        session.execute(delete(Person).where(Person.id == existing))
+        session.commit()
+
+    with session_scope() as session:
+        assert session.get(Person, existing) is None
+        warning = session.get(ImportJobError, warning_id)
+        assert warning is not None
+        assert warning.matched_person_id is None
+        assert (warning.code, warning.severity, warning.row_number) == (
+            "duplicate_exact",
+            "warning",
+            2,
+        )
