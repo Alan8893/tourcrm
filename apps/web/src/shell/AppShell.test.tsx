@@ -16,7 +16,7 @@ const NAVIGATION_LABELS = [
   "Настройки",
 ];
 
-function meResponse() {
+function meResponse(roleCodes: string[] = ["admin"]) {
   return {
     user: {
       id: "u1",
@@ -32,7 +32,11 @@ function meResponse() {
         photo_file_id: null,
       },
     },
-    role_assignments: [{ role_code: "admin", club_id: "club-1", scope_type: "all" }],
+    role_assignments: roleCodes.map((role_code) => ({
+      role_code,
+      club_id: "club-1",
+      scope_type: "all",
+    })),
   };
 }
 
@@ -184,5 +188,66 @@ describe("AppShell navigation and mobile drawer (TH-0089 regression)", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "Навигация" })).not.toBeInTheDocument(),
     );
+  });
+});
+
+describe("AppShell role-aware navigation (TH-0120 / Issue #181, UNION)", () => {
+  const cases: Array<{ name: string; roles: string[]; expected: string[] }> = [
+    { name: "Administrator", roles: ["admin"], expected: NAVIGATION_LABELS },
+    {
+      name: "Instructor",
+      roles: ["instructor"],
+      expected: ["Главная", "Люди", "Группы", "События", "Достижения", "Настройки"],
+    },
+    {
+      name: "Member",
+      roles: ["member"],
+      expected: ["Главная", "Группы", "События", "Достижения", "Настройки"],
+    },
+    {
+      name: "Guardian",
+      roles: ["guardian"],
+      expected: ["Главная", "События", "Достижения", "Настройки"],
+    },
+    {
+      name: "Guardian + Instructor (UNION)",
+      roles: ["guardian", "instructor"],
+      expected: ["Главная", "Люди", "Группы", "События", "Достижения", "Настройки"],
+    },
+  ];
+
+  it.each(cases)("$name sees exactly the allowed sections in the sidebar, in canonical order", async ({ roles, expected }) => {
+    stubFetch([{ match: "/auth/me", response: meResponse(roles) }]);
+    renderShell("/");
+
+    const nav = await screen.findByRole("navigation", { name: "Основная навигация" });
+    expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual(expected);
+    expect(screen.queryByText(/Гость/)).not.toBeInTheDocument();
+  });
+
+  it("applies the same role-aware list in the mobile drawer", async () => {
+    stubFetch([{ match: "/auth/me", response: meResponse(["guardian"]) }]);
+    renderShell("/");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Меню" }));
+    const drawer = screen.getByRole("dialog", { name: "Навигация" });
+    expect(within(drawer).getAllByRole("link").map((link) => link.textContent)).toEqual([
+      "Главная",
+      "События",
+      "Достижения",
+      "Настройки",
+    ]);
+  });
+
+  it("hiding an item is visibility only: a direct visit to a hidden route still renders the route", async () => {
+    // No frontend route guard is introduced; backend authorization stays
+    // authoritative for whatever the page then requests.
+    stubFetch([{ match: "/auth/me", response: meResponse(["guardian"]) }]);
+    renderShell("/reports");
+
+    expect(await screen.findByText("Protected page content")).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Основная навигация" });
+    expect(within(nav).queryByRole("link", { name: "Отчёты" })).not.toBeInTheDocument();
   });
 });
