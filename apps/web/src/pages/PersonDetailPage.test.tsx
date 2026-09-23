@@ -1273,3 +1273,354 @@ describe("PersonDetailPage — account tab (TH-0113)", () => {
     expect(screen.queryByText(/token/i)).not.toBeInTheDocument();
   });
 });
+
+function documentFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "doc1",
+    person_id: "p1",
+    document_group_id: "grp-doc1",
+    version_number: 1,
+    document_type: "medical_certificate",
+    status: "active",
+    issued_at: "2026-01-01T00:00:00Z",
+    expires_at: "2026-12-31T00:00:00Z",
+    file_id: "file1",
+    uploaded_by: "u1",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function documentsCollection(items: Array<Record<string, unknown>>) {
+  return {
+    items,
+    pagination: { page: 1, page_size: 50, total: items.length, pages: items.length ? 1 : 0 },
+  };
+}
+
+describe("PersonDetailPage — documents tab (Issue #175)", () => {
+  it("shows the medical_certificate document with its API-provided status, never a client-computed one", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/persons/p1/documents", response: documentsCollection([documentFixture()]) },
+      { match: "/persons/p1", response: PERSON },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Документы" }));
+
+    expect(await screen.findByText("Медицинская справка")).toBeInTheDocument();
+    expect(screen.getByText("Действителен")).toBeInTheDocument();
+  });
+
+  it("shows an empty state when no documents exist", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/persons/p1/documents", response: documentsCollection([]) },
+      { match: "/persons/p1", response: PERSON },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Документы" }));
+
+    expect(await screen.findByText("Документы не загружены")).toBeInTheDocument();
+  });
+
+  it("shows a forbidden state distinctly from a generic load failure", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("member") },
+      {
+        match: "/persons/p1/documents",
+        response: { error: { code: "forbidden", message: "Недостаточно прав", details: {}, request_id: "r1" } },
+        status: 403,
+      },
+      { match: "/persons/p1", response: PERSON },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Документы" }));
+
+    expect(await screen.findByText("Недостаточно прав для просмотра документов")).toBeInTheDocument();
+  });
+
+  it("shows document management controls regardless of role — the backend, not a role check, is the authorization boundary", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("member") },
+      { match: "/persons/p1/documents", response: documentsCollection([documentFixture()]) },
+      { match: "/persons/p1", response: PERSON },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Документы" }));
+    await screen.findByText("Медицинская справка");
+
+    expect(screen.getByRole("button", { name: "Загрузить документ" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Изменить даты" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Заменить версию" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Отозвать" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Скачать" })).toBeInTheDocument();
+  });
+
+  it("surfaces a backend document.manage rejection via toast instead of silently succeeding or hiding the action", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("member") },
+      { match: "/persons/p1/documents/doc1/revoke", response: { error: { code: "forbidden", message: "Недостаточно прав", details: {}, request_id: "r1" } }, status: 403 },
+      { match: "/persons/p1/documents", response: documentsCollection([documentFixture()]) },
+      { match: "/persons/p1", response: PERSON },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Документы" }));
+    await user.click(await screen.findByRole("button", { name: "Отозвать" }));
+    const dialog = screen.getByRole("dialog", { name: "Отозвать документ?" });
+    await user.click(within(dialog).getByRole("button", { name: "Отозвать" }));
+
+    expect(await screen.findByText("Недостаточно прав")).toBeInTheDocument();
+  });
+
+  it("lets an admin upload a new document as a multipart request", async () => {
+    let uploaded = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/auth/me")) return jsonResponse(meResponse("admin"));
+      if (url.endsWith("/persons/p1")) return jsonResponse(PERSON);
+      if ((url.includes("/persons/p1/documents?") || url.endsWith("/persons/p1/documents")) && method === "POST") {
+        uploaded = true;
+        expect(init?.body).toBeInstanceOf(FormData);
+        const form = init!.body as FormData;
+        expect(form.get("document_type")).toBe("medical_certificate");
+        expect(form.get("file")).toBeInstanceOf(File);
+        return jsonResponse(documentFixture(), 201);
+      }
+      if ((url.includes("/persons/p1/documents?") || url.endsWith("/persons/p1/documents")) && method === "GET") {
+        return jsonResponse(documentsCollection(uploaded ? [documentFixture()] : []));
+      }
+      throw new Error(`Unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Документы" }));
+    await screen.findByText("Документы не загружены");
+
+    await user.click(await screen.findByRole("button", { name: "Загрузить документ" }));
+    const dialog = await screen.findByRole("dialog", { name: "Загрузить документ" });
+    await user.type(within(dialog).getByLabelText("Тип документа"), "medical_certificate");
+    const file = new File(["binary"], "справка.pdf", { type: "application/pdf" });
+    const fileInput = dialog.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, file);
+    await user.click(within(dialog).getByRole("button", { name: "Загрузить" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Загрузить документ" })).not.toBeInTheDocument();
+    });
+    expect(uploaded).toBe(true);
+  });
+
+  it("sends only the changed date field(s) on PATCH", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/auth/me")) return jsonResponse(meResponse("admin"));
+      if (url.endsWith("/persons/p1")) return jsonResponse(PERSON);
+      if (url.endsWith("/persons/p1/documents/doc1") && method === "PATCH") {
+        const body = JSON.parse(String(init!.body));
+        expect(body).toEqual({ expires_at: "2027-06-30" });
+        return jsonResponse(documentFixture({ expires_at: "2027-06-30T00:00:00Z" }));
+      }
+      if ((url.includes("/persons/p1/documents?") || url.endsWith("/persons/p1/documents")) && method === "GET") {
+        return jsonResponse(documentsCollection([documentFixture()]));
+      }
+      throw new Error(`Unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Документы" }));
+    await user.click(await screen.findByRole("button", { name: "Изменить даты" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Изменить даты документа" });
+    const expiresInput = within(dialog).getByLabelText("Действителен до");
+    await user.clear(expiresInput);
+    await user.type(expiresInput, "2027-06-30");
+    await user.click(within(dialog).getByRole("button", { name: "Сохранить" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Изменить даты документа" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("replaces a document's version via a multipart POST to /replace", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/auth/me")) return jsonResponse(meResponse("admin"));
+      if (url.endsWith("/persons/p1")) return jsonResponse(PERSON);
+      if (url.endsWith("/persons/p1/documents/doc1/replace") && method === "POST") {
+        expect(init?.body).toBeInstanceOf(FormData);
+        return jsonResponse(documentFixture({ id: "doc2", version_number: 2 }), 201);
+      }
+      if ((url.includes("/persons/p1/documents?") || url.endsWith("/persons/p1/documents")) && method === "GET") {
+        return jsonResponse(documentsCollection([documentFixture()]));
+      }
+      throw new Error(`Unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Документы" }));
+    await user.click(await screen.findByRole("button", { name: "Заменить версию" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Заменить версию документа" });
+    const file = new File(["binary"], "справка-новая.pdf", { type: "application/pdf" });
+    const fileInput = dialog.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, file);
+    await user.click(within(dialog).getByRole("button", { name: "Заменить" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Заменить версию документа" })).not.toBeInTheDocument();
+    });
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).endsWith("/persons/p1/documents/doc1/replace") &&
+          (init as RequestInit)?.method === "POST",
+      ),
+    ).toBe(true);
+    // No client-side "history" claim: this PR does not present the
+    // superseded version as document history (Issue #175 review finding
+    // #1) — there is no such UI to assert on here.
+    expect(screen.queryByText(/История версий/)).not.toBeInTheDocument();
+  });
+
+  it("revokes a document through the confirm dialog", async () => {
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/persons/p1/documents/doc1/revoke", response: documentFixture({ status: "revoked" }) },
+      { match: "/persons/p1/documents", response: documentsCollection([documentFixture()]) },
+      { match: "/persons/p1", response: PERSON },
+    ]);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Документы" }));
+    await user.click(await screen.findByRole("button", { name: "Отозвать" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Отозвать документ?" });
+    await user.click(within(dialog).getByRole("button", { name: "Отозвать" }));
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/revoke"))).toBe(true);
+    });
+  });
+
+  it("downloads a document's content without exposing storage details", async () => {
+    const createObjectURL = vi.fn(() => "blob:mock-url");
+    const revokeObjectURL = vi.fn();
+    // jsdom has no native Blob-URL support and would otherwise attempt a
+    // real navigation on the anchor click (which it also doesn't
+    // implement) — stub both; the assertion here is only that the
+    // download flow calls through to the documented `/download` endpoint
+    // and never touches storage_key/file paths.
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    (URL as unknown as { createObjectURL: typeof createObjectURL }).createObjectURL = createObjectURL;
+    (URL as unknown as { revokeObjectURL: typeof revokeObjectURL }).revokeObjectURL = revokeObjectURL;
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/auth/me")) return jsonResponse(meResponse("admin"));
+      if (url.endsWith("/persons/p1")) return jsonResponse(PERSON);
+      if (url.endsWith("/persons/p1/documents/doc1/download")) {
+        return new Response(new Blob(["binary content"]), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/pdf",
+            "Content-Disposition": 'attachment; filename="cert.pdf"; filename*=UTF-8\'\'cert.pdf',
+          },
+        });
+      }
+      if ((url.includes("/persons/p1/documents?") || url.endsWith("/persons/p1/documents"))) return jsonResponse(documentsCollection([documentFixture()]));
+      throw new Error(`Unexpected fetch: ${url} ${init?.method ?? "GET"}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route: "/people/p1" },
+    );
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Документы" }));
+    await user.click(await screen.findByRole("button", { name: "Скачать" }));
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
+    expect(revokeObjectURL).toHaveBeenCalled();
+    anchorClick.mockRestore();
+  });
+});

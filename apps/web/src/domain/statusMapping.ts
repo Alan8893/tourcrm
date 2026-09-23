@@ -225,3 +225,77 @@ export function guardianRelationshipStatusLabel(status: GuardianRelationshipStat
       return "Отозвана";
   }
 }
+
+/** ADR-0040 §4 (`app.db.documents.CANONICAL_DOCUMENT_STATUSES`): the
+ * persisted `Document.status` value returned as-is by every participant
+ * Document endpoint (people-api.md §32). This is a *stored* status, not a
+ * read-time recomputation: `expires_at` elapsing does not rewrite it to
+ * `expired` server-side, so the frontend must render exactly this value
+ * and must never derive its own "is it expired today" verdict from
+ * `expires_at` — that would be exactly the client-side validity
+ * calculation the Issue #175 business rule forbids. */
+export type DocumentStatus = "active" | "expired" | "revoked";
+
+export function documentStatusIcon(status: DocumentStatus): StatusIconId {
+  switch (status) {
+    case "active":
+      return "status.success";
+    case "expired":
+      return "status.warning";
+    case "revoked":
+      // Not `error`: revocation is a deliberate business outcome, not a
+      // system fault — mirrors GuardianRelationshipStatus's identical
+      // `revoked -> archived` precedent above.
+      return "status.archived";
+  }
+}
+
+export function documentStatusLabel(status: DocumentStatus): string {
+  switch (status) {
+    case "active":
+      return "Действителен";
+    case "expired":
+      return "Истёк";
+    case "revoked":
+      return "Отозван";
+  }
+}
+
+/** `medical_certificate` gets the dedicated Issue #175 label; every other
+ * `document_type` remains an open string vocabulary (ADR-0040 §1,
+ * events-api.md §31.1) and is rendered as-is. */
+export function documentTypeLabel(documentType: string): string {
+  return documentType === "medical_certificate" ? "Медицинская справка" : documentType;
+}
+
+/** `EventDocumentRequirementCheckOut.result` (events-api.md §31.3): a
+ * derived, backend-computed three-value result — never calculated
+ * client-side. `revoked` is explicitly never a fourth value here (a
+ * revoked current Document maps to `expired` server-side, ADR-0040 §5). */
+export type DocumentRequirementResult = "valid" | "missing" | "expired";
+
+export function documentRequirementResultIcon(result: DocumentRequirementResult): StatusIconId {
+  switch (result) {
+    case "valid":
+      return "status.success";
+    case "expired":
+      return "status.warning";
+    case "missing":
+      // More severe than `expired` (nothing on file at all, vs. a
+      // superseded/elapsed document) — not `error` (a system fault),
+      // since this is an ordinary, expected operational state, but the
+      // most attention-demanding of the three.
+      return "status.error";
+  }
+}
+
+export function documentRequirementResultLabel(result: DocumentRequirementResult): string {
+  switch (result) {
+    case "valid":
+      return "Действителен";
+    case "expired":
+      return "Истёк";
+    case "missing":
+      return "Отсутствует";
+  }
+}
