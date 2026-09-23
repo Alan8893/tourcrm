@@ -90,7 +90,8 @@ Invitation token:
 
 Правила account provisioning:
 
-- если в импортируемой строке есть `email`, создаётся `User.status = active` с `login_identifier = normalized(email)`; выдача first-access credential выполняется по каноническому account-provisioning flow;
+- если в импортируемой строке есть `email`, создаётся `User.status = active` с `login_identifier = normalized(email)` и без пароля (`password_hash = NULL`);
+- импорт выполняет только создание учётной записи и не выдаёт first-access credential: password-reset/first-access challenge при импорте не создаётся, и никакой credential не возвращается, не журналируется и не сохраняется импортом; first access выдаётся позже администратором через существующий account-management flow — `POST /api/v1/persons/{person_id}/account/password-reset` (`docs/05-api/people-api.md` §24.2); новый механизм доставки credentials не вводится;
 - если `email` отсутствует, создаётся `pending-stub User`: `status = pending`, `login_identifier = NULL`, `password_hash = NULL`, без first-access credential;
 - фиктивные login/email значения для обхода отсутствующего email запрещены;
 - отсутствие email не является основанием для создания `Person` без `User`;

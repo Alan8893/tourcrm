@@ -787,6 +787,19 @@ Every match is reported as `duplicate_exact` with severity **`warning`** — nev
 
 For one counterpart only the first matching rule (canonical order) is reported.
 
+The same rules are re-evaluated at apply time, including a transactional per-row re-check immediately before row creation — see "POST /api/v1/memberships/imports/{import_id}/apply".
+
+### Import error and warning codes
+
+The machine-readable codes an ImportJob's errors/warnings (`GET .../errors`) can carry form a closed vocabulary:
+
+- file-level failure codes (severity `error`, no row): see "Source file format";
+- row-level validation codes (severity `error`): `required_field_missing`, `invalid_email`, `invalid_birth_date`, `value_too_long`, `invalid_value_type` — see "Row normalization and validation";
+- `duplicate_exact` (severity `warning`) — see "Duplicate detection"; at apply such a row is skipped;
+- `import_apply_failed` (severity `error`) — an unexpected application failure during apply (TH-0118.3): with the `row_number` of a valid candidate row whose row transaction failed and was rolled back, or without `row_number` for a batch-level unexpected application failure that has no meaningful row. It is not a validation error and not a duplicate code, and it never replaces `duplicate_exact`: a row identified as an exact duplicate is always `duplicate_exact` → skipped, never `import_apply_failed`.
+
+No other code is used. `import_apply_failed` is an import error code, not an audit action (the batch audit action is `membership.import.applied`, ADR-0024).
+
 ### Preview
 
 The preview is not a separate entity: it is the job's aggregate statistics plus its errors/warnings (`GET .../errors`).
@@ -838,19 +851,25 @@ Apply semantics for TH-0118.3:
 - rows with duplicate_exact warning are also skipped; an exact duplicate never creates a second Person and never updates, overwrites, merges with or reuses the matched Person/User;
 - the current source file is re-read using the same canonical parser/normalization/validation rules before mutation; the stored source file is immutable;
 - exact-duplicate checks are re-evaluated against current persisted data at apply time, so a duplicate created after preview is still skipped;
+- in addition, each candidate row is re-checked against the exact duplicate rules inside its own row transaction, immediately before creation. If the re-check finds an exact duplicate, no Person, User or ClubMembership is created; the row is classified as `duplicate_exact` (recorded as a warning in the row-level report, with `matched_person_id` when an existing Person matched), skipped and counted in `skipped_records` — never an unexpected application failure;
+- a database uniqueness violation on the normalized login identifier (email) caused by a concurrently created participant is the corresponding email exact-duplicate case: the row transaction is rolled back and the row is `duplicate_exact` → skipped, not `import_apply_failed`;
+- applies of different import jobs are serialized by an implementation-level, transaction-scoped mechanism covering the per-row re-check and row creation, so two overlapping import jobs cannot both create the same participant where the import duplicate rules identify the same entity;
 - a valid, non-duplicate row creates exactly Person + User + ClubMembership in one row-level transaction;
 - no RoleAssignment, GroupMembership, GroupInstructorAssignment, GuardianRelationship or EventParticipation is created by TH-0118.3 because the current import column contract does not contain those relations;
 - ClubMembership uses the canonical initial membership semantics: membership_type = member, status = active, joined_at = creation time;
-- User provisioning follows the canonical account contract: email present → active User with normalized login identifier and no password until first-access setup; email absent → pending-stub User with login_identifier = NULL, no password credential and no first-access credential;
-- raw credentials are never returned by the import status/error/report endpoints;
+- User provisioning follows the canonical account contract (auth-and-authorization.md §5.3). Import creates the User account but does not issue a first-access credential: email present → active User with the normalized email as login identifier and no password; no password-reset/first-access challenge is created during apply. First access is issued later, when an administrator uses the existing `POST /api/v1/persons/{person_id}/account/password-reset` (§24.2). Email absent → pending-stub User with login_identifier = NULL, no password credential and no first-access credential;
+- since import issues no credential, no credential or secret appears in the import response, the import report/errors, audit details or persisted import data;
 - each created Person/User/ClubMembership is audited with the existing domain action codes; the batch execution is additionally audited once with membership.import.applied using the ImportJob as the audit resource;
 - each row-level domain mutation and its audit records commit atomically; a failed row does not roll back previously committed successful rows;
+- an unexpected failure of a valid candidate row rolls back that row's transaction and is recorded in the row-level report as `import_apply_failed` with the row's `row_number`; a batch-level unexpected application failure with no meaningful row is recorded as `import_apply_failed` without `row_number`;
 - completed means the batch finished and all rows were either created or skipped according to this contract;
-- partially_completed means the batch finished with at least one unexpected row-level application failure after at least one successful row transaction;
+- partially_completed means the batch finished with at least one unexpected row-level application failure (`import_apply_failed`) after at least one successful row transaction;
 - failed means application could not be completed without any successful row transaction;
 - created_records counts successfully created participant rows;
 - updated_records is 0 after apply because TH-0118.3 never updates existing domain entities;
-- skipped_records counts invalid rows and exact-duplicate rows that were not applied.
+- skipped_records counts invalid rows and exact-duplicate rows (including duplicates identified by the transactional re-check or by the login uniqueness case) that were not applied; a row that failed with `import_apply_failed` is counted neither as created nor as skipped.
+
+Scope of the duplicate guarantee: it is an import-subsystem guarantee — against data committed when a row is re-checked inside its transaction, and against concurrently applied import jobs. It does not introduce global Person deduplication: other Person-creation workflows (`POST /persons`, `POST /persons/wizard`) do not participate in the import serialization and keep their existing behavior, where duplicates are allowed (§6, ADR-0025 §9); no global lock across Person creation and no unique constraint on `persons` is introduced.
 
 The final job status and aggregate counters are committed transactionally with the batch-level membership.import.applied audit record. The batch audit outcome is success for completed and partially_completed, and failure for failed.
 
@@ -864,13 +883,13 @@ Responses:
 
 TH-0118.3 does not introduce a separate report entity or report endpoint.
 
-The existing GET /api/v1/memberships/imports/{import_id} is the aggregate report: status plus counters. The existing GET /api/v1/memberships/imports/{import_id}/errors is the row-level report of validation errors and duplicate warnings. These endpoints together are the canonical import report surface.
+The existing GET /api/v1/memberships/imports/{import_id} is the aggregate report: status plus counters. The existing GET /api/v1/memberships/imports/{import_id}/errors is the row-level report: validation errors, duplicate warnings (including `duplicate_exact` found at apply time) and apply-time unexpected failures (`import_apply_failed`). These endpoints together are the canonical import report surface.
 
 For an applied job:
 
 - created_records, updated_records and skipped_records are populated;
 - row-level errors/warnings remain available for auditability;
-- no raw temporary credential is included in either endpoint.
+- no credential of any kind is included in either endpoint (import issues none).
 
 ### Import authorization and object access
 
@@ -1036,7 +1055,7 @@ Audit обязателен для создания/изменения Person, me
 - `ROLE_ASSIGNMENT_NOT_ALLOWED`;
 - `IMPORT_VALIDATION_FAILED` (реализовано как `import_validation_failed`, HTTP 422 — `POST /memberships/imports/{import_id}/preview`, когда файл не удалось разобрать/проверить и job переведён в `failed`, §22).
 
-Import-специфичные machine-readable коды (§22): `unsupported_import_format` (HTTP 422, upload), `invalid_import_job_status_transition` (HTTP 409, preview для job не в `uploaded`); file-level и row-level коды ошибок/предупреждений перечислены в §22 и возвращаются через `GET /memberships/imports/{import_id}/errors`, а не как HTTP-ошибки.
+Import-специфичные machine-readable коды (§22): `unsupported_import_format` (HTTP 422, upload), `invalid_import_job_status_transition` (HTTP 409, preview/approve/apply для job не в требуемом статусе); закрытый словарь file-level, row-level и apply-time кодов ошибок/предупреждений (включая `import_apply_failed`) определён в §22 "Import error and warning codes" и возвращается через `GET /memberships/imports/{import_id}/errors`, а не как HTTP-ошибки.
 
 Group/GroupMembership/GroupInstructorAssignment-специфичные machine-readable коды (§14–§16), все — lowercase snake_case, согласно установленной конвенции:
 
