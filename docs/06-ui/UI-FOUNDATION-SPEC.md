@@ -26,6 +26,18 @@ It does not reopen approved visual decisions and does not authorize creation of 
 
 ## 3. App Shell
 
+### 3.1 Authentication boundary
+
+The App Shell is an authenticated application surface. An unauthenticated visitor must not enter or render the authenticated shell.
+
+- Guest is not a TourCRM role.
+- Do not render a Гость pseudo-profile, pseudo-role or authenticated shell state for unauthenticated visitors.
+- If the current authentication/session state is unauthenticated, resolve the request at the existing authentication boundary and route the visitor to the login/auth entry.
+- Protected application routes must not become usable through a frontend-only pseudo-user state.
+- Do not introduce a new Guest permission, role, account or backend authorization model in this UI slice.
+- Authenticated users continue to receive the existing role-aware navigation; this task does not redefine navigation IA.
+- While authentication state is being resolved, use an explicit loading/resolution state rather than rendering the authenticated shell with placeholder identity.
+
 ### Desktop
 
 - Persistent left navigation.
@@ -183,7 +195,7 @@ Approved illustrations are used for empty, system and onboarding states.
 
 System illustrations are not interchangeable with status icons.
 
-Decorative assets must remain absent from this stage.
+Broad decorative assets remain absent from this stage except for the explicitly approved minimal TH-0089 header treatment.
 
 ## 11. Responsive rules
 
@@ -263,7 +275,7 @@ The UI Foundation is complete when:
 - responsive workflows do not require horizontal scrolling;
 - keyboard/focus behavior works;
 - approved illustrations are used for relevant states;
-- Decorative assets remain absent;
+- broad decorative assets remain absent except for the explicitly approved minimal TH-0089 header treatment;
 - closed visual decisions remain unchanged;
 - visual QA is performed at desktop, tablet and smartphone widths;
 - existing frontend checks remain green.
