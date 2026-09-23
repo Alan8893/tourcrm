@@ -107,7 +107,9 @@ archived
 
 ### 5.1. Назначение
 
-Связывает `Person` с конкретным `Club` и хранит историю участия.
+TourCRM использует ровно один `Club`. Мультиклубная модель, выбор клуба и переключение между клубами не поддерживаются и не являются целью продукта.
+
+`ClubMembership` связывает `Person` с этим единственным `Club` и хранит историю участия. Поле `club_id` не означает наличие нескольких доступных пользователю клубов.
 
 ### 5.2. Типы членства
 
@@ -248,6 +250,8 @@ Person A
 В ней могут находиться участники и назначенные инструкторы.
 
 ### 8.3. Каноническая persistence-модель
+
+TourCRM содержит ровно один `Club`; `Group.club_id` является ссылкой на него и не используется для выбора/переключения клуба.
 
 `Group` имеет следующие поля:
 
@@ -474,7 +478,7 @@ TH-0118.3 applies only the current CSV/XLSX participant fields. A valid, non-dup
 
 Rows with validation errors are skipped. Rows with duplicate_exact warnings are also skipped: the import never creates a duplicate and never updates, overwrites, merges with or reuses the existing Person/User.
 
-Импорт участника создаёт связанные сущности в рамках одного подтверждённого применения import batch:
+Импорт участника создаёт связанные сущности в рамках одного подтверждённого применения import batch. Все созданные `ClubMembership` принадлежат единственному `Club` системы:
 
 ```text
 Person
