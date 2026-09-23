@@ -75,11 +75,21 @@
   --font-size-xl: 1.625rem;
 
   /* Layout */
-  --shell-header-height: 64px;
+  /* TH-0089: tall enough for a readable official logo while staying a
+     compact single-row header; the mobile header overrides this below. */
+  --shell-header-height: 80px;
   --shell-sidebar-width: 248px;
   --shell-mobile-nav-height: 64px;
   --content-max-width: 1180px;
 
   /* Focus ring — always visible, never suppressed */
   --focus-ring-color: var(--color-accent);
+}
+
+/* TH-0089: dedicated compact mobile header — preserves vertical space for
+   content (UI-FOUNDATION-SPEC.md §3 Mobile). */
+@media (max-width: 767.98px) {
+  :root {
+    --shell-header-height: 64px;
+  }
 }

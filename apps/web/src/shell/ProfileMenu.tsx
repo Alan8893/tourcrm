@@ -11,21 +11,19 @@ import styles from "./ProfileMenu.module.css";
 /**
  * The App Shell's only entry point to profile/settings (spec §3: "Do not
  * add a separate Settings icon to the header"; §7 "profile/settings
- * access uses the avatar/profile area"). No login screen exists yet in
- * this Issue's scope, so an unauthenticated visitor sees a neutral
- * "Гость" state rather than a crash or fabricated identity.
+ * access uses the avatar/profile area"). Rendered only inside the
+ * authenticated shell (TH-0089 / spec §3.1): AppShell gates on `/auth/me`,
+ * so there is no Guest pseudo-profile — without a resolved identity this
+ * renders nothing rather than a placeholder name.
  */
 export function ProfileMenu() {
-  const { data, isError } = useCurrentUser();
+  const { data } = useCurrentUser();
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const menuId = useId();
   const navigate = useNavigate();
   const notify = useNotify();
   const logout = useLogout();
-
-  const name = data ? displayName(data.user) : undefined;
-  const label = name ?? "Гость";
 
   function handleLogout() {
     setOpen(false);
@@ -53,6 +51,9 @@ export function ProfileMenu() {
     };
   }, [open]);
 
+  if (!data) return null;
+  const label = displayName(data.user);
+
   return (
     <div className={styles.wrapper} ref={wrapperRef}>
       <button
@@ -63,10 +64,7 @@ export function ProfileMenu() {
         aria-controls={menuId}
         onClick={() => setOpen((value) => !value)}
       >
-        <Avatar
-          name={isError ? undefined : name}
-          photoUrl={isError ? undefined : currentUserPhotoUrl(data)}
-        />
+        <Avatar name={label} photoUrl={currentUserPhotoUrl(data)} />
         <span className={styles.name}>{label}</span>
       </button>
       {open ? (
@@ -81,17 +79,15 @@ export function ProfileMenu() {
             <Icon id="nav.settings" size={20} />
             Настройки
           </Link>
-          {data ? (
-            <button
-              type="button"
-              role="menuitem"
-              className={styles.menuItem}
-              disabled={logout.isPending}
-              onClick={handleLogout}
-            >
-              Выйти
-            </button>
-          ) : null}
+          <button
+            type="button"
+            role="menuitem"
+            className={styles.menuItem}
+            disabled={logout.isPending}
+            onClick={handleLogout}
+          >
+            Выйти
+          </button>
         </div>
       ) : null}
     </div>

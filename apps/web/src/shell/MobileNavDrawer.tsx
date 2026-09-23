@@ -2,7 +2,7 @@ import { useRef } from "react";
 import { createPortal } from "react-dom";
 
 import { BrandLogo } from "../components/ui/Icon";
-import { IconButton } from "../components/ui/Button";
+import { Button } from "../components/ui/Button";
 import { useFocusTrap } from "../components/ui/useFocusTrap";
 import { NavList } from "./NavList";
 import styles from "./MobileNavDrawer.module.css";
@@ -39,8 +39,15 @@ export function MobileNavDrawer({ open, onClose }: MobileNavDrawerProps) {
         tabIndex={-1}
       >
         <div className={styles.header}>
-          <BrandLogo height={28} />
-          <IconButton icon="action.close" aria-label="Закрыть меню" onClick={onClose} />
+          <BrandLogo height={96} className={styles.logo} />
+          <Button
+            icon="action.close"
+            aria-label="Закрыть меню"
+            className={styles.close}
+            onClick={onClose}
+          >
+            Закрыть
+          </Button>
         </div>
         <NavList onNavigate={onClose} />
       </div>

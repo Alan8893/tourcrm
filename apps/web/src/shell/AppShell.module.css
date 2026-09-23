@@ -32,3 +32,15 @@
     padding: var(--space-4) var(--space-3);
   }
 }
+
+/* TH-0089: auth resolution / auth-check failure frame — brand only, no
+   shell chrome and no protected content (spec §3.1). */
+.boundary {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  padding: var(--space-8) var(--space-4);
+}
