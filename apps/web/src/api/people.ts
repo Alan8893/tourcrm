@@ -222,7 +222,6 @@ export type PersonFields = {
   phone?: string | null;
   email?: string | null;
   address?: string | null;
-  photo_file_id?: string | null;
 };
 
 /** `POST /api/v1/persons` — `person.create`, admin-only, no `club_id` in

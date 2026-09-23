@@ -129,6 +129,12 @@ _DOCUMENT_PATHS = {
     "/api/v1/persons/{person_id}/documents/{document_id}/revoke",
 }
 
+_PERSON_PHOTO_PATHS = {
+    # TH-0119 / Issue #176 (profile-photo-api.md): GET/PUT/DELETE of the
+    # current profile photo — no other avatar endpoints.
+    "/api/v1/persons/{person_id}/photo",
+}
+
 _MEMBERSHIP_PATHS = {
     "/api/v1/memberships",
     "/api/v1/memberships/{membership_id}",
@@ -210,6 +216,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _AUTH_PATHS
         | _EVENT_PATHS
         | _PERSON_PATHS
+        | _PERSON_PHOTO_PATHS
         | _MEMBERSHIP_PATHS
         | _GUARDIAN_RELATIONSHIP_PATHS
         | _ME_PATHS

@@ -3,10 +3,13 @@ import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "./client";
 
 export type PersonSummary = {
+  id: string;
   first_name: string;
   last_name: string;
   middle_name: string | null;
   birth_date: string | null;
+  /** TH-0119: current profile photo reference; null → initials Avatar. */
+  photo_file_id: string | null;
 };
 
 export type CurrentUser = {

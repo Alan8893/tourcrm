@@ -5,6 +5,7 @@ import { Avatar } from "../components/ui/Avatar";
 import { Icon } from "../components/ui/Icon";
 import { useNotify } from "../components/ui/notificationContext";
 import { useCurrentUser, useLogout, displayName } from "../api/auth";
+import { currentUserPhotoUrl } from "../api/profilePhoto";
 import styles from "./ProfileMenu.module.css";
 
 /**
@@ -62,7 +63,10 @@ export function ProfileMenu() {
         aria-controls={menuId}
         onClick={() => setOpen((value) => !value)}
       >
-        <Avatar name={isError ? undefined : name} />
+        <Avatar
+          name={isError ? undefined : name}
+          photoUrl={isError ? undefined : currentUserPhotoUrl(data)}
+        />
         <span className={styles.name}>{label}</span>
       </button>
       {open ? (

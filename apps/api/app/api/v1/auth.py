@@ -59,10 +59,12 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 def _person_out(person: Person) -> PersonOut:
     return PersonOut(
+        id=person.id,
         first_name=person.first_name,
         last_name=person.last_name,
         middle_name=person.middle_name,
         birth_date=person.birth_date,
+        photo_file_id=person.photo_file_id,
     )
 
 
