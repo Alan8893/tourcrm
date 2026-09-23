@@ -231,7 +231,11 @@ API валидирует допустимость перехода, permission r
 
 ### GET `/api/v1/groups`
 
-Permission: `group.read`. Scope: `all` или `own_groups` (ADR-0021 §4 — `own_groups` определяется через explicit active `GroupInstructorAssignment` requester, а не через глобальную роль instructor).
+Permission: `group.read`. Scope: `all` или `own_groups`.
+
+Active groups are returned according to the requester's canonical scope/object relationship.
+
+Archived groups are visible **only to Administrator**. Non-administrator requesters must not receive archived groups in list results and must not retrieve an archived group through the item endpoint. Frontend visibility is not a substitute for backend authorization.
 
 Поддерживает pagination (`page`/`page_size`, ADR-0014/api-contract.md §7-8), фильтр `status` (`active`/`archived`, whitelist) и сортировку по whitelisted полям (`name`, `created_at`). Неизвестные поля сортировки/фильтра отклоняются (api-contract.md §9-10).
 
@@ -298,13 +302,19 @@ Permission: `group.manage` + scope + object relationship.
 
 Cross-Club integrity (ADR-0022 §4): `GroupMembership` валиден только при `Group.club_id == ClubMembership.club_id`. Проверка и запись выполняются в одной транзакции тем же каноническим service-механизмом, что реализован в `apps/api/app/groups/service.py` (implementation evidence, не источник бизнес-решения) — endpoint должен вызывать этот существующий shared-механизм, а не дублировать проверку.
 
-### 15.3. Перевод между группами — нет отдельного endpoint
+### 15.3. Перевод между группами
 
-Отдельного endpoint `.../members/{person_id}/transfer` не существует (Issue #69, PO decision, закрывает GAP-GROUP-004). Перевод человека в другую группу выполняется клиентом как две отдельные операции: `POST /api/v1/group-memberships/{id}/end` для текущей группы и `POST /api/v1/groups/{new_group_id}/members` для новой. Автоматической атомарной операции массового перевода API не предоставляет.
+Перевод участника в другую группу не удаляет историческую принадлежность к исходной группе. Операционная модель должна поддерживать как перевод одного участника, так и массовый перевод нескольких участников.
 
-### 15.4. Bulk endpoint — отложен
+Для одного участника перевод сохраняет историческую GroupMembership исходной группы и создаёт/активирует принадлежность к целевой группе согласно canonical membership lifecycle.
 
-`POST /api/v1/groups/{id}/members/bulk` (упомянут в `docs/05-api/endpoint-inventory.md` §7) не специфицируется в рамках этого контракта и не реализуется текущим implementation slice. Он остаётся deferred/not-MVP: отдельной независимой необходимости в нём не установлено, и данный документ не проектирует его request/response contract.
+### 15.4. Массовый перевод
+
+Массовый перевод является **обязательной бизнес-возможностью**: Administrator должен иметь возможность выбрать несколько участников исходной группы и перевести их в целевую группу одной операцией.
+
+Сценарий предназначен, в частности, для ежегодного перевода части состава между возрастными/учебными группами.
+
+`POST /api/v1/groups/{id}/members/bulk`, присутствующий в endpoint inventory §7, должен быть приведён в соответствие с этим решением. Точный request/response contract, атомарность, ограничения batch size, ошибки и audit semantics являются отдельной specification/implementation задачей; до её завершения нельзя додумывать контракт на frontend или backend.
 
 ### GET `/api/v1/groups/{group_id}/members`
 
