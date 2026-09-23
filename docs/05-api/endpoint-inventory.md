@@ -143,6 +143,7 @@ Invitation secrets are never returned after creation.
 - `POST /groups`
 - `PATCH /groups/{id}`
 - `POST /groups/{id}/archive`
+- `DELETE /groups/{id}` — permanent delete, Administrator only; destructive operation, detailed contract pending canonical specification.
 - `GET /groups/{id}/members`
 - `POST /groups/{id}/members`
 - `POST /groups/{id}/members/bulk`
