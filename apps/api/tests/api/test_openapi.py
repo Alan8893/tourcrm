@@ -151,6 +151,10 @@ _MEMBERSHIP_IMPORT_PATHS = {
     # TH-0118.2: explicit, synchronous parse/validate/duplicate-check
     # dry-run (people-api.md §22 "POST .../preview").
     "/api/v1/memberships/imports/{import_id}/preview",
+    # TH-0118.3: explicit approval and synchronous apply (people-api.md
+    # §22 "POST .../approve", "POST .../apply"); no separate report path.
+    "/api/v1/memberships/imports/{import_id}/approve",
+    "/api/v1/memberships/imports/{import_id}/apply",
 }
 
 _GUARDIAN_RELATIONSHIP_PATHS = {
@@ -245,8 +249,9 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
 
 def test_membership_import_endpoints_expose_only_their_canonical_methods(real_client) -> None:
     """TH-0118.1 / Issue #185: POST (multipart) creates a job; the job and
-    its errors are read-only. TH-0118.2 adds only POST .../preview — no
-    endpoint sets a job's status directly.
+    its errors are read-only. TH-0118.2 adds only POST .../preview and
+    TH-0118.3 only POST .../approve and POST .../apply — no endpoint sets a
+    job's status directly.
     """
     paths = real_client.get("/openapi.json").json()["paths"]
 
@@ -254,6 +259,12 @@ def test_membership_import_endpoints_expose_only_their_canonical_methods(real_cl
     assert set(paths["/api/v1/memberships/imports/{import_id}"]) == {"get"}
     assert set(paths["/api/v1/memberships/imports/{import_id}/errors"]) == {"get"}
     assert set(paths["/api/v1/memberships/imports/{import_id}/preview"]) == {"post"}
+    assert set(paths["/api/v1/memberships/imports/{import_id}/approve"]) == {"post"}
+    assert set(paths["/api/v1/memberships/imports/{import_id}/apply"]) == {"post"}
+    for action in ("approve", "apply"):
+        assert "requestBody" not in paths[f"/api/v1/memberships/imports/{{import_id}}/{action}"][
+            "post"
+        ]
     severity = next(
         parameter
         for parameter in paths["/api/v1/memberships/imports/{import_id}/errors"]["get"][

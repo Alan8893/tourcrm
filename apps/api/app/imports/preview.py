@@ -35,13 +35,11 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from app.db.documents import File
 from app.db.imports import ImportJob, ImportJobError
-from app.imports.duplicates import detect_duplicates
+from app.imports.evaluation import evaluate_source, issue_to_error_row, read_source
 from app.imports.lifecycle import InvalidImportJobStatusTransitionError
-from app.imports.parsing import ImportParseError, parse_source
-from app.imports.queries import find_existing_person_matches
-from app.imports.rows import SEVERITY_ERROR, ImportIssue, NormalizedRow, normalize_and_validate
+from app.imports.parsing import ImportParseError
+from app.imports.rows import SEVERITY_ERROR, ImportIssue
 from app.imports.service import transition_import_job_status
 from app.storage.file_storage import FileStorage, FileStorageError
 
@@ -59,15 +57,7 @@ class ImportJobNotUploadedError(Exception):
 
 
 def _to_row(job: ImportJob, issue: ImportIssue) -> ImportJobError:
-    return ImportJobError(
-        import_job_id=job.id,
-        row_number=issue.row_number,
-        field=issue.field,
-        code=issue.code,
-        message=issue.message,
-        severity=issue.severity,
-        matched_person_id=issue.matched_person_id,
-    )
+    return issue_to_error_row(job.id, issue)
 
 
 def _fail(session: Session, job: ImportJob, issue: ImportIssue) -> ImportJob:
@@ -106,11 +96,9 @@ def run_import_preview(session: Session, storage: FileStorage, *, job: ImportJob
 
     # --- parsing -----------------------------------------------------------
     try:
-        source_file = session.get(File, job.source_file_id)
-        if source_file is None:
-            raise FileStorageError(f"File row {job.source_file_id} is missing")
-        content = storage.get(source_file.storage_key)
-        parsed = parse_source(content, job.source_format)
+        parsed = read_source(
+            session, storage, source_file_id=job.source_file_id, source_format=job.source_format
+        )
     except ImportParseError as exc:
         return _fail(
             session,
@@ -142,13 +130,7 @@ def run_import_preview(session: Session, storage: FileStorage, *, job: ImportJob
 
     # --- validating (normalization, validation, duplicate detection) ----------
     try:
-        rows: list[NormalizedRow] = []
-        issues: list[ImportIssue] = []
-        for record in parsed.records:
-            row, row_issues = normalize_and_validate(record, source_format=job.source_format)
-            rows.append(row)
-            issues.extend(row_issues)
-        issues.extend(detect_duplicates(rows, find_existing_person_matches(session, rows)))
+        rows, issues = evaluate_source(session, parsed, source_format=job.source_format)
 
         invalid_rows = {issue.row_number for issue in issues if issue.severity == SEVERITY_ERROR}
         session.add_all(_to_row(job, issue) for issue in issues)

@@ -218,7 +218,8 @@ def _create_active_user_with_email(
     email: str,
     actor_user_id: uuid.UUID,
     request_id: Optional[str],
-) -> tuple[User, str]:
+    issue_first_access: bool,
+) -> tuple[User, Optional[str]]:
     user = User(
         id=uuid.uuid4(),
         person_id=person_id,
@@ -245,6 +246,12 @@ def _create_active_user_with_email(
         if _is_duplicate_login_identifier_violation(exc):
             raise DuplicateLoginIdentifierError(email=email) from exc
         raise
+
+    if not issue_first_access:
+        # TH-0118.3 (participant import, auth-and-authorization.md §5.3):
+        # the account is created, but no first-access challenge is issued —
+        # first access is issued later via `admin_reset_password_for_person`.
+        return user, None
 
     # Reuses the exact same self-service challenge-issuance function — no
     # second token/challenge implementation. `email` is `user.
@@ -312,6 +319,7 @@ def create_user_for_person(
     person_id: uuid.UUID,
     actor_user_id: uuid.UUID,
     request_id: Optional[str] = None,
+    issue_first_access: bool = True,
 ) -> tuple[User, Optional[str]]:
     """ADR-0038 §2, extended by TH-0116: create a User for `person_id` (or,
     for a Person with no email, a pending stub — see module docstring)
@@ -336,6 +344,14 @@ def create_user_for_person(
     cases. The raw credential, when returned, exists only in that return
     value and must never be persisted, logged, or included in an audit
     `details` payload by any caller.
+
+    `issue_first_access=False` (TH-0118.3, participant import —
+    auth-and-authorization.md §5.3) creates a new active User without
+    issuing the first-access challenge at all: no PasswordResetChallenge
+    row, no `password_reset_challenge.created` audit, `(user, None)` is
+    returned. First access is then issued later through
+    `admin_reset_password_for_person`. It only applies to creating a new
+    User with an email; the other outcomes are unchanged.
     """
     person = session.get(Person, person_id)
     assert person is not None  # the router already checked existence
@@ -369,6 +385,7 @@ def create_user_for_person(
         email=email,
         actor_user_id=actor_user_id,
         request_id=request_id,
+        issue_first_access=issue_first_access,
     )
 
 
