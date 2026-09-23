@@ -291,14 +291,25 @@ Permission: `group.manage` + scope + object relationship.
 
 ### DELETE `/api/v1/groups/{group_id}`
 
-Permanent delete — отдельная destructive-операция, доступная только Administrator. Group может быть удалена независимо от наличия исторических GroupMembership и GroupInstructorAssignment; связанные с Group исторические данные удаляются вместе с Group. Операция требует отдельного явного подтверждения пользователем.
+**Permanent Group deletion — Administrator only.**
 
-Точный контракт transaction/atomicity, audit semantics и влияние на `Event`/`EventGroupTarget` должны быть определены до реализации. Event не является автоматически Group-owned данными; существующий канонический Event API остаётся источником истины. До завершения этого контракта endpoint не считается реализованным.
+This is an explicit destructive operation. It is allowed even when the Group has historical data, but the operation must preserve the invariant that deleting a Group never turns a targeted Event/EventSeries into a club-wide event.
 
-## 15. Group membership (GroupMembership)
+Before deletion the backend must inspect all canonical Group targeting relationships affected by the Group, including persisted EventGroupTarget relationships and recurring-event targeting where the Group is part of the series targeting contract.
 
-`GroupMembership` — историческая связь между `ClubMembership` и `Group` (ADR-0021 §2). Канонические persistence-поля: `id`, `group_id`, `club_membership_id`, `valid_from`, `valid_to`, `membership_status`, `created_at`, `updated_at`. `person_id` не хранится — Person разрешается через `club_membership_id -> ClubMembership.person_id`.
+The operation is allowed only when removing the Group target cannot leave the affected Event/EventSeries with zero remaining Group targets. If the Group is the only Group target of an affected targeted Event/EventSeries, the Group deletion is rejected and no data is changed. The client must resolve that Event/EventSeries dependency first through the canonical Event lifecycle/targeting APIs.
 
+If another Group target remains, the Group target relationship for the deleted Group is removed. The Event/EventSeries/EventOccurrence themselves are not deleted or otherwise modified by Group deletion. Club-wide Events/EventSeries (no Group targets) are unaffected.
+
+The Group, its historical GroupMembership records and its historical GroupInstructorAssignment records are deleted in the same transaction. The operation is atomic: on any validation or dependency failure, no Group or related targeting/history record is deleted.
+
+Required permission: Administrator with the applicable administrative Group scope.
+
+The operation requires explicit destructive confirmation in the UI.
+
+The operation must create the canonical audit record. Exact audit event name/payload follows the existing audit contract and is not a new permission.
+
+No cascade deletion of Events, EventSeries or EventOccurrences is introduced.
 ### 15.1. Lifecycle: `GroupMembership.membership_status`
 
 Канонический закрытый словарь `membership_status` (Issue #69, PO decision):
