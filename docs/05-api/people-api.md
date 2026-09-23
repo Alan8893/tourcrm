@@ -797,6 +797,81 @@ The preview is not a separate entity: it is the job's aggregate statistics plus 
 
 The preview is a dry-run: until `approved`/`applying`, no Person, User, ClubMembership, RoleAssignment, GroupMembership, GroupInstructorAssignment, GuardianRelationship, EventParticipation or any other domain entity is created or changed; existing Persons/Users are only read.
 
+### POST /api/v1/memberships/imports/{import_id}/approve
+
+Explicitly approves a preview_ready import job for application.
+
+Authorization: the same membership.import + all requirement and ImportJob object-access policy as the other import job endpoints.
+
+The request has no body.
+
+Lifecycle:
+
+preview_ready → approved
+
+Responses:
+
+- 200 OK — the job is now approved;
+- 404 — the job does not exist or is not accessible to the requester;
+- 409 invalid_import_job_status_transition — the job is not preview_ready.
+
+Approval does not create or change any domain entity.
+
+### POST /api/v1/memberships/imports/{import_id}/apply
+
+Synchronously applies an approved import job. No queue or background worker is introduced.
+
+Authorization: the same membership.import + all requirement and ImportJob object-access policy as the other import job endpoints.
+
+The request has no body.
+
+Lifecycle:
+
+approved → applying → completed
+                  ↘ partially_completed
+                  ↘ failed
+
+Apply semantics for TH-0118.3:
+
+- only rows that are valid according to the canonical preview contract are candidates for creation;
+- rows with validation error are skipped and never create or update domain entities;
+- rows with duplicate_exact warning are also skipped; an exact duplicate never creates a second Person and never updates, overwrites, merges with or reuses the matched Person/User;
+- the current source file is re-read using the same canonical parser/normalization/validation rules before mutation; the stored source file is immutable;
+- exact-duplicate checks are re-evaluated against current persisted data at apply time, so a duplicate created after preview is still skipped;
+- a valid, non-duplicate row creates exactly Person + User + ClubMembership in one row-level transaction;
+- no RoleAssignment, GroupMembership, GroupInstructorAssignment, GuardianRelationship or EventParticipation is created by TH-0118.3 because the current import column contract does not contain those relations;
+- ClubMembership uses the canonical initial membership semantics: membership_type = member, status = active, joined_at = creation time;
+- User provisioning follows the canonical account contract: email present → active User with normalized login identifier and no password until first-access setup; email absent → pending-stub User with login_identifier = NULL, no password credential and no first-access credential;
+- raw credentials are never returned by the import status/error/report endpoints;
+- each created Person/User/ClubMembership is audited with the existing domain action codes; the batch execution is additionally audited once with membership.import.applied using the ImportJob as the audit resource;
+- each row-level domain mutation and its audit records commit atomically; a failed row does not roll back previously committed successful rows;
+- completed means the batch finished and all rows were either created or skipped according to this contract;
+- partially_completed means the batch finished with at least one unexpected row-level application failure after at least one successful row transaction;
+- failed means application could not be completed without any successful row transaction;
+- created_records counts successfully created participant rows;
+- updated_records is 0 after apply because TH-0118.3 never updates existing domain entities;
+- skipped_records counts invalid rows and exact-duplicate rows that were not applied.
+
+The final job status and aggregate counters are committed transactionally with the batch-level membership.import.applied audit record. The batch audit outcome is success for completed and partially_completed, and failure for failed.
+
+Responses:
+
+- 200 OK — the job reaches a terminal status and the body is the import job status representation;
+- 404 — the job does not exist or is not accessible to the requester;
+- 409 invalid_import_job_status_transition — the job is not approved.
+
+### Import report
+
+TH-0118.3 does not introduce a separate report entity or report endpoint.
+
+The existing GET /api/v1/memberships/imports/{import_id} is the aggregate report: status plus counters. The existing GET /api/v1/memberships/imports/{import_id}/errors is the row-level report of validation errors and duplicate warnings. These endpoints together are the canonical import report surface.
+
+For an applied job:
+
+- created_records, updated_records and skipped_records are populated;
+- row-level errors/warnings remain available for auditability;
+- no raw temporary credential is included in either endpoint.
+
 ### Import authorization and object access
 
 Import operations require canonical permission `membership.import` with `all` scope in the job's Club.
@@ -818,7 +893,7 @@ Backend authorization is authoritative. Frontend navigation or route visibility 
 
 Creating an ImportJob is **not** an audit-required business action under ADR-0024.
 
-The later `apply`/import-execution operation and its material results are audit-required. Its action code will be added to the closed audit vocabulary by a separate ADR amendment before the apply slice is implemented.
+The later apply/import-execution operation and its material results are audit-required. The canonical batch-level action is membership.import.applied (ADR-0024 amendment). Domain mutations performed by the import use their existing action codes.
 
 Preview/dry-run does not create final participant changes and is not audit-required.
 

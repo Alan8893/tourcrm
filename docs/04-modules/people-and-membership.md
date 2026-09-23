@@ -470,6 +470,10 @@ Preview — dry-run: результат предпросмотра — это с
 
 ### 11.5. Результат импорта участника
 
+TH-0118.3 applies only the current CSV/XLSX participant fields. A valid, non-duplicate row creates exactly Person + User + ClubMembership. RoleAssignment, GroupMembership, GroupInstructorAssignment, GuardianRelationship and EventParticipation are deferred to later import extensions.
+
+Rows with validation errors are skipped. Rows with duplicate_exact warnings are also skipped: the import never creates a duplicate and never updates, overwrites, merges with or reuses the existing Person/User.
+
 Импорт участника создаёт связанные сущности в рамках одного подтверждённого применения import batch:
 
 ```text
@@ -491,7 +495,27 @@ Person
 
 Один импорт может создавать одного guardian и связывать его с несколькими детьми через `GuardianRelationship`. Отсутствие email у guardian или участника не препятствует созданию Person, User, роли, группы или связи.
 
-Создание ImportJob не является audit-required действием. Применение import batch и существенные результаты импорта должны попадать в audit; отдельный audit action code будет добавлен через ADR amendment до реализации apply slice.
+Создание ImportJob и preview не являются audit-required действиями. Применение import batch и существенные результаты импорта должны попадать в audit: каждая созданная доменная сущность использует существующий audit action, а batch-level execution записывается как membership.import.applied согласно ADR-0024.
+
+### 11.5.1. Approve / apply / report (TH-0118.3)
+
+После preview_ready администратор явно переводит ImportJob в approved через POST /memberships/imports/{import_id}/approve. Approval не меняет доменные сущности.
+
+POST /memberships/imports/{import_id}/apply выполняется синхронно и допускается только из approved. Для применения исходный, неизменяемый файл перечитывается тем же canonical parser/normalizer/validator. Exact duplicate detection повторяется against current persisted data, чтобы результат не зависел от изменений, произошедших после preview.
+
+Каждая valid, non-duplicate строка создаёт атомарно Person + User + ClubMembership. Невалидные строки и duplicate_exact строки пропускаются. Existing Person/User никогда не обновляются, перезаписываются, объединяются или автоматически переиспользуются.
+
+В TH-0118.3:
+- created_records — число успешно созданных participant rows;
+- updated_records — 0 после apply;
+- skipped_records — число строк, пропущенных из-за validation errors или duplicate_exact;
+- completed означает, что batch завершён без неожиданных row-level application failures;
+- partially_completed означает, что хотя бы одна строка была успешно применена, а хотя бы одна другая завершилась неожиданной row-level ошибкой;
+- failed означает, что применение завершилось без успешно применённых строк.
+
+Каждая строковая транзакция содержит доменные audit events для реально созданных сущностей. Дополнительно один batch-level audit event membership.import.applied записывается для ImportJob. Raw temporary credentials не возвращаются через import status/errors/report endpoints.
+
+Отдельная сущность или endpoint для report не вводится: GET /memberships/imports/{import_id} является aggregate report, а GET /memberships/imports/{import_id}/errors — row-level report.
 
 ### 11.6. Экспорт участников
 
