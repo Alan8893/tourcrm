@@ -393,7 +393,41 @@ expired
 
 Первая версия должна быть рассчитана минимум на CSV/XLSX импорт.
 
-### 11.2. Pipeline
+Import source files are stored through the existing file-storage subsystem. The ImportJob stores the file reference rather than the binary content inline.
+
+### 11.2. ImportBatch / ImportJob lifecycle
+
+Canonical persisted workflow states:
+
+```text
+uploaded
+→ parsing
+→ validating
+→ preview_ready
+→ approved
+→ applying
+→ completed
+```
+
+Terminal/error states:
+
+- `failed`;
+- `partially_completed`;
+- `cancelled`.
+
+Allowed transitions are:
+
+- `uploaded` → `parsing`, `cancelled`, `failed`;
+- `parsing` → `validating`, `failed`;
+- `validating` → `preview_ready`, `failed`;
+- `preview_ready` → `approved`, `cancelled`;
+- `approved` → `applying`, `cancelled`, `failed`;
+- `applying` → `completed`, `partially_completed`, `failed`;
+- `completed`, `partially_completed`, `failed`, `cancelled` are terminal.
+
+A newly created ImportJob starts in `uploaded`. Invalid transitions are rejected at the domain/application boundary.
+
+### 11.3. Pipeline
 
 ```text
 upload
@@ -407,7 +441,7 @@ upload
 
 Никогда не применять импорт непосредственно после загрузки файла без предварительной валидации и предварительного просмотра результата.
 
-### 11.3. Дубликаты
+### 11.4. Дубликаты
 
 Система должна проверять потенциальные дубликаты по нескольким полям, а не по одному ФИО.
 
@@ -421,7 +455,7 @@ upload
 
 Автоматическое объединение (`merge`) без явного правила и аудита запрещено.
 
-### 11.4. Результат импорта участника
+### 11.5. Результат импорта участника
 
 Импорт участника создаёт связанные сущности в рамках одного подтверждённого применения import batch:
 
@@ -444,9 +478,9 @@ Person
 
 Один импорт может создавать одного guardian и связывать его с несколькими детьми через `GuardianRelationship`. Отсутствие email у guardian или участника не препятствует созданию Person, User, роли, группы или связи.
 
-Применение import batch и существенные результаты импорта должны попадать в audit.
+Создание ImportJob не является audit-required действием. Применение import batch и существенные результаты импорта должны попадать в audit; отдельный audit action code будет добавлен через ADR amendment до реализации apply slice.
 
-### 11.5. Экспорт участников
+### 11.6. Экспорт участников
 
 Экспорт является отдельным операционным сценарием от импорта.
 

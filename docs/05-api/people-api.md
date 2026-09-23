@@ -603,46 +603,128 @@ ADR-0025 §5: самостоятельная регистрация — отде
 
 ## 22. Import
 
-### POST `/api/v1/memberships/imports`
+### Import job model
 
-Создаёт import job для загрузки участников из согласованных форматов CSV/XLSX.
+Participant import is represented by an `ImportJob`.
 
-Импорт является отдельным административным workflow:
+Canonical fields:
+
+- `id`;
+- `club_id`;
+- `created_by_user_id`;
+- `source_file_id` — reference to the uploaded source file in the existing file-storage subsystem;
+- `source_format` — `csv` or `xlsx`;
+- `status`;
+- `created_at`;
+- `updated_at`;
+- aggregate counters required by the status/report contract.
+
+The uploaded source file is stored through the existing file-storage infrastructure; import job persistence stores the file reference, not the binary content inline.
+
+### Import lifecycle
+
+The canonical workflow is:
 
 ```text
-upload
-→ parse
-→ validate
-→ preview
-→ approve
-→ apply
-→ report
+uploaded
+  ↓
+parsing
+  ↓
+validating
+  ↓
+preview_ready
+  ↓
+approved
+  ↓
+applying
+  ↓
+completed
 ```
 
-Upload не применяет изменения автоматически. До `apply` пользователь должен получить результат предварительной валидации и явно подтвердить применение.
+Terminal/error states:
 
-При применении import batch создаются/обновляются согласованные доменные записи участника. Для нового участника User создаётся всегда:
+- `failed`;
+- `partially_completed`;
+- `cancelled`.
 
-- email есть → `User.status = active`, `login_identifier = normalized(email)`;
-- email нет → `User.status = pending`, `login_identifier = NULL`, без password credential и без first-access credential.
+Allowed transitions:
 
-Фиктивные login/email значения для строк без email запрещены.
+| From | To |
+|---|---|
+| `uploaded` | `parsing`, `cancelled`, `failed` |
+| `parsing` | `validating`, `failed` |
+| `validating` | `preview_ready`, `failed` |
+| `preview_ready` | `approved`, `cancelled` |
+| `approved` | `applying`, `cancelled`, `failed` |
+| `applying` | `completed`, `partially_completed`, `failed` |
+| `completed` | terminal |
+| `partially_completed` | terminal |
+| `failed` | terminal |
+| `cancelled` | terminal |
 
-Импорт может создавать предусмотренные импортом связи `RoleAssignment`, `GroupMembership` и `GuardianRelationship`. Один guardian может быть связан с несколькими детьми. Точные mapping/column rules являются частью отдельного implementation contract и не могут быть придуманы frontend'ом.
+`POST /api/v1/memberships/imports` creates a job in `uploaded`. Invalid lifecycle transitions are rejected at the application/domain boundary.
 
-Import должен быть асинхронным, если размер превышает синхронный лимит.
+### POST `/api/v1/memberships/imports`
+
+Creates an import job from a CSV/XLSX file.
+
+Request:
+
+- `multipart/form-data`;
+- file upload is required;
+- the server determines/validates `source_format` as `csv` or `xlsx` from uploaded file metadata/extension according to the file-upload contract.
+
+The operation creates the job and stores the source file reference. It does **not** parse, validate or apply participant changes automatically.
+
+Response: `201 Created`
+
+```json
+{
+  "import_id": "...",
+  "status": "uploaded",
+  "format": "csv",
+  "created_at": "..."
+}
+```
+
+Unsupported format is rejected with `422` and canonical error code `unsupported_import_format`.
 
 ### GET `/api/v1/memberships/imports/{import_id}`
 
-Возвращает статус и статистику import job.
+Returns the import job status and currently available aggregate statistics.
+
+The requester must have `membership.import` for the job's Club and satisfy the ImportJob object-access policy below.
 
 ### GET `/api/v1/memberships/imports/{import_id}/errors`
 
-Возвращает строки/ошибки импорта без раскрытия чужих конфиденциальных данных сверх прав requester.
+Returns a paginated list of validation/application errors belonging to the requested import job.
+
+The response must not disclose errors from another import job or confidential data outside the requester's authorized scope.
+
+### Import authorization and object access
+
+Import operations require canonical permission `membership.import` with `all` scope in the job's Club.
+
+Current role matrix grants `membership.import` to `admin` only.
+
+An ImportJob is always bound to exactly one Club and records its creating User.
+
+A requester may access a job only when:
+
+1. the requester has `membership.import` with `all` scope in the job's Club; and
+2. the requester is the job creator **or** is an Administrator authorized for that Club.
+
+A request for a job that exists but is outside the requester's authorized object scope is returned as `404` to avoid existence disclosure.
+
+Backend authorization is authoritative. Frontend navigation or route visibility never grants access.
 
 ### Import security and audit
 
-Import execution requires administrative authorization and is audited. Preview/dry-run does not create the final participant changes.
+Creating an ImportJob is **not** an audit-required business action under ADR-0024.
+
+The later `apply`/import-execution operation and its material results are audit-required. Its action code will be added to the closed audit vocabulary by a separate ADR amendment before the apply slice is implemented.
+
+Preview/dry-run does not create final participant changes.
 
 Import must preserve the duplicate-detection and fail-closed rules defined in `docs/04-modules/people-and-membership.md §11`.
 
