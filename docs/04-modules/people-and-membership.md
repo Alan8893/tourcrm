@@ -476,7 +476,7 @@ Preview — dry-run: результат предпросмотра — это с
 
 TH-0118.3 applies only the current CSV/XLSX participant fields. A valid, non-duplicate row creates exactly Person + User + ClubMembership. RoleAssignment, GroupMembership, GroupInstructorAssignment, GuardianRelationship and EventParticipation are deferred to later import extensions.
 
-Rows with validation errors are skipped. Rows with duplicate_exact warnings are also skipped: the import never creates a duplicate and never updates, overwrites, merges with or reuses the existing Person/User.
+Rows with validation errors are skipped. Rows with duplicate_exact warnings are also skipped: within the import duplicate rules and the import-level concurrency guarantee (§11.5.1) the import never creates a duplicate, and it never updates, overwrites, merges with or reuses the existing Person/User.
 
 Импорт участника создаёт связанные сущности в рамках одного подтверждённого применения import batch. Все созданные `ClubMembership` принадлежат единственному `Club` системы:
 
@@ -491,7 +491,7 @@ Person
 
 Ключевой инвариант учётной записи:
 
-- если в импортируемой строке есть email, создаётся `User.status = active` с `login_identifier = normalized(email)`;
+- если в импортируемой строке есть email, создаётся `User.status = active` с `login_identifier = normalized(email)` и без password credential; импорт создаёт учётную запись, но не выдаёт first-access credential (password-reset challenge при импорте не создаётся) — first access выдаётся позже администратором через существующий `POST /api/v1/persons/{person_id}/account/password-reset` (`docs/05-api/people-api.md` §24.2);
 - если email отсутствует, создаётся `User.status = pending` с `login_identifier = NULL` и без password credential;
 - для pending-stub не выдаётся first-access credential и вход невозможен;
 - фиктивные login/email значения для обхода отсутствующего email запрещены;
@@ -509,17 +509,26 @@ POST /memberships/imports/{import_id}/apply выполняется синхро�
 
 Каждая valid, non-duplicate строка создаёт атомарно Person + User + ClubMembership. Невалидные строки и duplicate_exact строки пропускаются. Existing Person/User никогда не обновляются, перезаписываются, объединяются или автоматически переиспользуются.
 
+Import-level concurrency guarantee:
+- каждая candidate-строка повторно проверяется по exact duplicate rules внутри своей row transaction непосредственно перед созданием; если найден exact duplicate — Person, User и ClubMembership не создаются, строка классифицируется как duplicate_exact (warning в row-level report), пропускается и учитывается в skipped_records, а не как неожиданная ошибка применения;
+- нарушение уникальности normalized login identifier (email), вызванное конкурентно созданным участником, трактуется как соответствующий email exact duplicate (duplicate_exact → skipped), а не как import_apply_failed;
+- применения разных ImportJob сериализуются implementation-level transaction-scoped механизмом, охватывающим re-check и создание строки, чтобы два пересекающихся импорта не создали одного и того же участника в смысле import duplicate rules.
+
+Эта гарантия относится только к import subsystem. Глобальная дедупликация Person не вводится: другие сценарии создания Person (ручное создание, wizard) не участвуют в сериализации импорта и сохраняют существующее поведение, допускающее дубликаты; глобальная блокировка всех путей создания Person и unique constraints на `persons` не вводятся.
+
+Неожиданная ошибка применения valid candidate-строки откатывает транзакцию этой строки и фиксируется в row-level report кодом import_apply_failed (severity error, с row_number строки); batch-level неожиданная ошибка применения без осмысленного номера строки фиксируется как import_apply_failed без row_number. import_apply_failed — код ошибки импорта, а не validation error, не duplicate code и не audit action; он не заменяет duplicate_exact. Закрытый словарь кодов — `docs/05-api/people-api.md` §22 "Import error and warning codes".
+
 В TH-0118.3:
 - created_records — число успешно созданных participant rows;
 - updated_records — 0 после apply;
-- skipped_records — число строк, пропущенных из-за validation errors или duplicate_exact;
+- skipped_records — число строк, пропущенных из-за validation errors или duplicate_exact (включая duplicate_exact, найденные при transactional re-check); строка с import_apply_failed не считается ни созданной, ни пропущенной;
 - completed означает, что batch завершён без неожиданных row-level application failures;
-- partially_completed означает, что хотя бы одна строка была успешно применена, а хотя бы одна другая завершилась неожиданной row-level ошибкой;
+- partially_completed означает, что хотя бы одна строка была успешно применена, а хотя бы одна другая завершилась неожиданной row-level ошибкой (import_apply_failed);
 - failed означает, что применение завершилось без успешно применённых строк.
 
-Каждая строковая транзакция содержит доменные audit events для реально созданных сущностей. Дополнительно один batch-level audit event membership.import.applied записывается для ImportJob. Raw temporary credentials не возвращаются через import status/errors/report endpoints.
+Каждая строковая транзакция содержит доменные audit events для реально созданных сущностей. Дополнительно один batch-level audit event membership.import.applied записывается для ImportJob. Импорт не выдаёт credentials, поэтому никакой credential/secret не появляется в ответе импорта, import report/errors, audit details или persisted import data.
 
-Отдельная сущность или endpoint для report не вводится: GET /memberships/imports/{import_id} является aggregate report, а GET /memberships/imports/{import_id}/errors — row-level report.
+Отдельная сущность или endpoint для report не вводится: GET /memberships/imports/{import_id} является aggregate report, а GET /memberships/imports/{import_id}/errors — row-level report (validation errors, duplicate warnings, включая найденные при apply, и apply-time неожиданные ошибки import_apply_failed).
 
 ### 11.6. Экспорт участников
 
