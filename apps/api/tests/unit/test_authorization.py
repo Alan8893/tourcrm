@@ -40,10 +40,13 @@ def test_documented_permission_codes_have_no_invented_entries() -> None:
     # app.db.authorization.DOCUMENTED_PERMISSION_CODES's own comment.
     # `document.export` was added by TH-0117.1 (ADR-0040 §6) — see
     # app.db.authorization.DOCUMENTED_PERMISSION_CODES's own comment.
+    # `membership.import` was added by TH-0118.1 (people-api.md §22,
+    # roles-and-permissions.md §4 PO decision) — see the same comment.
     assert set(DOCUMENTED_PERMISSION_CODES) == {
         "user.directory.read",
         "account.manage",
         "document.export",
+        "membership.import",
         "person.read",
         "person.create",
         "person.update",

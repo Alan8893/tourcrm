@@ -141,6 +141,15 @@ _MEMBERSHIP_PATHS = {
     "/api/v1/memberships/{membership_id}/status",
 }
 
+_MEMBERSHIP_IMPORT_PATHS = {
+    # TH-0118.1 / Issue #185 (people-api.md §22, endpoint-inventory.md
+    # §4.1): participant import job foundation — create/status/errors
+    # only; no parse/preview/approve/apply endpoints in this slice.
+    "/api/v1/memberships/imports",
+    "/api/v1/memberships/imports/{import_id}",
+    "/api/v1/memberships/imports/{import_id}/errors",
+}
+
 _GUARDIAN_RELATIONSHIP_PATHS = {
     "/api/v1/persons/{person_id}/guardian-relationships",
     "/api/v1/guardian-relationships/{relationship_id}",
@@ -218,6 +227,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _PERSON_PATHS
         | _PERSON_PHOTO_PATHS
         | _MEMBERSHIP_PATHS
+        | _MEMBERSHIP_IMPORT_PATHS
         | _GUARDIAN_RELATIONSHIP_PATHS
         | _ME_PATHS
         | _GROUP_PATHS
@@ -228,6 +238,20 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()
+
+
+def test_membership_import_endpoints_expose_only_their_canonical_methods(real_client) -> None:
+    """TH-0118.1 / Issue #185: POST (multipart) creates a job; the job and
+    its errors are read-only — no endpoint changes a job's status directly.
+    """
+    paths = real_client.get("/openapi.json").json()["paths"]
+
+    assert set(paths["/api/v1/memberships/imports"]) == {"post"}
+    assert set(paths["/api/v1/memberships/imports/{import_id}"]) == {"get"}
+    assert set(paths["/api/v1/memberships/imports/{import_id}/errors"]) == {"get"}
+    request_body = paths["/api/v1/memberships/imports"]["post"]["requestBody"]
+    assert set(request_body["content"]) == {"multipart/form-data"}
+    assert "201" in paths["/api/v1/memberships/imports"]["post"]["responses"]
 
 
 def test_document_metadata_patch_endpoint_and_schemas_are_exact(real_client) -> None:

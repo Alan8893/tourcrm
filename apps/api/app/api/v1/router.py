@@ -7,6 +7,7 @@ from app.api.v1.events_series import series_router as event_series_router
 from app.api.v1.groups import router as groups_router
 from app.api.v1.guardian_relationships import router as guardian_relationships_router
 from app.api.v1.me import router as me_router
+from app.api.v1.membership_imports import router as membership_imports_router
 from app.api.v1.memberships import router as memberships_router
 from app.api.v1.persons import router as persons_router
 from app.api.v1.role_assignments import router as role_assignments_router
@@ -24,6 +25,9 @@ router.include_router(events_router)
 router.include_router(event_series_router)
 router.include_router(event_occurrences_router)
 router.include_router(persons_router)
+# Mounted before memberships_router so `/memberships/imports/...` is never
+# shadowed by that router's `/memberships/{membership_id}` path.
+router.include_router(membership_imports_router)
 router.include_router(memberships_router)
 router.include_router(guardian_relationships_router)
 router.include_router(groups_router)
