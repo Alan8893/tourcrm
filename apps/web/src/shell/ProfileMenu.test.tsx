@@ -146,11 +146,17 @@ describe("ProfileMenu", () => {
     fetchMock.mockImplementation(
       async () => new Response(JSON.stringify({}), { status: 401, headers: { "Content-Type": "application/json" } }),
     );
+    // The exact number of `/auth/me` calls around logout is incidental
+    // (removing the query can let a still-mounted observer refetch before
+    // unmount), so only require a fresh request after the remount and wait
+    // for the shared cache to settle on the backend's 401.
+    const meCalls = () =>
+      fetchMock.mock.calls.filter(([input]) => String(input).includes("/auth/me")).length;
+    const meCallsBeforeRemount = meCalls();
     renderWithProviders(<ProfileMenu />, { client });
 
-    await waitFor(() =>
-      expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/auth/me"))).toHaveLength(2),
-    );
+    await waitFor(() => expect(meCalls()).toBeGreaterThan(meCallsBeforeRemount));
+    await waitFor(() => expect(client.getQueryState(["auth", "me"])?.status).toBe("error"));
     expect(screen.queryByRole("button", { name: /Иванова Анна/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/Гость/)).not.toBeInTheDocument();
   });
