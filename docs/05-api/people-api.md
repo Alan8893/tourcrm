@@ -281,11 +281,19 @@ Permission: `group.manage` + scope + object relationship.
 
 Выполняет единственный допустимый переход `active → archived` (§14.1). Повторный вызов для уже `archived` группы отклоняется с кодом `invalid_group_status_transition`, HTTP 409.
 
-Архивация группы также прекращает/отменяет её будущую событийную активность. Прошедшие Events/Occurrences, GroupMembership и GroupInstructorAssignment не удаляются и сохраняются для истории.
+Архивация группы сама по себе не отменяет Events. Перед завершением операции backend проверяет наличие будущих Events, адресованных именно этой Group через `EventGroupTarget`; club-wide Events (`group_ids = []`) в эту проверку не входят и не затрагиваются.
+
+Если связанные будущие Events существуют, frontend должен показать их пользователю и запросить явное решение: отменить все последующие связанные Events и архивировать Group; оставить Events и архивировать Group; либо отменить архивацию. Автоматическая отмена без явного подтверждения не выполняется.
+
+При выборе отмены Events связанные последующие Events отменяются согласно каноническому Event lifecycle/API. Для recurring Events используется существующая модель `EventSeries → EventOccurrence`; новый Group→Event каскад или новый Event lifecycle не вводится. Прошедшие Events/Occurrences, GroupMembership и GroupInstructorAssignment не удаляются и сохраняются для истории.
 
 Архивная группа доступна только Administrator. Non-administrator requesters не должны получать её через list/item API.
 
-Архивную группу можно окончательно удалить отдельной явной destructive-операцией Administrator. До принятия отдельного API-контракта endpoint физического удаления не считается реализованным и не должен додумываться frontend/backend implementation task.
+### DELETE `/api/v1/groups/{group_id}`
+
+Permanent delete — отдельная destructive-операция, доступная только Administrator. Group может быть удалена независимо от наличия исторических GroupMembership и GroupInstructorAssignment; связанные с Group исторические данные удаляются вместе с Group. Операция требует отдельного явного подтверждения пользователем.
+
+Точный контракт transaction/atomicity, audit semantics и влияние на `Event`/`EventGroupTarget` должны быть определены до реализации. Event не является автоматически Group-owned данными; существующий канонический Event API остаётся источником истины. До завершения этого контракта endpoint не считается реализованным.
 
 ## 15. Group membership (GroupMembership)
 
@@ -320,7 +328,30 @@ Cross-Club integrity (ADR-0022 §4): `GroupMembership` валиден тольк
 
 Сценарий предназначен, в частности, для ежегодного перевода части состава между возрастными/учебными группами.
 
-`POST /api/v1/groups/{id}/members/bulk`, присутствующий в endpoint inventory §7, должен быть приведён в соответствие с этим решением. Точный request/response contract, атомарность, ограничения batch size, ошибки и audit semantics являются отдельной specification/implementation задачей; до её завершения нельзя додумывать контракт на frontend или backend.
+`POST /api/v1/groups/{source_group_id}/members/bulk` является каноническим endpoint массового перевода.
+
+Request:
+
+```json
+{
+  "target_group_id": "...",
+  "person_ids": ["...", "...", "..."]
+}
+```
+
+Семантика:
+- операция полностью атомарна; частичного успеха нет;
+- `source_group_id` и `target_group_id` должны существовать, принадлежать одному Club и иметь `status = active`;
+- каждый `person_id` должен иметь active `ClubMembership` в Club и active `GroupMembership` в исходной Group;
+- `person_ids` не может быть пустым; максимальный batch size — 100;
+- уже существующее active membership в target Group является конфликтом `409` и откатывает всю операцию;
+- `source_group_id == target_group_id` отклоняется как `422 invalid_group_transfer`;
+- cross-Club transfer запрещён;
+- archived source/target Group запрещены;
+- для каждого участника исходное membership завершается, новое membership в target создаётся; историческая принадлежность сохраняется;
+- операция аудируется без избыточного раскрытия PII.
+
+Полная операция выполняется в одной транзакции: любая ошибка откатывает весь bulk transfer.
 
 ### GET `/api/v1/groups/{group_id}/members`
 
