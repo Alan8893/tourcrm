@@ -27,7 +27,8 @@ class ImportJobCreatedOut(BaseModel):
 class ImportJobStatisticsOut(BaseModel):
     """Aggregate statistics. A record counter is `null` until a pipeline
     stage has actually computed it — never a fabricated 0. `error_count`
-    is always the real number of errors recorded for the job."""
+    is the real number of `error`-severity entries recorded for the job;
+    warnings (e.g. `duplicate_exact`) are not counted."""
 
     total_records: Optional[int]
     valid_records: Optional[int]
@@ -50,9 +51,15 @@ class ImportJobOut(BaseModel):
 
 
 class ImportJobErrorOut(BaseModel):
+    """One error or warning. `matched_person_id` is set only for a
+    `duplicate_exact` warning against an existing Person — its id only,
+    never any of that Person's data."""
+
     id: UUID
     row_number: Optional[int]
     field: Optional[str]
     code: str
     message: str
+    severity: str
+    matched_person_id: Optional[UUID]
     created_at: datetime

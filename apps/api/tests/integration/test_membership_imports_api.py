@@ -212,6 +212,7 @@ def _add_errors(job_id: uuid.UUID, rows: list[tuple[int | None, str | None, str]
                     field=field,
                     code=code,
                     message=f"{code} at row {row_number}",
+                    severity="error",
                 )
             )
         session.commit()
@@ -676,7 +677,18 @@ def test_error_item_shape(client: TestClient) -> None:
 
     item = client.get(f"{_URL}/{job_id}/errors").json()["items"][0]
 
-    assert set(item) == {"id", "row_number", "field", "code", "message", "created_at"}
+    assert set(item) == {
+        "id",
+        "row_number",
+        "field",
+        "code",
+        "message",
+        "severity",
+        "matched_person_id",
+        "created_at",
+    }
+    assert item["severity"] == "error"
+    assert item["matched_person_id"] is None
     assert item["row_number"] == 3
     assert item["field"] == "email"
     assert item["code"] == "invalid_email"
@@ -877,13 +889,19 @@ def test_import_job_errors_require_an_existing_job_and_positive_row_number() -> 
     job_id = _insert_job(club_id=club_id, created_by_user_id=_make_user())
 
     with session_scope() as session:
-        session.add(ImportJobError(import_job_id=uuid.uuid4(), code="x", message="x"))
+        session.add(
+            ImportJobError(import_job_id=uuid.uuid4(), code="x", message="x", severity="error")
+        )
         with pytest.raises(IntegrityError):
             session.flush()
         session.rollback()
 
     with session_scope() as session:
-        session.add(ImportJobError(import_job_id=job_id, row_number=0, code="x", message="x"))
+        session.add(
+            ImportJobError(
+                import_job_id=job_id, row_number=0, code="x", message="x", severity="error"
+            )
+        )
         with pytest.raises(IntegrityError):
             session.flush()
         session.rollback()
