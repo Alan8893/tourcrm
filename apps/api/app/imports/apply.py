@@ -26,25 +26,40 @@ synchronously within the request:
    (app.imports.evaluation — the same code path as preview);
 2. invalid rows and `duplicate_exact` rows are skipped
    (app.imports.apply_plan); an existing Person/User is never touched;
-3. every other row is applied in its own transaction, creating exactly
-   Person + ClubMembership (app.people.service.
-   create_person_with_membership: `member`/`active`/`joined_at = now`)
-   and User (app.authentication.account_provisioning.
-   create_user_for_person: active with `login_identifier = email` and the
-   canonical first-access challenge, or a pending stub without email),
-   together with those functions' own domain audit records — composed
-   with the Person-creation wizard's deferred-commit proxy, so a failure
-   anywhere rolls back that row only;
+3. every other row is applied in its own transaction (`_apply_row`):
+   a. the transaction-scoped import lock is taken (`_lock_import_apply`);
+   b. the row is re-checked against the exact duplicate rules, inside the
+      transaction, immediately before creation — a match makes the row
+      `duplicate_exact` -> skipped, creating nothing;
+   c. otherwise it creates exactly Person + ClubMembership (app.people.
+      service.create_person_with_membership: `member`/`active`/
+      `joined_at = now`) and User (app.authentication.
+      account_provisioning.create_user_for_person with
+      `issue_first_access=False`: active with `login_identifier = email`
+      and no first-access challenge, or a pending stub without email),
+      together with those functions' own domain audit records — composed
+      with the Person-creation wizard's deferred-commit proxy, so a
+      failure anywhere rolls back that row only. A login uniqueness
+      violation there is the email duplicate case (`duplicate_exact`),
+      not an application failure;
 4. the final status, the aggregate counters and exactly one
    `membership.import.applied` audit record commit together.
+
+Concurrency guarantee (people-api.md §22 "POST .../apply"): the lock in
+3a serializes the re-check + creation of every row across concurrently
+applied import jobs, and the re-check reads committed data after the lock
+is acquired (READ COMMITTED), so two overlapping import jobs never both
+create the same participant. The guarantee is import-only: no other
+Person-creation workflow takes this lock (manual creation still allows
+duplicates, ADR-0025 §9).
 
 The ClubMembership's Club is the job's `club_id`: the installation's sole
 Club, resolved server-side when the job was created — never a client
 choice.
 
-The raw first-access credential `create_user_for_person` returns is
-discarded here: it is never returned, persisted, logged or audited by the
-import (people-api.md §22 "Import report").
+Import issues no first-access credential (auth-and-authorization.md
+§5.3): first access is issued later by an administrator through
+`POST /persons/{person_id}/account/password-reset`.
 """
 
 import logging
@@ -56,16 +71,19 @@ from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit_event
 from app.authentication import account_provisioning
+from app.db.identity import User
 from app.db.imports import ImportJob, ImportJobError
 from app.imports.apply_plan import (
     APPLY_FAILED,
     plan_import_apply,
     resolve_final_import_status,
 )
+from app.imports.duplicates import DUPLICATE_EXACT_CODE, detect_duplicates
 from app.imports.evaluation import evaluate_source, issue_to_error_row, read_source
 from app.imports.lifecycle import InvalidImportJobStatusTransitionError
 from app.imports.parsing import ImportParseError
-from app.imports.rows import SEVERITY_ERROR, ImportIssue, NormalizedRow
+from app.imports.queries import find_existing_person_matches
+from app.imports.rows import SEVERITY_ERROR, SEVERITY_WARNING, ImportIssue, NormalizedRow
 from app.imports.service import transition_import_job_status
 from app.people import service as people_service
 from app.people.wizard import _DeferredCommitSession
@@ -80,6 +98,12 @@ IMPORT_JOB_AUDIT_RESOURCE_TYPE = "import_job"
 # `row_number` for one row whose transaction was rolled back, without it
 # when the batch itself could not be completed.
 IMPORT_APPLY_FAILED_CODE = "import_apply_failed"
+
+# Key of the transaction-scoped PostgreSQL advisory lock serializing the
+# per-row re-check + creation of concurrently applied import jobs. One key
+# for the whole participant-import subsystem (TourCRM has exactly one
+# Club); nothing outside app.imports takes it.
+_IMPORT_APPLY_LOCK_KEY = 118_300_193
 
 
 class ImportJobStatusConflictError(Exception):
@@ -128,6 +152,42 @@ def _record_apply_time_issues(
     session.flush()
 
 
+def _lock_import_apply(session: Session) -> None:
+    """Take the import-apply advisory lock for the current transaction; it
+    is released by that transaction's commit or rollback."""
+    session.execute(sa.select(sa.func.pg_advisory_xact_lock(_IMPORT_APPLY_LOCK_KEY)))
+
+
+def _recheck_duplicates(session: Session, row: NormalizedRow) -> list[ImportIssue]:
+    """The row's `duplicate_exact` issues against data committed now — the
+    same exact rules as preview (external_id is in-file only and was
+    already decided for the whole file)."""
+    return detect_duplicates([row], find_existing_person_matches(session, [row]))
+
+
+def _login_duplicate(session: Session, row: NormalizedRow) -> list[ImportIssue]:
+    """A login uniqueness violation is the email exact-duplicate case: the
+    `duplicate_exact` issue against the User now holding that login."""
+    assert row.email is not None
+    person_id = session.execute(
+        sa.select(User.person_id).where(User.normalized_login_identifier == row.email)
+    ).scalar_one_or_none()
+    matches = {row.row_number: [(person_id, "email")]} if person_id is not None else {}
+    issues = detect_duplicates([row], matches)
+    if issues:
+        return issues
+    # The conflicting User is gone again by now — still the email duplicate.
+    return [
+        ImportIssue(
+            code=DUPLICATE_EXACT_CODE,
+            message="Exact duplicate of an existing person by email",
+            severity=SEVERITY_WARNING,
+            row_number=row.row_number,
+            field="email",
+        )
+    ]
+
+
 def _apply_row(
     session: Session,
     *,
@@ -135,12 +195,22 @@ def _apply_row(
     club_id: uuid.UUID,
     actor_user_id: uuid.UUID,
     request_id: Optional[str],
-) -> None:
-    """One row's transaction: Person + ClubMembership + User and their
-    domain audit records, committed together or not at all."""
+) -> list[ImportIssue]:
+    """One row's transaction: under the import lock, re-check duplicates,
+    then create Person + ClubMembership + User and their domain audit
+    records, committed together or not at all.
+
+    Returns `[]` when the row was created, or its `duplicate_exact` issues
+    when it is a duplicate (nothing created). Any other failure propagates
+    after the row's transaction has been rolled back."""
     assert row.first_name is not None and row.last_name is not None  # valid row
     deferred = cast(Session, _DeferredCommitSession(session))
     try:
+        _lock_import_apply(session)
+        duplicates = _recheck_duplicates(session, row)
+        if duplicates:
+            session.rollback()
+            return duplicates
         person, _membership = people_service.create_person_with_membership(
             deferred,
             first_name=row.first_name,
@@ -154,15 +224,21 @@ def _apply_row(
             actor_user_id=actor_user_id,
             request_id=request_id,
         )
-        # The raw credential (second element) is deliberately dropped — see
-        # module docstring.
         account_provisioning.create_user_for_person(
-            deferred, person_id=person.id, actor_user_id=actor_user_id, request_id=request_id
+            deferred,
+            person_id=person.id,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+            issue_first_access=False,
         )
         session.commit()
+    except account_provisioning.DuplicateLoginIdentifierError:
+        session.rollback()
+        return _login_duplicate(session, row)
     except Exception:
         session.rollback()
         raise
+    return []
 
 
 def _record_failure(session: Session, *, import_job_id: uuid.UUID, issue: ImportIssue) -> None:
@@ -198,6 +274,7 @@ def run_import_apply(
     failed = 0
     skipped: Optional[int] = None
     aborted = False
+    duplicates: list[ImportIssue]
     try:
         parsed = read_source(
             session, storage, source_file_id=source_file_id, source_format=source_format
@@ -210,7 +287,7 @@ def run_import_apply(
 
         for row in plan.candidates:
             try:
-                _apply_row(
+                duplicates = _apply_row(
                     session,
                     row=row,
                     club_id=club_id,
@@ -235,7 +312,14 @@ def run_import_apply(
                     ),
                 )
             else:
-                created += 1
+                if duplicates:
+                    skipped += 1
+                    _record_apply_time_issues(
+                        session, import_job_id=import_job_id, issues=duplicates
+                    )
+                    session.commit()
+                else:
+                    created += 1
     except Exception as exc:
         session.rollback()
         logger.exception("imports.apply.failed import_id=%s", import_job_id)

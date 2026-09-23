@@ -17,14 +17,17 @@ source file through the real FileStorage path.
 import datetime
 import io
 import threading
+import time
 import uuid
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
+import app.imports.apply as apply_module
+import app.people.service as people_service_module
 from app.api.deps import CurrentPrincipal, get_current_principal
 from app.audit.security import assert_safe_audit_details
 from app.authentication import account_provisioning
@@ -510,10 +513,10 @@ def test_successful_xlsx_apply(client: TestClient) -> None:
 # --- apply: account provisioning --------------------------------------------------
 
 
-def test_row_with_email_creates_active_user_with_normalized_login_and_first_access(
+def test_row_with_email_creates_active_user_without_first_access_credential(
     client: TestClient,
 ) -> None:
-    _setup(client)
+    club_id, _ = _setup(client)
     import_id = _approved_job(client, _csv(_HEADER, "Anna,Ivanova,,,,ANNA@Example.com,"))
 
     response = _post(client, import_id, "apply")
@@ -527,11 +530,26 @@ def test_row_with_email_creates_active_user_with_normalized_login_and_first_acce
     assert user.login_identifier == "anna@example.com"
     assert user.normalized_login_identifier == "anna@example.com"
     assert user.password_hash is None
-    # The canonical first-access flow issued its one-time challenge; the raw
-    # credential is never part of any import response.
-    assert _count(PasswordResetChallenge, PasswordResetChallenge.user_id == user.id) == 1
-    for body in (response.text, client.get(f"{_URL}/{import_id}").text):
+    # D2: import creates the account only — no first-access challenge, no
+    # `password_reset_challenge.created` audit, nothing to leak.
+    assert _count(PasswordResetChallenge) == 0
+    assert _audit("password_reset_challenge.created") == []
+    for body in (
+        response.text,
+        client.get(f"{_URL}/{import_id}").text,
+        str(_errors(client, import_id)),
+    ):
         assert "credential" not in body and "token" not in body and "password" not in body
+
+    # First access is issued later through the existing canonical
+    # administrator password-reset flow.
+    _authenticate_as(_admin(club_id))
+    reset = client.post(
+        f"/api/v1/persons/{anna.id}/account/password-reset", headers=_csrf_headers(client)
+    )
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["temporary_credential"]
+    assert _count(PasswordResetChallenge, PasswordResetChallenge.user_id == user.id) == 1
 
 
 def test_row_without_email_creates_pending_stub_user(client: TestClient) -> None:
@@ -790,7 +808,7 @@ def test_failed_row_is_rolled_back_and_others_stay_committed(
     assert after["Person"] == before["Person"] + 2
     assert after["User"] == before["User"] + 2
     assert after["ClubMembership"] == before["ClubMembership"] + 2
-    assert after["PasswordResetChallenge"] == before["PasswordResetChallenge"] + 1
+    assert after["PasswordResetChallenge"] == before["PasswordResetChallenge"]
     assert len(_audit("person.created")) == 2
     assert len(_audit("user.created")) == 2
     assert len(_audit("membership.created")) == 2
@@ -886,8 +904,8 @@ def test_apply_audits_every_created_entity_and_the_batch_exactly_once(
         user = _user_of(person.id)
         assert user is not None
         assert len(_audit("user.created", resource_id=user.id)) == 1
-    # First-access challenge only for the row with an email.
-    assert len(_audit("password_reset_challenge.created")) == 1
+    # No first-access challenge is issued by import, even for the email row.
+    assert _audit("password_reset_challenge.created") == []
 
     [applied] = _audit("membership.import.applied")
     assert applied.resource_type == "import_job"
@@ -903,8 +921,8 @@ def test_apply_audits_every_created_entity_and_the_batch_exactly_once(
         "skipped_records": 1,
         "failed_records": 0,
     }
-    # 2 x (person, membership, user) + 1 challenge + 1 batch record.
-    assert _count(AuditLog) == audit_before + 8
+    # 2 x (person, membership, user) + 1 batch record.
+    assert _count(AuditLog) == audit_before + 7
 
     with session_scope() as session:
         for row in session.execute(select(AuditLog)).scalars():
@@ -1212,3 +1230,260 @@ def test_concurrent_applies_apply_once(client: TestClient, storage_root: Path) -
     assert after["ClubMembership"] == before["ClubMembership"] + 2
     assert len(_audit("membership.import.applied")) == 1
     assert _status(import_id) == "completed"
+
+
+# --- D3: in-transaction duplicate re-check, login race, import concurrency --------
+
+
+_DIMENSION_ROWS = {
+    # dimension -> (conflicting Person values, CSV row of the imported person)
+    "email": ({"email": "race@example.com"}, "Boris,Petrov,,,,race@example.com,"),
+    "phone": ({"phone": "+7 900 321"}, "Boris,Petrov,,,+7 900 321,,"),
+    "name_birth_date": (
+        {"first_name": "Boris", "last_name": "Petrov", "birth_date": datetime.date(2011, 1, 2)},
+        "Boris,Petrov,,2011-01-02,,,",
+    ),
+}
+_DIMENSION_FIELD = {"email": "email", "phone": "phone", "name_birth_date": None}
+
+
+def _codes(client: TestClient, import_id: str) -> list[str]:
+    return [e["code"] for e in _errors(client, import_id)]
+
+
+@pytest.mark.parametrize("dimension", sorted(_DIMENSION_ROWS))
+def test_duplicate_committed_between_rows_is_caught_by_the_in_transaction_recheck(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, dimension: str
+) -> None:
+    """The batch evaluation at the start of apply sees no duplicate; while
+    row 2 is being created, another workflow commits a Person that matches
+    row 3. Only the per-row re-check can catch it."""
+    _setup(client)
+    conflicting, row = _DIMENSION_ROWS[dimension]
+    import_id = _approved_job(client, _csv(_HEADER, "Anna,Ivanova,,,,,", row))
+    conflict_ids: list[uuid.UUID] = []
+    original = people_service_module.create_person_with_membership
+
+    def create_person_with_membership(session, **kwargs):
+        if kwargs["first_name"] == "Anna":
+            conflict_ids.append(_make_person(**conflicting))
+        return original(session, **kwargs)
+
+    monkeypatch.setattr(
+        people_service_module, "create_person_with_membership", create_person_with_membership
+    )
+    before = _domain_counts()
+
+    response = _post(client, import_id, "apply")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["statistics"]["created_records"] == 1
+    assert body["statistics"]["skipped_records"] == 1
+    assert body["statistics"]["updated_records"] == 0
+    # Anna + the conflicting Person; Boris was not created.
+    assert _count(Person) == before["Person"] + 2
+    assert _count(User) == before["User"] + 1
+    assert _count(ClubMembership) == before["ClubMembership"] + 1
+    [conflict_id] = conflict_ids
+    assert _user_of(conflict_id) is None
+    assert _memberships_of(conflict_id) == []
+    [warning] = [e for e in _errors(client, import_id) if e["code"] == "duplicate_exact"]
+    assert warning["row_number"] == 3
+    assert warning["severity"] == "warning"
+    assert warning["field"] == _DIMENSION_FIELD[dimension]
+    assert warning["matched_person_id"] == str(conflict_id)
+    assert "import_apply_failed" not in _codes(client, import_id)
+
+
+def test_recheck_and_creation_run_in_one_transaction_under_the_import_lock(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(client)
+    import_id = _approved_job(client, _csv(_HEADER, "Anna,Ivanova,,,,,", "Boris,Petrov,,,,,"))
+    events: list[tuple[str, int, int]] = []
+
+    def probe(session) -> tuple[int, int]:
+        txid = session.execute(select(func.txid_current())).scalar_one()
+        held = session.execute(
+            text(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                "AND pid = pg_backend_pid() AND granted"
+            )
+        ).scalar_one()
+        return txid, held
+
+    original_recheck = apply_module.find_existing_person_matches
+    original_create = people_service_module.create_person_with_membership
+
+    def recheck(session, rows):
+        events.append(("recheck", *probe(session)))
+        return original_recheck(session, rows)
+
+    def create(session, **kwargs):
+        events.append(("create", *probe(session)))
+        return original_create(session, **kwargs)
+
+    monkeypatch.setattr(apply_module, "find_existing_person_matches", recheck)
+    monkeypatch.setattr(people_service_module, "create_person_with_membership", create)
+
+    assert _post(client, import_id, "apply").json()["status"] == "completed"
+
+    assert [kind for kind, _, _ in events] == ["recheck", "create", "recheck", "create"]
+    for (_, recheck_tx, recheck_locks), (_, create_tx, create_locks) in (
+        (events[0], events[1]),
+        (events[2], events[3]),
+    ):
+        assert recheck_tx == create_tx  # same row transaction
+        assert recheck_locks == create_locks == 1  # the import lock is held
+    assert events[0][1] != events[2][1]  # one transaction per row
+
+
+def test_concurrent_login_uniqueness_violation_is_duplicate_exact_not_a_failure(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another workflow commits a User with the row's login after the
+    re-check and before the row's User insert: the database uniqueness
+    violation is the email duplicate case."""
+    _setup(client)
+    import_id = _approved_job(
+        client, _csv(_HEADER, "Anna,Ivanova,,,,,", "Boris,Petrov,,,,taken-late@example.com,")
+    )
+    racing_user_ids: list[uuid.UUID] = []
+    original = account_provisioning.create_user_for_person
+
+    def create_user_for_person(session, *, person_id, **kwargs):
+        person = session.get(Person, person_id)
+        if person is not None and person.email == "taken-late@example.com":
+            racing_user_ids.append(_make_user(login="taken-late@example.com"))
+        return original(session, person_id=person_id, **kwargs)
+
+    monkeypatch.setattr(account_provisioning, "create_user_for_person", create_user_for_person)
+    before = _domain_counts()
+
+    response = _post(client, import_id, "apply")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["statistics"]["created_records"] == 1
+    assert body["statistics"]["skipped_records"] == 1
+    assert _person_by_first_name("Boris") is None  # the row was rolled back
+    # Anna + the racing User's own Person.
+    assert _count(Person) == before["Person"] + 2
+    [racing_user_id] = racing_user_ids
+    with session_scope() as session:
+        racing_person_id = session.get(User, racing_user_id).person_id
+    [warning] = [e for e in _errors(client, import_id) if e["code"] == "duplicate_exact"]
+    assert (warning["row_number"], warning["field"]) == (3, "email")
+    assert warning["matched_person_id"] == str(racing_person_id)
+    assert "import_apply_failed" not in _codes(client, import_id)
+    [applied] = _audit("membership.import.applied")
+    assert applied.details["failed_records"] == 0
+
+
+@pytest.mark.parametrize("dimension", sorted(_DIMENSION_ROWS))
+def test_concurrent_import_jobs_never_both_create_the_same_participant(
+    client: TestClient, storage_root: Path, monkeypatch: pytest.MonkeyPatch, dimension: str
+) -> None:
+    """Job A is inside its row transaction (lock held, Person not yet
+    committed) when job B starts: B must wait for the import lock, then its
+    re-check sees A's Person — duplicate_exact, skipped, never a failure."""
+    _, user_id = _setup(client)
+    conflicting, row = _DIMENSION_ROWS[dimension]
+    job_a = _approved_job(client, _csv(_HEADER, row))
+    job_b = _approved_job(client, _csv(_HEADER, row))
+    storage = LocalFileStorage(root=storage_root)
+    a_inside = threading.Event()
+    original = people_service_module.create_person_with_membership
+
+    def create_person_with_membership(session, **kwargs):
+        if threading.current_thread().name == "job-a":
+            a_inside.set()
+            time.sleep(0.5)
+        return original(session, **kwargs)
+
+    monkeypatch.setattr(
+        people_service_module, "create_person_with_membership", create_person_with_membership
+    )
+    before = _domain_counts()
+    results: dict[str, object] = {}
+
+    def apply(import_id: str, name: str) -> None:
+        if name == "job-b":
+            assert a_inside.wait(timeout=30)
+        try:
+            with session_scope() as session:
+                job = session.get_one(ImportJob, uuid.UUID(import_id))
+                results[name] = run_import_apply(
+                    session, storage, job=job, actor_user_id=user_id
+                ).status
+        except Exception as exc:  # asserted below
+            results[name] = exc
+
+    threads = [
+        threading.Thread(target=apply, args=(job_a, "job-a"), name="job-a"),
+        threading.Thread(target=apply, args=(job_b, "job-b"), name="job-b"),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert results == {"job-a": "completed", "job-b": "completed"}
+    assert _count(Person) == before["Person"] + 1
+    assert _count(User) == before["User"] + 1
+    assert _count(ClubMembership) == before["ClubMembership"] + 1
+    report_a = client.get(f"{_URL}/{job_a}").json()["statistics"]
+    report_b = client.get(f"{_URL}/{job_b}").json()["statistics"]
+    assert (report_a["created_records"], report_a["skipped_records"]) == (1, 0)
+    assert (report_b["created_records"], report_b["skipped_records"]) == (0, 1)
+    assert _codes(client, job_b) == ["duplicate_exact"]
+    assert _codes(client, job_a) == []
+    assert len(_audit("membership.import.applied")) == 2
+
+
+def test_external_id_duplicates_are_intra_file_only(client: TestClient) -> None:
+    _setup(client)
+    first = _approved_job(
+        client,
+        _csv(_HEADER, "Anna,Ivanova,,,,,X-1", "Anya,Orlova,,,,,X-1", "Boris,Petrov,,,,,X-2"),
+    )
+
+    body = _post(client, first, "apply").json()
+
+    assert body["statistics"]["created_records"] == 1
+    assert body["statistics"]["skipped_records"] == 2
+    assert _person_by_first_name("Anna") is None and _person_by_first_name("Anya") is None
+    # external_id is never compared with persisted data (no persisted
+    # external identifier exists), so another job's X-2 is not a duplicate.
+    second = _approved_job(client, _csv(_HEADER, "Vera,Sokolova,,,,,X-2"))
+    body = _post(client, second, "apply").json()
+    assert body["statistics"]["created_records"] == 1
+    assert body["statistics"]["skipped_records"] == 0
+
+
+def test_unexpected_batch_level_failure_is_import_apply_failed_without_row(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(client)
+    import_id = _approved_job(client, _csv(_HEADER, "Anna,Ivanova,,,,,"))
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("simulated batch failure")
+
+    monkeypatch.setattr(apply_module, "evaluate_source", broken)
+    before = _domain_counts()
+
+    response = _post(client, import_id, "apply")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "failed"
+    assert _domain_counts() == before
+    [failure] = [e for e in _errors(client, import_id) if e["code"] == "import_apply_failed"]
+    assert failure["row_number"] is None
+    assert failure["severity"] == "error"
+    assert "simulated" not in failure["message"]
+    [applied] = _audit("membership.import.applied")
+    assert applied.outcome == "failure"
