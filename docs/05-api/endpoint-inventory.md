@@ -102,11 +102,13 @@ Membership lifecycle is exposed through the canonical `/status` operation. The o
 
 ### 4.1 Participant import
 
-- `POST /memberships/imports` — import job creation (CSV/XLSX; preview/dry-run before apply).
-- `GET /memberships/imports/{import_id}` — import job status/statistics.
-- `GET /memberships/imports/{import_id}/errors` — import validation/application errors.
+- `POST /memberships/imports` — multipart CSV/XLSX import-job creation; creates status `uploaded`.
+- `GET /memberships/imports/{import_id}` — import job status/statistics; protected by `membership.import` and ImportJob object policy.
+- `GET /memberships/imports/{import_id}/errors` — paginated import validation/application errors; protected by `membership.import` and ImportJob object policy.
 
-The detailed import workflow and account semantics are defined in `docs/05-api/people-api.md §22` and `docs/04-modules/people-and-membership.md §11`.
+Import jobs are Club-bound and retain `created_by_user_id` and `source_file_id`. Creation is not audit-required; import application/execution is audit-required and requires a future ADR amendment for its action code.
+
+The detailed import workflow, lifecycle, authorization and account semantics are defined in `docs/05-api/people-api.md §22` and `docs/04-modules/people-and-membership.md §11`.
 
 ### 4.2 Participant export
 

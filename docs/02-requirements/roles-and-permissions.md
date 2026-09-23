@@ -93,6 +93,7 @@ permission исключение, а не пересмотр общей scope-м�
 - `settings.manage`
 - `role.manage`
 - `account.manage`
+- `membership.import`
 
 Каталог включает также отдельный `account.manage` (TH-0113, ADR-0038) — permission для
 административного управления User account/credentials из Person Detail: создание User для
@@ -154,6 +155,7 @@ Feature setting не может расширить permissions.
 | Membership: создание | ✅ | ❌ | ❌ | ❌ |
 | Membership: изменение type | ✅ | ❌ | ❌ | ❌ |
 | Membership: lifecycle | ✅ | ❌ | ❌ | ❌ |
+| Participant import job management | ✅ `membership.import` + `all` | ❌ | ❌ | ❌ |
 | GuardianRelationship: чтение | authorized global | по `own_groups` | собственные relationship records | собственные relationship records |
 | GuardianRelationship: создание | ✅ | ❌ | ❌ | ❌ |
 | GuardianRelationship: изменение | ✅ | ❌ | ❌ | ❌ |
