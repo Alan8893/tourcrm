@@ -128,6 +128,13 @@ DOCUMENTED_PERMISSION_CODES = (
     # permission code exists so future work has a stable, already-seeded
     # target to gate against.
     "document.export",
+    # TH-0118.1 (Participant import job foundation), people-api.md §22 /
+    # roles-and-permissions.md §4: the canonical permission for participant
+    # import job management, required with `all` scope in the job's Club.
+    # Deliberately NOT membership.manage/person.create/role.manage/
+    # account.manage. Granted only to `admin` in the current MVP (see
+    # app.imports.authorization for the ImportJob object policy).
+    "membership.import",
 )
 
 
