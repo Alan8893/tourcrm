@@ -12,6 +12,7 @@ import { GroupsPage } from "./pages/GroupsPage";
 import { GroupDetailPage } from "./pages/GroupDetailPage";
 import { EventsPage } from "./pages/EventsPage";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
+import { SettingsPage } from "./pages/SettingsPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 
 const queryClient = new QueryClient({
@@ -42,7 +43,7 @@ export function App() {
               <Route path="events" element={<EventsPage />} />
               <Route path="achievements" element={<PlaceholderPage title="Достижения" />} />
               <Route path="reports" element={<PlaceholderPage title="Отчёты" />} />
-              <Route path="settings" element={<PlaceholderPage title="Настройки" />} />
+              <Route path="settings" element={<SettingsPage />} />
               <Route path="*" element={<NotFoundPage />} />
             </Route>
           </Routes>

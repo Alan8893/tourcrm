@@ -23,10 +23,14 @@ class RegisterRequest(BaseModel):
 
 
 class PersonOut(BaseModel):
+    # TH-0119: `id`/`photo_file_id` let the authenticated UI build the
+    # versioned profile photo URL; no storage internals are exposed.
+    id: UUID
     first_name: str
     last_name: str
     middle_name: str | None
     birth_date: date | None
+    photo_file_id: UUID | None
 
 
 class UserOut(BaseModel):

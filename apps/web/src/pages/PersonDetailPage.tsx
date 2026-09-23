@@ -209,7 +209,6 @@ function EditPersonDialog({
   const [phone, setPhone] = useState(person.phone ?? "");
   const [email, setEmail] = useState(person.email ?? "");
   const [address, setAddress] = useState(person.address ?? "");
-  const [photoFileId, setPhotoFileId] = useState(person.photo_file_id ?? "");
   const [birthDate, setBirthDate] = useState(person.birth_date ?? "");
   const updatePerson = useUpdatePerson();
   const notify = useNotify();
@@ -227,9 +226,6 @@ function EditPersonDialog({
     if ((phone.trim() || null) !== person.phone) fields.phone = phone.trim() || null;
     if ((email.trim() || null) !== person.email) fields.email = email.trim() || null;
     if ((address.trim() || null) !== person.address) fields.address = address.trim() || null;
-    if ((photoFileId.trim() || null) !== person.photo_file_id) {
-      fields.photo_file_id = photoFileId.trim() || null;
-    }
     // birth_date is never offered to a non-admin, so it can never appear
     // in the diff for one — matches "non-admin roles must not be offered
     // birth-date editing" beyond merely disabling the field.
@@ -281,12 +277,6 @@ function EditPersonDialog({
         <Input label="Телефон" value={phone} onChange={(e) => setPhone(e.target.value)} />
         <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
         <Input label="Адрес" value={address} onChange={(e) => setAddress(e.target.value)} />
-        <Input
-          label="ID файла фото (необязательно)"
-          value={photoFileId}
-          onChange={(e) => setPhotoFileId(e.target.value)}
-          hint="Ссылка на уже загруженный файл — загрузка фото в этой версии не реализована."
-        />
         {isAdmin ? (
           <Input
             label="Дата рождения"

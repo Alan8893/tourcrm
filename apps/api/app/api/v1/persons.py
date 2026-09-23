@@ -129,6 +129,13 @@ from app.people.guardian_queries import (
     list_guardian_relationships_for_child,
 )
 from app.people.guardian_queries import InvalidSortError as InvalidGuardianSortError
+from app.people.photo import delete_profile_photo, read_current_photo, set_profile_photo
+from app.people.photo_image import (
+    MAX_PHOTO_UPLOAD_BYTES,
+    PHOTO_OUTPUT_MIME_TYPE,
+    InvalidPhotoError,
+    PhotoTooLargeError,
+)
 from app.people.queries import (
     MEMBERSHIP_DEFAULT_SORT,
     PERSON_DEFAULT_SORT,
@@ -462,6 +469,106 @@ def update_person(
         **fields,
     )
     return _person_out(person, role_codes=_role_codes_for_person(db, person.id))
+
+
+# --- profile photo (TH-0119 / Issue #176; profile-photo-api.md) -------------
+
+
+@router.get("/{person_id}/photo")
+def get_person_photo(
+    person_id: uuid.UUID,
+    request: Request,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    storage: FileStorage = Depends(get_file_storage),
+) -> Response:
+    """Stream the current profile photo (512×512 WebP) — existing
+    `person.read` policy. No current photo uses the same 404 contract as
+    any other absent current resource. `storage_key` never leaves the
+    backend. The ETag is the current `photo_file_id`, the same
+    server-authoritative version the frontend puts in the photo URL, so a
+    replacement can never keep serving the previous image.
+    """
+    person = _get_authorized_person_or_404(
+        db, person_id=person_id, user_id=principal.user_id, permission_code="person.read"
+    )
+    current = read_current_photo(db, storage, person=person)
+    if current is None:
+        raise APIError(status.HTTP_404_NOT_FOUND, "photo_not_found", "Photo not found")
+    file_id, content = current
+    etag = f'"{file_id}"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    return Response(content=content, media_type=PHOTO_OUTPUT_MIME_TYPE, headers=headers)
+
+
+@router.put("/{person_id}/photo", response_model=PersonOut)
+def put_person_photo(
+    person_id: uuid.UUID,
+    request: Request,
+    photo: UploadFile = File(...),
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    storage: FileStorage = Depends(get_file_storage),
+    _csrf: None = Depends(require_csrf_token),
+) -> PersonOut:
+    """Create or replace the current profile photo — existing
+    `person.update`/self policy; no avatar-specific permission. The
+    backend validates actual image content and stores only the
+    normalized 512×512 WebP (app.people.photo_image)."""
+    person = _get_authorized_person_or_404(
+        db, person_id=person_id, user_id=principal.user_id, permission_code="person.update"
+    )
+    # Read at most one byte past the limit: an oversized upload is
+    # rejected without buffering all of it.
+    content = photo.file.read(MAX_PHOTO_UPLOAD_BYTES + 1)
+    try:
+        person = set_profile_photo(
+            db,
+            storage,
+            person=person,
+            content=content,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
+        )
+    except PhotoTooLargeError as exc:
+        raise APIError(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            "photo_too_large",
+            "Photo exceeds the 10 MB upload limit",
+        ) from exc
+    except InvalidPhotoError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "invalid_photo",
+            "Photo must be a valid JPEG, PNG or WebP image",
+        ) from exc
+    return _person_out(person, role_codes=_role_codes_for_person(db, person.id))
+
+
+@router.delete("/{person_id}/photo", status_code=status.HTTP_204_NO_CONTENT)
+def delete_person_photo(
+    person_id: uuid.UUID,
+    request: Request,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    storage: FileStorage = Depends(get_file_storage),
+    _csrf: None = Depends(require_csrf_token),
+) -> Response:
+    """Remove the current profile photo — existing `person.update`/self
+    policy. Repeated deletion with no current photo is a 204 no-op."""
+    person = _get_authorized_person_or_404(
+        db, person_id=person_id, user_id=principal.user_id, permission_code="person.update"
+    )
+    delete_profile_photo(
+        db,
+        storage,
+        person=person,
+        actor_user_id=principal.user_id,
+        request_id=get_request_id(request),
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{person_id}/memberships", response_model=CollectionResponse[MembershipOut])
