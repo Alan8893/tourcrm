@@ -46,6 +46,11 @@ CANONICAL_AUDIT_ACTIONS: frozenset[str] = frozenset(
         "membership.updated",
         "membership.status_changed",
         "membership.ended",
+        # Participant import batch execution (TH-0118.3 amendment to
+        # ADR-0024 §4): one batch-level record per applied ImportJob, with
+        # the job as the audit resource. It never replaces the per-entity
+        # `person.*`/`user.*`/`membership.*` records the import also writes.
+        "membership.import.applied",
         # Roles
         "role_assignment.created",
         "role_assignment.changed",

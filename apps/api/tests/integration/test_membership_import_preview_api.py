@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 from sqlalchemy import delete, func, select
 
+import app.imports.evaluation as evaluation_module
 import app.imports.preview as preview_module
 from app.api.deps import CurrentPrincipal, get_current_principal
 from app.db.attendance import Attendance
@@ -386,7 +387,7 @@ def test_validation_failure_fails_the_job_and_keeps_no_partial_rows(
     def broken_lookup(session, rows):
         raise RuntimeError("lookup unavailable")
 
-    monkeypatch.setattr(preview_module, "find_existing_person_matches", broken_lookup)
+    monkeypatch.setattr(evaluation_module, "find_existing_person_matches", broken_lookup)
 
     response = _preview(client, import_id)
 

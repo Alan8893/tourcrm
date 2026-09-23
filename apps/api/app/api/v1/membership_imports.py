@@ -1,5 +1,5 @@
 """Participant import job API — /api/v1/memberships/imports (TH-0118.1 /
-Issue #185; preview added by TH-0118.2).
+Issue #185; preview added by TH-0118.2; approve/apply by TH-0118.3).
 
 Canonical sources: docs/05-api/people-api.md §22,
 docs/05-api/endpoint-inventory.md §4.1,
@@ -9,12 +9,14 @@ docs/02-requirements/roles-and-permissions.md §4 (`membership.import`).
     GET  /memberships/imports/{import_id}           status + statistics
     GET  /memberships/imports/{import_id}/errors    paginated errors/warnings
     POST /memberships/imports/{import_id}/preview   parse + validate (dry-run)
+    POST /memberships/imports/{import_id}/approve   preview_ready -> approved
+    POST /memberships/imports/{import_id}/apply     approved -> applying -> terminal
 
 Authorization: `POST` has no object yet, so — like `POST /memberships` —
 it uses the generic 403 AuthorizationDenied contract: `membership.import`
 with `all` scope in the installation's sole Club (the Club the new job is
 bound to; the client never supplies `club_id`). The job-level endpoints
-(both `GET`s and `POST .../preview`) apply the ImportJob object policy
+(both `GET`s and `POST .../preview|approve|apply`) apply the ImportJob object policy
 (app.imports.authorization) with existence-hiding, mirroring
 app.api.v1.memberships/app.api.v1.persons: a job that does not exist and a
 job the requester may not access receive an identical 404.
@@ -23,13 +25,16 @@ Routers stay thin: lifecycle, storage, parsing, validation and query
 logic live in app.imports.*. Creating a job never parses, validates or
 applies the file, and is not audit-required (people-api.md §22). Preview
 is an explicit, synchronous dry-run that never creates or changes a
-domain entity (app.imports.preview).
+domain entity (app.imports.preview). Approve changes only the job's
+status; apply synchronously creates Person + User + ClubMembership for
+valid, non-duplicate rows (app.imports.apply). The two `GET`s are the
+import report — no raw credential is ever part of any response here.
 """
 
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
@@ -38,6 +43,7 @@ from app.api.deps import (
     require_csrf_token,
 )
 from app.api.errors import APIError
+from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.membership_imports_schemas import (
     ImportJobCreatedOut,
@@ -50,6 +56,11 @@ from app.authorization.service import Authorizer
 from app.db.imports import ImportJob, ImportJobError
 from app.db.session import get_db
 from app.imports import queries as import_queries
+from app.imports.apply import (
+    ImportJobStatusConflictError,
+    approve_import_job,
+    run_import_apply,
+)
 from app.imports.authorization import (
     PERMISSION_CODE,
     can_access_import_job,
@@ -235,4 +246,57 @@ def preview_membership_import(
             "The import file could not be parsed or validated; see the import errors",
             details={"import_id": str(job.id), "status": job.status},
         )
+    return _import_job_out(db, job)
+
+
+def _status_conflict(exc: ImportJobStatusConflictError, operation: str) -> APIError:
+    return APIError(
+        status.HTTP_409_CONFLICT,
+        "invalid_import_job_status_transition",
+        f"{operation} can only be run for an import job in {exc.required_status!r}",
+        details={"status": exc.status},
+    )
+
+
+@router.post("/{import_id}/approve", response_model=ImportJobOut)
+def approve_membership_import(
+    import_id: uuid.UUID,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> ImportJobOut:
+    """Explicitly approve a `preview_ready` job (people-api.md §22). 200
+    with the job in `approved`; 409 if the job is not `preview_ready`. No
+    domain entity is created or changed."""
+    job = _get_authorized_import_job_or_404(db, import_id=import_id, user_id=principal.user_id)
+    try:
+        job = approve_import_job(db, job=job)
+    except ImportJobStatusConflictError as exc:
+        raise _status_conflict(exc, "Approve") from exc
+    return _import_job_out(db, job)
+
+
+@router.post("/{import_id}/apply", response_model=ImportJobOut)
+def apply_membership_import(
+    import_id: uuid.UUID,
+    request: Request,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    storage: FileStorage = Depends(get_file_storage),
+    _csrf: None = Depends(require_csrf_token),
+) -> ImportJobOut:
+    """Synchronously apply an `approved` job (people-api.md §22). 200 with
+    the job in its terminal status (`completed`, `partially_completed` or
+    `failed`) and its final counters; 409 if the job is not `approved`."""
+    job = _get_authorized_import_job_or_404(db, import_id=import_id, user_id=principal.user_id)
+    try:
+        job = run_import_apply(
+            db,
+            storage,
+            job=job,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
+        )
+    except ImportJobStatusConflictError as exc:
+        raise _status_conflict(exc, "Apply") from exc
     return _import_job_out(db, job)
