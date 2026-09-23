@@ -12,6 +12,8 @@ Accepted. Closes ODR-015. Closes the audit-record-shape portion of ODR-013; **re
 
 **Amended by ADR-0040 §7 (TH-0117.0):** extends the closed vocabulary with `document.created`, `document.updated`, `document.replaced`, `document.revoked`, `document.downloaded`, `document.exported` for the participant-document domain. The corresponding audit vocabulary migration and document-domain audit usage are implemented by the completed TH-0117 backend slices.
 
+**Amended by TH-0118.3:** adds `membership.import.applied` for the audited execution of a participant import batch. The corresponding audit vocabulary migration is required before the apply slice is implemented.
+
 ## Context
 
 The system requires significant business mutations to be auditable, but a canonical persistence contract, write boundary and failure mode had not previously been defined. Existing unimplemented `AuditLog` sketches using `target_type`/`target_id`, `ip_address`, `user_agent` and a bare `status` are superseded by this ADR.
@@ -58,7 +60,7 @@ The application provides no update/delete operation for audit rows. No database 
 
 ### 4. Audit-required action vocabulary (closed)
 
-The following **43 action codes** are canonical. The vocabulary must not be extended without a corresponding ADR amendment and migration.
+The following **44 action codes** are canonical. The vocabulary must not be extended without a corresponding ADR amendment and migration.
 
 ```text
 person.created
@@ -71,6 +73,7 @@ user.locked
 user.unlocked
 
 membership.created
+membership.import.applied
 membership.updated
 membership.status_changed
 membership.ended
@@ -113,6 +116,8 @@ document.revoked
 document.downloaded
 document.exported
 ```
+
+`membership.import.applied` records execution of an approved participant-import batch as a single batch-level business action. It is emitted by the import apply workflow with the import job as the audit resource. This action does not replace the domain-level audit records required for individual `person.*`, `user.*`, `membership.*` or other mutations performed by the import.
 
 `membership.updated` is for non-lifecycle changes to an existing `ClubMembership`, currently `membership_type`. It is distinct from `membership.status_changed` and `membership.ended`. `membership.ended` is emitted when `left_at` is first set. A status transition that also ends a membership period may emit both `membership.status_changed` and `membership.ended`.
 
@@ -159,6 +164,7 @@ This ADR defines persistence and the write boundary only. It does not create an 
 - Wiring every future domain mutation to the audit infrastructure is handled by separate implementation Issues.
 - A public audit-read API and its authorization model are future work.
 - Any further action-vocabulary extension requires an ADR amendment.
+- `membership.import.applied` is reserved for participant-import execution defined by TH-0118; it must not be reused for unrelated membership mutations.
 
 ## Consequences
 
@@ -178,4 +184,5 @@ This ADR defines persistence and the write boundary only. It does not create an 
 - ADR-0025 — People & Membership API decisions and audit-vocabulary amendments
 - ADR-0028 — Event Recurrence Persistence and Series Versioning
 - ADR-0040 — Document Domain and File Storage (audit-vocabulary amendment, TH-0117.0)
+- TH-0118.3 — Participant Import approval/apply/report (audit-vocabulary amendment)
 - `docs/03-architecture/data-retention-and-deletion.md`
