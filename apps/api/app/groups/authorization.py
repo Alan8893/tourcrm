@@ -24,6 +24,18 @@ requesting User hold an explicit *active* `GroupInstructorAssignment` for
 defines for accessing Group/GroupMembership/GroupInstructorAssignment
 data.
 
+Archived Group read visibility (people-api.md §14-16, PO decision Q1/Q2
+= A): under `group.read`, an archived Group is satisfied *only* by a
+`scope_type='all'` assignment — `own_groups` never grants access to an
+archived Group, even with an active `GroupInstructorAssignment`. This is
+expressed through the existing permission/scope model (no role-code
+check): `build_group_resource_context(..., archived_requires_all_scope=
+True)` resolves `is_own_group=False` for an archived Group, and
+`group_visibility_filter` restricts its `own_groups` clause to active
+Groups. It applies to `GET /groups`, `GET /groups/{id}`, `GET
+/groups/{id}/members` and `GET /groups/{id}/instructors` only; the Group
+Schedule keeps its own ODR-0002 policy (app.groups.schedule_authorization).
+
 `GroupMembership`/`GroupInstructorAssignment` have no `club_id` column of
 their own — both resolve their Club through `group_id -> Group.club_id`,
 exactly like the write-side cross-Club checks in app.groups.service.
@@ -46,6 +58,8 @@ from sqlalchemy.orm import Session, aliased
 from app.authorization.context import ResourceContext
 from app.authorization.service import applicable_assignments
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
+
+ARCHIVED_GROUP_STATUS = "archived"
 
 
 def _active_interval(valid_from: Any, valid_to: Any) -> sa.ColumnElement[bool]:
@@ -70,8 +84,17 @@ def _own_group_condition(group_id: Any, requester_user_id: uuid.UUID) -> sa.Colu
 
 
 def build_group_resource_context(
-    session: Session, *, group: Group, requester_user_id: uuid.UUID
+    session: Session,
+    *,
+    group: Group,
+    requester_user_id: uuid.UUID,
+    archived_requires_all_scope: bool = False,
 ) -> ResourceContext:
+    """`archived_requires_all_scope=True` (the `group.read` item/nested-read
+    endpoints) makes an archived Group reachable only through a
+    `scope_type='all'` assignment — see the module docstring."""
+    if archived_requires_all_scope and group.status == ARCHIVED_GROUP_STATUS:
+        return ResourceContext(club_id=group.club_id, is_own_group=False)
     is_own_group = session.execute(
         sa.select(_own_group_condition(group.id, requester_user_id))
     ).scalar()
@@ -119,7 +142,9 @@ def group_visibility_filter(
     """Build the predicate for a Group list query (`.where(...)`
     referencing `Group.id`/`Group.club_id`), true only for Groups the
     acting user is authorized to see under `permission_code`. Used by
-    `GET /api/v1/groups`.
+    `GET /api/v1/groups`. An `own_groups` assignment only ever matches
+    active Groups — archived Groups are listed through `all` alone (see
+    the module docstring).
     """
     assignments = applicable_assignments(session, user_id, permission_code)
     if not assignments:
@@ -133,7 +158,9 @@ def group_visibility_filter(
         if assignment.scope_type == "all":
             scope_predicate: sa.ColumnElement[bool] = sa.true()
         elif assignment.scope_type == "own_groups":
-            scope_predicate = _own_group_condition(Group.id, user_id)
+            scope_predicate = sa.and_(
+                Group.status != ARCHIVED_GROUP_STATUS, _own_group_condition(Group.id, user_id)
+            )
         elif assignment.scope_type == "none":
             scope_predicate = sa.false()
         else:

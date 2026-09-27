@@ -142,6 +142,7 @@ def _get_authorized_group_or_404(
     user_id: uuid.UUID,
     permission_code: str,
     lock: bool = False,
+    archived_requires_all_scope: bool = False,
 ) -> Group:
     stmt = select(Group).where(Group.id == group_id)
     if lock:
@@ -150,12 +151,18 @@ def _get_authorized_group_or_404(
     if group is None:
         raise APIError(status.HTTP_404_NOT_FOUND, _GROUP_NOT_FOUND_CODE, _GROUP_NOT_FOUND_MESSAGE)
 
-    context = build_group_resource_context(db, group=group, requester_user_id=user_id)
+    context = build_group_resource_context(
+        db,
+        group=group,
+        requester_user_id=user_id,
+        archived_requires_all_scope=archived_requires_all_scope,
+    )
     authorizer = Authorizer(session=db, user_id=user_id, permission_code=permission_code)
     if not authorizer.is_allowed(context):
         # Deliberately the same status/code/message as "does not exist"
         # above — an existing-but-unauthorized Group must be
-        # indistinguishable from a nonexistent one (IDOR protection).
+        # indistinguishable from a nonexistent one (IDOR protection) — this
+        # includes an archived Group read without `scope=all`.
         raise APIError(status.HTTP_404_NOT_FOUND, _GROUP_NOT_FOUND_CODE, _GROUP_NOT_FOUND_MESSAGE)
     return group
 
@@ -270,7 +277,11 @@ def get_group(
     db: Session = Depends(get_db),
 ) -> GroupOut:
     group = _get_authorized_group_or_404(
-        db, group_id=group_id, user_id=principal.user_id, permission_code="group.read"
+        db,
+        group_id=group_id,
+        user_id=principal.user_id,
+        permission_code="group.read",
+        archived_requires_all_scope=True,
     )
     return _group_out(group)
 
@@ -319,13 +330,16 @@ def update_group(
         lock=True,
     )
     fields = payload.model_dump(exclude_unset=True)
-    group = group_service.update_group(
-        db,
-        group=group,
-        actor_user_id=principal.user_id,
-        request_id=get_request_id(request),
-        **fields,
-    )
+    try:
+        group = group_service.update_group(
+            db,
+            group=group,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
+            **fields,
+        )
+    except group_service.GroupArchivedError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "group_archived", str(exc)) from exc
     return _group_out(group)
 
 
@@ -436,7 +450,11 @@ def list_group_members(
     db: Session = Depends(get_db),
 ) -> CollectionResponse[GroupMembershipOut]:
     _get_authorized_group_or_404(
-        db, group_id=group_id, user_id=principal.user_id, permission_code="group.read"
+        db,
+        group_id=group_id,
+        user_id=principal.user_id,
+        permission_code="group.read",
+        archived_requires_all_scope=True,
     )
     try:
         rows, total = list_group_memberships_page(
@@ -543,13 +561,16 @@ def update_group_membership(
             f"Fields not modifiable via PATCH: {sorted(immutable_fields)}",
         )
 
-    membership = group_service.update_group_membership(
-        db,
-        membership=membership,
-        actor_user_id=principal.user_id,
-        request_id=get_request_id(request),
-        **{k: v for k, v in fields.items() if k == "valid_from"},
-    )
+    try:
+        membership = group_service.update_group_membership(
+            db,
+            membership=membership,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
+            **{k: v for k, v in fields.items() if k == "valid_from"},
+        )
+    except group_service.GroupArchivedError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "group_archived", str(exc)) from exc
     return _group_membership_out(membership)
 
 
@@ -602,7 +623,11 @@ def list_group_instructors(
     db: Session = Depends(get_db),
 ) -> CollectionResponse[GroupInstructorAssignmentOut]:
     _get_authorized_group_or_404(
-        db, group_id=group_id, user_id=principal.user_id, permission_code="group.read"
+        db,
+        group_id=group_id,
+        user_id=principal.user_id,
+        permission_code="group.read",
+        archived_requires_all_scope=True,
     )
     try:
         rows, total = list_group_instructor_assignments_page(

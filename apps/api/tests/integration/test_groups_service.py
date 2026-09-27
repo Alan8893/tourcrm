@@ -836,6 +836,70 @@ def test_ending_a_membership_is_allowed_after_the_group_is_archived() -> None:
         assert ended.membership_status == "ended"
 
 
+@requires_postgres
+def test_update_group_rejects_archived_group() -> None:
+    """people-api.md §14 (PO decision Q3 = A): an archived Group cannot be
+    PATCHed — nothing is persisted and no audit record is written."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        user = _make_user(person)
+        group = _make_group(club, status="archived", name="Frozen")
+        session.add_all([user, group])
+        session.commit()
+        group_id = group.id
+
+        with pytest.raises(GroupArchivedError):
+            update_group(session, group=group, actor_user_id=user.id, name="Renamed")
+
+    with session_scope() as session:
+        assert session.get(Group, group_id).name == "Frozen"  # type: ignore[union-attr]
+    assert _latest_audit_action(resource_id=group_id) == []
+
+
+@requires_postgres
+def test_update_group_membership_rejects_archived_group() -> None:
+    """people-api.md §15 (PO decision Q3 = A): a GroupMembership of an
+    archived Group cannot be PATCHed — nothing is persisted and no audit
+    record is written (ending it stays allowed, see the test above)."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        user = _make_user(person)
+        club_membership = _make_club_membership(club, person)
+        group = _make_group(club)
+        session.add_all([user, club_membership, group])
+        session.commit()
+
+        membership = create_group_membership(
+            session,
+            group_id=group.id,
+            club_membership_id=club_membership.id,
+            valid_from=_utc(2024, 1, 1),
+            actor_user_id=user.id,
+        )
+        membership_id = membership.id
+        archive_group(session, group=group, actor_user_id=user.id)
+
+        with pytest.raises(GroupArchivedError):
+            update_group_membership(
+                session,
+                membership=membership,
+                actor_user_id=user.id,
+                valid_from=_utc(2024, 2, 1),
+            )
+
+    with session_scope() as session:
+        stored = session.get(GroupMembership, membership_id)
+        assert stored is not None
+        assert stored.valid_from == _utc(2024, 1, 1)
+    assert _latest_audit_action(resource_id=membership_id) == ["group_membership.created"]
+
+
 # --- GroupInstructorAssignment lifecycle / archived-group / primary -------
 
 

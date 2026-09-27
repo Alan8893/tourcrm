@@ -227,7 +227,7 @@ API валидирует допустимость перехода, permission r
 
 Единственный допустимый переход: `active → archived`, выполняется только через `POST /api/v1/groups/{group_id}/archive`. Обратного перехода (`archived → active`) не существует; отдельный "restore"/"unarchive" endpoint не вводится. `PATCH /api/v1/groups/{group_id}` не может изменять `status` напрямую.
 
-Для архивной группы запрещено создание новых `GroupMembership` и `GroupInstructorAssignment` (см. §26). Завершение (`end`) уже существующих активных `GroupMembership`/`GroupInstructorAssignment` архивной группы остаётся разрешённым: это не создаёт новую ответственность/принадлежность и не противоречит терминальности архивирования.
+Для архивной группы запрещено создание новых `GroupMembership` и `GroupInstructorAssignment` (см. §26), а также изменение самой группы через `PATCH /api/v1/groups/{group_id}` и изменение её `GroupMembership` через `PATCH /api/v1/group-memberships/{id}` — код `group_archived`, HTTP 409 (PO decision Q3 = A). Завершение (`end`) уже существующих активных `GroupMembership`/`GroupInstructorAssignment` архивной группы остаётся разрешённым: это не создаёт новую ответственность/принадлежность и не противоречит терминальности архивирования.
 
 ### GET `/api/v1/groups`
 
@@ -237,6 +237,10 @@ Active groups are returned according to the requester's canonical scope/object r
 
 Archived groups are visible **only to Administrator**. Non-administrator requesters must not receive archived groups in list results and must not retrieve an archived group through the item endpoint. Frontend visibility is not a substitute for backend authorization.
 
+«Administrator» здесь определяется существующей permission/scope-моделью, а не проверкой role code (PO decision Q1 = A): archived группа доступна через `group.read` **только при scope `all`** (Administrator scope по `docs/02-requirements/role-permission-scope-matrix.md` §6). Scope `own_groups` не даёт доступа к archived группе даже при активном `GroupInstructorAssignment` requester: list её не возвращает (в том числе при `status=archived`), а item и nested read endpoints (§15 `GET .../members`, §16 `GET .../instructors`, PO decision Q2 = A) отвечают `404 group_not_found` — тем же ответом, что и для несуществующей группы (existence-hiding, §29).
+
+Это правило не распространяется на `GET /api/v1/groups/{group_id}/schedule`: его доступ к archived группе определяется ODR-0002 (`all`/`own_groups` — включая историю; `self`/`children` — только будущие события).
+
 Поддерживает pagination (`page`/`page_size`, ADR-0014/api-contract.md §7-8), фильтр `status` (`active`/`archived`, whitelist) и сортировку по whitelisted полям (`name`, `created_at`). Неизвестные поля сортировки/фильтра отклоняются (api-contract.md §9-10).
 
 Результат ограничен объектами того же `Club`, что и requester context, и дополнительно — object-relationship policy применимого scope.
@@ -245,7 +249,7 @@ Archived groups are visible **only to Administrator**. Non-administrator request
 
 Permission: `group.read` + scope + object relationship (`own_groups`: требуется active `GroupInstructorAssignment` requester на данную группу).
 
-IDOR/existence-hiding: несуществующая группа и группа, к которой requester не авторизован, возвращают одинаковый HTTP 404 с кодом `group_not_found` (см. §29, по аналогии с существующим GuardianRelationship-паттерном §18).
+IDOR/existence-hiding: несуществующая группа и группа, к которой requester не авторизован, возвращают одинаковый HTTP 404 с кодом `group_not_found` (см. §29, по аналогии с существующим GuardianRelationship-паттерном §18). Archived группа без scope `all` считается неавторизованной и возвращает тот же `404 group_not_found` (см. GET list выше).
 
 ### POST `/api/v1/groups`
 
@@ -271,6 +275,8 @@ Response: `201 Created`, представление `Group` напрямую (б
 
 Permission: `group.manage` + scope + object relationship (как в GET item).
 
+Для archived группы (§14.1) запрос отклоняется с кодом `group_archived`, HTTP 409 — после проверки authorization (неавторизованный requester получает `404 group_not_found`).
+
 Изменяемые поля: `name`, `description`, `valid_from`, `valid_to`. `status` и `club_id` не изменяются через этот endpoint (`club_id` неизменяем после создания; `status` изменяется только через `POST .../archive`, §14.1).
 
 Concurrency/idempotency: как и `PATCH /api/v1/persons/{person_id}` (§7), в кодовой базе нет project-wide optimistic-concurrency механизма ни у одного реализованного домена; `PATCH` использует last-write-wins семантику — принятая граница текущего slice.
@@ -287,7 +293,7 @@ Permission: `group.manage` + scope + object relationship.
 
 При выборе отмены Events связанные последующие Events отменяются согласно каноническому Event lifecycle/API. Для recurring Events используется существующая модель `EventSeries → EventOccurrence`; новый Group→Event каскад или новый Event lifecycle не вводится. Прошедшие Events/Occurrences, GroupMembership и GroupInstructorAssignment не удаляются и сохраняются для истории.
 
-Архивная группа доступна только Administrator. Non-administrator requesters не должны получать её через list/item API.
+Архивная группа доступна только Administrator (scope `all`, см. GET list выше). Non-administrator requesters не должны получать её через list/item API и nested read endpoints `.../members`/`.../instructors`.
 
 ### DELETE `/api/v1/groups/{group_id}`
 
@@ -368,6 +374,8 @@ Request:
 
 Permission: `group.read` + scope + object relationship на `group_id` (как в §14 GET item).
 
+Archived группа доступна только при scope `all`; иначе — `404 group_not_found`, как для несуществующей группы (§14 GET list, PO decision Q2 = A).
+
 Pagination обязательна. Фильтр `membership_status` (`active`/`ended`, whitelist).
 
 ### POST `/api/v1/groups/{group_id}/members`
@@ -399,6 +407,8 @@ Response: `201 Created`.
 Permission: `group.manage` + scope + object relationship на группу, к которой принадлежит membership.
 
 Изменяемое поле: только `valid_from` (корректировка даты начала интервала — не lifecycle-переход). `group_id`, `club_membership_id` и `membership_status` через `PATCH` не изменяются: изменение `group_id`/`club_membership_id` было бы переводом в другую группу, что не поддерживается этим endpoint (§15.3); изменение `membership_status` выполняется только через `POST .../end` (§15.1). Попытка передать любое из этих полей отклоняется с кодом `group_membership_immutable_field`, HTTP 422.
+
+Если группа membership архивирована (§14.1), запрос отклоняется с кодом `group_archived`, HTTP 409 (PO decision Q3 = A). Завершение такого membership через `POST .../end` остаётся разрешённым.
 
 IDOR/existence-hiding: как в §29.
 
@@ -450,6 +460,8 @@ Cross-Club integrity (ADR-0022 §5): `GroupInstructorAssignment` валиден 
 ### GET `/api/v1/groups/{group_id}/instructors`
 
 Permission: `group.read` + scope + object relationship на `group_id`.
+
+Archived группа доступна только при scope `all`; иначе — `404 group_not_found`, как для несуществующей группы (§14 GET list, PO decision Q2 = A).
 
 Pagination обязательна. Канонический фильтр активности называется `has_ended`:
 
@@ -1015,7 +1027,7 @@ GuardianRelationship не предоставляет guardian доступ к к
 - отсутствие невозможных интервалов membership;
 - корректность guardian relationship lifecycle;
 - отсутствие self-link и дублирующих активных GuardianRelationship одного типа для одной пары;
-- невозможность создать `GroupMembership` или `GroupInstructorAssignment` для архивной (`status = archived`) группы (§14.1, §15, §16);
+- невозможность создать `GroupMembership` или `GroupInstructorAssignment` для архивной (`status = archived`) группы, а также изменить через `PATCH` саму архивную группу или её `GroupMembership` (§14.1, §15, §16);
 - отсутствие дублирующего активного `GroupMembership` для одной и той же пары `(group_id, club_membership_id)` (§15.2 — обязательный DB invariant, реализованный на уровне БД текущего Group API implementation slice);
 - отсутствие пересекающихся по интервалу `[valid_from, valid_to)` `is_primary = true` записей `GroupInstructorAssignment` на одну группу (§16.2 — обязательный DB invariant, реализованный на уровне БД текущего Group API implementation slice);
 - проверка существования и принадлежности объектов одному Club там, где это применимо (в том числе `Group.club_id == ClubMembership.club_id` для `GroupMembership`, ADR-0022 §4, и активный `ClubMembership` для `GroupInstructorAssignment`, ADR-0022 §5);
@@ -1065,7 +1077,7 @@ Group/GroupMembership/GroupInstructorAssignment-специфичные machine-r
 - `invalid_group_status_transition` — HTTP 409 (§14.1, например повторный `archive`);
 - `invalid_group_membership_transition` — HTTP 409 (§15.1, например повторный `end`);
 - `invalid_group_instructor_assignment_transition` — HTTP 409 (§16.1, например повторный `end`);
-- `group_archived` — HTTP 409 (§15, §16 — попытка создать membership/instructor assignment для архивной группы);
+- `group_archived` — HTTP 409 (§14, §15, §16 — попытка создать membership/instructor assignment для архивной группы либо изменить через `PATCH` архивную группу или её membership);
 - `group_membership_immutable_field` — HTTP 422 (§15 `PATCH` — попытка изменить `group_id`/`club_membership_id`/`membership_status`);
 - `duplicate_group_membership` — HTTP 409 (§15.2 — дублирующее активное membership в той же группе);
 - `duplicate_primary_instructor` — HTTP 409 (§16.2 — `is_primary = true` запись с интервалом, пересекающимся с уже существующей `is_primary = true` записью той же группы);
@@ -1077,6 +1089,8 @@ Group/GroupMembership/GroupInstructorAssignment-специфичные machine-r
 ### Group / GroupMembership / GroupInstructorAssignment: existence-hiding для item-level operations
 
 `GET /api/v1/groups/{group_id}`, `PATCH /api/v1/groups/{group_id}`, `POST /api/v1/groups/{group_id}/archive`, `PATCH /api/v1/group-memberships/{id}`, `POST /api/v1/group-memberships/{id}/end`, `GET /api/v1/groups/{group_id}/instructors`, `POST /api/v1/groups/{group_id}/instructors` и `POST /api/v1/group-instructor-assignments/{id}/end` защищены от IDOR через existence-hiding по тому же паттерну, что и GuardianRelationship (§18, см. также ниже в этом разделе): объект, который реально не существует, и объект, который существует, но requester к нему не авторизован (permission есть, но scope/object relationship не подходит), возвращают одинаковый HTTP 404 с одинаковым machine-readable кодом (`group_not_found`/`group_membership_not_found`/`group_instructor_assignment_not_found` соответственно).
+
+Для `GET /api/v1/groups/{group_id}`, `GET /api/v1/groups/{group_id}/members` и `GET /api/v1/groups/{group_id}/instructors` archived группа, запрошенная без scope `all`, неотличима от несуществующей: тот же `404 group_not_found` (§14).
 
 ### GuardianRelationship: existence-hiding для `PATCH`/`terminate`
 
