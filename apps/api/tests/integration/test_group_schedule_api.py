@@ -35,7 +35,15 @@ from app.main import app
 
 from .conftest import requires_postgres
 
-_START = datetime.datetime(2026, 9, 15, 0, 0, tzinfo=datetime.timezone.utc)
+# Anchored to the start of the current UTC day, never a fixed calendar date:
+# `self`/`children` schedules are future-only relative to the real `now()`,
+# so this module's "past" (`_START - 1..10 days`) and "future"
+# (`_START + 10 days`) fixtures must keep bracketing the moment the suite
+# runs. A hard-coded date silently turned every "future" fixture into a
+# past one once the wall clock passed it.
+_START = datetime.datetime.now(datetime.timezone.utc).replace(
+    hour=0, minute=0, second=0, microsecond=0
+)
 
 
 @pytest.fixture
@@ -393,6 +401,18 @@ def test_own_events_scope_does_not_grant_group_schedule_access(client: TestClien
 
     response = _schedule(client, group_id)
     assert response.status_code == 404
+
+
+@requires_postgres
+def test_fixture_anchor_keeps_past_and_future_fixtures_on_the_right_side_of_now() -> None:
+    """Regression guard for the fixed-date `_START` that expired on
+    2026-09-25: the "past" and "future" fixtures used by the future-only
+    `self`/`children` tests below must always bracket the real current
+    time, whatever date the suite runs on."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    assert _START - datetime.timedelta(days=1) < now
+    assert _START - datetime.timedelta(days=10) < now
+    assert _START + datetime.timedelta(days=10) > now
 
 
 # --- `self` --------------------------------------------------------------
