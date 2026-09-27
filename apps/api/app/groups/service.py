@@ -271,6 +271,21 @@ def create_group_membership(
     return membership
 
 
+def ensure_group_membership_mutable(session: Session, *, group_id: uuid.UUID) -> None:
+    """people-api.md §15 (PO decisions Q3/D1): no GroupMembership of an
+    archived Group may be PATCHed. Takes a share lock on the Group row
+    (the same way create_group_membership guards against a concurrent
+    archive) and raises GroupArchivedError — after rolling back — when the
+    Group is archived. Called by the PATCH endpoint *before* its
+    field-level validation, so an archived Group always answers
+    `409 group_archived`, and again by update_group_membership itself.
+    """
+    _lock_group_club_id(session, group_id)
+    if _group_status(session, group_id) == "archived":
+        session.rollback()
+        raise GroupArchivedError(group_id=group_id, message="its memberships cannot be modified")
+
+
 def update_group_membership(
     session: Session,
     *,
@@ -296,11 +311,7 @@ def update_group_membership(
             f"Fields not updatable via update_group_membership: {sorted(unknown_fields)}"
         )
 
-    group_id = membership.group_id
-    _lock_group_club_id(session, group_id)
-    if _group_status(session, group_id) == "archived":
-        session.rollback()
-        raise GroupArchivedError(group_id=group_id, message="its memberships cannot be modified")
+    ensure_group_membership_mutable(session, group_id=membership.group_id)
 
     changes: dict[str, Any] = {}
     for field_name, new_value in fields.items():
@@ -634,6 +645,7 @@ __all__ = [
     "UPDATABLE_GROUP_MEMBERSHIP_FIELDS",
     "create_group_membership",
     "update_group_membership",
+    "ensure_group_membership_mutable",
     "end_group_membership",
     "create_group_instructor_assignment",
     "end_group_instructor_assignment",

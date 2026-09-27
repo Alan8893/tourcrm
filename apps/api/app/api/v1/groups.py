@@ -552,6 +552,15 @@ def update_group_membership(
         permission_code="group.manage",
         lock=True,
     )
+    # people-api.md §15 (PO decision D1): the archived-Group state guard
+    # runs after authorization/existence-hiding but *before* field-level
+    # validation — any PATCH of an archived Group's membership, including
+    # one naming an immutable field, is `409 group_archived`.
+    try:
+        group_service.ensure_group_membership_mutable(db, group_id=membership.group_id)
+    except group_service.GroupArchivedError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "group_archived", str(exc)) from exc
+
     fields = payload.model_dump(exclude_unset=True)
     immutable_fields = set(fields) - {"valid_from"}
     if immutable_fields:

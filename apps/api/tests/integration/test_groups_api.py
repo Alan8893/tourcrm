@@ -1628,60 +1628,126 @@ def test_group_schedule_of_archived_group_keeps_odr_0002_own_groups_access(
     assert schedule.status_code == 200, schedule.text
 
 
+def _group_patch_payload(kind: str, seeded: dict[str, uuid.UUID]) -> dict[str, object]:
+    if kind == "change":
+        return {"name": "Renamed"}
+    if kind == "no_change":
+        with session_scope() as session:
+            stored = session.get(Group, seeded["group_id"])
+            assert stored is not None
+            return {"name": stored.name, "valid_from": _iso(stored.valid_from)}
+    # "immutable": `status`/`club_id` are not PATCHable (people-api.md §14).
+    return {"status": "active", "club_id": str(uuid.uuid4())}
+
+
 @requires_postgres
 @pytest.mark.parametrize(
-    ("group_state", "expected_status", "expected_code"),
+    ("group_state", "payload_kind", "expected_status", "expected_code"),
     [
-        ("active", 200, None),
-        ("archived", 409, "group_archived"),
-        ("missing", 404, "group_not_found"),
+        ("active", "change", 200, None),
+        ("active", "immutable", 200, None),
+        ("archived", "change", 409, "group_archived"),
+        ("archived", "no_change", 409, "group_archived"),
+        ("archived", "immutable", 409, "group_archived"),
+        ("missing", "change", 404, "group_not_found"),
     ],
 )
 def test_patch_group_by_state(
-    client: TestClient, group_state: str, expected_status: int, expected_code: str | None
+    client: TestClient,
+    group_state: str,
+    payload_kind: str,
+    expected_status: int,
+    expected_code: str | None,
 ) -> None:
+    """people-api.md §14 (PO decisions Q3/D2): any PATCH of an archived
+    Group — including one that changes nothing — is `409 group_archived`,
+    with no DB change and no audit record."""
     seeded = _seed_own_group("archived" if group_state == "archived" else "active")
     _grant_permission(seeded["requester_id"], "group.manage", scope_type="all")
     _authenticate_as(seeded["requester_id"])
     group_id = uuid.uuid4() if group_state == "missing" else seeded["group_id"]
+    with session_scope() as session:
+        before = session.get(Group, seeded["group_id"])
+        assert before is not None
+        before_state = (before.name, before.status, before.club_id, before.updated_at)
 
     response = client.patch(
-        f"/api/v1/groups/{group_id}", json={"name": "Renamed"}, headers=_csrf_headers(client)
+        f"/api/v1/groups/{group_id}",
+        json=_group_patch_payload(payload_kind, seeded),
+        headers=_csrf_headers(client),
     )
 
     assert response.status_code == expected_status, response.text
     if expected_code is not None:
         assert response.json()["error"]["code"] == expected_code
-    else:
+    elif payload_kind == "change":
         assert response.json()["name"] == "Renamed"
+    else:
+        # Existing behavior: immutable fields are ignored, status unchanged.
+        assert response.json()["status"] == "active"
+        assert response.json()["club_id"] == str(before_state[2])
     if group_state == "archived":
         with session_scope() as session:
             stored = session.get(Group, seeded["group_id"])
             assert stored is not None
-            assert stored.name != "Renamed"
+            assert (stored.name, stored.status, stored.club_id, stored.updated_at) == before_state
         assert _latest_audit_row(action="group.updated", resource_id=seeded["group_id"]) is None
+
+
+def _membership_patch_payload(kind: str, seeded: dict[str, uuid.UUID]) -> dict[str, object]:
+    if kind == "change":
+        return {"valid_from": _iso(_utc(2024, 2, 1))}
+    if kind == "no_change":
+        return {"valid_from": _iso(_utc(2024, 1, 1))}
+    if kind == "immutable_status":
+        return {"membership_status": "ended"}
+    # "immutable_group": moving a membership to another Group is not a PATCH.
+    return {"group_id": str(uuid.uuid4()), "valid_from": _iso(_utc(2024, 2, 1))}
 
 
 @requires_postgres
 @pytest.mark.parametrize(
-    ("group_state", "expected_status", "expected_code"),
+    ("group_state", "payload_kind", "expected_status", "expected_code"),
     [
-        ("active", 200, None),
-        ("archived", 409, "group_archived"),
-        ("missing", 404, "group_membership_not_found"),
+        ("active", "change", 200, None),
+        ("active", "immutable_status", 422, "group_membership_immutable_field"),
+        ("archived", "change", 409, "group_archived"),
+        ("archived", "no_change", 409, "group_archived"),
+        ("archived", "immutable_status", 409, "group_archived"),
+        ("archived", "immutable_group", 409, "group_archived"),
+        ("missing", "change", 404, "group_membership_not_found"),
     ],
 )
 def test_patch_group_membership_by_group_state(
-    client: TestClient, group_state: str, expected_status: int, expected_code: str | None
+    client: TestClient,
+    group_state: str,
+    payload_kind: str,
+    expected_status: int,
+    expected_code: str | None,
 ) -> None:
+    """people-api.md §15 (PO decisions Q3/D1): any PATCH of a membership of
+    an archived Group is `409 group_archived` — the archived-state guard
+    runs before field-level validation, so immutable fields do NOT yield
+    `422 group_membership_immutable_field` — with no DB change and no
+    audit record."""
     seeded = _seed_own_group("archived" if group_state == "archived" else "active")
     _grant_permission(seeded["requester_id"], "group.manage", scope_type="all")
     _authenticate_as(seeded["requester_id"])
     membership_id = uuid.uuid4() if group_state == "missing" else seeded["membership_id"]
+    with session_scope() as session:
+        before = session.get(GroupMembership, seeded["membership_id"])
+        assert before is not None
+        before_state = (
+            before.group_id,
+            before.valid_from,
+            before.valid_to,
+            before.membership_status,
+            before.updated_at,
+        )
 
     response = client.patch(
         f"/api/v1/group-memberships/{membership_id}",
-        json={"valid_from": _iso(_utc(2024, 2, 1))},
+        json=_membership_patch_payload(payload_kind, seeded),
         headers=_csrf_headers(client),
     )
 
@@ -1694,7 +1760,13 @@ def test_patch_group_membership_by_group_state(
         with session_scope() as session:
             stored = session.get(GroupMembership, seeded["membership_id"])
             assert stored is not None
-            assert stored.valid_from == _utc(2024, 1, 1)
+            assert (
+                stored.group_id,
+                stored.valid_from,
+                stored.valid_to,
+                stored.membership_status,
+                stored.updated_at,
+            ) == before_state
         assert (
             _latest_audit_row(
                 action="group_membership.updated", resource_id=seeded["membership_id"]

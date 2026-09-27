@@ -275,7 +275,7 @@ Response: `201 Created`, представление `Group` напрямую (б
 
 Permission: `group.manage` + scope + object relationship (как в GET item).
 
-Для archived группы (§14.1) запрос отклоняется с кодом `group_archived`, HTTP 409 — после проверки authorization (неавторизованный requester получает `404 group_not_found`).
+Для archived группы (§14.1) любой запрос отклоняется с кодом `group_archived`, HTTP 409 — после проверки authorization (неавторизованный requester получает `404 group_not_found`), в том числе запрос, не изменяющий фактических значений (no-op): no-op не определяется до archived guard (PO decision D2).
 
 Изменяемые поля: `name`, `description`, `valid_from`, `valid_to`. `status` и `club_id` не изменяются через этот endpoint (`club_id` неизменяем после создания; `status` изменяется только через `POST .../archive`, §14.1).
 
@@ -408,7 +408,7 @@ Permission: `group.manage` + scope + object relationship на группу, к �
 
 Изменяемое поле: только `valid_from` (корректировка даты начала интервала — не lifecycle-переход). `group_id`, `club_membership_id` и `membership_status` через `PATCH` не изменяются: изменение `group_id`/`club_membership_id` было бы переводом в другую группу, что не поддерживается этим endpoint (§15.3); изменение `membership_status` выполняется только через `POST .../end` (§15.1). Попытка передать любое из этих полей отклоняется с кодом `group_membership_immutable_field`, HTTP 422.
 
-Если группа membership архивирована (§14.1), запрос отклоняется с кодом `group_archived`, HTTP 409 (PO decision Q3 = A). Завершение такого membership через `POST .../end` остаётся разрешённым.
+Если группа membership архивирована (§14.1), любой запрос отклоняется с кодом `group_archived`, HTTP 409 (PO decision Q3 = A), в том числе no-op запрос и запрос с immutable-полями: archived guard выполняется после authorization/existence-hiding, но до field-level validation, поэтому `group_membership_immutable_field` для archived группы не возвращается (PO decision D1). Завершение такого membership через `POST .../end` остаётся разрешённым.
 
 IDOR/existence-hiding: как в §29.
 
