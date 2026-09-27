@@ -475,18 +475,20 @@ def create_event(
     db: Session = Depends(get_db),
     _csrf: None = Depends(require_csrf_token),
 ) -> EventOut:
-    if db.get(Club, payload.club_id) is None:
-        raise APIError(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_club_id", "club_id does not exist"
-        )
-
     authorizer = Authorizer(session=db, user_id=principal.user_id, permission_code="event.create")
     # No Event exists yet: is_self/is_child/is_own_group/is_own_event are
     # structurally unresolvable and stay at their fail-closed `None`
     # default, so only a `scope_type='all'` assignment (matching the
     # target club) can ever satisfy event.create — a consequence of the
-    # existing tri-state ResourceContext design, not a new rule.
+    # existing tri-state ResourceContext design, not a new rule. Checked
+    # before the club existence check (P1 GAP-3), so an unauthorized
+    # caller cannot probe which club_id values exist.
     authorizer.check(ResourceContext(club_id=payload.club_id))
+
+    if db.get(Club, payload.club_id) is None:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_club_id", "club_id does not exist"
+        )
 
     try:
         event = events_crud.create_event_with_targeting(

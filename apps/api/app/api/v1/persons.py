@@ -89,7 +89,7 @@ from app.api.v1.role_assignments_schemas import (
 from app.authentication import account_provisioning
 from app.authentication.rate_limit import RateLimiter, RateLimitExceeded, get_rate_limiter
 from app.authorization.context import ResourceContext
-from app.authorization.service import AuthorizationDenied, Authorizer
+from app.authorization.service import AuthorizationDenied, Authorizer, applicable_assignments
 from app.db.authorization import UserRoleAssignment
 from app.db.documents import Document
 from app.db.documents import File as FileModel
@@ -585,7 +585,13 @@ def list_person_memberships(
     Existence of `person_id` is checked, but visibility of the returned
     memberships is governed entirely by `membership.read` + scope (never
     `person.read`) — this is a Membership listing, not a Person read.
+
+    Authorization before existence (P1 GAP-3): a caller holding no
+    effective `membership.read` grant at all is refused with 403 before
+    `person_id` is looked up, so the answer never depends on whether the
+    Person exists.
     """
+    _require_permission_grant(db, user_id=principal.user_id, permission_code="membership.read")
     if db.get(Person, person_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
 
@@ -609,6 +615,19 @@ def list_person_memberships(
         items=[_membership_out(membership) for membership in rows],
         pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
     )
+
+
+def _require_permission_grant(db: Session, *, user_id: uuid.UUID, permission_code: str) -> None:
+    """P1 GAP-3 (authorization before existence) for the nested Person
+    list endpoints whose own authorization is a per-row scope filter
+    rather than a single object check: a caller with *no* currently-
+    effective assignment granting `permission_code` is refused with the
+    generic 403 before `person_id` is looked up. Same gate shape as
+    `GET /users` (app.users.authorization.requester_has_directory_access);
+    scope/row visibility is still applied afterwards, unchanged.
+    """
+    if not applicable_assignments(db, user_id, permission_code):
+        raise AuthorizationDenied(permission_code)
 
 
 def _group_membership_out(membership: GroupMembership) -> GroupMembershipOut:
@@ -650,13 +669,12 @@ def list_person_groups(
     conventions for why Person-scoped admin views use this simpler,
     already-established shape).
     """
-    if db.get(Person, person_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
-
     club_id = person_role_service.resolve_sole_club_id(db)
     Authorizer(session=db, user_id=principal.user_id, permission_code="group.read").check(
         ResourceContext(club_id=club_id)
     )
+    if db.get(Person, person_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
 
     try:
         rows, total = list_person_group_memberships_page(
@@ -686,7 +704,14 @@ def list_person_guardian_relationships(
     principal: CurrentPrincipal = Depends(require_authenticated_principal),
     db: Session = Depends(get_db),
 ) -> CollectionResponse[GuardianRelationshipOut]:
-    """Guardians of `person_id` — the child-side view (Issue #64 §7)."""
+    """Guardians of `person_id` — the child-side view (Issue #64 §7).
+
+    Authorization before existence (P1 GAP-3): no effective
+    `guardian_relationship.read` grant -> 403 before `person_id` is looked
+    up; rows are then filtered by scope exactly as before."""
+    _require_permission_grant(
+        db, user_id=principal.user_id, permission_code="guardian_relationship.read"
+    )
     if db.get(Person, person_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
 
@@ -726,7 +751,21 @@ def create_person_guardian_relationship(
     _csrf: None = Depends(require_csrf_token),
 ) -> GuardianRelationshipOut:
     """Create a GuardianRelationship with `person_id` as the child side
-    (Issue #64 §7-8)."""
+    (Issue #64 §7-8).
+
+    Authorization before existence (P1 GAP-3): the create context is
+    resolved from the path/payload ids alone (it never needs the Person
+    row), so `guardian_relationship.manage` is checked first — neither
+    the child's nor the guardian's existence is disclosed to a caller who
+    may not create the relationship."""
+    authorizer = Authorizer(
+        session=db, user_id=principal.user_id, permission_code="guardian_relationship.manage"
+    )
+    context = build_guardian_relationship_create_context(
+        db, child_person_id=person_id, requester_user_id=principal.user_id
+    )
+    authorizer.check(context)
+
     if db.get(Person, person_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
     if db.get(Person, payload.guardian_person_id) is None:
@@ -735,14 +774,6 @@ def create_person_guardian_relationship(
             "invalid_person_id",
             "guardian_person_id does not exist",
         )
-
-    authorizer = Authorizer(
-        session=db, user_id=principal.user_id, permission_code="guardian_relationship.manage"
-    )
-    context = build_guardian_relationship_create_context(
-        db, child_person_id=person_id, requester_user_id=principal.user_id
-    )
-    authorizer.check(context)
 
     try:
         relationship = guardian_service.create_guardian_relationship(
@@ -1194,13 +1225,12 @@ def list_person_role_assignments(
     list_person_role_assignments) — indistinguishable here from "has a
     User but zero roles"; only the mutating endpoints below need to tell
     the two apart."""
-    if db.get(Person, person_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
-
     club_id = person_role_service.resolve_sole_club_id(db)
     Authorizer(session=db, user_id=principal.user_id, permission_code="role.manage").check(
         ResourceContext(club_id=club_id)
     )
+    if db.get(Person, person_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
 
     rows = person_role_service.list_person_role_assignments(db, person_id=person_id)
     return CollectionResponse(
@@ -1224,13 +1254,12 @@ def add_person_role_assignment(
     db: Session = Depends(get_db),
     _csrf: None = Depends(require_csrf_token),
 ) -> PersonRoleAssignmentOut:
-    if db.get(Person, person_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
-
     club_id = person_role_service.resolve_sole_club_id(db)
     Authorizer(session=db, user_id=principal.user_id, permission_code="role.manage").check(
         ResourceContext(club_id=club_id)
     )
+    if db.get(Person, person_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
 
     if payload.role_code not in person_role_service.CANONICAL_PERSON_ROLE_CODES:
         raise APIError(
@@ -1280,13 +1309,12 @@ def remove_person_role_assignment(
     (`role_assignment_not_found`) — there is nothing here for an
     unauthorized or already-ended state to disclose.
     """
-    if db.get(Person, person_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
-
     club_id = person_role_service.resolve_sole_club_id(db)
     Authorizer(session=db, user_id=principal.user_id, permission_code="role.manage").check(
         ResourceContext(club_id=club_id)
     )
+    if db.get(Person, person_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
 
     if role_code not in person_role_service.CANONICAL_PERSON_ROLE_CODES:
         raise APIError(
@@ -1372,9 +1400,9 @@ def get_person_account(
     """Safe account metadata only — never `password_hash`, any token/
     hash, or session data (docs/07-security/security-and-privacy.md §2.6).
     """
+    _check_account_manage(db, user_id=principal.user_id)
     if db.get(Person, person_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
-    _check_account_manage(db, user_id=principal.user_id)
 
     user = db.execute(select(User).where(User.person_id == person_id)).scalar_one_or_none()
     if user is None:
@@ -1403,9 +1431,9 @@ def create_person_account(
     password/role/club_id is ever accepted from the client.
     """
     _apply_rate_limit(limiter, f"account-create:{person_id}")
+    _check_account_manage(db, user_id=principal.user_id)
     if db.get(Person, person_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
-    _check_account_manage(db, user_id=principal.user_id)
 
     try:
         user, raw_credential = account_provisioning.create_user_for_person(
@@ -1441,9 +1469,9 @@ def reset_person_account_password(
     User. Use `POST .../account` first if `person_id` has no User yet.
     """
     _apply_rate_limit(limiter, f"account-password-reset:{person_id}")
+    _check_account_manage(db, user_id=principal.user_id)
     if db.get(Person, person_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
-    _check_account_manage(db, user_id=principal.user_id)
 
     try:
         user, raw_credential = account_provisioning.admin_reset_password_for_person(

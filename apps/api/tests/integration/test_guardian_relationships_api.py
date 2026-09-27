@@ -236,10 +236,13 @@ def test_get_guardian_relationships_all_scope_succeeds(client: TestClient) -> No
 
 
 @requires_postgres
-def test_get_guardian_relationships_without_permission_returns_empty(client: TestClient) -> None:
-    """List endpoints never 403 — an unauthorized/uninvolved requester
-    simply sees an empty (filtered) list, matching Person/Membership.
-    """
+def test_get_guardian_relationships_without_permission_is_forbidden(client: TestClient) -> None:
+    """P1 GAP-3 (authorization before existence, PO decision): a requester
+    holding no `guardian_relationship.read` grant at all is refused with
+    403 before `person_id` is looked up (people-api.md §18: access only
+    with the permission). A requester that holds the permission but no
+    matching scope still sees an empty filtered list — see the `none`
+    scope test below."""
     with session_scope() as session:
         guardian, guardian_user, child, requester_user = _make_guardian_child_requester(session)
         session.add(_make_guardian_relationship(guardian, child))
@@ -248,9 +251,8 @@ def test_get_guardian_relationships_without_permission_returns_empty(client: Tes
     _authenticate_as(requester_user_id)
 
     response = client.get(f"/api/v1/persons/{child_id}/guardian-relationships")
-    assert response.status_code == 200, response.text
-    assert response.json()["items"] == []
-    assert response.json()["pagination"]["total"] == 0
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
 
 
 @requires_postgres
