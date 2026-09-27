@@ -135,6 +135,22 @@ def _grant_permission(
         session.commit()
 
 
+def _grant_canonical_admin_role(user_id: uuid.UUID, club_id: uuid.UUID) -> None:
+    """Assign the seeded canonical system `admin` role (which already holds
+    every catalog permission, migration 6a99a77234ba) — the only identity
+    people-api.md §14 lets see archived Groups (Issue #184)."""
+    with session_scope() as session:
+        admin_role = session.execute(
+            select(Role).where(Role.code == "admin", Role.is_system.is_(True))
+        ).scalar_one()
+        session.add(
+            UserRoleAssignment(
+                user_id=user_id, role_id=admin_role.id, scope_type="all", club_id=club_id
+            )
+        )
+        session.commit()
+
+
 def _authenticate_as(user_id: uuid.UUID) -> None:
     app.dependency_overrides[get_current_principal] = lambda: CurrentPrincipal(
         user_id=user_id, session_id=uuid.uuid4()
@@ -310,7 +326,9 @@ def test_list_groups_status_filter_archived(client: TestClient) -> None:
         session.add_all([requester, active_group, archived_group])
         session.commit()
         requester_id, active_id, archived_id = requester.id, active_group.id, archived_group.id
-    _grant_permission(requester_id, "group.read", scope_type="all")
+        club_id = club.id
+    # people-api.md §14: archived Groups are visible only to Administrator.
+    _grant_canonical_admin_role(requester_id, club_id)
     _authenticate_as(requester_id)
 
     response = client.get("/api/v1/groups", params={"status": "archived"})
@@ -333,7 +351,9 @@ def test_list_groups_without_status_filter_returns_both(client: TestClient) -> N
         session.add_all([requester, active_group, archived_group])
         session.commit()
         requester_id, active_id, archived_id = requester.id, active_group.id, archived_group.id
-    _grant_permission(requester_id, "group.read", scope_type="all")
+        club_id = club.id
+    # people-api.md §14: archived Groups are visible only to Administrator.
+    _grant_canonical_admin_role(requester_id, club_id)
     _authenticate_as(requester_id)
 
     response = client.get("/api/v1/groups")
@@ -391,6 +411,180 @@ def test_get_group_nonexistent_and_unauthorized_return_identical_404(client: Tes
     assert missing.json() == unauthorized.json() or (
         missing.json()["error"]["code"] == unauthorized.json()["error"]["code"] == "group_not_found"
     )
+
+
+# --- Archived Group visibility: Administrator only (Issue #184) -----------
+#
+# people-api.md §14: "Archived groups are visible only to Administrator.
+# Non-administrator requesters must not receive archived groups in list
+# results and must not retrieve an archived group through the item
+# endpoint." A group.read grant (even `all` scope) through any role other
+# than the canonical system `admin` role reaches only active Groups.
+
+
+@requires_postgres
+def test_non_admin_all_scope_list_excludes_archived_groups_from_items_and_total(
+    client: TestClient,
+) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        active_group = _make_group(club, status="active")
+        archived_group = _make_group(club, status="archived")
+        session.add_all([requester, active_group, archived_group])
+        session.commit()
+        requester_id, active_id, archived_id = requester.id, active_group.id, archived_group.id
+        club_id = club.id
+    _grant_permission(requester_id, "group.read", scope_type="all", club_id=club_id)
+    _authenticate_as(requester_id)
+
+    unfiltered = client.get("/api/v1/groups")
+    assert unfiltered.status_code == 200, unfiltered.text
+    body = unfiltered.json()
+    assert [item["id"] for item in body["items"]] == [str(active_id)]
+    assert body["pagination"]["total"] == 1
+
+    # A filter can never widen access: asking for archived Groups explicitly
+    # returns nothing, with a total that does not disclose their existence.
+    archived_only = client.get("/api/v1/groups", params={"status": "archived"})
+    assert archived_only.status_code == 200, archived_only.text
+    assert archived_only.json()["items"] == []
+    assert archived_only.json()["pagination"]["total"] == 0
+    assert str(archived_id) not in archived_only.text
+
+
+@requires_postgres
+def test_own_groups_instructor_cannot_see_their_archived_group(client: TestClient) -> None:
+    """An instructor still holding an active GroupInstructorAssignment for a
+    Group that has since been archived: `own_groups` alone no longer
+    reaches it — neither in the list nor through the item endpoint, which
+    answers exactly like a nonexistent Group."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        archived_group = _make_group(club, status="archived")
+        session.add_all([requester, archived_group])
+        session.commit()
+        session.add(_make_group_instructor_assignment(archived_group, requester))
+        session.commit()
+        requester_id, archived_id, club_id = requester.id, archived_group.id, club.id
+    _grant_permission(requester_id, "group.read", scope_type="own_groups", club_id=club_id)
+    _authenticate_as(requester_id)
+
+    listed = client.get("/api/v1/groups")
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["items"] == []
+    assert listed.json()["pagination"]["total"] == 0
+
+    item = client.get(f"/api/v1/groups/{archived_id}")
+    missing = client.get(f"/api/v1/groups/{uuid.uuid4()}")
+    assert item.status_code == missing.status_code == 404
+    assert item.json()["error"]["code"] == missing.json()["error"]["code"] == "group_not_found"
+    assert item.json()["error"]["message"] == missing.json()["error"]["message"]
+
+
+@requires_postgres
+def test_non_admin_all_scope_item_endpoint_hides_archived_group_but_not_active(
+    client: TestClient,
+) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        active_group = _make_group(club, status="active")
+        archived_group = _make_group(club, status="archived")
+        session.add_all([requester, active_group, archived_group])
+        session.commit()
+        requester_id, active_id, archived_id = requester.id, active_group.id, archived_group.id
+        club_id = club.id
+    _grant_permission(requester_id, "group.read", scope_type="all", club_id=club_id)
+    _authenticate_as(requester_id)
+
+    assert client.get(f"/api/v1/groups/{active_id}").status_code == 200
+    hidden = client.get(f"/api/v1/groups/{archived_id}")
+    assert hidden.status_code == 404
+    assert hidden.json()["error"]["code"] == "group_not_found"
+
+
+@requires_postgres
+def test_canonical_admin_sees_archived_group_in_list_and_item(client: TestClient) -> None:
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        archived_group = _make_group(club, status="archived")
+        session.add_all([requester, archived_group])
+        session.commit()
+        requester_id, archived_id, club_id = requester.id, archived_group.id, club.id
+    _grant_canonical_admin_role(requester_id, club_id)
+    _authenticate_as(requester_id)
+
+    listed = client.get("/api/v1/groups", params={"status": "archived"})
+    assert listed.status_code == 200, listed.text
+    assert [item["id"] for item in listed.json()["items"]] == [str(archived_id)]
+
+    item = client.get(f"/api/v1/groups/{archived_id}")
+    assert item.status_code == 200, item.text
+    assert item.json()["status"] == "archived"
+
+
+@requires_postgres
+def test_canonical_admin_of_another_club_cannot_see_archived_group(client: TestClient) -> None:
+    """The Administrator exception never bypasses the club boundary: it
+    only applies through an admin assignment that already matches the
+    Group's Club and scope."""
+    with session_scope() as session:
+        club = _make_club()
+        other_club = _make_club()
+        person = _make_person()
+        session.add_all([club, other_club, person])
+        session.commit()
+        requester = _make_user(person)
+        archived_group = _make_group(club, status="archived")
+        session.add_all([requester, archived_group])
+        session.commit()
+        requester_id, archived_id, other_club_id = requester.id, archived_group.id, other_club.id
+    _grant_canonical_admin_role(requester_id, other_club_id)
+    _authenticate_as(requester_id)
+
+    assert client.get("/api/v1/groups", params={"status": "archived"}).json()["items"] == []
+    assert client.get(f"/api/v1/groups/{archived_id}").status_code == 404
+
+
+@requires_postgres
+def test_non_admin_archived_visibility_is_additive_with_an_admin_assignment(
+    client: TestClient,
+) -> None:
+    """Effective permissions are additive: a requester holding both a
+    non-admin `group.read` grant and the canonical admin role sees archived
+    Groups through the admin assignment."""
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        session.add_all([club, person])
+        session.commit()
+        requester = _make_user(person)
+        archived_group = _make_group(club, status="archived")
+        session.add_all([requester, archived_group])
+        session.commit()
+        requester_id, archived_id, club_id = requester.id, archived_group.id, club.id
+    _grant_permission(requester_id, "group.read", scope_type="all", club_id=club_id)
+    _grant_canonical_admin_role(requester_id, club_id)
+    _authenticate_as(requester_id)
+
+    assert client.get(f"/api/v1/groups/{archived_id}").status_code == 200
+    ids = {item["id"] for item in client.get("/api/v1/groups").json()["items"]}
+    assert str(archived_id) in ids
 
 
 # --- POST /groups ------------------------------------------------------

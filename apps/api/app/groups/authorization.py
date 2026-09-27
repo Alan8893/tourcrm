@@ -35,6 +35,21 @@ people-api.md §15/§16): authorizing the nested list/create endpoints is
 therefore done by authorizing the *parent Group* object
 (`build_group_resource_context` below), not by a separate per-row
 visibility filter — see app.api.v1.groups.
+
+Archived Groups (Issue #184, people-api.md §14 `GET /groups`): "Archived
+groups are visible **only to Administrator**. Non-administrator
+requesters must not receive archived groups in list results and must not
+retrieve an archived group through the item endpoint." This is an
+object-state restriction layered on top of the ordinary `group.read` +
+scope + club check, never a replacement for it: an archived Group is
+visible only through a `group.read` assignment that already matches the
+Group's Club and scope AND is granted through the canonical system
+administrator role (`Role.code == ADMIN_ROLE_CODE` *and* `Role.is_system`)
+— the same "Administrator" identity app.imports.authorization and
+app.people.authorization.is_system_admin_person_update_grant already use,
+never a bare role-name check. The Group schedule projection
+(app.groups.schedule_authorization) is deliberately unaffected: ODR-0002
+keeps archived Groups readable there for `all`/`own_groups` callers.
 """
 
 import uuid
@@ -43,9 +58,21 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
+from app.authentication.bootstrap import ADMIN_ROLE_CODE
 from app.authorization.context import ResourceContext
-from app.authorization.service import applicable_assignments
+from app.authorization.service import (
+    applicable_assignments,
+    club_boundary_matches,
+    scope_matches,
+)
+from app.db.authorization import UserRoleAssignment
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
+
+_ARCHIVED_GROUP_STATUS = "archived"
+
+
+def _is_canonical_admin_assignment(assignment: UserRoleAssignment) -> bool:
+    return assignment.role.code == ADMIN_ROLE_CODE and assignment.role.is_system
 
 
 def _active_interval(valid_from: Any, valid_to: Any) -> sa.ColumnElement[bool]:
@@ -120,6 +147,11 @@ def group_visibility_filter(
     referencing `Group.id`/`Group.club_id`), true only for Groups the
     acting user is authorized to see under `permission_code`. Used by
     `GET /api/v1/groups`.
+
+    An assignment not granted through the canonical administrator role
+    reaches only non-archived Groups (see module docstring) — applied
+    per assignment inside the SQL predicate, so an archived Group never
+    leaks into `items` or `pagination.total` for such a requester.
     """
     assignments = applicable_assignments(session, user_id, permission_code)
     if not assignments:
@@ -139,9 +171,38 @@ def group_visibility_filter(
         else:
             # self/children/own_events: not applicable to Group.
             continue
-        clauses.append(sa.and_(club_boundary, scope_predicate))
+        status_predicate: sa.ColumnElement[bool] = (
+            sa.true()
+            if _is_canonical_admin_assignment(assignment)
+            else Group.status != _ARCHIVED_GROUP_STATUS
+        )
+        clauses.append(sa.and_(club_boundary, scope_predicate, status_predicate))
 
     return sa.or_(*clauses) if clauses else sa.false()
+
+
+def is_group_state_visible(
+    session: Session, *, group: Group, requester_user_id: uuid.UUID, permission_code: str
+) -> bool:
+    """Object-state half of `GET /api/v1/groups/{group_id}` — evaluated
+    only after the ordinary `group.read` + scope + club check has already
+    passed. A non-archived Group needs nothing more; an archived Group is
+    visible only when one of the requester's matching `permission_code`
+    assignments is granted through the canonical administrator role (see
+    module docstring), mirroring `group_visibility_filter` per assignment
+    so the list and item endpoints can never disagree.
+    """
+    if group.status != _ARCHIVED_GROUP_STATUS:
+        return True
+    context = build_group_resource_context(
+        session, group=group, requester_user_id=requester_user_id
+    )
+    return any(
+        _is_canonical_admin_assignment(assignment)
+        and club_boundary_matches(assignment.club_id, context.club_id)
+        and scope_matches(assignment.scope_type, context)
+        for assignment in applicable_assignments(session, requester_user_id, permission_code)
+    )
 
 
 __all__ = [
@@ -150,4 +211,5 @@ __all__ = [
     "build_group_membership_resource_context",
     "build_group_instructor_assignment_resource_context",
     "group_visibility_filter",
+    "is_group_state_visible",
 ]

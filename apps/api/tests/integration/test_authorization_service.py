@@ -14,6 +14,7 @@ tests/integration/test_authorization.py:
     pytest tests/integration -v
 """
 
+import datetime
 import uuid
 
 import pytest
@@ -372,3 +373,94 @@ def test_authorizer_check_does_not_raise_on_allow() -> None:
 
         authorizer = Authorizer(session=session, user_id=user.id, permission_code="widget.read")
         authorizer.check()  # must not raise
+
+
+# --- Temporal effectivity (ADR-0026 §1, Issue #184 regression) -------------
+#
+# `applicable_assignments` — the single query every permission check goes
+# through — must consider only assignments valid *now*: a revoked
+# (`valid_to` in the past) or not-yet-effective (`valid_from` in the future)
+# RoleAssignment grants nothing, while an unrelated still-active assignment
+# keeps granting additively.
+
+
+def _utcnow() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+@requires_postgres
+def test_revoked_role_assignment_no_longer_grants_the_permission() -> None:
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        role = _make_role()
+        permission = _make_permission(code="widget.read")
+        session.add_all([person, user, role, permission])
+        session.commit()
+        _grant(session, role, permission)
+        _assign(
+            session,
+            user,
+            role,
+            scope_type="all",
+            valid_from=_utcnow() - datetime.timedelta(days=30),
+            valid_to=_utcnow() - datetime.timedelta(seconds=1),
+        )
+        session.commit()
+
+        assert can(session, user.id, "widget.read") is False
+        with pytest.raises(AuthorizationDenied):
+            Authorizer(session=session, user_id=user.id, permission_code="widget.read").check()
+
+
+@requires_postgres
+def test_not_yet_effective_role_assignment_does_not_grant_the_permission() -> None:
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        role = _make_role()
+        permission = _make_permission(code="widget.read")
+        session.add_all([person, user, role, permission])
+        session.commit()
+        _grant(session, role, permission)
+        _assign(
+            session,
+            user,
+            role,
+            scope_type="all",
+            valid_from=_utcnow() + datetime.timedelta(days=1),
+        )
+        session.commit()
+
+        assert can(session, user.id, "widget.read") is False
+
+
+@requires_postgres
+def test_revoked_assignment_does_not_cancel_another_active_assignment() -> None:
+    """Additive, no implicit deny: revoking one role leaves a different,
+    still-active role's grant fully effective — and never the reverse."""
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        revoked_role = _make_role()
+        active_role = _make_role()
+        read = _make_permission(code="widget.read")
+        manage = _make_permission(code="widget.manage")
+        session.add_all([person, user, revoked_role, active_role, read, manage])
+        session.commit()
+        _grant(session, revoked_role, read)
+        _grant(session, revoked_role, manage)
+        _grant(session, active_role, read)
+        _assign(
+            session,
+            user,
+            revoked_role,
+            scope_type="all",
+            valid_from=_utcnow() - datetime.timedelta(days=30),
+            valid_to=_utcnow() - datetime.timedelta(seconds=1),
+        )
+        _assign(session, user, active_role, scope_type="all")
+        session.commit()
+
+        assert can(session, user.id, "widget.read") is True
+        assert can(session, user.id, "widget.manage") is False

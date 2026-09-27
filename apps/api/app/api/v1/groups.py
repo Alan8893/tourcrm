@@ -61,6 +61,7 @@ from app.groups.authorization import (
     build_group_instructor_assignment_resource_context,
     build_group_membership_resource_context,
     build_group_resource_context,
+    is_group_state_visible,
 )
 from app.groups.lifecycle import (
     InvalidGroupMembershipStatusTransitionError,
@@ -272,6 +273,12 @@ def get_group(
     group = _get_authorized_group_or_404(
         db, group_id=group_id, user_id=principal.user_id, permission_code="group.read"
     )
+    # people-api.md §14 (Issue #184): an archived Group is visible only to
+    # an Administrator — hidden with the same 404 as a nonexistent Group.
+    if not is_group_state_visible(
+        db, group=group, requester_user_id=principal.user_id, permission_code="group.read"
+    ):
+        raise APIError(status.HTTP_404_NOT_FOUND, _GROUP_NOT_FOUND_CODE, _GROUP_NOT_FOUND_MESSAGE)
     return _group_out(group)
 
 
