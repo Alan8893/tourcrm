@@ -104,13 +104,20 @@ class InstructorClubMembershipMissingError(GroupOwnershipError):
 
 
 class GroupArchivedError(GroupOwnershipError):
-    """people-api.md §15/§16: a new GroupMembership/GroupInstructorAssignment
-    cannot be created for a Group whose `status = 'archived'` — ending an
-    already-existing one remains allowed (see end_group_membership/
+    """people-api.md §14-16: a Group whose `status = 'archived'` cannot be
+    modified — no new GroupMembership/GroupInstructorAssignment, no
+    `PATCH` of the Group itself, no `PATCH` of one of its
+    GroupMemberships. Ending an already-existing membership/assignment
+    remains allowed (see end_group_membership/
     end_group_instructor_assignment, which perform no such check)."""
 
-    def __init__(self, *, group_id: uuid.UUID) -> None:
-        super().__init__(f"Group {group_id} is archived; new relationships cannot be created")
+    def __init__(
+        self,
+        *,
+        group_id: uuid.UUID,
+        message: str = "new relationships cannot be created",
+    ) -> None:
+        super().__init__(f"Group {group_id} is archived; {message}")
         self.group_id = group_id
 
 
@@ -264,6 +271,21 @@ def create_group_membership(
     return membership
 
 
+def ensure_group_membership_mutable(session: Session, *, group_id: uuid.UUID) -> None:
+    """people-api.md §15 (PO decisions Q3/D1): no GroupMembership of an
+    archived Group may be PATCHed. Takes a share lock on the Group row
+    (the same way create_group_membership guards against a concurrent
+    archive) and raises GroupArchivedError — after rolling back — when the
+    Group is archived. Called by the PATCH endpoint *before* its
+    field-level validation, so an archived Group always answers
+    `409 group_archived`, and again by update_group_membership itself.
+    """
+    _lock_group_club_id(session, group_id)
+    if _group_status(session, group_id) == "archived":
+        session.rollback()
+        raise GroupArchivedError(group_id=group_id, message="its memberships cannot be modified")
+
+
 def update_group_membership(
     session: Session,
     *,
@@ -277,12 +299,19 @@ def update_group_membership(
     `club_membership_id` and `membership_status` are immutable here (see
     app.api.v1.groups for the immutable-field rejection). No-ops (no
     mutation, no audit record) when nothing actually changes.
+
+    Raises GroupArchivedError when the membership's Group is archived
+    (people-api.md §15, PO decision Q3 = A), persisting nothing — checked
+    under a share lock on the Group row, the same way
+    create_group_membership guards against a concurrent archive.
     """
     unknown_fields = set(fields) - UPDATABLE_GROUP_MEMBERSHIP_FIELDS
     if unknown_fields:
         raise ValueError(
             f"Fields not updatable via update_group_membership: {sorted(unknown_fields)}"
         )
+
+    ensure_group_membership_mutable(session, group_id=membership.group_id)
 
     changes: dict[str, Any] = {}
     for field_name, new_value in fields.items():
@@ -519,10 +548,19 @@ def update_group(
     (see app.api.v1.groups for the immutable-field rejection; `status`
     changes only through archive_group). No-ops (no mutation, no audit
     record) when nothing actually changes.
+
+    Raises GroupArchivedError when `group` is archived (people-api.md §14,
+    PO decision Q3 = A), persisting nothing — checked before the no-op
+    shortcut, so any PATCH of an archived Group is rejected. The caller
+    (app.api.v1.groups) has already loaded `group` under `FOR UPDATE`.
     """
     unknown_fields = set(fields) - UPDATABLE_GROUP_FIELDS
     if unknown_fields:
         raise ValueError(f"Fields not updatable via update_group: {sorted(unknown_fields)}")
+    if group.status == "archived":
+        group_id = group.id
+        session.rollback()
+        raise GroupArchivedError(group_id=group_id, message="it cannot be modified")
 
     changes: dict[str, Any] = {}
     for field_name, new_value in fields.items():
@@ -607,6 +645,7 @@ __all__ = [
     "UPDATABLE_GROUP_MEMBERSHIP_FIELDS",
     "create_group_membership",
     "update_group_membership",
+    "ensure_group_membership_mutable",
     "end_group_membership",
     "create_group_instructor_assignment",
     "end_group_instructor_assignment",
