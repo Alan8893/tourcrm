@@ -17,8 +17,10 @@ individually:
 - app.authentication.account_provisioning.create_user_for_person
   (automatic account provisioning, ADR-0038 — active-with-email or
   pending-stub-without-email, per that module's own docstring)
-- app.role_assignments.service.create_role_assignment (the initial
-  RoleAssignment, ADR-0039)
+- app.role_assignments.person_roles.create_canonical_role_assignments
+  (the initial RoleAssignment set, ADR-0039 / AUTH-2 — the same canonical
+  per-role scope set Person Detail uses, each row created by
+  app.role_assignments.service.create_role_assignment)
 - app.groups.service.create_group_instructor_assignment /
   create_group_membership (Instructor's 0..N groups / Member's 1..N
   groups)
@@ -70,15 +72,9 @@ from app.db.identity import Club, Person
 from app.groups import service as groups_service
 from app.people import service as people_service
 from app.people.guardian_service import create_guardian_relationship
-from app.role_assignments.service import create_role_assignment
+from app.role_assignments.person_roles import create_canonical_role_assignments
 
 PersonWizardRoleCode = Literal["admin", "instructor", "member", "guardian"]
-
-# Mirrors app.role_assignments.person_roles's identical constant/
-# rationale exactly: `role.manage` is only ever effective with
-# `scope_type='all'` today, and it is the only value already correct for
-# every canonical role (see that module's own docstring point 2).
-_ROLE_ASSIGNMENT_SCOPE_TYPE = "all"
 
 # ADR-0025 §18's documented example value; also used by
 # LinkChildDialog/CreateGuardianRelationshipDialog's own free-text field
@@ -230,9 +226,7 @@ def create_person_with_wizard(
         )
 
     club_id = _resolve_sole_club_id(session)
-    role_id = session.execute(
-        sa.select(Role.id).where(Role.code == role_code)
-    ).scalar_one()
+    role = session.execute(sa.select(Role).where(Role.code == role_code)).scalar_one()
 
     deferred = cast(Session, _DeferredCommitSession(session))
     try:
@@ -255,11 +249,12 @@ def create_person_with_wizard(
             actor_user_id=actor_user_id,
             request_id=request_id,
         )
-        create_role_assignment(
+        # AUTH-2: identical canonical scope set to Person Detail
+        # (app.role_assignments.person_roles.CANONICAL_ROLE_SCOPE_TYPES).
+        create_canonical_role_assignments(
             deferred,
             user_id=user.id,
-            role_id=role_id,
-            scope_type=_ROLE_ASSIGNMENT_SCOPE_TYPE,
+            role=role,
             club_id=club_id,
             actor_user_id=actor_user_id,
             request_id=request_id,

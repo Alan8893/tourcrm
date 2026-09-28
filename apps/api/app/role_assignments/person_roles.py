@@ -30,26 +30,27 @@ for this one restricted entry point:
    raised, never a User created implicitly, when the target Person has no
    User yet.
 
-2. **`scope_type`.** A `UserRoleAssignment` scope is a property of the
-   *assignment*, not the role (app.db.authorization.UserRoleAssignment's
-   own docstring) — the generic API's caller must always choose one.
-   `role.manage` itself is only ever effective with `scope_type='all'`
-   (app.role_assignments.authorization module docstring), and — as of
-   this writing — `instructor`/`member`/`guardian` carry **zero**
-   `RolePermission` grants (only `admin` is fully seeded;
-   `95487f3b616b` grants `instructor` exactly one narrow permission,
-   `user.directory.read`, whose own policy ignores `scope_type` entirely
-   — see app.users.authorization). Mapping roles-and-permissions.md §7's
-   matrix into concrete `own_groups`/`self`/`children` grants for these
-   three roles was explicitly deferred to a future issue
-   (`e5ae1ad9e1e1`'s and `6a99a77234ba`'s own migration docstrings) — this
-   task must not make that product decision either. `scope_type='all'`
-   is therefore the only value that is already, demonstrably correct for
-   every canonical role today (it cannot over-grant a permission that
-   does not exist yet), and is used uniformly for admin/instructor/
-   member/guardian alike. Whoever eventually seeds real scope-sensitive
-   grants for instructor/member/guardian must revisit this default at
-   the same time — this module's docstring is the flag for that.
+2. **`scope_type`** (AUTH-2, PO decision — GAP-4 option B). A
+   `UserRoleAssignment` scope is a property of the *assignment*, not of
+   each permission (`RolePermission` carries no scope), so a role whose
+   canonical permissions need two scopes is granted as two assignments
+   of the same role — `CANONICAL_ROLE_SCOPE_TYPES`:
+
+       admin      -> all
+       instructor -> own_groups + self
+       member     -> self
+       guardian   -> children + self
+
+   Accepted limitation of the current model: every permission of a
+   two-assignment role is effective through *both* scopes. The set is
+   created/revoked atomically as one unit (one `role_assignment.created`/
+   `.revoked` audit record per assignment row, ADR-0026 §6). Duplicate
+   detection and revoke look at *every* active assignment of the role in
+   the Club regardless of scope, so a historical `scope_type='all'`
+   assignment (created before AUTH-2, never migrated) counts as "already
+   has the role" and is revoked by the same remove flow. The generic
+   `/api/v1/role-assignments` API is unchanged: its caller still chooses
+   `scope_type` explicitly.
 
 `club_id` is always the installation's sole Club (TourCRM is not
 multi-club — see `resolve_sole_club_id` below): the admin never picks a
@@ -102,8 +103,32 @@ def role_codes_matching_search_term(term: str) -> list[str]:
         if lowered in code.casefold() or lowered in PERSON_ROLE_LABELS[code].casefold()
     ]
 
-# See module docstring point 2. Uniform across all four canonical roles.
-_PERSON_ROLE_SCOPE_TYPE = "all"
+# See module docstring point 2. The one source of truth for both Person
+# Detail and the Person wizard (app.people.wizard).
+CANONICAL_ROLE_SCOPE_TYPES: dict[str, tuple[str, ...]] = {
+    "admin": ("all",),
+    "instructor": ("own_groups", "self"),
+    "member": ("self",),
+    "guardian": ("children", "self"),
+}
+
+
+class _DeferredCommitSession:
+    """Turns each nested `.commit()` into `.flush()` so several
+    `create_role_assignment`/`revoke_role_assignment` calls (each of which
+    commits on its own) share one transaction; `.rollback()` and every
+    other call go to the real session. Duplicated from
+    app.people.wizard's identical proxy, per this codebase's convention
+    for small helpers (importing it would create an import cycle)."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def commit(self) -> None:
+        self._session.flush()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._session, name)
 
 
 class PersonRoleAssignmentError(Exception):
@@ -211,12 +236,81 @@ def list_person_role_assignments(
                 UserRoleAssignment.valid_from <= now,
                 sa.or_(UserRoleAssignment.valid_to.is_(None), now < UserRoleAssignment.valid_to),
             )
-            .order_by(UserRoleAssignment.created_at.desc())
+            .order_by(UserRoleAssignment.created_at.desc(), UserRoleAssignment.id)
         )
         .scalars()
         .all()
     )
     return list(rows)
+
+
+def _active_role_assignments(
+    session: Session, *, user_id: uuid.UUID, role_id: uuid.UUID, club_id: uuid.UUID
+) -> list[UserRoleAssignment]:
+    """Every currently-effective assignment of `role_id` for `user_id` in
+    `club_id`, whatever its `scope_type` (see module docstring point 2),
+    locked for the duplicate/revoke decision that follows."""
+    now = sa.func.now()
+    return list(
+        session.execute(
+            sa.select(UserRoleAssignment)
+            .where(
+                UserRoleAssignment.user_id == user_id,
+                UserRoleAssignment.role_id == role_id,
+                UserRoleAssignment.club_id == club_id,
+                UserRoleAssignment.valid_from <= now,
+                sa.or_(UserRoleAssignment.valid_to.is_(None), now < UserRoleAssignment.valid_to),
+            )
+            .order_by(UserRoleAssignment.created_at, UserRoleAssignment.id)
+            .with_for_update()
+        )
+        .scalars()
+        .all()
+    )
+
+
+def create_canonical_role_assignments(
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    role: Role,
+    club_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    request_id: Optional[str] = None,
+) -> list[UserRoleAssignment]:
+    """Grant `role` to `user_id` as `CANONICAL_ROLE_SCOPE_TYPES[role.code]`
+    — one `create_role_assignment` call (and audit record) per scope.
+
+    Raises DuplicateRoleAssignmentError when *any* active assignment of
+    the role already exists in `club_id`, whatever its scope. Commits via
+    `session.commit()` after each assignment, exactly like
+    `create_role_assignment` itself: callers that need the whole set to be
+    atomic pass a deferred-commit proxy (see `add_person_role` and
+    app.people.wizard) and commit once themselves.
+    """
+    existing = _active_role_assignments(
+        session, user_id=user_id, role_id=role.id, club_id=club_id
+    )
+    if existing:
+        session.rollback()
+        raise role_assignment_service.DuplicateRoleAssignmentError(
+            user_id=user_id,
+            role_id=role.id,
+            club_id=club_id,
+            scope_type=existing[0].scope_type,
+        )
+    return [
+        role_assignment_service.create_role_assignment(
+            session,
+            user_id=user_id,
+            role_id=role.id,
+            scope_type=scope_type,
+            club_id=club_id,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+        )
+        for scope_type in CANONICAL_ROLE_SCOPE_TYPES[role.code]
+    ]
 
 
 def list_active_role_codes_by_person(
@@ -263,15 +357,20 @@ def add_person_role(
     actor_user_id: uuid.UUID,
     request_id: Optional[str] = None,
 ) -> UserRoleAssignment:
-    """ADR-0039: grant `role_code` to `person_id`'s own User. Does not
+    """ADR-0039: grant `role_code` to `person_id`'s own User as its
+    canonical scope set (module docstring point 2), atomically. Does not
     create a User, does not mutate Person/ClubMembership, and creates no
-    Group/Event/GuardianRelationship side effect — this only ever calls
+    Group/Event/GuardianRelationship side effect — every row is created by
     `app.role_assignments.service.create_role_assignment`, the exact same
     function the generic `/api/v1/role-assignments` API uses.
 
+    Returns the first assignment of the set (the router's response
+    represents the role, not each scope).
+
     Raises PersonHasNoUserAccountError, InvalidPersonRoleCodeError, or
     (bubbled from the underlying service, unchanged) RoleAssignmentClub
-    MembershipMissingError / DuplicateRoleAssignmentError.
+    MembershipMissingError / DuplicateRoleAssignmentError — persisting
+    nothing in every case.
     """
     role = _role_by_code(session, role_code)
     user_id = user_id_for_person(session, person_id)
@@ -279,15 +378,16 @@ def add_person_role(
         raise PersonHasNoUserAccountError(person_id=person_id)
     club_id = resolve_sole_club_id(session)
 
-    return role_assignment_service.create_role_assignment(
-        session,
+    assignments = create_canonical_role_assignments(
+        _DeferredCommitSession(session),  # type: ignore[arg-type]
         user_id=user_id,
-        role_id=role.id,
-        scope_type=_PERSON_ROLE_SCOPE_TYPE,
+        role=role,
         club_id=club_id,
         actor_user_id=actor_user_id,
         request_id=request_id,
     )
+    session.commit()
+    return assignments[0]
 
 
 def remove_person_role(
@@ -299,9 +399,12 @@ def remove_person_role(
     request_id: Optional[str] = None,
 ) -> UserRoleAssignment:
     """ADR-0039: revoke `person_id`'s own currently-effective `role_code`
-    assignment — never another Person's, and never any other role this
-    Person holds. Only ever calls `app.role_assignments.service.
-    revoke_role_assignment` on the one matching row.
+    — never another Person's, and never any other role this Person holds.
+    Revokes *every* active assignment of that role in the Club, whatever
+    its scope (the canonical two-scope set and any historical `all`
+    assignment alike — module docstring point 2), atomically; each row is
+    revoked by `app.role_assignments.service.revoke_role_assignment`.
+    Returns the first revoked assignment.
 
     Raises PersonHasNoUserAccountError, InvalidPersonRoleCodeError, or
     PersonRoleAssignmentNotFoundError (no currently-effective assignment
@@ -317,28 +420,24 @@ def remove_person_role(
         raise PersonHasNoUserAccountError(person_id=person_id)
     club_id = resolve_sole_club_id(session)
 
-    now = sa.func.now()
-    assignment = session.execute(
-        sa.select(UserRoleAssignment)
-        .where(
-            UserRoleAssignment.user_id == user_id,
-            UserRoleAssignment.role_id == role.id,
-            UserRoleAssignment.club_id == club_id,
-            UserRoleAssignment.scope_type == _PERSON_ROLE_SCOPE_TYPE,
-            UserRoleAssignment.valid_from <= now,
-            sa.or_(UserRoleAssignment.valid_to.is_(None), now < UserRoleAssignment.valid_to),
-        )
-        .with_for_update()
-    ).scalar_one_or_none()
-    if assignment is None:
+    assignments = _active_role_assignments(
+        session, user_id=user_id, role_id=role.id, club_id=club_id
+    )
+    if not assignments:
         raise PersonRoleAssignmentNotFoundError(person_id=person_id, role_code=role_code)
 
-    return role_assignment_service.revoke_role_assignment(
-        session,
-        assignment=assignment,
-        actor_user_id=actor_user_id,
-        request_id=request_id,
-    )
+    deferred = _DeferredCommitSession(session)
+    revoked = [
+        role_assignment_service.revoke_role_assignment(
+            deferred,  # type: ignore[arg-type]
+            assignment=assignment,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+        )
+        for assignment in assignments
+    ]
+    session.commit()
+    return revoked[0]
 
 
 __all__ = [
@@ -353,6 +452,8 @@ __all__ = [
     "PersonRoleAssignmentNotFoundError",
     "user_id_for_person",
     "resolve_sole_club_id",
+    "CANONICAL_ROLE_SCOPE_TYPES",
+    "create_canonical_role_assignments",
     "list_person_role_assignments",
     "list_active_role_codes_by_person",
     "add_person_role",
