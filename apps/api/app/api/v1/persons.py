@@ -114,6 +114,7 @@ from app.people import guardian_service
 from app.people import service as people_service
 from app.people import wizard as person_wizard_service
 from app.people.authorization import (
+    CHILD_UPDATABLE_PERSON_FIELDS,
     has_person_create_assignment,
     is_person_visible,
     is_system_admin_person_update_grant,
@@ -452,6 +453,19 @@ def update_person(
         db, person_id=person_id, user_id=principal.user_id, permission_code="person.update"
     )
     fields = payload.model_dump(exclude_unset=True)
+    # AUTH-1 (role-permission-scope-matrix.md §3.4/§4): when the Person is
+    # reachable only through `person.update(children)`, just
+    # CHILD_UPDATABLE_PERSON_FIELDS may change — email/birth_date are 403.
+    # Access through any other scope (`self`, `all`, `own_groups`) keeps its
+    # ordinary field rules.
+    if set(fields) - CHILD_UPDATABLE_PERSON_FIELDS and not is_person_visible(
+        db,
+        person_id=person.id,
+        user_id=principal.user_id,
+        permission_code="person.update",
+        exclude_scope_types=frozenset({"children"}),
+    ):
+        raise AuthorizationDenied("person.update")
     if "birth_date" in fields:
         # ADR-0035 §5: only the canonical system admin role may change
         # birth_date, including on the admin's own Person — a bare
