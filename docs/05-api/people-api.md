@@ -1143,17 +1143,31 @@ Group/GroupMembership/GroupInstructorAssignment endpoints не вводят proj
 
 Permissions: `document.read` (список/метаданные/скачивание), `document.manage` (создание/замена/отзыв), `document.export` (экспорт содержимого/пакета документов). `person.read` не предоставляет доступа к содержимому документов (ADR-0040 §6) — необходим один из трёх permissions выше в дополнение к обычному Person-доступу.
 
+**Authorization для `/persons/{person_id}/documents...`** (PO decisions PD-1 = B, PD-2 = A) — одинаково для всех endpoint'ов ниже:
+
+- **Чтение** (список, метаданные, скачивание): `person.read` **и** `document.read`.
+- **Изменение** (создание, PATCH метаданных, замена, отзыв): `person.update` **и** `document.manage`.
+- Ни Person permission, ни Document permission по отдельности не достаточны; `document.manage` не подразумевает `document.read`, и наоборот.
+- Person должен попадать в scope **обоих** permissions (пересечение): scope одного permission не расширяет доступ, данный другим.
+- Порядок — authorization before existence:
+  1. нет хотя бы одного из двух требуемых permissions → `403` (generic `forbidden`), независимо от того, существует ли Person;
+  2. оба permissions есть, но Person не существует → `404`;
+  3. Person существует, но не попадает в scope хотя бы одного из двух permissions → тот же `404`;
+  4. документ не существует или не принадлежит указанному Person (а для PATCH/replace/revoke — историческая версия) → существующий `404 document_not_found`.
+
+Event document endpoints (events-api.md §31) этим правилом не изменяются.
+
 Минимально необходимые для TH-0117 операции:
 
-- **Список документов участника** — `GET /persons/{person_id}/documents` (planned) — метаданные (`document_type`, `status`, `issued_at`, `expires_at`, `file_id`, `version_number`) текущих версий; не раскрывает содержимое файла. Требует `document.read`.
-- **Создание/загрузка документа** — `POST /persons/{person_id}/documents` (planned) — создаёт первую версию (`version_number = 1`, новый `document_group_id`) и связанный `File` через `FileStorage.put`. Требует `document.manage`. Аудируется как `document.created`.
-- **Метаданные документа** — `GET /persons/{person_id}/documents/{document_id}` (planned) — метаданные текущей или конкретной исторической версии; не раскрывает содержимое файла. Требует `document.read`.
-- **Скачивание содержимого** — `GET /persons/{person_id}/documents/{document_id}/download` (planned) — возвращает бинарное содержимое только после авторизации; `storage_key` никогда не передаётся клиенту напрямую (ADR-0040 §3). Требует `document.read`. Аудируется как `document.downloaded` — обязательно для sensitive документов (`medical_certificate`).
-- **Замена/новая версия** — `POST /persons/{person_id}/documents/{document_id}/replace` (planned) — создаёт новую версию (`version_number + 1`, тот же `document_group_id`, новый `File`); не перезаписывает существующую версию/файл. Требует `document.manage`. Аудируется как `document.replaced`.
-- **Отзыв** — `POST /persons/{person_id}/documents/{document_id}/revoke` (planned) — переводит текущую версию в `status = revoked` на месте, без создания новой версии. Требует `document.manage`. Аудируется как `document.revoked`.
+- **Список документов участника** — `GET /persons/{person_id}/documents` (planned) — метаданные (`document_type`, `status`, `issued_at`, `expires_at`, `file_id`, `version_number`) текущих версий; не раскрывает содержимое файла. Требует `person.read` + `document.read`.
+- **Создание/загрузка документа** — `POST /persons/{person_id}/documents` (planned) — создаёт первую версию (`version_number = 1`, новый `document_group_id`) и связанный `File` через `FileStorage.put`. Требует `person.update` + `document.manage`. Аудируется как `document.created`.
+- **Метаданные документа** — `GET /persons/{person_id}/documents/{document_id}` (planned) — метаданные текущей или конкретной исторической версии; не раскрывает содержимое файла. Требует `person.read` + `document.read`.
+- **Скачивание содержимого** — `GET /persons/{person_id}/documents/{document_id}/download` (planned) — возвращает бинарное содержимое только после авторизации; `storage_key` никогда не передаётся клиенту напрямую (ADR-0040 §3). Требует `person.read` + `document.read`. Аудируется как `document.downloaded` — обязательно для sensitive документов (`medical_certificate`).
+- **Замена/новая версия** — `POST /persons/{person_id}/documents/{document_id}/replace` (planned) — создаёт новую версию (`version_number + 1`, тот же `document_group_id`, новый `File`); не перезаписывает существующую версию/файл. Требует `person.update` + `document.manage`. Аудируется как `document.replaced`.
+- **Отзыв** — `POST /persons/{person_id}/documents/{document_id}/revoke` (planned) — переводит текущую версию в `status = revoked` на месте, без создания новой версии. Требует `person.update` + `document.manage`. Аудируется как `document.revoked`.
 
 Корректировка не-файловых метаданных текущей версии выполняется через:
-- **PATCH `/persons/{person_id}/documents/{document_id}`** (planned, TH-0117.8) — изменяет только не-файловые метаданные текущей версии на месте; новая версия и новый File не создаются. Требует `document.manage`. В MVP изменяемые поля: `issued_at`, `expires_at`. `document_type`, `person_id`, `document_group_id`, `version_number`, `status` и `file_id` этим endpoint'ом не изменяются.
+- **PATCH `/persons/{person_id}/documents/{document_id}`** (planned, TH-0117.8) — изменяет только не-файловые метаданные текущей версии на месте; новая версия и новый File не создаются. Требует `person.update` + `document.manage`. В MVP изменяемые поля: `issued_at`, `expires_at`. `document_type`, `person_id`, `document_group_id`, `version_number`, `status` и `file_id` этим endpoint'ом не изменяются.
 - Endpoint принимает только поля, присутствующие в request body; отсутствие обоих поддерживаемых полей — ошибка валидации. `expires_at`, если передан вместе с `issued_at`, не может быть раньше `issued_at`.
 - Операция разрешена только для текущей версии (`max(version_number)`). Историческая версия возвращает существующий для Document API not-found/existence-hiding результат.
 - Аудируется как `document.updated`; запись аудита и изменение метаданных фиксируются одной DB-транзакцией.
