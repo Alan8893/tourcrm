@@ -294,8 +294,8 @@ def create_group(
     db: Session = Depends(get_db),
     _csrf: None = Depends(require_csrf_token),
 ) -> GroupOut:
-    # No Group exists yet: is_own_group stays unresolved (None), so only a
-    # scope_type='all' assignment matching the target club can authorize
+    # No Group exists yet: is_own_group stays unresolved (None), so only an
+    # `all`-scope grant matching the target club can authorize
     # creation — same precedent as membership.create/event.create.
     authorizer = Authorizer(session=db, user_id=principal.user_id, permission_code="group.manage")
     authorizer.check(build_group_create_context(payload.club_id))

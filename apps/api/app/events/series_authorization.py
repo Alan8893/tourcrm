@@ -19,7 +19,7 @@ recurring `EventOccurrence` resources, never for the `EventSeries`
 resource itself (the Series lifecycle/update endpoints — pause/resume/
 cancel/archive/PATCH). `series_visibility_filter`/
 `build_series_resource_context` therefore remain exactly as Issue #79
-left them: only a `scope_type="all"` assignment can satisfy a Series-
+left them: only an `all`-scope grant can satisfy a Series-
 resource permission check. Extending Series-resource authorization to use
 the relationship source directly is a different, not-yet-canonically-
 specified decision and is not made here.
@@ -75,7 +75,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
 from app.authorization.context import ResourceContext
-from app.authorization.service import applicable_assignments
+from app.authorization.service import applicable_grants
 from app.db.event_recurrence import EventOccurrence, EventSeries
 from app.db.event_recurrence_relationships import (
     EventOccurrenceGroupTarget,
@@ -247,8 +247,8 @@ def _all_scope_visibility_filter(
 ) -> sa.ColumnElement[bool]:
     """`all`-scope-only predicate — still used as-is by
     `series_visibility_filter` (see module docstring)."""
-    assignments = applicable_assignments(session, user_id, permission_code)
-    all_scope_club_ids = [a.club_id for a in assignments if a.scope_type == "all"]
+    grants = applicable_grants(session, user_id, permission_code)
+    all_scope_club_ids = [a.club_id for a in grants if a.scope_type == "all"]
     if not all_scope_club_ids:
         return sa.false()
     if any(club_id is None for club_id in all_scope_club_ids):
@@ -278,38 +278,38 @@ def occurrence_visibility_filter(
     Python — required so pagination/totals/offsets never leak an
     unauthorized row (mirrors app.events.authorization.
     event_visibility_filter exactly)."""
-    assignments = applicable_assignments(session, user_id, permission_code)
-    if not assignments:
+    grants = applicable_grants(session, user_id, permission_code)
+    if not grants:
         return sa.false()
 
-    needs_person = any(a.scope_type in ("self", "children") for a in assignments)
+    needs_person = any(a.scope_type in ("self", "children") for a in grants)
     person_id = _person_id_for_user(session, user_id) if needs_person else None
 
     clauses: list[sa.ColumnElement[bool]] = []
-    for assignment in assignments:
+    for grant in grants:
         club_boundary: sa.ColumnElement[bool] = (
             sa.true()
-            if assignment.club_id is None
-            else EventOccurrence.club_id == assignment.club_id
+            if grant.club_id is None
+            else EventOccurrence.club_id == grant.club_id
         )
-        if assignment.scope_type == "all":
+        if grant.scope_type == "all":
             scope_predicate: sa.ColumnElement[bool] = sa.true()
-        elif assignment.scope_type == "own_events":
+        elif grant.scope_type == "own_events":
             scope_predicate = _own_occurrence_condition(EventOccurrence.id, user_id)
-        elif assignment.scope_type == "own_groups":
+        elif grant.scope_type == "own_groups":
             scope_predicate = _own_group_condition(
                 EventOccurrence.id, EventOccurrence.club_id, user_id
             )
-        elif assignment.scope_type == "self":
+        elif grant.scope_type == "self":
             scope_predicate = _self_condition(EventOccurrence.id, person_id)
-        elif assignment.scope_type == "children":
+        elif grant.scope_type == "children":
             scope_predicate = _child_condition(
                 EventOccurrence.id, EventOccurrence.club_id, person_id
             )
-        elif assignment.scope_type == "none":
+        elif grant.scope_type == "none":
             scope_predicate = sa.false()
         else:  # pragma: no cover - unreachable, DB CHECK constraint guards this
-            raise ValueError(f"Unhandled scope_type: {assignment.scope_type!r}")
+            raise ValueError(f"Unhandled scope_type: {grant.scope_type!r}")
         clauses.append(sa.and_(club_boundary, scope_predicate))
 
     return sa.or_(*clauses)

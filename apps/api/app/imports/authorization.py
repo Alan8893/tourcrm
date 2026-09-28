@@ -13,7 +13,7 @@ object access":
   answered exactly like a nonexistent one (404, existence-hiding).
 
 Built entirely on the existing engine's building blocks
-(`applicable_assignments`/`club_boundary_matches`/`scope_matches` from
+(`applicable_grants`/`club_boundary_matches`/`scope_matches` from
 app.authorization.service) — no parallel authorization mechanism.
 "Administrator" is recognized through the same identity
 app.authentication.bootstrap and app.people.authorization already use for
@@ -31,11 +31,11 @@ from sqlalchemy.orm import Session
 from app.authentication.bootstrap import ADMIN_ROLE_CODE
 from app.authorization.context import ResourceContext
 from app.authorization.service import (
-    applicable_assignments,
+    PermissionGrant,
+    applicable_grants,
     club_boundary_matches,
     scope_matches,
 )
-from app.db.authorization import UserRoleAssignment
 from app.db.identity import Club
 from app.db.imports import ImportJob
 
@@ -70,19 +70,19 @@ def resolve_sole_club_id(session: Session) -> uuid.UUID:
     return club_ids[0]
 
 
-def _qualifying_assignments(
+def _qualifying_grants(
     session: Session, *, user_id: uuid.UUID, club_id: uuid.UUID
-) -> list[UserRoleAssignment]:
-    """The requester's currently-effective `membership.import` assignments
+) -> list[PermissionGrant]:
+    """The requester's currently-effective `membership.import` grants
     that reach `club_id` with `all` scope. A `ResourceContext` carrying only
     `club_id` leaves every relationship scope unresolved (`None`), so only
     `scope_type == "all"` can match — exactly the canonical requirement."""
     context = ResourceContext(club_id=club_id)
     return [
-        assignment
-        for assignment in applicable_assignments(session, user_id, PERMISSION_CODE)
-        if club_boundary_matches(assignment.club_id, context.club_id)
-        and scope_matches(assignment.scope_type, context)
+        grant
+        for grant in applicable_grants(session, user_id, PERMISSION_CODE)
+        if club_boundary_matches(grant.club_id, context.club_id)
+        and scope_matches(grant.scope_type, context)
     ]
 
 
@@ -90,14 +90,14 @@ def can_access_import_job(session: Session, *, job: ImportJob, user_id: uuid.UUI
     """people-api.md §22 object policy: `membership.import` + `all` in the
     job's Club, and either the job's creator or an Administrator authorized
     for that Club."""
-    assignments = _qualifying_assignments(session, user_id=user_id, club_id=job.club_id)
-    if not assignments:
+    grants = _qualifying_grants(session, user_id=user_id, club_id=job.club_id)
+    if not grants:
         return False
     if job.created_by_user_id == user_id:
         return True
     return any(
-        assignment.role.code == ADMIN_ROLE_CODE and assignment.role.is_system
-        for assignment in assignments
+        grant.assignment.role.code == ADMIN_ROLE_CODE and grant.assignment.role.is_system
+        for grant in grants
     )
 
 

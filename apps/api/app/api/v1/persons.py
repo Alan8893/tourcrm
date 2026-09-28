@@ -89,7 +89,7 @@ from app.api.v1.role_assignments_schemas import (
 from app.authentication import account_provisioning
 from app.authentication.rate_limit import RateLimiter, RateLimitExceeded, get_rate_limiter
 from app.authorization.context import ResourceContext
-from app.authorization.service import AuthorizationDenied, Authorizer, applicable_assignments
+from app.authorization.service import AuthorizationDenied, Authorizer, applicable_grants
 from app.db.authorization import UserRoleAssignment
 from app.db.documents import Document
 from app.db.documents import File as FileModel
@@ -635,12 +635,12 @@ def _require_permission_grant(db: Session, *, user_id: uuid.UUID, permission_cod
     """P1 GAP-3 (authorization before existence) for the nested Person
     list endpoints whose own authorization is a per-row scope filter
     rather than a single object check: a caller with *no* currently-
-    effective assignment granting `permission_code` is refused with the
+    effective grant of `permission_code` is refused with the
     generic 403 before `person_id` is looked up. Same gate shape as
     `GET /users` (app.users.authorization.requester_has_directory_access);
     scope/row visibility is still applied afterwards, unchanged.
     """
-    if not applicable_assignments(db, user_id, permission_code):
+    if not applicable_grants(db, user_id, permission_code):
         raise AuthorizationDenied(permission_code)
 
 

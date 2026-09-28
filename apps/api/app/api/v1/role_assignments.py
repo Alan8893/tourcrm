@@ -21,9 +21,10 @@ Validation order for `POST /role-assignments` follows Issue #74's
 required checks (authentication; effective `role.manage` + target Club
 boundary — one `Authorizer.check(ResourceContext(club_id=...))` call
 satisfies both, exactly like `app.api.v1.memberships.create_membership`'s
-identical precedent; target User exists; target Role exists; scope
-combination valid; active ClubMembership for a club-scoped assignment;
-temporal duplicate invariant; audit in the same transaction) — grouped
+identical precedent; target User exists; target Role exists; `club_id`
+fits the Role's permission scopes; active ClubMembership for a club-scoped
+assignment; one-active-role duplicate invariant; audit in the same
+transaction) — grouped
 as simple existence/authorization checks in this router followed by
 business-invariant validation in app.role_assignments.service, in that
 service's own sensible order (structural scope-combination validity
@@ -32,6 +33,12 @@ forcing an exact single linear sequence split across the router/service
 boundary. This does not change externally observable behavior for any
 well-formed request; only which single error is reported first for a
 request that is simultaneously invalid in more than one way.
+
+AUTH-2A: `POST /role-assignments` assigns a Role, never an authorization
+scope. The request carries no `scope_type`; the scopes of each of the
+Role's permissions come from `RolePermissionScope` only. A legacy client
+that still sends `scope_type` has it ignored (the request model does not
+declare it), so it can never choose or widen a scope.
 """
 
 import uuid
@@ -45,7 +52,7 @@ from app.api.errors import APIError
 from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.role_assignments_schemas import RoleAssignmentCreateRequest, RoleAssignmentOut
-from app.authorization.context import InvalidScopeError, ResourceContext, normalize_scope_type
+from app.authorization.context import ResourceContext
 from app.authorization.service import Authorizer
 from app.db.authorization import Role, UserRoleAssignment
 from app.db.identity import User
@@ -159,21 +166,11 @@ def create_role_assignment(
     db: Session = Depends(get_db),
     _csrf: None = Depends(require_csrf_token),
 ) -> RoleAssignmentOut:
-    # ADR-0013/app.authorization.context.normalize_scope_type: resolves
-    # the `assigned_events` input alias to `own_events` and rejects
-    # `own_records`/any non-canonical value — the exact existing
-    # mechanism this module's own docstring documents as unused-until-now.
-    try:
-        scope_type = normalize_scope_type(payload.scope_type)
-    except InvalidScopeError as exc:
-        raise APIError(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_role_assignment_scope", str(exc)
-        ) from exc
-
     # Effective `role.manage` + target Club boundary in one call — no
     # RoleAssignment exists yet, so no relationship field is resolved;
-    # only `scope_type='all'` (globally or for this specific club_id) can
-    # authorize creation, exactly per ADR-0026 §5.
+    # only an `all`-scope `role.manage` grant (through a global or this
+    # specific club_id's assignment) can authorize creation, exactly per
+    # ADR-0026 §5.
     authorizer = Authorizer(session=db, user_id=principal.user_id, permission_code="role.manage")
     authorizer.check(ResourceContext(club_id=payload.club_id))
 
@@ -191,7 +188,6 @@ def create_role_assignment(
             db,
             user_id=payload.user_id,
             role_id=payload.role_id,
-            scope_type=scope_type,
             club_id=payload.club_id,
             scope_ref_id=payload.scope_ref_id,
             actor_user_id=principal.user_id,

@@ -11,12 +11,11 @@ Pure Python — no FastAPI import, no database session, no ORM import —
 mirroring app.groups.lifecycle/app.people.lifecycle/app.events.lifecycle
 exactly.
 
-This module validates the (`scope_type`, `club_id`, `scope_ref_id`)
-*combination* ADR-0026 §2 requires. It does NOT validate that
-`scope_type` itself is a canonical ADR-0013 scope, or resolve the
-`assigned_events` alias — that is
-`app.authorization.context.normalize_scope_type`'s job and must be
-called first (see app.role_assignments.service.create_role_assignment).
+This module validates the (scope, `club_id`, `scope_ref_id`)
+*combination* ADR-0026 §2 requires. Since AUTH-2A the scopes are those of
+the assigned Role's own permission grants (`RolePermissionScope`), loaded
+by app.role_assignments.service.create_role_assignment — a RoleAssignment
+no longer carries a caller-chosen scope.
 
 ## `all`'s club_id is optional, not merely "required" (TH-0089 amendment)
 
@@ -36,7 +35,7 @@ other scope keeps its original, unchanged rule.
 """
 
 import uuid
-from typing import Optional
+from typing import Collection, Optional
 
 # ADR-0026 §2 / roles-and-permissions.md §19.2 (as amended for TH-0089 /
 # Issue #99 — see module docstring): "required" means club_id must be
@@ -59,8 +58,8 @@ class RoleAssignmentLifecycleError(Exception):
 
 
 class InvalidRoleAssignmentScopeError(RoleAssignmentLifecycleError):
-    """ADR-0026 §2: the (`scope_type`, `club_id`, `scope_ref_id`)
-    combination is not one of the six canonical MVP combinations."""
+    """ADR-0026 §2: `club_id`/`scope_ref_id` do not fit the scopes of the
+    assigned Role's permission grants (AUTH-2A)."""
 
 
 class InvalidRoleAssignmentTransitionError(RoleAssignmentLifecycleError):
@@ -75,37 +74,46 @@ class InvalidRoleAssignmentTransitionError(RoleAssignmentLifecycleError):
         self.assignment_id = assignment_id
 
 
-def validate_role_assignment_scope(
+def validate_role_assignment_club(
     *,
-    scope_type: str,
+    permission_scope_types: Collection[str],
     club_id: Optional[uuid.UUID],
     scope_ref_id: Optional[uuid.UUID],
 ) -> None:
-    """Raises InvalidRoleAssignmentScopeError, and validates nothing else,
-    unless `scope_type` is already one of ADR-0013's canonical scopes
-    (the caller must have already normalized it via
-    `app.authorization.context.normalize_scope_type`) and the
-    (`club_id`, `scope_ref_id`) pairing matches ADR-0026 §2's table for
-    that scope exactly.
+    """AUTH-2A: ADR-0026 §2's `club_id` rule, applied to the scopes of the
+    assigned Role's own permission grants (`RolePermissionScope`) rather
+    than to a scope chosen for the assignment. Every scope the Role's
+    grants carry must accept `club_id`: a club-scoped grant scope
+    (`self`/`children`/`own_groups`/`own_events`) requires a Club, `none`
+    forbids one, `all` accepts either. A Role whose grants carry no scope
+    at all imposes no `club_id` rule. `scope_ref_id` is unconditionally
+    required to be NULL (legacy column, never used by an MVP scope).
+
+    Raises InvalidRoleAssignmentScopeError on any violation.
     """
-    if scope_type not in _CLUB_ID_RULE_BY_SCOPE:
-        raise InvalidRoleAssignmentScopeError(
-            f"{scope_type!r} is not a canonical RoleAssignment scope_type"
-        )
     if scope_ref_id is not None:
         raise InvalidRoleAssignmentScopeError(
             "scope_ref_id is not used by any canonical MVP RoleAssignment scope combination"
         )
-    club_id_rule = _CLUB_ID_RULE_BY_SCOPE[scope_type]
-    if club_id_rule == "required" and club_id is None:
-        raise InvalidRoleAssignmentScopeError(f"scope_type {scope_type!r} requires a club_id")
-    if club_id_rule == "forbidden" and club_id is not None:
-        raise InvalidRoleAssignmentScopeError(f"scope_type {scope_type!r} must not have a club_id")
+    for scope_type in sorted(set(permission_scope_types)):
+        if scope_type not in _CLUB_ID_RULE_BY_SCOPE:
+            raise InvalidRoleAssignmentScopeError(
+                f"{scope_type!r} is not a canonical permission scope"
+            )
+        club_id_rule = _CLUB_ID_RULE_BY_SCOPE[scope_type]
+        if club_id_rule == "required" and club_id is None:
+            raise InvalidRoleAssignmentScopeError(
+                f"the role's {scope_type!r} permission scope requires a club_id"
+            )
+        if club_id_rule == "forbidden" and club_id is not None:
+            raise InvalidRoleAssignmentScopeError(
+                f"the role's {scope_type!r} permission scope must not have a club_id"
+            )
 
 
 __all__ = [
     "RoleAssignmentLifecycleError",
     "InvalidRoleAssignmentScopeError",
     "InvalidRoleAssignmentTransitionError",
-    "validate_role_assignment_scope",
+    "validate_role_assignment_club",
 ]

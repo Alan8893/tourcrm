@@ -23,11 +23,14 @@ class RoleAssignmentCreateRequest(BaseModel):
     detect and reject a non-NULL value with the specific error ADR-0026
     §2 requires, instead of Pydantic silently dropping an undocumented
     field.
+
+    AUTH-2A: no `scope_type` — a RoleAssignment grants a Role; permission
+    scopes come from `RolePermissionScope`. A `scope_type` sent by a
+    legacy client is ignored as an undeclared field.
     """
 
     user_id: UUID
     role_id: UUID
-    scope_type: str
     club_id: Optional[UUID] = None
     scope_ref_id: Optional[UUID] = None
 
@@ -37,6 +40,9 @@ class RoleAssignmentOut(BaseModel):
     user_id: UUID
     role_id: UUID
     club_id: Optional[UUID]
+    # Legacy (AUTH-2A): the stored `user_role_assignments.scope_type`
+    # value, kept in the response for compatibility. Not the scope of any
+    # permission — see app.db.authorization.UserRoleAssignment.
     scope_type: str
     scope_ref_id: Optional[UUID]
     valid_from: datetime

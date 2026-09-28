@@ -19,7 +19,7 @@ Two call shapes share the same SQL-predicate builders below:
   EXISTS query against one already-loaded Event.
 - List-level filtering (the list endpoint): `event_visibility_filter()`
   builds one predicate per applicable UserRoleAssignment (via
-  app.authorization.service.applicable_assignments) and ORs them
+  app.authorization.service.applicable_grants) and ORs them
   together, correlated against `Event.id`/`Event.club_id` in the outer
   query — so authorization is applied *inside* the SQL query itself,
   never by fetching rows first and filtering in Python (required so an
@@ -47,7 +47,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
 from app.authorization.context import ResourceContext
-from app.authorization.service import applicable_assignments
+from app.authorization.service import applicable_grants
 from app.db.events import Event, EventGroupTarget, EventParticipation, EventStaffAssignment
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 from app.db.identity import ClubMembership, GuardianRelationship, User
@@ -230,32 +230,32 @@ def event_visibility_filter(
     permission. Never fetch-then-filter-in-Python — required so
     pagination/totals/offsets never leak an unauthorized row.
     """
-    assignments = applicable_assignments(session, user_id, permission_code)
-    if not assignments:
+    grants = applicable_grants(session, user_id, permission_code)
+    if not grants:
         return sa.false()
 
-    needs_person = any(a.scope_type in ("self", "children") for a in assignments)
+    needs_person = any(a.scope_type in ("self", "children") for a in grants)
     person_id = _person_id_for_user(session, user_id) if needs_person else None
 
     clauses: list[sa.ColumnElement[bool]] = []
-    for assignment in assignments:
+    for grant in grants:
         club_boundary: sa.ColumnElement[bool] = (
-            sa.true() if assignment.club_id is None else Event.club_id == assignment.club_id
+            sa.true() if grant.club_id is None else Event.club_id == grant.club_id
         )
-        if assignment.scope_type == "all":
+        if grant.scope_type == "all":
             scope_predicate: sa.ColumnElement[bool] = sa.true()
-        elif assignment.scope_type == "own_events":
+        elif grant.scope_type == "own_events":
             scope_predicate = _own_event_condition(Event.id, user_id)
-        elif assignment.scope_type == "own_groups":
+        elif grant.scope_type == "own_groups":
             scope_predicate = _own_group_condition(Event.id, Event.club_id, user_id)
-        elif assignment.scope_type == "self":
+        elif grant.scope_type == "self":
             scope_predicate = _self_condition(Event.id, person_id)
-        elif assignment.scope_type == "children":
+        elif grant.scope_type == "children":
             scope_predicate = _child_condition(Event.id, Event.club_id, person_id)
-        elif assignment.scope_type == "none":
+        elif grant.scope_type == "none":
             scope_predicate = sa.false()
         else:  # pragma: no cover - unreachable, DB CHECK constraint guards this
-            raise ValueError(f"Unhandled scope_type: {assignment.scope_type!r}")
+            raise ValueError(f"Unhandled scope_type: {grant.scope_type!r}")
         clauses.append(sa.and_(club_boundary, scope_predicate))
 
     return sa.or_(*clauses)

@@ -40,7 +40,7 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
-from app.authorization.service import applicable_assignments
+from app.authorization.service import applicable_grants
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 from app.db.identity import ClubMembership, GuardianRelationship, User
 
@@ -185,8 +185,8 @@ def build_group_schedule_access(
         ).scalar()
     )
 
-    assignments = applicable_assignments(session, requester_user_id, permission_code)
-    matching = [a for a in assignments if a.club_id is None or a.club_id == group.club_id]
+    grants = applicable_grants(session, requester_user_id, permission_code)
+    matching = [a for a in grants if a.club_id is None or a.club_id == group.club_id]
     has_all = any(a.scope_type == "all" for a in matching)
     has_own_groups = any(a.scope_type == "own_groups" for a in matching)
     has_self = any(a.scope_type == "self" for a in matching)

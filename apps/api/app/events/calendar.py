@@ -76,7 +76,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Session, aliased
 
-from app.authorization.service import applicable_assignments
+from app.authorization.service import applicable_grants
 from app.db.event_recurrence import EventOccurrence, EventSeries
 from app.db.events import Event, EventGroupTarget, EventStaffAssignment
 from app.events.authorization import event_visibility_filter
@@ -135,15 +135,15 @@ def _extend_recurring_materialization(
     app.events.materialization.ensure_materialized's own contract) for
     every active, terminal EventSeries the requester could possibly see.
 
-    Bounded to Clubs the requester has a `scope_type="all"` assignment for
+    Bounded to Clubs the requester has an `all`-scope grant of
     `permission_code` — see the module docstring's "residual, narrower
     limitation" note: this mirrors the existing, unchanged, all-scope-only
     Series-resource access scoping, so extending materialization for any
     other Club would be pure wasted work, never a security boundary
     (materialization itself returns no data and leaks nothing).
     """
-    assignments = applicable_assignments(session, user_id, permission_code)
-    all_scope_club_ids = [a.club_id for a in assignments if a.scope_type == "all"]
+    grants = applicable_grants(session, user_id, permission_code)
+    all_scope_club_ids = [a.club_id for a in grants if a.scope_type == "all"]
     if not all_scope_club_ids:
         return
 

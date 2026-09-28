@@ -9,13 +9,15 @@ docs/05-api/auth-and-authorization.md §11/§13.
 `can()` is the reusable decision function: given a real database session, an
 authenticated user id, a canonical permission code, and an explicit
 ResourceContext already resolved by domain policy, it decides allow/deny by
-querying the actual `UserRoleAssignment`/`RolePermission` data — never from
-an assumed/hardcoded role-to-permission mapping (Issue #19 deliberately
-seeded no such grants; Issue #29 must not invent any either).
+querying the actual `UserRoleAssignment`/`RolePermission`/
+`RolePermissionScope` data — never from an assumed/hardcoded
+role-to-permission mapping.
 
-A user may hold several roles/assignments; permissions are additive (any
-one applicable, matching assignment is enough) — no explicit deny exists
-(roles-and-permissions.md §13).
+AUTH-2A: scope is a property of each permission grant
+(`UserRoleAssignment -> RolePermission -> RolePermissionScope`), never of
+the assignment. A user may hold several roles; permissions are additive
+(any one applicable, matching grant scope is enough) — no explicit deny
+exists (roles-and-permissions.md §13).
 """
 
 import uuid
@@ -26,7 +28,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.authorization.context import ResourceContext
-from app.db.authorization import Permission, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 
 
 def club_boundary_matches(
@@ -72,12 +79,35 @@ def scope_matches(scope_type: str, context: ResourceContext) -> bool:
     raise ValueError(f"Unhandled scope_type: {scope_type!r}")
 
 
-def applicable_assignments(
+@dataclass(frozen=True)
+class PermissionGrant:
+    """One scope through which a permission reaches a user (AUTH-2A):
+    a currently-effective `assignment` whose Role holds the permission,
+    and one `scope_type` of *that* permission's own RolePermission grant
+    (`UserRoleAssignment -> RolePermission -> RolePermissionScope`).
+
+    `club_id` is the assignment's Club boundary; `scope_type` never comes
+    from the assignment (its legacy column is not an authorization input).
+    """
+
+    assignment: UserRoleAssignment
+    scope_type: str
+
+    @property
+    def club_id(self) -> uuid.UUID | None:
+        return self.assignment.club_id
+
+
+def applicable_grants(
     session: Session, user_id: uuid.UUID, permission_code: str
-) -> list[UserRoleAssignment]:
-    """All of the user's *currently effective* UserRoleAssignment rows that
-    grant `permission_code` (via the assignment's Role -> RolePermission ->
-    Permission chain).
+) -> list[PermissionGrant]:
+    """Every (currently-effective assignment, scope) pair through which
+    the user holds `permission_code`: the assignment's Role ->
+    RolePermission for exactly this Permission -> each of that grant's
+    RolePermissionScope rows. A grant with several scopes yields one
+    PermissionGrant per scope; scopes of any *other* permission of the
+    same role never appear here (AUTH-2A). A grant without scope rows
+    yields nothing (fail closed).
 
     ADR-0026 §1 / Issue #74: "Effective authorization considers only
     assignments valid at the authorization-check time" — a revoked
@@ -92,7 +122,7 @@ def applicable_assignments(
     app.people.guardian_authorization).
 
     Public because domain-level query filtering (e.g. Event list scope
-    filtering, Issue #40) needs the identical query to build per-assignment
+    filtering, Issue #40) needs the identical query to build per-grant
     SQL predicates, not just the aggregate allow/deny `can()` returns.
 
     Deliberately does NOT check ClubMembership status. ADR-0027 (RoleAssignment
@@ -107,17 +137,22 @@ def applicable_assignments(
     """
     now = sa.func.now()
     stmt = (
-        select(UserRoleAssignment)
+        select(UserRoleAssignment, RolePermissionScope.scope_type)
         .join(RolePermission, RolePermission.role_id == UserRoleAssignment.role_id)
         .join(Permission, Permission.id == RolePermission.permission_id)
+        .join(RolePermissionScope, RolePermissionScope.role_permission_id == RolePermission.id)
         .where(
             UserRoleAssignment.user_id == user_id,
             Permission.code == permission_code,
             UserRoleAssignment.valid_from <= now,
             sa.or_(UserRoleAssignment.valid_to.is_(None), now < UserRoleAssignment.valid_to),
         )
+        .order_by(UserRoleAssignment.id, RolePermissionScope.scope_type)
     )
-    return list(session.execute(stmt).scalars().all())
+    return [
+        PermissionGrant(assignment=assignment, scope_type=scope_type)
+        for assignment, scope_type in session.execute(stmt).all()
+    ]
 
 
 def can(
@@ -126,16 +161,15 @@ def can(
     permission_code: str,
     context: ResourceContext | None = None,
 ) -> bool:
-    """Allow iff at least one of the user's UserRoleAssignments grants
-    `permission_code` (via its Role's RolePermission rows) and that
-    assignment's club boundary and scope both match `context`.
+    """Allow iff at least one PermissionGrant of `permission_code` (see
+    `applicable_grants`) matches `context` on both its assignment's club
+    boundary and its own permission scope.
     """
     resolved_context = context if context is not None else ResourceContext()
-    assignments = applicable_assignments(session, user_id, permission_code)
     return any(
-        club_boundary_matches(assignment.club_id, resolved_context.club_id)
-        and scope_matches(assignment.scope_type, resolved_context)
-        for assignment in assignments
+        club_boundary_matches(grant.club_id, resolved_context.club_id)
+        and scope_matches(grant.scope_type, resolved_context)
+        for grant in applicable_grants(session, user_id, permission_code)
     )
 
 

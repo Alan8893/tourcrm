@@ -16,11 +16,13 @@ from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit_event
 from app.authentication.passwords import hash_password, validate_password_policy
-from app.db.authorization import Role, UserRoleAssignment
+from app.db.authorization import LEGACY_ASSIGNMENT_SCOPE_TYPE, Role, UserRoleAssignment
 from app.db.identity import Club, Person, User, normalize_login_identifier
-from app.role_assignments.lifecycle import validate_role_assignment_scope
 
 ADMIN_ROLE_CODE = "admin"
+# The scope of every `admin` permission grant (`RolePermissionScope`,
+# AUTH-2A) — displayed by the bootstrap CLI. Not written to the
+# assignment: a RoleAssignment carries no authorization scope.
 GLOBAL_ADMIN_SCOPE_TYPE = "all"
 
 BOOTSTRAP_ADMIN_FIRST_NAME = "Admin"
@@ -66,14 +68,16 @@ class BootstrapResult:
 
 
 def global_administrator_exists(session: Session) -> bool:
-    """Return whether an effective canonical bootstrap administrator exists."""
+    """Return whether an effective canonical administrator exists: any
+    currently-effective assignment of the `admin` role. AUTH-2A: the
+    assignment's legacy `scope_type` is not consulted — an `admin`
+    assignment's reach comes from the role's own permission scopes."""
     now = sa.func.statement_timestamp()
     stmt = (
         sa.select(UserRoleAssignment.id)
         .join(Role, Role.id == UserRoleAssignment.role_id)
         .where(
             Role.code == ADMIN_ROLE_CODE,
-            UserRoleAssignment.scope_type == GLOBAL_ADMIN_SCOPE_TYPE,
             UserRoleAssignment.valid_from <= now,
             sa.or_(UserRoleAssignment.valid_to.is_(None), now < UserRoleAssignment.valid_to),
         )
@@ -143,10 +147,6 @@ def bootstrap_initial_administrator(
         ).scalar_one_or_none()
         if existing_user is not None:
             raise EmailAlreadyRegisteredError(f"A User already exists for {normalized!r}")
-
-        validate_role_assignment_scope(
-            scope_type=GLOBAL_ADMIN_SCOPE_TYPE, club_id=None, scope_ref_id=None
-        )
     except Exception:
         session.rollback()
         raise
@@ -177,7 +177,7 @@ def bootstrap_initial_administrator(
             user_id=user.id,
             role_id=admin_role.id,
             club_id=club.id,
-            scope_type=GLOBAL_ADMIN_SCOPE_TYPE,
+            scope_type=LEGACY_ASSIGNMENT_SCOPE_TYPE,
             scope_ref_id=None,
             valid_from=_utcnow(),
         )

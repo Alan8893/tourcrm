@@ -56,7 +56,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
 from app.authorization.context import ResourceContext
-from app.authorization.service import applicable_assignments
+from app.authorization.service import applicable_grants
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 
 ARCHIVED_GROUP_STATUS = "archived"
@@ -146,22 +146,22 @@ def group_visibility_filter(
     active Groups — archived Groups are listed through `all` alone (see
     the module docstring).
     """
-    assignments = applicable_assignments(session, user_id, permission_code)
-    if not assignments:
+    grants = applicable_grants(session, user_id, permission_code)
+    if not grants:
         return sa.false()
 
     clauses: list[sa.ColumnElement[bool]] = []
-    for assignment in assignments:
+    for grant in grants:
         club_boundary: sa.ColumnElement[bool] = (
-            sa.true() if assignment.club_id is None else Group.club_id == assignment.club_id
+            sa.true() if grant.club_id is None else Group.club_id == grant.club_id
         )
-        if assignment.scope_type == "all":
+        if grant.scope_type == "all":
             scope_predicate: sa.ColumnElement[bool] = sa.true()
-        elif assignment.scope_type == "own_groups":
+        elif grant.scope_type == "own_groups":
             scope_predicate = sa.and_(
                 Group.status != ARCHIVED_GROUP_STATUS, _own_group_condition(Group.id, user_id)
             )
-        elif assignment.scope_type == "none":
+        elif grant.scope_type == "none":
             scope_predicate = sa.false()
         else:
             # self/children/own_events: not applicable to Group.
