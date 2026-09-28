@@ -240,14 +240,38 @@ describe("AppShell role-aware navigation (TH-0120 / Issue #181, UNION)", () => {
     ]);
   });
 
-  it("hiding an item is visibility only: a direct visit to a hidden route still renders the route", async () => {
-    // No frontend route guard is introduced; backend authorization stays
-    // authoritative for whatever the page then requests.
+  it("the shell itself does not gate routes: hidden items are removed from navigation only", async () => {
+    // Section gating on direct visits lives in SectionGuard on the app
+    // routes (Issue #212, covered in App.test.tsx); backend authorization
+    // stays authoritative for whatever a page then requests.
     stubFetch([{ match: "/auth/me", response: meResponse(["guardian"]) }]);
     renderShell("/reports");
 
     expect(await screen.findByText("Protected page content")).toBeInTheDocument();
     const nav = screen.getByRole("navigation", { name: "Основная навигация" });
     expect(within(nav).queryByRole("link", { name: "Отчёты" })).not.toBeInTheDocument();
+  });
+});
+
+describe("AppShell role-aware navigation — Reports visibility (Issue #212)", () => {
+  it.each([
+    { roles: ["admin"], visible: true },
+    { roles: ["instructor"], visible: false },
+    { roles: ["member"], visible: false },
+    { roles: ["guardian"], visible: false },
+    { roles: ["instructor", "member", "guardian"], visible: false },
+    { roles: ["member", "admin"], visible: true },
+  ])("roles $roles → Отчёты visible: $visible", async ({ roles, visible }) => {
+    stubFetch([{ match: "/auth/me", response: meResponse(roles) }]);
+    renderShell("/");
+
+    const nav = await screen.findByRole("navigation", { name: "Основная навигация" });
+    const reports = within(nav).queryByRole("link", { name: "Отчёты" });
+    if (visible) expect(reports).toBeInTheDocument();
+    else expect(reports).not.toBeInTheDocument();
+    // Achievements stays visible for every role (feature not implemented yet).
+    expect(within(nav).getByRole("link", { name: "Достижения" })).toBeInTheDocument();
+    // No active-role switcher is introduced.
+    expect(screen.queryByRole("combobox", { name: /роль/i })).not.toBeInTheDocument();
   });
 });

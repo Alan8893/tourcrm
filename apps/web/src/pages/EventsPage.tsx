@@ -61,7 +61,7 @@ import {
   formatTime,
   isSameDay,
   monthLabel,
-  monthRange,
+  monthGridRange,
   parseDateParam,
   startOfDay,
   toDatetimeLocalValue,
@@ -174,7 +174,10 @@ export function EventsPage() {
 
   const groupsQuery = useGroups({ status: "active" });
 
-  const range = useMemo(() => monthRange(selectedDate), [selectedDate]);
+  // The whole visible grid, not just the month: the first displayed week's
+  // previous-month dates (and trailing next-month dates) must show their
+  // events too (IA §8.0 first-week visibility, Issue #212).
+  const range = useMemo(() => monthGridRange(selectedDate), [selectedDate]);
   const calendarQuery = useCalendarRange({
     from: range.from,
     to: range.to,

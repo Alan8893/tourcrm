@@ -75,3 +75,13 @@ export function visibleNavigationItems(
   }
   return NAVIGATION_ITEMS.filter((item) => allowed.has(item.id));
 }
+
+/** Whether the navigation section `id` is visible for these role
+ * assignments (same UNION as `visibleNavigationItems`). UI visibility
+ * only — never a substitute for backend authorization. */
+export function isNavigationItemVisible(
+  roleAssignments: readonly Pick<RoleAssignmentSummary, "role_code">[],
+  id: NavigationItemId,
+): boolean {
+  return visibleNavigationItems(roleAssignments).some((item) => item.id === id);
+}
