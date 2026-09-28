@@ -28,6 +28,7 @@ When documents conflict, do not guess. Record the conflict and resolve it explic
 | Roles/permissions | `02-requirements/roles-and-permissions.md` | Authorization matrix |
 | Use cases | `02-requirements/use-cases.md` | User scenarios |
 | Scope | `02-requirements/scope.md` | Functional scope |
+| Role → permission → scope matrix | `02-requirements/role-permission-scope-matrix.md` | Current canonical role/permission/scope policy |
 
 ## 4. Architecture
 
@@ -51,6 +52,8 @@ Canonical ADR location: `03-architecture/adr/`.
 ADR directory contains accepted architecture decisions and the explicit open-decision register.
 
 Before changing a decision, check for an existing ADR. Superseded decisions must remain historically visible and be replaced by a new ADR rather than silently edited into a different decision.
+
+**Authorization scope architecture:** `03-architecture/adr/ADR-0041-permission-level-scopes.md` is the canonical decision for permission-level scopes introduced by AUTH-2A. The related reconciliation record is `09-governance/auth-2a-documentation-reconciliation.md`.
 
 ## 6. Domain modules
 
