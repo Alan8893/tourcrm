@@ -192,7 +192,8 @@ def _upload_document_via_api(
     content: bytes = b"cert-bytes",
     document_type: str = "medical_certificate",
 ) -> str:
-    manage_actor_id = _make_actor(club_id, permission_codes=["document.manage"])
+    # Person Document API (people-api.md §32): person.update + document.manage.
+    manage_actor_id = _make_actor(club_id, permission_codes=["person.update", "document.manage"])
     _authenticate_as(manage_actor_id)
     response = client.post(
         f"/api/v1/persons/{person_id}/documents",
@@ -490,7 +491,7 @@ def test_medical_certificate_never_appears_in_ordinary_person_document_list(
     club_id, event_id, person_id = _setup_event_with_participant()
     _upload_document_via_api(client, club_id, person_id, content=b"secret-medical-content")
 
-    read_actor_id = _make_actor(club_id, permission_codes=["document.read"])
+    read_actor_id = _make_actor(club_id, permission_codes=["person.read", "document.read"])
     _authenticate_as(read_actor_id)
     list_response = client.get(f"/api/v1/persons/{person_id}/documents")
 

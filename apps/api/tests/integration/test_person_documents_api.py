@@ -130,8 +130,17 @@ def _setup_target_person() -> tuple[uuid.UUID, uuid.UUID]:
         return club.id, person.id
 
 
+# people-api.md §32 (PD-1 = B): a Person permission AND a Document
+# permission are both required.
+READ = ("person.read", "document.read")
+MANAGE = ("person.update", "document.manage")
+
+
 def _make_actor(
-    club_id: uuid.UUID, *, permission_code: str | None, scope_type: str = "all"
+    club_id: uuid.UUID,
+    *,
+    permission_code: str | tuple[str, ...] | None,
+    scope_type: str = "all",
 ) -> uuid.UUID:
     with session_scope() as session:
         actor_person = _make_person()
@@ -139,8 +148,9 @@ def _make_actor(
         session.add_all([actor_person, actor_user])
         session.commit()
         actor_user_id = actor_user.id
-    if permission_code is not None:
-        _grant_permission(actor_user_id, permission_code, scope_type=scope_type, club_id=club_id)
+    codes = (permission_code,) if isinstance(permission_code, str) else permission_code or ()
+    for code in codes:
+        _grant_permission(actor_user_id, code, scope_type=scope_type, club_id=club_id)
     return actor_user_id
 
 
@@ -176,13 +186,16 @@ def test_create_document_requires_document_manage_not_person_read(client: TestCl
 
     response = _upload(client, person_id)
 
-    assert response.status_code == 404, response.text
+    # PD-2 = A: a missing required permission is 403 before any existence
+    # or scope check (people-api.md §32).
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
 
 
 @requires_postgres
 def test_create_document_succeeds_with_document_manage(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    actor_id = _make_actor(club_id, permission_code="document.manage")
+    actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(actor_id)
 
     response = _upload(client, person_id)
@@ -202,7 +215,7 @@ def test_create_document_succeeds_with_document_manage(client: TestClient) -> No
 @requires_postgres
 def test_create_document_persists_actual_uploaded_bytes(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    actor_id = _make_actor(club_id, permission_code="document.manage")
+    actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(actor_id)
     content = b"the real uploaded certificate content"
 
@@ -210,7 +223,7 @@ def test_create_document_persists_actual_uploaded_bytes(client: TestClient) -> N
     assert create_response.status_code == 201, create_response.text
     document_id = create_response.json()["id"]
 
-    read_actor_id = _make_actor(club_id, permission_code="document.read")
+    read_actor_id = _make_actor(club_id, permission_code=READ)
     _authenticate_as(read_actor_id)
     download_response = client.get(
         f"/api/v1/persons/{person_id}/documents/{document_id}/download"
@@ -222,7 +235,7 @@ def test_create_document_persists_actual_uploaded_bytes(client: TestClient) -> N
 @requires_postgres
 def test_create_document_missing_filename_returns_422(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    actor_id = _make_actor(club_id, permission_code="document.manage")
+    actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(actor_id)
 
     response = client.post(
@@ -238,7 +251,7 @@ def test_create_document_missing_filename_returns_422(client: TestClient) -> Non
 @requires_postgres
 def test_create_document_nonexistent_person_returns_404(client: TestClient) -> None:
     club_id, _person_id = _setup_target_person()
-    actor_id = _make_actor(club_id, permission_code="document.manage")
+    actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(actor_id)
 
     response = _upload(client, uuid.uuid4())
@@ -252,7 +265,7 @@ def test_create_document_client_cannot_supply_storage_key(client: TestClient) ->
     that name is simply ignored, never used to influence where the
     content is actually stored."""
     club_id, person_id = _setup_target_person()
-    actor_id = _make_actor(club_id, permission_code="document.manage")
+    actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(actor_id)
 
     response = _upload(
@@ -276,7 +289,10 @@ def test_list_documents_requires_document_read_not_person_read(client: TestClien
 
     response = client.get(f"/api/v1/persons/{person_id}/documents")
 
-    assert response.status_code == 404, response.text
+    # PD-2 = A: a missing required permission is 403 before any existence
+    # or scope check (people-api.md §32).
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
 
 
 @requires_postgres
@@ -284,7 +300,7 @@ def test_list_documents_returns_current_version_and_excludes_historical(
     client: TestClient,
 ) -> None:
     club_id, person_id = _setup_target_person()
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
 
     create_response = _upload(client, person_id, content=b"version-one")
@@ -319,7 +335,7 @@ def test_list_documents_returns_current_version_and_excludes_historical(
         session.commit()
         v2_id = v2.id
 
-    read_actor_id = _make_actor(club_id, permission_code="document.read")
+    read_actor_id = _make_actor(club_id, permission_code=READ)
     _authenticate_as(read_actor_id)
     list_response = client.get(f"/api/v1/persons/{person_id}/documents")
 
@@ -335,11 +351,11 @@ def test_list_documents_returns_current_version_and_excludes_historical(
 @requires_postgres
 def test_list_documents_response_never_contains_storage_internals(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    actor_id = _make_actor(club_id, permission_code="document.manage")
+    actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(actor_id)
     _upload(client, person_id)
 
-    read_actor_id = _make_actor(club_id, permission_code="document.read")
+    read_actor_id = _make_actor(club_id, permission_code=READ)
     _authenticate_as(read_actor_id)
     response = client.get(f"/api/v1/persons/{person_id}/documents")
 
@@ -354,12 +370,12 @@ def test_list_documents_response_never_contains_storage_internals(client: TestCl
 @requires_postgres
 def test_get_document_detail_returns_expected_metadata(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    actor_id = _make_actor(club_id, permission_code="document.manage")
+    actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(actor_id)
     create_response = _upload(client, person_id)
     document_id = create_response.json()["id"]
 
-    read_actor_id = _make_actor(club_id, permission_code="document.read")
+    read_actor_id = _make_actor(club_id, permission_code=READ)
     _authenticate_as(read_actor_id)
     response = client.get(f"/api/v1/persons/{person_id}/documents/{document_id}")
 
@@ -373,7 +389,7 @@ def test_get_document_detail_returns_expected_metadata(client: TestClient) -> No
 @requires_postgres
 def test_get_document_detail_requires_document_read_not_person_read(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     document_id = _upload(client, person_id).json()["id"]
 
@@ -381,13 +397,16 @@ def test_get_document_detail_requires_document_read_not_person_read(client: Test
     _authenticate_as(read_only_person_actor)
     response = client.get(f"/api/v1/persons/{person_id}/documents/{document_id}")
 
-    assert response.status_code == 404, response.text
+    # PD-2 = A: a missing required permission is 403 before any existence
+    # or scope check (people-api.md §32).
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
 
 
 @requires_postgres
 def test_get_document_detail_nonexistent_document_returns_404(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    actor_id = _make_actor(club_id, permission_code="document.read")
+    actor_id = _make_actor(club_id, permission_code=READ)
     _authenticate_as(actor_id)
 
     response = client.get(f"/api/v1/persons/{person_id}/documents/{uuid.uuid4()}")
@@ -402,14 +421,14 @@ def test_get_document_detail_nonexistent_document_returns_404(client: TestClient
 @requires_postgres
 def test_download_document_returns_exact_binary_and_mime_type(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    actor_id = _make_actor(club_id, permission_code="document.manage")
+    actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(actor_id)
     content = b"binary content for download round trip"
     document_id = _upload(
         client, person_id, content=content, content_type="application/pdf"
     ).json()["id"]
 
-    read_actor_id = _make_actor(club_id, permission_code="document.read")
+    read_actor_id = _make_actor(club_id, permission_code=READ)
     _authenticate_as(read_actor_id)
     response = client.get(f"/api/v1/persons/{person_id}/documents/{document_id}/download")
 
@@ -421,7 +440,7 @@ def test_download_document_returns_exact_binary_and_mime_type(client: TestClient
 @requires_postgres
 def test_download_document_requires_document_read_not_person_read(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     document_id = _upload(client, person_id).json()["id"]
 
@@ -429,13 +448,16 @@ def test_download_document_requires_document_read_not_person_read(client: TestCl
     _authenticate_as(read_only_person_actor)
     response = client.get(f"/api/v1/persons/{person_id}/documents/{document_id}/download")
 
-    assert response.status_code == 404, response.text
+    # PD-2 = A: a missing required permission is 403 before any existence
+    # or scope check (people-api.md §32).
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
 
 
 @requires_postgres
 def test_download_document_nonexistent_returns_404(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    actor_id = _make_actor(club_id, permission_code="document.read")
+    actor_id = _make_actor(club_id, permission_code=READ)
     _authenticate_as(actor_id)
 
     response = client.get(
@@ -450,11 +472,11 @@ def test_download_document_response_never_contains_storage_key_or_path(
     client: TestClient, tmp_path
 ) -> None:
     club_id, person_id = _setup_target_person()
-    actor_id = _make_actor(club_id, permission_code="document.manage")
+    actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(actor_id)
     document_id = _upload(client, person_id).json()["id"]
 
-    read_actor_id = _make_actor(club_id, permission_code="document.read")
+    read_actor_id = _make_actor(club_id, permission_code=READ)
     _authenticate_as(read_actor_id)
     response = client.get(f"/api/v1/persons/{person_id}/documents/{document_id}/download")
 
@@ -470,7 +492,7 @@ def test_download_document_response_never_contains_storage_key_or_path(
 @requires_postgres
 def test_download_document_sanitizes_a_malicious_filename(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    actor_id = _make_actor(club_id, permission_code="document.manage")
+    actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(actor_id)
     malicious_name = 'evil".pdf\r\nSet-Cookie: hijacked=1\r\nX-Injected: yes'
 
@@ -478,7 +500,7 @@ def test_download_document_sanitizes_a_malicious_filename(client: TestClient) ->
     assert create_response.status_code == 201, create_response.text
     document_id = create_response.json()["id"]
 
-    read_actor_id = _make_actor(club_id, permission_code="document.read")
+    read_actor_id = _make_actor(club_id, permission_code=READ)
     _authenticate_as(read_actor_id)
     response = client.get(f"/api/v1/persons/{person_id}/documents/{document_id}/download")
 
@@ -493,11 +515,11 @@ def test_download_document_sanitizes_a_malicious_filename(client: TestClient) ->
 @requires_postgres
 def test_download_document_records_document_downloaded_audit_event(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    actor_id = _make_actor(club_id, permission_code="document.manage")
+    actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(actor_id)
     document_id = _upload(client, person_id).json()["id"]
 
-    read_actor_id = _make_actor(club_id, permission_code="document.read")
+    read_actor_id = _make_actor(club_id, permission_code=READ)
     _authenticate_as(read_actor_id)
     response = client.get(f"/api/v1/persons/{person_id}/documents/{document_id}/download")
     assert response.status_code == 200, response.text

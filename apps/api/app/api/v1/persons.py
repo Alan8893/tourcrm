@@ -798,18 +798,53 @@ def create_person_guardian_relationship(
 # --- Participant Documents (TH-0117.3 / Issue #160, ADR-0040) --------------
 #
 # Nested-only in this slice (people-api.md §32): no flat `/documents/{id}`
-# resource exists yet, unlike GuardianRelationship. Authorization reuses
-# this module's own `_get_authorized_person_or_404` — identical existence-
-# hiding for a nonexistent Person and one the caller cannot act on — but
-# parameterized by `document.manage`/`document.read` instead of
-# `person.read`, so ordinary Person visibility is never sufficient on its
-# own (ADR-0040 §6). `Document` has no authorization scope beyond its
-# owning Person (ADR-0040 §2: explicit, non-polymorphic `person_id`
-# association, no other subject), so this one per-Person check is the
-# complete authorization boundary for all four endpoints below.
+# resource exists yet, unlike GuardianRelationship. Every endpoint below
+# goes through `_get_person_for_document_or_404` (PO decisions PD-1 = B,
+# PD-2 = A): a Person permission AND a Document permission are both
+# required — `person.read` + `document.read` to read, `person.update` +
+# `document.manage` to mutate — and neither is ever sufficient on its own
+# (ADR-0040 §6). `Document` has no authorization scope beyond its owning
+# Person (ADR-0040 §2: explicit, non-polymorphic `person_id` association,
+# no other subject), so this one per-Person check is the complete
+# authorization boundary for all seven endpoints below.
 
 _DOCUMENT_NOT_FOUND_CODE = "document_not_found"
 _DOCUMENT_NOT_FOUND_DETAIL = "Document not found"
+
+_DOCUMENT_READ_PERMISSIONS = ("person.read", "document.read")
+_DOCUMENT_MANAGE_PERMISSIONS = ("person.update", "document.manage")
+
+
+def _get_person_for_document_or_404(
+    db: Session, *, person_id: uuid.UUID, user_id: uuid.UUID, permission_codes: tuple[str, str]
+) -> Person:
+    """people-api.md §32 authorization for the Participant Document API.
+
+    `permission_codes` is `_DOCUMENT_READ_PERMISSIONS` or
+    `_DOCUMENT_MANAGE_PERMISSIONS` — (Person permission, Document
+    permission). Order (authorization before existence, PD-2 = A):
+
+    1. The caller must hold *some* currently-effective grant for each of
+       the two permissions, else the generic 403 — before `person_id` is
+       looked up, so the answer never depends on whether it exists (same
+       gate shape as `_require_permission_grant`).
+    2. A nonexistent Person -> 404.
+    3. The Person must be within the scope of BOTH permissions (the
+       intersection, PD-1 = B — one permission's scope never widens the
+       other's), else the same 404 as "does not exist".
+    """
+    for permission_code in permission_codes:
+        _require_permission_grant(db, user_id=user_id, permission_code=permission_code)
+
+    person = db.get(Person, person_id)
+    if person is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+    for permission_code in permission_codes:
+        if not is_person_visible(
+            db, person_id=person.id, user_id=user_id, permission_code=permission_code
+        ):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
+    return person
 # CR/LF (header injection), control characters, and the characters that
 # would break a quoted-string (Issue #160 §10) — never let a client-
 # supplied original_name flow unsanitized into a response header.
@@ -861,13 +896,16 @@ def create_person_document(
     _csrf: None = Depends(require_csrf_token),
 ) -> DocumentOut:
     """Create the first version of a new participant Document
-    (people-api.md §32) — `document.manage`; `person.read`/`document.read`
-    alone are never sufficient (ADR-0040 §6). `storage_key` is always
+    (people-api.md §32) — `person.update` + `document.manage`; neither alone
+    is sufficient (ADR-0040 §6). `storage_key` is always
     generated server-side (`app.documents.service.create_document`) — the
     client supplies only the file content and its own metadata.
     """
-    _get_authorized_person_or_404(
-        db, person_id=person_id, user_id=principal.user_id, permission_code="document.manage"
+    _get_person_for_document_or_404(
+        db,
+        person_id=person_id,
+        user_id=principal.user_id,
+        permission_codes=_DOCUMENT_MANAGE_PERMISSIONS,
     )
 
     original_name = (file.filename or "").strip()
@@ -910,9 +948,13 @@ def list_person_documents(
     principal: CurrentPrincipal = Depends(require_authenticated_principal),
     db: Session = Depends(get_db),
 ) -> CollectionResponse[DocumentOut]:
-    """Current versions only (people-api.md §32) — `document.read`."""
-    _get_authorized_person_or_404(
-        db, person_id=person_id, user_id=principal.user_id, permission_code="document.read"
+    """Current versions only (people-api.md §32) — `person.read` +
+    `document.read`."""
+    _get_person_for_document_or_404(
+        db,
+        person_id=person_id,
+        user_id=principal.user_id,
+        permission_codes=_DOCUMENT_READ_PERMISSIONS,
     )
 
     rows, total = list_current_documents_for_person(
@@ -933,9 +975,12 @@ def get_person_document(
     db: Session = Depends(get_db),
 ) -> DocumentOut:
     """Metadata for one version, current or historical (people-api.md
-    §32) — `document.read`."""
-    _get_authorized_person_or_404(
-        db, person_id=person_id, user_id=principal.user_id, permission_code="document.read"
+    §32) — `person.read` + `document.read`."""
+    _get_person_for_document_or_404(
+        db,
+        person_id=person_id,
+        user_id=principal.user_id,
+        permission_codes=_DOCUMENT_READ_PERMISSIONS,
     )
 
     document = get_document_for_person(db, person_id=person_id, document_id=document_id)
@@ -958,8 +1003,8 @@ def update_person_document_metadata(
 ) -> DocumentOut:
     """Correct non-file metadata (`issued_at`/`expires_at`) of
     `document_id`'s current version in place (people-api.md §32) —
-    `document.manage`; `person.read`/`document.read` alone are never
-    sufficient (ADR-0040 §6). No file upload, no new version, no new
+    `person.update` + `document.manage`; neither alone is sufficient
+    (ADR-0040 §6). No file upload, no new version, no new
     File, and `FileStorage` is never called (Issue #170 §mutation) —
     `document_type`/`person_id`/`document_group_id`/`version_number`/
     `status`/`file_id` are never accepted or changed by this endpoint.
@@ -974,8 +1019,11 @@ def update_person_document_metadata(
     receives the same existence-hiding 404 as `get_person_document`/
     `replace_person_document`/`revoke_person_document`.
     """
-    _get_authorized_person_or_404(
-        db, person_id=person_id, user_id=principal.user_id, permission_code="document.manage"
+    _get_person_for_document_or_404(
+        db,
+        person_id=person_id,
+        user_id=principal.user_id,
+        permission_codes=_DOCUMENT_MANAGE_PERMISSIONS,
     )
 
     document = get_document_for_person(db, person_id=person_id, document_id=document_id)
@@ -1021,14 +1069,17 @@ def download_person_document(
     storage: FileStorage = Depends(get_file_storage),
 ) -> Response:
     """Stream a Document's binary content (people-api.md §32) —
-    `document.read`. `storage_key`/filesystem path never appear in this or
+    `person.read` + `document.read`. `storage_key`/filesystem path never appear in this or
     any response (ADR-0040 §3): content is read exclusively through the
     `FileStorage` port, never direct filesystem access. Audited as
     `document.downloaded` for every document type, not only
     `medical_certificate` (ADR-0040 §7).
     """
-    _get_authorized_person_or_404(
-        db, person_id=person_id, user_id=principal.user_id, permission_code="document.read"
+    _get_person_for_document_or_404(
+        db,
+        person_id=person_id,
+        user_id=principal.user_id,
+        permission_codes=_DOCUMENT_READ_PERMISSIONS,
     )
 
     document = get_document_for_person(db, person_id=person_id, document_id=document_id)
@@ -1073,8 +1124,8 @@ def replace_person_document(
     _csrf: None = Depends(require_csrf_token),
 ) -> DocumentOut:
     """Create a new version of `document_id`'s logical document
-    (people-api.md §32) — `document.manage`; `person.read`/`document.read`
-    alone are never sufficient (ADR-0040 §6). `document_type` is never
+    (people-api.md §32) — `person.update` + `document.manage`; neither alone
+    is sufficient (ADR-0040 §6). `document_type` is never
     accepted from the client: the new version always copies it from the
     version being replaced (Issue #166 §4). `storage_key` is always
     generated server-side — the old `File`/`Document` are never mutated.
@@ -1085,8 +1136,11 @@ def replace_person_document(
     `download_person_document` (Issue #166 §3) — never a distinct error
     that would disclose which case applied.
     """
-    _get_authorized_person_or_404(
-        db, person_id=person_id, user_id=principal.user_id, permission_code="document.manage"
+    _get_person_for_document_or_404(
+        db,
+        person_id=person_id,
+        user_id=principal.user_id,
+        permission_codes=_DOCUMENT_MANAGE_PERMISSIONS,
     )
 
     document = get_document_for_person(db, person_id=person_id, document_id=document_id)
@@ -1149,8 +1203,8 @@ def revoke_person_document(
     _csrf: None = Depends(require_csrf_token),
 ) -> DocumentOut:
     """Revoke `document_id`'s current version in place (people-api.md
-    §32) — `document.manage`; `person.read`/`document.read` alone are
-    never sufficient (ADR-0040 §6). No request body: the mutation is a
+    §32) — `person.update` + `document.manage`; neither alone is
+    sufficient (ADR-0040 §6). No request body: the mutation is a
     fixed `status -> revoked` transition, nothing is accepted from the
     client. `File`/`file_id`/`document_group_id`/`version_number` are
     never changed and `FileStorage` is never called (Issue #168 §mutation).
@@ -1162,8 +1216,11 @@ def revoke_person_document(
     rejected with 409, mirroring `POST /guardian-relationships/{id}/
     terminate`'s identical already-terminal precedent (ADR-0025 §3).
     """
-    _get_authorized_person_or_404(
-        db, person_id=person_id, user_id=principal.user_id, permission_code="document.manage"
+    _get_person_for_document_or_404(
+        db,
+        person_id=person_id,
+        user_id=principal.user_id,
+        permission_codes=_DOCUMENT_MANAGE_PERMISSIONS,
     )
 
     document = get_document_for_person(db, person_id=person_id, document_id=document_id)

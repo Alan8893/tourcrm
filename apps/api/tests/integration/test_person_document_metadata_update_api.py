@@ -124,8 +124,17 @@ def _setup_target_person() -> tuple[uuid.UUID, uuid.UUID]:
         return club.id, person.id
 
 
+# people-api.md §32 (PD-1 = B): a Person permission AND a Document
+# permission are both required.
+READ = ("person.read", "document.read")
+MANAGE = ("person.update", "document.manage")
+
+
 def _make_actor(
-    club_id: uuid.UUID, *, permission_code: str | None, scope_type: str = "all"
+    club_id: uuid.UUID,
+    *,
+    permission_code: str | tuple[str, ...] | None,
+    scope_type: str = "all",
 ) -> uuid.UUID:
     with session_scope() as session:
         actor_person = _make_person()
@@ -133,8 +142,9 @@ def _make_actor(
         session.add_all([actor_person, actor_user])
         session.commit()
         actor_user_id = actor_user.id
-    if permission_code is not None:
-        _grant_permission(actor_user_id, permission_code, scope_type=scope_type, club_id=club_id)
+    codes = (permission_code,) if isinstance(permission_code, str) else permission_code or ()
+    for code in codes:
+        _grant_permission(actor_user_id, code, scope_type=scope_type, club_id=club_id)
     return actor_user_id
 
 
@@ -164,7 +174,7 @@ def _patch(client: TestClient, person_id: uuid.UUID, document_id, body: dict):
 
 
 def _create_first_version(client: TestClient, club_id: uuid.UUID, person_id: uuid.UUID) -> str:
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     response = _upload(client, person_id)
     assert response.status_code == 201, response.text
@@ -179,7 +189,7 @@ def test_patch_update_issued_at_returns_200(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
     document_id = _create_first_version(client, club_id, person_id)
 
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     response = _patch(client, person_id, document_id, {"issued_at": "2026-01-01T00:00:00+00:00"})
 
@@ -194,7 +204,7 @@ def test_patch_update_expires_at_returns_200(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
     document_id = _create_first_version(client, club_id, person_id)
 
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     response = _patch(client, person_id, document_id, {"expires_at": "2027-01-01T00:00:00+00:00"})
 
@@ -207,7 +217,7 @@ def test_patch_update_both_fields(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
     document_id = _create_first_version(client, club_id, person_id)
 
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     response = _patch(
         client,
@@ -225,7 +235,7 @@ def test_patch_update_both_fields(client: TestClient) -> None:
 @requires_postgres
 def test_patch_explicit_null_clears_field(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     upload_response = _upload(client, person_id)
     assert upload_response.status_code == 201, upload_response.text
@@ -248,8 +258,9 @@ def test_patch_response_is_the_existing_document_out_shape(client: TestClient) -
     club_id, person_id = _setup_target_person()
     document_id = _create_first_version(client, club_id, person_id)
 
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
-    _grant_permission(manage_actor_id, "document.read", club_id=club_id)
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
+    for code in READ:
+        _grant_permission(manage_actor_id, code, club_id=club_id)
     _authenticate_as(manage_actor_id)
     detail_response = client.get(f"/api/v1/persons/{person_id}/documents/{document_id}")
     _authenticate_as(manage_actor_id)
@@ -269,7 +280,7 @@ def test_patch_empty_body_rejected(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
     document_id = _create_first_version(client, club_id, person_id)
 
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     response = _patch(client, person_id, document_id, {})
 
@@ -282,7 +293,7 @@ def test_patch_invalid_date_ordering_returns_422(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
     document_id = _create_first_version(client, club_id, person_id)
 
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     response = _patch(
         client,
@@ -298,7 +309,7 @@ def test_patch_invalid_date_ordering_returns_422(client: TestClient) -> None:
 @requires_postgres
 def test_patch_invalid_resulting_dates_with_only_one_field_supplied(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     upload_response = _upload(client, person_id)
     document_id = upload_response.json()["id"]
@@ -319,7 +330,7 @@ def test_patch_document_type_cannot_be_changed_via_request(client: TestClient) -
     club_id, person_id = _setup_target_person()
     document_id = _create_first_version(client, club_id, person_id)
 
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     response = client.patch(
         f"/api/v1/persons/{person_id}/documents/{document_id}",
@@ -339,7 +350,7 @@ def test_historical_document_returns_404(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
     document_id = _create_first_version(client, club_id, person_id)
 
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     replace_response = client.post(
         f"/api/v1/persons/{person_id}/documents/{document_id}/replace",
@@ -367,11 +378,14 @@ def test_patch_requires_document_manage_not_document_read(client: TestClient) ->
     club_id, person_id = _setup_target_person()
     document_id = _create_first_version(client, club_id, person_id)
 
-    read_actor_id = _make_actor(club_id, permission_code="document.read")
+    read_actor_id = _make_actor(club_id, permission_code=READ)
     _authenticate_as(read_actor_id)
     response = _patch(client, person_id, document_id, {"issued_at": "2026-01-01T00:00:00+00:00"})
 
-    assert response.status_code == 404, response.text
+    # PD-2 = A: a missing required permission is 403 before any existence
+    # or scope check (people-api.md §32).
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
 
 
 @requires_postgres
@@ -383,7 +397,10 @@ def test_patch_requires_document_manage_not_person_read(client: TestClient) -> N
     _authenticate_as(person_read_actor_id)
     response = _patch(client, person_id, document_id, {"issued_at": "2026-01-01T00:00:00+00:00"})
 
-    assert response.status_code == 404, response.text
+    # PD-2 = A: a missing required permission is 403 before any existence
+    # or scope check (people-api.md §32).
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
 
 
 @requires_postgres
@@ -392,7 +409,7 @@ def test_patch_denied_when_person_not_visible_to_actor(client: TestClient) -> No
     document_id = _create_first_version(client, club_id, person_id)
 
     other_club_id, _ = _setup_target_person()
-    actor_id = _make_actor(other_club_id, permission_code="document.manage")
+    actor_id = _make_actor(other_club_id, permission_code=MANAGE)
     _authenticate_as(actor_id)
     response = _patch(client, person_id, document_id, {"issued_at": "2026-01-01T00:00:00+00:00"})
 
@@ -405,7 +422,7 @@ def test_patch_cannot_target_another_persons_document(client: TestClient) -> Non
     _, person_b_id = _setup_target_person()
     document_id = _create_first_version(client, club_id, person_a_id)
 
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     response = _patch(client, person_b_id, document_id, {"issued_at": "2026-01-01T00:00:00+00:00"})
 
@@ -419,7 +436,7 @@ def test_patch_cannot_target_another_persons_document(client: TestClient) -> Non
 @requires_postgres
 def test_patch_nonexistent_document_returns_404_without_disclosure(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    actor_id = _make_actor(club_id, permission_code="document.manage")
+    actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(actor_id)
 
     response = _patch(
@@ -434,7 +451,7 @@ def test_patch_nonexistent_document_returns_404_without_disclosure(client: TestC
 def test_patch_nonexistent_person_returns_404(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
     document_id = _create_first_version(client, club_id, person_id)
-    actor_id = _make_actor(club_id, permission_code="document.manage")
+    actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(actor_id)
 
     response = _patch(
@@ -452,7 +469,7 @@ def test_patch_records_exactly_one_document_updated_audit_event(client: TestClie
     club_id, person_id = _setup_target_person()
     document_id = _create_first_version(client, club_id, person_id)
 
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     response = _patch(client, person_id, document_id, {"issued_at": "2026-01-01T00:00:00+00:00"})
     assert response.status_code == 200, response.text
@@ -478,7 +495,7 @@ def test_patch_response_never_contains_storage_internals(client: TestClient) -> 
     club_id, person_id = _setup_target_person()
     document_id = _create_first_version(client, club_id, person_id)
 
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     response = _patch(client, person_id, document_id, {"issued_at": "2026-01-01T00:00:00+00:00"})
 
@@ -490,7 +507,7 @@ def test_patch_response_never_contains_storage_internals(client: TestClient) -> 
 @requires_postgres
 def test_patch_never_changes_the_file_or_binary_content(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     content = b"binary content that must survive a metadata patch"
     upload_response = _upload(client, person_id, content=content)
@@ -505,7 +522,7 @@ def test_patch_never_changes_the_file_or_binary_content(client: TestClient) -> N
     assert patch_response.status_code == 200, patch_response.text
     assert patch_response.json()["file_id"] == file_id_before
 
-    read_actor_id = _make_actor(club_id, permission_code="document.read")
+    read_actor_id = _make_actor(club_id, permission_code=READ)
     _authenticate_as(read_actor_id)
     download_response = client.get(f"/api/v1/persons/{person_id}/documents/{document_id}/download")
     assert download_response.status_code == 200, download_response.text
@@ -517,7 +534,7 @@ def test_patch_does_not_change_status(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
     document_id = _create_first_version(client, club_id, person_id)
 
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     response = _patch(client, person_id, document_id, {"issued_at": "2026-01-01T00:00:00+00:00"})
 
@@ -530,7 +547,7 @@ def test_patch_does_not_create_a_new_file_row(client: TestClient) -> None:
     club_id, person_id = _setup_target_person()
     document_id = _create_first_version(client, club_id, person_id)
 
-    manage_actor_id = _make_actor(club_id, permission_code="document.manage")
+    manage_actor_id = _make_actor(club_id, permission_code=MANAGE)
     _authenticate_as(manage_actor_id)
     response = _patch(client, person_id, document_id, {"issued_at": "2026-01-01T00:00:00+00:00"})
     assert response.status_code == 200, response.text
