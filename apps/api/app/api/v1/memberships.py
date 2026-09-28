@@ -170,6 +170,17 @@ def create_membership(
     db: Session = Depends(get_db),
     _csrf: None = Depends(require_csrf_token),
 ) -> MembershipOut:
+    authorizer = Authorizer(
+        session=db, user_id=principal.user_id, permission_code="membership.manage"
+    )
+    # No ClubMembership exists yet: is_self/is_own_group stay unresolved
+    # (None), so only a scope_type='all' assignment matching the target
+    # club can authorize creation — same precedent as event.create.
+    # Checked before the club/person existence checks below (P1 GAP-3):
+    # the context needs only the payload id, and a caller who may not
+    # create memberships must not learn which club_id/person_id exist.
+    authorizer.check(ResourceContext(club_id=payload.club_id))
+
     if db.get(Club, payload.club_id) is None:
         raise APIError(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_club_id", "club_id does not exist"
@@ -178,14 +189,6 @@ def create_membership(
         raise APIError(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_person_id", "person_id does not exist"
         )
-
-    authorizer = Authorizer(
-        session=db, user_id=principal.user_id, permission_code="membership.manage"
-    )
-    # No ClubMembership exists yet: is_self/is_own_group stay unresolved
-    # (None), so only a scope_type='all' assignment matching the target
-    # club can authorize creation — same precedent as event.create.
-    authorizer.check(ResourceContext(club_id=payload.club_id))
 
     try:
         membership = people_service.create_membership(
