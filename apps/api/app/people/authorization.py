@@ -19,10 +19,15 @@ ClubMembership read: a Guardian may read their children's membership data
 through the authorized `children`/GuardianRelationship path — resolved
 below the same way app.people.guardian_authorization resolves it for
 GuardianRelationship itself (an *active* GuardianRelationship from the
-requester to the membership's Person). ADR-0035 §3.2 is explicit that a
-Guardian gets no such access to Person through People management, so
-Person's own `person_visibility_filter` deliberately still fails closed on
-`children` — only ClubMembership's resolution changes here.
+requester to the membership's Person).
+
+AUTH-1 (docs/02-requirements/role-permission-scope-matrix.md §3.4/§4, the
+current source of truth): Person itself now resolves `children` the same
+way — `person.read(children)`/`person.update(children)` reach a Person
+only through an active, interval-valid GuardianRelationship from the
+requester to that Person. `person.update(children)` is further limited to
+`CHILD_UPDATABLE_PERSON_FIELDS` (enforced by the router); that limit
+applies only when the Person is reachable *solely* through `children`.
 
 `Person` has no `club_id` of its own (Club-neutral: a Person may have
 `ClubMembership` rows in more than one Club). Because of this, a single
@@ -206,8 +211,20 @@ def _own_group_condition_for_membership(
     )
 
 
+# AUTH-1 (role-permission-scope-matrix.md §3.4/§4): the only Person fields
+# `person.update(children)` may change — email, birth_date and every
+# administrative field are excluded.
+CHILD_UPDATABLE_PERSON_FIELDS = frozenset(
+    {"first_name", "last_name", "middle_name", "phone", "address", "photo_file_id"}
+)
+
+
 def person_visibility_filter(
-    session: Session, *, user_id: uuid.UUID, permission_code: str
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    permission_code: str,
+    exclude_scope_types: frozenset[str] = frozenset(),
 ) -> sa.ColumnElement[bool]:
     """Build the predicate for a Person query (`.where(...)` referencing
     `Person.id`), true only for Persons the acting user is authorized to
@@ -215,13 +232,21 @@ def person_visibility_filter(
     `is_person_visible`) for a single-Person check — see module docstring
     for why Person authorization cannot go through the generic
     `Authorizer`/`ResourceContext` engine.
+
+    `exclude_scope_types` ignores assignments of those scope types — used
+    only to ask "is this Person reachable through anything *other than*
+    `children`?" for the child-specific field restriction.
     """
-    assignments = applicable_assignments(session, user_id, permission_code)
+    assignments = [
+        a
+        for a in applicable_assignments(session, user_id, permission_code)
+        if a.scope_type not in exclude_scope_types
+    ]
     if not assignments:
         return sa.false()
 
-    needs_self = any(a.scope_type == "self" for a in assignments)
-    requester_person_id = _person_id_for_user(session, user_id) if needs_self else None
+    needs_person = any(a.scope_type in ("self", "children") for a in assignments)
+    requester_person_id = _person_id_for_user(session, user_id) if needs_person else None
 
     clauses: list[sa.ColumnElement[bool]] = []
     for assignment in assignments:
@@ -247,11 +272,19 @@ def person_visibility_filter(
             # independent of Club — the assignment's own club_id (if any)
             # is not a boundary here.
             scope_predicate = Person.id == requester_person_id
+        elif assignment.scope_type == "children":
+            # AUTH-1: an *active*, interval-valid GuardianRelationship from
+            # the requester to this Person. Like `self` (and like the
+            # Club-neutral GuardianRelationship itself), identity-level:
+            # the assignment's club_id is not a boundary here.
+            scope_predicate = _active_guardian_condition(
+                guardian_person_id=requester_person_id, child_person_id=Person.id
+            )
         elif assignment.scope_type == "none":
             scope_predicate = sa.false()
         else:
-            # children/own_events (or any future scope): not applicable to
-            # Person in this Issue; fail closed rather than match.
+            # own_events (or any future scope): not applicable to Person;
+            # fail closed rather than match.
             continue
         clauses.append(scope_predicate)
 
@@ -259,13 +292,23 @@ def person_visibility_filter(
 
 
 def is_person_visible(
-    session: Session, *, person_id: uuid.UUID, user_id: uuid.UUID, permission_code: str
+    session: Session,
+    *,
+    person_id: uuid.UUID,
+    user_id: uuid.UUID,
+    permission_code: str,
+    exclude_scope_types: frozenset[str] = frozenset(),
 ) -> bool:
     """Single-Person authorization check, built from the exact same
     per-assignment predicate as `person_visibility_filter` so the list and
     detail endpoints can never disagree.
     """
-    predicate = person_visibility_filter(session, user_id=user_id, permission_code=permission_code)
+    predicate = person_visibility_filter(
+        session,
+        user_id=user_id,
+        permission_code=permission_code,
+        exclude_scope_types=exclude_scope_types,
+    )
     stmt = sa.select(sa.exists(sa.select(Person.id).where(Person.id == person_id, predicate)))
     return bool(session.execute(stmt).scalar())
 
@@ -491,6 +534,7 @@ def membership_visibility_filter(
 
 
 __all__ = [
+    "CHILD_UPDATABLE_PERSON_FIELDS",
     "person_visibility_filter",
     "is_person_visible",
     "has_person_create_assignment",

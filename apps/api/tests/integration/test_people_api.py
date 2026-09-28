@@ -1547,9 +1547,9 @@ def test_own_groups_instructor_can_read_and_update_target_contact_fields(
 
 @requires_postgres
 def test_guardian_relationship_does_not_grant_child_contact_access(client: TestClient) -> None:
-    """ADR-0035 §4/§8.4: an active GuardianRelationship never substitutes
-    for `person.read` + a matching scope on the child's Person record —
-    Person authorization has no `children` branch (it fails closed), and
+    """An active GuardianRelationship never substitutes for `person.read` +
+    a matching scope on the child's Person record: without a
+    `person.read(children)` grant (AUTH-1) the child stays hidden, and
     `guardian_relationship.read` is a wholly separate permission that
     never grants Person access by itself.
     """
