@@ -4,6 +4,8 @@
 
 Документ определяет модель авторизации TourCRM. Он является нормативным для backend authorization и основанием для ограничения интерфейса.
 
+Каноническая role → permission → scope политика зафиксирована в `docs/02-requirements/role-permission-scope-matrix.md`. При расхождении значение из этой матрицы имеет приоритет над формулировками данного документа. Архитектура scope-модели — ADR-0041 (permission-level scopes, AUTH-2A).
+
 ## 2. Принципы
 
 1. Role — набор permissions.
@@ -128,6 +130,25 @@ permissions и не должны использоваться как отдел�
 
 В дальнейшем допускаются scopes на базе ownership/relationship и специализированные политики только через отдельное решение.
 
+### 5.1 Где хранится scope (ADR-0041, AUTH-2A)
+
+Scope является свойством конкретного permission grant роли, а не назначения роли пользователю:
+
+```text
+User
+  → UserRoleAssignment
+      → Role
+          → RolePermission
+              → RolePermissionScope(s)
+                  → Resource/Object
+```
+
+- `RolePermission` связывает роль с permission; `RolePermissionScope` задаёт один или несколько канонических scopes именно этого grant.
+- Если у permission несколько scopes, достаточно совпадения любого из них (с последующей проверкой object relationship и состояния ресурса).
+- Scope, заданный для одного permission, не расширяет, не ограничивает и никак не влияет на другой permission — в том числе permission той же роли.
+- `RolePermission` без `RolePermissionScope` не даёт доступа.
+- `UserRoleAssignment.scope_type` — legacy-поле хранения на переходный период. Оно не является источником authorization и не используется для определения доступа; назначение роли не выбирает и не передаёт scope.
+
 ## 6. Authorization evaluation
 
 Доступ к операции определяется минимум по следующим условиям:
@@ -145,13 +166,11 @@ Feature setting не может расширить permissions.
 | Ресурс/действие | admin | instructor | member | guardian |
 |---|---:|---:|---:|---:|
 | Auth/self account | ✅ | ✅ | ✅ | ✅ |
-| Свой Person: чтение | ✅ | ✅ | ✅ | ✅ |
-| Свой Person: изменение | ✅ | ✅ | ✅ | ✅ |
-| Свой Person: изменение birth_date | ✅ | ❌ | ❌ | ❌ |
-| Любой Person: чтение | ✅ в all scope | по `own_groups` | ❌ | ❌ |
-| Любой Person: изменение | ✅ в all scope | по `own_groups` | ❌ | ❌ |
-| Person: создание | ✅ `person.create` | ❌ | ❌ | ❌ |
-| Membership: чтение | ✅ authorized | `own_groups` | self | children/relationship |
+| Person: чтение (`person.read`) | `all` | `own_groups` | `self` | `children` |
+| Person: изменение (`person.update`) | `all`, все поля | ❌ | `self`, ограниченные поля | `children`, ограниченные поля |
+| Person: изменение `email`/`birth_date` | ✅ | ❌ | ❌ | ❌ |
+| Person: создание | ✅ `person.create` (`all`) | ❌ | ❌ | ❌ |
+| Membership: чтение | `all` | `own_groups` | `self` | `children` |
 | Membership: создание | ✅ | ❌ | ❌ | ❌ |
 | Membership: изменение type | ✅ | ❌ | ❌ | ❌ |
 | Membership: lifecycle | ✅ | ❌ | ❌ | ❌ |
@@ -160,38 +179,38 @@ Feature setting не может расширить permissions.
 | GuardianRelationship: создание | ✅ | ❌ | ❌ | ❌ |
 | GuardianRelationship: изменение | ✅ | ❌ | ❌ | ❌ |
 | GuardianRelationship: terminate | ✅ | ❌ | ❌ | ❌ |
-| Группы: чтение | ✅ | assigned | ограниченно | ограниченно |
+| Группы: чтение | `all` | `own_groups` | own membership | children's groups |
 | Группы: управление | ✅ | ❌ | ❌ | ❌ |
-| Event: чтение | ✅ | по scope | по scope | children/relationship |
-| Event: создание | ✅ | по permission | ❌ | ❌ |
-| Event: изменение | ✅ | assigned/owned | ❌ | ❌ |
-| Event: отмена | ✅ | по permission/scope | ❌ | ❌ |
+| Event: чтение | `all` | applicable `own_groups` / `own_events` | own participation | children's participation |
+| Event: создание | `all` | according to documented event policy and scope | ❌ | ❌ |
+| Event: изменение | `all` | assigned/owned scope | ❌ | ❌ |
+| Event: отмена | `all` | permission + scope | ❌ | ❌ |
 | Event: архивирование | ✅ | по `event.manage` и scope | ❌ | ❌ |
 | Event: участники — чтение | по `event.read`/scope | по `event.read`/scope | self/relationship | children/relationship |
 | Event: участники — управление | по `event.manage`/scope | по `event.manage`/scope | ❌ | ❌ |
-| Attendance: чтение | ✅ | assigned/owned | self | children |
-| Attendance: изменение | ✅ | assigned/owned | ❌ | ❌ |
+| Attendance: чтение | `all` | assigned/owned | `self` | `children` |
+| Attendance: изменение | `all` | assigned/owned | ❌ | ❌ |
 | Attendance: correction | по `attendance.update` + reason/audit | по `attendance.update` + scope + reason/audit | ❌ | ❌ |
 | Trip: чтение | ✅ | ✅ | self | children |
 | Trip: управление | ✅ | assigned/owned | ❌ | ❌ |
-| Achievement: чтение | ✅ | ✅ | self | children |
-| Achievement: выдача | ✅ | ✅ | ❌ | ❌ |
+| Achievement: чтение | `all` | `own_groups` | `self` | `children` |
+| Achievement: выдача | `all` | `own_groups` | ❌ | ❌ |
 | Knowledge: чтение | ✅ | ✅ | ✅ | ✅ |
 | Knowledge: управление | ✅ | по permission | ❌ | ❌ |
-| Documents: чтение | ✅ | по scope | self | children |
-| Documents: управление | ✅ | по scope | ограниченно | ограниченно |
+| Documents: чтение | `all` | `own_groups` | `self` | `children` |
+| Documents: управление | `all` | ❌ | ❌ | ❌ |
 | Consent: чтение | ✅ | по необходимости | self | children |
 | Consent: управление | ✅ | по policy | ❌ | ограниченно |
 | Equipment: чтение | ✅ | по назначению | ❌ | ❌ |
 | Equipment: управление | ✅ | по permission | ❌ | ❌ |
 | Finance: чтение | ✅ | по permission | self-related | self-related |
 | Finance: управление | ✅ | по permission | ❌ | ❌ |
-| Audit: чтение | ✅ | ❌ по умолчанию | ❌ | ❌ |
+| Audit: чтение | ✅ | ❌ | ❌ | ❌ |
 | System settings | ✅ | ❌ | ❌ | ❌ |
 | Roles/permissions | ✅ | ❌ | ❌ | ❌ |
 | Account management (create User, password reset) | ✅ | ❌ | ❌ | ❌ |
 
-Матрица является базовой. Для чувствительных данных действуют дополнительные объектные ограничения.
+Матрица является базовой. Значения для Person, Membership, Group, Event, Attendance, Achievement, Document и административных permissions соответствуют `role-permission-scope-matrix.md`, который имеет приоритет при расхождении. Для чувствительных данных действуют дополнительные объектные ограничения.
 
 ### 7.1 People Management — каноническая policy
 
@@ -199,15 +218,16 @@ Feature setting не может расширить permissions.
 
 **Person**
 
-- `person.create`: только `admin`. Авторизуется effective `person.create` assignment со `scope_type=all`; `assignment.club_id` не участвует в решении (не обязан быть `NULL`) — у Person ещё нет target Club, относительно которого проверялась бы club boundary (TH-0106 / Issue #131).
+- `person.create`: только `admin`. Авторизуется effective grant `person.create` со scope `all` (`RolePermissionScope`, ADR-0041) через активное назначение роли; `assignment.club_id` не участвует в решении (не обязан быть `NULL`) — у Person ещё нет target Club, относительно которого проверялась бы club boundary (TH-0106 / Issue #131).
 - TH-0111 / Issue #140: `POST /api/v1/persons` атомарно создаёт также начальное активное `ClubMembership` для текущего Club (`member`/`active`) в той же транзакции — см. ADR-0035 §2 (amendment) и `people-api.md` §6. Это не новый permission и не требует `membership.manage`: набор полей membership полностью фиксирован политикой, а не является предметом отдельного решения вызывающего.
-- `person.read`: каждый пользователь может читать собственный Person; `admin` — Persons в authorized `all` scope; `instructor` — Persons только через `own_groups`; `member` и `guardian` не получают общего доступа к другим Persons.
-- `person.update`: каждый пользователь может изменять собственный Person в разрешённых полях; `admin` — Persons в authorized `all` scope; `instructor` — Persons через `own_groups`.
+- `person.read`: `admin` — `all`; `instructor` — только `own_groups`; `member` — `self`; `guardian` — `children`. Других путей чтения Person (в том числе неявного доступа к собственной записи вне этих grants) нет.
+- `person.update`: `admin` — `all`, любые поля Person, включая `email` и `birth_date` (намеренное административное исключение для исправления данных); `instructor` — **не имеет `person.update`**; `member` — `self`, только разрешённые поля; `guardian` — `children`, только разрешённые поля.
+- Разрешённые поля для `member`/`self` и `guardian`/`children`: `first_name`, `last_name`, `middle_name`, `phone`, `address`, `photo` / avatar. `email`, `birth_date`, `id` и любые административные поля Person им изменять нельзя.
+- Запрос, содержащий поле вне разрешённого для вызывающего набора, отклоняется backend authorization/validation; скрытие полей во frontend недостаточно.
 - `id` неизменяем.
-- `first_name`, `last_name`, `middle_name`, `phone`, `email`, `address`, `photo` доступны для изменения пользователем в рамках его собственной записи; `admin`/`instructor` также могут изменять эти поля у Persons в своей authorized scope.
-- `birth_date` доступен для чтения в authorized scope; изменять его может только `admin`, включая собственный Person.
+- `birth_date` доступен для чтения в authorized scope; изменять его может только `admin`.
 - Отдельных `person.contact.read/update` permissions нет. Контакты являются полями Person и регулируются той же role/scope/object policy.
-- `GuardianRelationship` не даёт автоматического доступа к контактам ребёнка.
+- `GuardianRelationship` сама по себе не является permission: доступ guardian к Person ребёнка определяется grants `person.read(children)` / `person.update(children)` (с ограничением полей выше) и проверкой активной `GuardianRelationship`.
 
 **ClubMembership**
 
@@ -217,7 +237,7 @@ Feature setting не может расширить permissions.
 - `archived` — terminal; `inactive → active` не допускается.
 - Повторное вступление после `inactive` создаёт новый membership period.
 - `member`, `guardian`, `instructor` не могут самостоятельно менять lifecycle membership.
-- Read: `admin` — authorized full; `instructor` — `own_groups`; `member` — self; `guardian` — children/relationship.
+- Read (`membership.read`): `admin` — `all`; `instructor` — `own_groups`; `member` — `self`; `guardian` — `children`.
 - История читается через `GET /persons/{person_id}/memberships`; отдельный history endpoint не вводится.
 
 **GuardianRelationship**
@@ -255,13 +275,13 @@ Feature setting не может расширить permissions.
 
 `self` применяется только к данным, которые пользователь имеет право видеть о себе. Например, member может видеть свой профиль, свои мероприятия, свои достижения и свою историю посещения, но не получает право просматривать другого member через подмену идентификатора ресурса.
 
-Все четыре базовые роли могут читать и изменять собственные `first_name`, `last_name`, `middle_name`, `phone`, `email`, `address` и `photo`. `birth_date` для self доступен всем для чтения, но изменяется только admin.
+Для Person `self` предоставляется только тем ролям, чьи grants его содержат: `member` — `person.read(self)` и `person.update(self)`, изменение ограничено полями `first_name`, `last_name`, `middle_name`, `phone`, `address`, `photo` / avatar; `email` и `birth_date` member не изменяет. `admin` работает с Person через `all`. `instructor` и `guardian` не получают Person-доступ через `self` (см. §7.1).
 
 ## 10. Guardian access
 
 `children` не означает доступ к любому ребёнку в клубе. Сервис должен вычислять допустимых детей через активные GuardianRelationship.
 
-GuardianRelationship сам по себе не расширяет доступ guardian к полному Person ребёнка и не предоставляет его контакты. Для `/me/children` используется отдельная безопасная projection policy.
+GuardianRelationship сама по себе не является grant: доступ guardian к Person ребёнка определяется `person.read(children)` / `person.update(children)` (изменение только разрешённых полей, §7.1). Для `/me/children` используется отдельная безопасная projection policy.
 
 Удалённая/неактивная связь автоматически прекращает актуальный доступ, если отдельное правило не требует сохранения read-only исторического доступа.
 
@@ -315,7 +335,7 @@ permission + scope + object relationship checks. Фильтры API не мог�
 
 Один пользователь может иметь несколько ролей.
 
-Итоговые permissions формируются объединением permissions назначенных ролей с последующей проверкой scope и object-level policies.
+Итоговые permissions формируются объединением permissions назначенных ролей с последующей проверкой scope и object-level policies. Каждый permission сохраняет собственные scopes: например, при `instructor + guardian` `own_groups` не превращается в `all` из-за наличия другой роли, а scopes одного permission не переносятся на другой.
 
 Будущие explicit denies допускаются только после отдельного ADR, поскольку неверная реализация deny поверх role union может сделать модель трудно предсказуемой.
 
@@ -332,7 +352,7 @@ Canonical MVP roles:
 - member;
 - guardian.
 
-One Person/User may have multiple active roles simultaneously.
+One Person/User may have multiple active roles simultaneously. Each active role is represented by exactly one `UserRoleAssignment` per Club; the same role is never assigned several times to express several scopes — scopes belong to the role's permission grants (ADR-0041). Role assignment (Person Detail, the Person creation wizard and the generic `/api/v1/role-assignments` API) does not choose or accept an authorization scope.
 
 Role assignment/removal does not mutate Person, ClubMembership, membership status, or membership_type.
 
