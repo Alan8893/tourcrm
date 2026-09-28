@@ -55,16 +55,18 @@ A Club is required for every role assignment except a global assignment of the s
 
 The product-level source of truth remains `docs/02-requirements/role-permission-scope-matrix.md`.
 
-The current canonical role-level scope requirements relevant to AUTH-2A are:
+Scopes are defined **per permission**, not per role (AUTH-2C, Issue #209). A role has no general scope pattern: in particular, neither `instructor` nor `guardian` has `self` as a general rule, and there is no implicit `self` access merely because a user is authenticated, holds a role, or owns the record. `self` applies to a permission only when that permission's grant carries it, which requires a PO decision for that permission.
 
-| Role | Permission scope pattern |
-|---|---|
-| `admin` | `all` |
-| `instructor` | permissions may use `own_groups` and `self` independently |
-| `member` | permissions use `self` where granted |
-| `guardian` | permissions may use `children` and `self` independently |
+The current canonical Person grants are:
 
-This table describes the scope model, not permission seeding. AUTH-2A does not add permissions to instructor, member or guardian.
+| Role | `person.read` | `person.update` | `person.create` |
+|---|---|---|---|
+| `admin` | `all` | `all` / all fields | `all` |
+| `instructor` | `own_groups` | no permission | — |
+| `member` | `self` | `self` / restricted fields | — |
+| `guardian` | `children` | `children` / restricted fields | — |
+
+Grants of other permissions are listed in the canonical matrix. This section describes the scope model, not permission seeding. AUTH-2A does not add permissions to instructor, member or guardian.
 
 ## 5. Legacy migration
 
