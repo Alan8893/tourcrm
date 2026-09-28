@@ -23,7 +23,13 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentPrincipal, get_current_principal
 from app.db.audit import AuditLog
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.identity import Club, Person, User
 from app.db.session import session_scope
 from app.main import app
@@ -73,13 +79,18 @@ def _setup_authorized_caller(*, club_id: uuid.UUID | None, permission_code: str)
         ).scalar_one()
         s.add(role)
         s.commit()
-        s.add(RolePermission(role_id=role.id, permission_id=permission.id))
+        s.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+                scopes=[RolePermissionScope(scope_type="all")],
+            )
+        )
         s.add(
             UserRoleAssignment(
                 user_id=user.id,
                 role_id=role.id,
                 club_id=club_id,
-                scope_type="all",
                 valid_from=datetime.now(dt_timezone.utc),
             )
         )
@@ -204,13 +215,18 @@ def _setup_authorized_caller_extra(
         ).scalar_one()
         s.add(role)
         s.commit()
-        s.add(RolePermission(role_id=role.id, permission_id=permission.id))
+        s.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+                scopes=[RolePermissionScope(scope_type="all")],
+            )
+        )
         s.add(
             UserRoleAssignment(
                 user_id=user_id,
                 role_id=role.id,
                 club_id=club_id,
-                scope_type="all",
                 valid_from=datetime.now(dt_timezone.utc),
             )
         )

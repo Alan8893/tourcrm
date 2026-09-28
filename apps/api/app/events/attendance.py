@@ -103,7 +103,7 @@ already-authorized-object restriction (occurrence_visibility_filter
 filters *which objects* are visible across a list, never *which
 participants* within one already-visible object) —
 `_attendance_row_visibility` below is new but reuses the exact same
-`applicable_assignments`/`club_boundary_matches`/active-
+`applicable_grants`/`club_boundary_matches`/active-
 GuardianRelationship-plus-ClubMembership building blocks as
 app.events.series_authorization, composed for this new shape rather than
 inventing a second authorization mechanism.
@@ -118,7 +118,7 @@ from sqlalchemy.orm import Session, aliased
 
 from app.audit.service import record_audit_event
 from app.authorization.context import ResourceContext
-from app.authorization.service import applicable_assignments, club_boundary_matches
+from app.authorization.service import applicable_grants, club_boundary_matches
 from app.db.attendance import CANONICAL_ABSENCE_REASONS, CANONICAL_ATTENDANCE_STATUSES, Attendance
 from app.db.event_recurrence import EventOccurrence
 from app.db.event_recurrence_relationships import EventOccurrenceParticipant
@@ -675,23 +675,23 @@ def _attendance_row_visibility(
     at the object level, per `resource_context`) grant the full set;
     `self`/`children` restrict to the requester's own/their children's
     rows; `none` contributes nothing."""
-    assignments = applicable_assignments(session, user_id, permission_code)
+    grants = applicable_grants(session, user_id, permission_code)
     clauses: list[sa.ColumnElement[bool]] = []
     self_person_id: Optional[uuid.UUID] = None
-    for assignment in assignments:
-        if not club_boundary_matches(assignment.club_id, club_id):
+    for grant in grants:
+        if not club_boundary_matches(grant.club_id, club_id):
             continue
-        if assignment.scope_type == "all":
+        if grant.scope_type == "all":
             clauses.append(sa.true())
-        elif assignment.scope_type == "own_events" and resource_context.is_own_event is True:
+        elif grant.scope_type == "own_events" and resource_context.is_own_event is True:
             clauses.append(sa.true())
-        elif assignment.scope_type == "own_groups" and resource_context.is_own_group is True:
+        elif grant.scope_type == "own_groups" and resource_context.is_own_group is True:
             clauses.append(sa.true())
-        elif assignment.scope_type == "self" and resource_context.is_self is True:
+        elif grant.scope_type == "self" and resource_context.is_self is True:
             if self_person_id is None:
                 self_person_id = _person_id_for_user(session, user_id)
             clauses.append(participant_person_id_column == self_person_id)
-        elif assignment.scope_type == "children" and resource_context.is_child is True:
+        elif grant.scope_type == "children" and resource_context.is_child is True:
             if self_person_id is None:
                 self_person_id = _person_id_for_user(session, user_id)
             clauses.append(

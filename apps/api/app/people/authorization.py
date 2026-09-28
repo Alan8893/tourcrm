@@ -42,7 +42,7 @@ neither is expressible as a single `club_id` on `ResourceContext`.
 
 For this reason, Person authorization (both the list filter and the
 single-resource check) is resolved entirely in this module by iterating
-`applicable_assignments` directly and building a per-assignment SQL
+`applicable_grants` directly and building a per-assignment SQL
 predicate (`person_visibility_filter`), the same shape already used for
 list-query filtering — never via `Authorizer.check(ResourceContext(...))`
 with a single shared context. `is_person_visible` reuses the exact same
@@ -54,7 +54,7 @@ check a club-scoped assignment's boundary against at all — not "no Club"
 in the sense of "therefore require a global assignment" (an earlier,
 incorrect reading of Issue #62 that this fixes), but "the Club boundary
 question does not apply to this operation in either direction."
-`assignment.club_id` is not consulted; only `scope_type == "all"` is.
+`grant.club_id` is not consulted; only `scope_type == "all"` is.
 This is why `create_person` no longer goes through the generic
 `Authorizer.check(ResourceContext())` — that engine's
 `club_boundary_matches` compares one assignment Club against one resource
@@ -82,7 +82,7 @@ from app.authentication.bootstrap import ADMIN_ROLE_CODE
 from app.authorization.context import ResourceContext
 from app.authorization.service import (
     AuthorizationDenied,
-    applicable_assignments,
+    applicable_grants,
     club_boundary_matches,
     scope_matches,
 )
@@ -233,25 +233,25 @@ def person_visibility_filter(
     for why Person authorization cannot go through the generic
     `Authorizer`/`ResourceContext` engine.
 
-    `exclude_scope_types` ignores assignments of those scope types — used
+    `exclude_scope_types` ignores grant scopes of those types — used
     only to ask "is this Person reachable through anything *other than*
     `children`?" for the child-specific field restriction.
     """
-    assignments = [
+    grants = [
         a
-        for a in applicable_assignments(session, user_id, permission_code)
+        for a in applicable_grants(session, user_id, permission_code)
         if a.scope_type not in exclude_scope_types
     ]
-    if not assignments:
+    if not grants:
         return sa.false()
 
-    needs_person = any(a.scope_type in ("self", "children") for a in assignments)
+    needs_person = any(a.scope_type in ("self", "children") for a in grants)
     requester_person_id = _person_id_for_user(session, user_id) if needs_person else None
 
     clauses: list[sa.ColumnElement[bool]] = []
-    for assignment in assignments:
-        if assignment.scope_type == "all":
-            if assignment.club_id is None:
+    for grant in grants:
+        if grant.scope_type == "all":
+            if grant.club_id is None:
                 scope_predicate: sa.ColumnElement[bool] = sa.true()
             else:
                 # Issue #62 accepted decision: a club-scoped `all`
@@ -260,19 +260,19 @@ def person_visibility_filter(
                 cm = aliased(ClubMembership)
                 scope_predicate = sa.exists(
                     sa.select(cm.id).where(
-                        cm.person_id == Person.id, cm.club_id == assignment.club_id
+                        cm.person_id == Person.id, cm.club_id == grant.club_id
                     )
                 )
-        elif assignment.scope_type == "own_groups":
+        elif grant.scope_type == "own_groups":
             scope_predicate = own_group_condition_for_person(
-                Person.id, user_id, club_id=assignment.club_id
+                Person.id, user_id, club_id=grant.club_id
             )
-        elif assignment.scope_type == "self":
+        elif grant.scope_type == "self":
             # Issue #62 accepted decision: `self` is identity-level and
             # independent of Club — the assignment's own club_id (if any)
             # is not a boundary here.
             scope_predicate = Person.id == requester_person_id
-        elif assignment.scope_type == "children":
+        elif grant.scope_type == "children":
             # AUTH-1: an *active*, interval-valid GuardianRelationship from
             # the requester to this Person. Like `self` (and like the
             # Club-neutral GuardianRelationship itself), identity-level:
@@ -280,7 +280,7 @@ def person_visibility_filter(
             scope_predicate = _active_guardian_condition(
                 guardian_person_id=requester_person_id, child_person_id=Person.id
             )
-        elif assignment.scope_type == "none":
+        elif grant.scope_type == "none":
             scope_predicate = sa.false()
         else:
             # own_events (or any future scope): not applicable to Person;
@@ -317,7 +317,7 @@ def has_person_create_assignment(session: Session, user_id: uuid.UUID) -> bool:
     """TH-0106 / Issue #131: is `user_id` authorized to create a Person?
 
     Person is Club-neutral and a not-yet-created Person has no target Club
-    at all, so `assignment.club_id` must not participate in this decision
+    at all, so `grant.club_id` must not participate in this decision
     — neither as a boundary to satisfy nor as a reason to deny. This is
     narrower than (and does not reuse) the generic
     `Authorizer`/`club_boundary_matches` engine, which always compares an
@@ -334,8 +334,8 @@ def has_person_create_assignment(session: Session, user_id: uuid.UUID) -> bool:
     decision (only `admin` holds `person.create` at all in the current
     MVP, and only ever at `all` scope — see roles-and-permissions.md §7.1).
     """
-    assignments = applicable_assignments(session, user_id, "person.create")
-    return any(assignment.scope_type == "all" for assignment in assignments)
+    grants = applicable_grants(session, user_id, "person.create")
+    return any(grant.scope_type == "all" for grant in grants)
 
 
 class NoClubConfiguredError(Exception):
@@ -417,11 +417,11 @@ def resolve_current_club_id_for_person_create(session: Session, user_id: uuid.UU
         )
     sole_club_id = club_ids[0]
 
-    assignments = applicable_assignments(session, user_id, "person.create")
+    grants = applicable_grants(session, user_id, "person.create")
     club_scoped_ids = {
-        assignment.club_id
-        for assignment in assignments
-        if assignment.scope_type == "all" and assignment.club_id is not None
+        grant.club_id
+        for grant in grants
+        if grant.scope_type == "all" and grant.club_id is not None
     }
     if club_scoped_ids and sole_club_id not in club_scoped_ids:
         raise AuthorizationDenied("person.create")
@@ -442,7 +442,7 @@ def is_system_admin_person_update_grant(session: Session, user_id: uuid.UUID) ->
     to recognize the canonical administrator (`Role.code ==
     ADMIN_ROLE_CODE` *and* `Role.is_system`) — never a bare, ad hoc
     `Role.code == "admin"` string comparison invented in this module —
-    and the same `applicable_assignments`/`club_boundary_matches`/
+    and the same `applicable_grants`/`club_boundary_matches`/
     `scope_matches` building blocks `app.authorization.service.can()`
     itself uses for its scope evaluation, evaluated against an empty
     `ResourceContext` (global reach only, matching `person.create`'s own
@@ -451,13 +451,13 @@ def is_system_admin_person_update_grant(session: Session, user_id: uuid.UUID) ->
     satisfies it.
     """
     global_all_context = ResourceContext()
-    assignments = applicable_assignments(session, user_id, "person.update")
+    grants = applicable_grants(session, user_id, "person.update")
     return any(
-        assignment.role.code == ADMIN_ROLE_CODE
-        and assignment.role.is_system
-        and club_boundary_matches(assignment.club_id, global_all_context.club_id)
-        and scope_matches(assignment.scope_type, global_all_context)
-        for assignment in assignments
+        grant.assignment.role.code == ADMIN_ROLE_CODE
+        and grant.assignment.role.is_system
+        and club_boundary_matches(grant.club_id, global_all_context.club_id)
+        and scope_matches(grant.scope_type, global_all_context)
+        for grant in grants
     )
 
 
@@ -495,27 +495,27 @@ def membership_visibility_filter(
     """Build the predicate for a ClubMembership list query (`.where(...)`
     referencing `ClubMembership.id`/`ClubMembership.club_id`).
     """
-    assignments = applicable_assignments(session, user_id, permission_code)
-    if not assignments:
+    grants = applicable_grants(session, user_id, permission_code)
+    if not grants:
         return sa.false()
 
-    needs_person = any(a.scope_type in ("self", "children") for a in assignments)
+    needs_person = any(a.scope_type in ("self", "children") for a in grants)
     requester_person_id = _person_id_for_user(session, user_id) if needs_person else None
 
     clauses: list[sa.ColumnElement[bool]] = []
-    for assignment in assignments:
+    for grant in grants:
         club_boundary: sa.ColumnElement[bool] = (
             sa.true()
-            if assignment.club_id is None
-            else ClubMembership.club_id == assignment.club_id
+            if grant.club_id is None
+            else ClubMembership.club_id == grant.club_id
         )
-        if assignment.scope_type == "all":
+        if grant.scope_type == "all":
             scope_predicate: sa.ColumnElement[bool] = sa.true()
-        elif assignment.scope_type == "own_groups":
+        elif grant.scope_type == "own_groups":
             scope_predicate = _own_group_condition_for_membership(ClubMembership.id, user_id)
-        elif assignment.scope_type == "self":
+        elif grant.scope_type == "self":
             scope_predicate = ClubMembership.person_id == requester_person_id
-        elif assignment.scope_type == "children":
+        elif grant.scope_type == "children":
             # ADR-0035 §7.3: a Guardian may read their children's
             # membership data through the authorized `children`/
             # GuardianRelationship path — an *active* GuardianRelationship
@@ -524,7 +524,7 @@ def membership_visibility_filter(
                 guardian_person_id=requester_person_id,
                 child_person_id=ClubMembership.person_id,
             )
-        elif assignment.scope_type == "none":
+        elif grant.scope_type == "none":
             scope_predicate = sa.false()
         else:
             continue

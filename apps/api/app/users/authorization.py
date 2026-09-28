@@ -36,13 +36,13 @@ Two separate concerns, kept in two separate functions:
   within their authorized Club reach? (a SQL predicate, applied inside the
   query — never fetch-then-filter-in-Python.)
 
-Deliberately ignores each assignment's `scope_type` value entirely: only
-`club_id` (global when NULL, otherwise that one Club) matters. A typical
-`instructor` `UserRoleAssignment` already carries a `club_id` (usually with
-`scope_type="own_groups"` for other permissions) — once the `instructor`
-role is granted this permission via `RolePermission`, that same,
-already-existing assignment is sufficient; no second/duplicate
-`UserRoleAssignment` is created or required for this permission.
+Only the assignment's `club_id` (global when NULL, otherwise that one
+Club) decides reach. AUTH-2A (PO decision): the `user.directory.read`
+grant carries `RolePermissionScope(all)`; a grant needs a scope row to be
+effective at all (`applicable_grants`), but which scope it is does not
+widen or narrow this Club-boundary policy. The one existing assignment of
+the role is sufficient; no second `UserRoleAssignment` is created or
+required for this permission.
 """
 
 import uuid
@@ -50,7 +50,7 @@ import uuid
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
-from app.authorization.service import applicable_assignments
+from app.authorization.service import applicable_grants
 from app.db.identity import ClubMembership, Person
 
 PERMISSION_CODE = "user.directory.read"
@@ -67,7 +67,7 @@ def requester_has_directory_access(session: Session, *, user_id: uuid.UUID) -> b
     specifically to grant or withhold the whole directory capability
     (PO decision), unlike `person.read`'s shared, scope-narrowed list.
     """
-    return bool(applicable_assignments(session, user_id, PERMISSION_CODE))
+    return bool(applicable_grants(session, user_id, PERMISSION_CODE))
 
 
 def directory_reach_filter(session: Session, *, user_id: uuid.UUID) -> sa.ColumnElement[bool]:
@@ -84,13 +84,13 @@ def directory_reach_filter(session: Session, *, user_id: uuid.UUID) -> sa.Column
     via `requester_has_directory_access` before reaching this point, but
     this function stays safe to call standalone regardless.
     """
-    assignments = applicable_assignments(session, user_id, PERMISSION_CODE)
-    if not assignments:
+    grants = applicable_grants(session, user_id, PERMISSION_CODE)
+    if not grants:
         return sa.false()
 
     clauses: list[sa.ColumnElement[bool]] = []
-    for assignment in assignments:
-        if assignment.club_id is None:
+    for grant in grants:
+        if grant.club_id is None:
             clauses.append(sa.true())
         else:
             cm = aliased(ClubMembership)
@@ -98,7 +98,7 @@ def directory_reach_filter(session: Session, *, user_id: uuid.UUID) -> sa.Column
                 sa.exists(
                     sa.select(cm.id).where(
                         cm.person_id == Person.id,
-                        cm.club_id == assignment.club_id,
+                        cm.club_id == grant.club_id,
                         cm.status == _ACTIVE_CLUB_MEMBERSHIP_STATUS,
                     )
                 )

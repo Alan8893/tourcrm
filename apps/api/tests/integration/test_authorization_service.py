@@ -3,9 +3,10 @@ engine: permission lookup, multi-role additivity, scope evaluation and club
 isolation against actual Role/Permission/RolePermission/UserRoleAssignment
 rows.
 
-No RolePermission grant is assumed to pre-exist (Issue #19 seeded roles and
-permissions but deliberately no grants, and Issue #29 must not invent any)
-— every test creates exactly the rows its scenario needs, per Issue #29 §12.
+No RolePermission grant is assumed to pre-exist — every test creates
+exactly the rows its scenario needs, per Issue #29 §12. AUTH-2A: each
+grant carries its own scopes (`RolePermissionScope`); the assignment only
+attaches the role.
 
 Run with a reachable PostgreSQL instance, matching
 tests/integration/test_authorization.py:
@@ -20,7 +21,13 @@ import pytest
 
 from app.authorization.context import ResourceContext
 from app.authorization.service import AuthorizationDenied, Authorizer, can
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.identity import Club, Person, User
 from app.db.session import session_scope
 
@@ -61,12 +68,19 @@ def _make_permission(**overrides: object) -> Permission:
     return Permission(**defaults)  # type: ignore[arg-type]
 
 
-def _grant(session, role: Role, permission: Permission) -> None:
-    session.add(RolePermission(role_id=role.id, permission_id=permission.id))
+def _grant(session, role: Role, permission: Permission, *scope_types: str) -> None:
+    """AUTH-2A: the scopes belong to this one permission grant."""
+    session.add(
+        RolePermission(
+            role_id=role.id,
+            permission_id=permission.id,
+            scopes=[RolePermissionScope(scope_type=scope_type) for scope_type in scope_types],
+        )
+    )
 
 
 def _assign(session, user: User, role: Role, **overrides: object) -> UserRoleAssignment:
-    defaults: dict[str, object] = {"user_id": user.id, "role_id": role.id, "scope_type": "all"}
+    defaults: dict[str, object] = {"user_id": user.id, "role_id": role.id}
     defaults.update(overrides)
     assignment = UserRoleAssignment(**defaults)  # type: ignore[arg-type]
     session.add(assignment)
@@ -98,7 +112,7 @@ def test_role_assigned_but_permission_not_granted_is_denied() -> None:
         session.commit()
         # Deliberately no RolePermission row: role exists, permission
         # exists, but this role doesn't grant it.
-        _assign(session, user, role, scope_type="all")
+        _assign(session, user, role)
         session.commit()
 
         assert can(session, user.id, "widget.read") is False
@@ -113,8 +127,8 @@ def test_role_permission_grant_allows() -> None:
         permission = _make_permission(code="widget.read")
         session.add_all([person, user, role, permission])
         session.commit()
-        _grant(session, role, permission)
-        _assign(session, user, role, scope_type="all")
+        _grant(session, role, permission, "all")
+        _assign(session, user, role)
         session.commit()
 
         assert can(session, user.id, "widget.read") is True
@@ -129,8 +143,8 @@ def test_permission_check_is_specific_to_the_requested_code() -> None:
         permission = _make_permission(code="widget.read")
         session.add_all([person, user, role, permission])
         session.commit()
-        _grant(session, role, permission)
-        _assign(session, user, role, scope_type="all")
+        _grant(session, role, permission, "all")
+        _assign(session, user, role)
         session.commit()
 
         assert can(session, user.id, "widget.update") is False
@@ -147,10 +161,10 @@ def test_multiple_roles_grant_permissions_additively() -> None:
         permission_y = _make_permission(code="widget.manage")
         session.add_all([person, user, role_a, role_b, permission_x, permission_y])
         session.commit()
-        _grant(session, role_a, permission_x)
-        _grant(session, role_b, permission_y)
-        _assign(session, user, role_a, scope_type="all")
-        _assign(session, user, role_b, scope_type="all")
+        _grant(session, role_a, permission_x, "all")
+        _grant(session, role_b, permission_y, "all")
+        _assign(session, user, role_a)
+        _assign(session, user, role_b)
         session.commit()
 
         assert can(session, user.id, "widget.read") is True
@@ -172,8 +186,8 @@ def test_scope_all_allows_for_matching_club() -> None:
         permission = _make_permission(code="widget.read")
         session.add_all([person, user, club, role, permission])
         session.commit()
-        _grant(session, role, permission)
-        _assign(session, user, role, club_id=club.id, scope_type="all")
+        _grant(session, role, permission, "all")
+        _assign(session, user, role, club_id=club.id)
         session.commit()
 
         assert can(session, user.id, "widget.read", ResourceContext(club_id=club.id)) is True
@@ -188,8 +202,8 @@ def test_scope_self_allows_own_resource_and_denies_others() -> None:
         permission = _make_permission(code="widget.read")
         session.add_all([person, user, role, permission])
         session.commit()
-        _grant(session, role, permission)
-        _assign(session, user, role, scope_type="self")
+        _grant(session, role, permission, "self")
+        _assign(session, user, role)
         session.commit()
 
         assert can(session, user.id, "widget.read", ResourceContext(is_self=True)) is True
@@ -213,8 +227,8 @@ def test_unresolved_relationship_context_never_grants_access_despite_valid_grant
         permission = _make_permission(code="widget.read")
         session.add_all([person, user, role, permission])
         session.commit()
-        _grant(session, role, permission)
-        _assign(session, user, role, scope_type="self")
+        _grant(session, role, permission, "self")
+        _assign(session, user, role)
         session.commit()
 
         # No context at all (defaults to fully unresolved).
@@ -238,8 +252,8 @@ def test_scope_children_allows_explicit_child_and_denies_unrelated() -> None:
         permission = _make_permission(code="widget.read")
         session.add_all([person, user, role, permission])
         session.commit()
-        _grant(session, role, permission)
-        _assign(session, user, role, scope_type="children")
+        _grant(session, role, permission, "children")
+        _assign(session, user, role)
         session.commit()
 
         assert can(session, user.id, "widget.read", ResourceContext(is_child=True)) is True
@@ -255,8 +269,8 @@ def test_scope_own_groups_allows_owned_group_and_denies_others() -> None:
         permission = _make_permission(code="widget.read")
         session.add_all([person, user, role, permission])
         session.commit()
-        _grant(session, role, permission)
-        _assign(session, user, role, scope_type="own_groups")
+        _grant(session, role, permission, "own_groups")
+        _assign(session, user, role)
         session.commit()
 
         assert can(session, user.id, "widget.read", ResourceContext(is_own_group=True)) is True
@@ -272,8 +286,8 @@ def test_scope_own_events_allows_assigned_event_and_denies_others() -> None:
         permission = _make_permission(code="widget.update")
         session.add_all([person, user, role, permission])
         session.commit()
-        _grant(session, role, permission)
-        _assign(session, user, role, scope_type="own_events")
+        _grant(session, role, permission, "own_events")
+        _assign(session, user, role)
         session.commit()
 
         assert can(session, user.id, "widget.update", ResourceContext(is_own_event=True)) is True
@@ -289,8 +303,8 @@ def test_scope_none_always_denies() -> None:
         permission = _make_permission(code="widget.read")
         session.add_all([person, user, role, permission])
         session.commit()
-        _grant(session, role, permission)
-        _assign(session, user, role, scope_type="none")
+        _grant(session, role, permission, "none")
+        _assign(session, user, role)
         session.commit()
 
         context = ResourceContext(
@@ -313,8 +327,8 @@ def test_club_scoped_assignment_does_not_grant_access_to_a_different_club() -> N
         permission = _make_permission(code="widget.read")
         session.add_all([person, user, club_a, club_b, role, permission])
         session.commit()
-        _grant(session, role, permission)
-        _assign(session, user, role, club_id=club_a.id, scope_type="all")
+        _grant(session, role, permission, "all")
+        _assign(session, user, role, club_id=club_a.id)
         session.commit()
 
         assert can(session, user.id, "widget.read", ResourceContext(club_id=club_a.id)) is True
@@ -333,8 +347,8 @@ def test_global_assignment_applies_regardless_of_club() -> None:
         permission = _make_permission(code="widget.manage")
         session.add_all([person, user, club, role, permission])
         session.commit()
-        _grant(session, role, permission)
-        _assign(session, user, role, club_id=None, scope_type="all")
+        _grant(session, role, permission, "all")
+        _assign(session, user, role, club_id=None)
         session.commit()
 
         assert can(session, user.id, "widget.manage", ResourceContext(club_id=club.id)) is True
@@ -366,8 +380,8 @@ def test_authorizer_check_does_not_raise_on_allow() -> None:
         permission = _make_permission(code="widget.read")
         session.add_all([person, user, role, permission])
         session.commit()
-        _grant(session, role, permission)
-        _assign(session, user, role, scope_type="all")
+        _grant(session, role, permission, "all")
+        _assign(session, user, role)
         session.commit()
 
         authorizer = Authorizer(session=session, user_id=user.id, permission_code="widget.read")

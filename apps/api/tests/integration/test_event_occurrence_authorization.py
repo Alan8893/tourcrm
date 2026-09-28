@@ -18,8 +18,14 @@ from datetime import timezone as dt_timezone
 
 from sqlalchemy import select
 
-from app.authorization.service import Authorizer, applicable_assignments
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.authorization.service import Authorizer, applicable_grants
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.event_recurrence import EventOccurrence, EventSeries
 from app.db.groups import Group, GroupInstructorAssignment
 from app.db.identity import Club, ClubMembership, GuardianRelationship, Person, User
@@ -141,9 +147,15 @@ def _grant_permission(
     role = Role(code=f"role-{uuid.uuid4().hex[:8]}", name="Test role")
     session.add(role)
     session.commit()
-    session.add(RolePermission(role_id=role.id, permission_id=permission.id))
     session.add(
-        UserRoleAssignment(user_id=user_id, role_id=role.id, scope_type=scope_type, club_id=club_id)
+        RolePermission(
+            role_id=role.id,
+            permission_id=permission.id,
+            scopes=[RolePermissionScope(scope_type=scope_type)],
+        )
+    )
+    session.add(
+        UserRoleAssignment(user_id=user_id, role_id=role.id, club_id=club_id)
     )
     session.commit()
 
@@ -200,13 +212,12 @@ def test_own_events_scope_requires_active_occurrence_staff_assignment() -> None:
 
 @requires_postgres
 def test_assigned_events_alias_behaves_identically_to_own_events() -> None:
-    """`assigned_events` is normalized to `own_events` at the write
-    boundary (app.authorization.context.normalize_scope_type, applied by
-    the role-assignment write path — app.api.v1.role_assignments) before
-    ever reaching the database; `user_role_assignments.scope_type`'s own
-    CHECK constraint only accepts canonical values, so this proves the
-    alias resolves to identical occurrence-authorization behavior via
-    that same normalization, not by persisting the alias literally."""
+    """`assigned_events` is only an alias of `own_events`
+    (app.authorization.context.normalize_scope_type); the
+    `role_permission_scopes.scope_type` CHECK constraint only accepts
+    canonical values, so this proves the alias resolves to identical
+    occurrence-authorization behavior via that normalization, not by
+    persisting the alias literally."""
     from app.authorization.context import normalize_scope_type
 
     assert normalize_scope_type("assigned_events") == "own_events"
@@ -231,8 +242,8 @@ def test_assigned_events_alias_behaves_identically_to_own_events() -> None:
             scope_type=normalize_scope_type("assigned_events"),
             club_id=club_id,
         )
-        assignments = applicable_assignments(s, staff_user.id, "event.read")
-        assert assignments[0].scope_type == "own_events"
+        grants = applicable_grants(s, staff_user.id, "event.read")
+        assert grants[0].scope_type == "own_events"
 
         context = build_occurrence_resource_context(s, occurrence=occ, user_id=staff_user.id)
         authorizer = Authorizer(session=s, user_id=staff_user.id, permission_code="event.read")

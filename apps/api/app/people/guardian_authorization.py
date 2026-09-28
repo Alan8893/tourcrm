@@ -77,7 +77,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
 from app.authorization.context import ResourceContext
-from app.authorization.service import applicable_assignments
+from app.authorization.service import applicable_grants
 from app.db.identity import GuardianRelationship, Person, User
 from app.people.authorization import own_group_condition_for_person
 
@@ -174,27 +174,27 @@ def guardian_relationship_visibility_filter(
     to see under `permission_code`. Used by
     `GET /persons/{person_id}/guardian-relationships`.
     """
-    assignments = applicable_assignments(session, user_id, permission_code)
-    if not assignments:
+    grants = applicable_grants(session, user_id, permission_code)
+    if not grants:
         return sa.false()
 
-    needs_person = any(a.scope_type in ("self", "children") for a in assignments)
+    needs_person = any(a.scope_type in ("self", "children") for a in grants)
     requester_person_id = _person_id_for_user(session, user_id) if needs_person else None
 
     clauses: list[sa.ColumnElement[bool]] = []
-    for assignment in assignments:
-        if assignment.club_id is not None:
+    for grant in grants:
+        if grant.club_id is not None:
             # GuardianRelationship is Club-neutral: no club-scoped
             # override is defined for it (see module docstring) — a
             # club-scoped assignment never matches, of any scope_type.
             continue
-        if assignment.scope_type == "all":
+        if grant.scope_type == "all":
             scope_predicate: sa.ColumnElement[bool] = sa.true()
-        elif assignment.scope_type == "self":
+        elif grant.scope_type == "self":
             scope_predicate = GuardianRelationship.child_person_id == requester_person_id
-        elif assignment.scope_type == "children":
+        elif grant.scope_type == "children":
             scope_predicate = GuardianRelationship.guardian_person_id == requester_person_id
-        elif assignment.scope_type == "own_groups":
+        elif grant.scope_type == "own_groups":
             # TH-0103 / ADR-0035 §8.4: either side of the relationship
             # being reachable through the Instructor's own_groups chain
             # is sufficient ("relationships involving Persons reachable
@@ -205,7 +205,7 @@ def guardian_relationship_visibility_filter(
                 ),
                 own_group_condition_for_person(GuardianRelationship.child_person_id, user_id),
             )
-        elif assignment.scope_type == "none":
+        elif grant.scope_type == "none":
             scope_predicate = sa.false()
         else:
             # own_events: not applicable to GuardianRelationship.
@@ -229,19 +229,19 @@ def children_visibility_filter(
     relationships; a club-scoped assignment never matches, same as
     `guardian_relationship_visibility_filter`.
     """
-    assignments = applicable_assignments(session, user_id, permission_code)
-    if not assignments:
+    grants = applicable_grants(session, user_id, permission_code)
+    if not grants:
         return sa.false()
 
     requester_person_id = _person_id_for_user(session, user_id)
 
     clauses: list[sa.ColumnElement[bool]] = []
-    for assignment in assignments:
-        if assignment.club_id is not None:
+    for grant in grants:
+        if grant.club_id is not None:
             continue
-        if assignment.scope_type == "none":
+        if grant.scope_type == "none":
             continue
-        if assignment.scope_type not in ("all", "self", "children"):
+        if grant.scope_type not in ("all", "self", "children"):
             continue
         clauses.append(
             _active_guardian_condition(

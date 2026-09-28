@@ -11,20 +11,20 @@ relationships).
 Every other list-level authorization predicate in this codebase (see
 `app.events.authorization.event_visibility_filter`,
 `app.events.series_authorization.occurrence_visibility_filter`) resolves
-`scope_matches` per `UserRoleAssignment` (`all` -> unconditional, `own_
+`scope_matches` per permission grant scope (`all` -> unconditional, `own_
 events` -> a relationship check, etc.). Instructor Schedule is explicitly
 different (group-and-instructor-schedule-api.md §3 "Scope behavior"): "An
 `all` RoleAssignment does not by itself turn this contextual endpoint into
-a club-wide instructor schedule" — i.e. `scope_type` itself plays no role
+a club-wide instructor schedule" — i.e. the grant's scope itself plays no role
 in *widening* the result; only the underlying relationship
 (`EventStaffAssignment` / `EventGroupTarget` + `GroupInstructorAssignment`)
-does. What the assignment *does* still gate is (a) whether the caller
+does. What the grant *does* still gate is (a) whether the caller
 holds `event.read` at all in a given Club (`none` contributes nothing,
 matching that scope's universal "no access" meaning everywhere else in
 this codebase) and (b) which Club(s) are covered at all (`club_id`
 boundary) — ADR-0022 §13: "preserve independent Club/object boundaries...
 no Club may be inferred from the User's global identity". A Club the
-caller holds zero `event.read` assignments for (of any non-`none` scope)
+caller holds zero `event.read` grants for (of any non-`none` scope)
 never appears, even if a stray relationship row exists there.
 
 ## Effectivity is evaluated at the item's own scheduled start, not "now"
@@ -39,9 +39,9 @@ genuinely staffed even after that assignment has since ended). This
 module therefore defines its own instant-parameterized predicates rather
 than reusing those two now()-only helpers.
 
-`assigned_events` is never a literal `scope_type` value (it is normalized
-to `own_events` at the write boundary, `app.authorization.context.
-normalize_scope_type`) — this module needs no separate handling for it.
+`assigned_events` is never a stored scope value (the
+`role_permission_scopes.scope_type` CHECK constraint admits only ADR-0013's
+canonical names) — this module needs no separate handling for it.
 """
 
 import uuid
@@ -52,8 +52,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Session, aliased
 
-from app.authorization.service import applicable_assignments
-from app.db.authorization import UserRoleAssignment
+from app.authorization.service import PermissionGrant, applicable_grants
 from app.db.event_recurrence import EventOccurrence, EventSeries
 from app.db.event_recurrence_relationships import (
     EventOccurrenceGroupTarget,
@@ -141,15 +140,15 @@ def _own_occurrence_group_condition_at(
     )
 
 
-def _assignment_club_coverage(
-    club_id_column: Any, non_none_assignments: list[UserRoleAssignment]
+def _grant_club_coverage(
+    club_id_column: Any, non_none_grants: list[PermissionGrant]
 ) -> sa.ColumnElement[bool]:
     """True if at least one of the caller's non-`none` `event.read`
-    assignments covers `club_id_column` (`club_id IS NULL` -> global,
-    covers every Club)."""
-    if any(a.club_id is None for a in non_none_assignments):
+    grants covers `club_id_column` (assignment `club_id IS NULL` ->
+    global, covers every Club)."""
+    if any(g.club_id is None for g in non_none_grants):
         return sa.true()
-    club_ids = [a.club_id for a in non_none_assignments]
+    club_ids = [g.club_id for g in non_none_grants]
     if not club_ids:
         return sa.false()
     return club_id_column.in_(club_ids)
@@ -204,15 +203,15 @@ def list_instructor_schedule_items_page(
     """Return `(items, total)` for `[from_at, to_at)` for the authenticated
     User's own instructor responsibilities — relationship-based, not
     scope-based (see module docstring)."""
-    assignments = applicable_assignments(session, user_id, permission_code)
-    non_none_assignments = [a for a in assignments if a.scope_type != "none"]
-    if not non_none_assignments:
+    grants = applicable_grants(session, user_id, permission_code)
+    non_none_grants = [g for g in grants if g.scope_type != "none"]
+    if not non_none_grants:
         return [], 0
 
     _extend_instructor_materialization(session, user_id=user_id, until=to_at)
 
     event_conditions: list[sa.ColumnElement[bool]] = [
-        _assignment_club_coverage(Event.club_id, non_none_assignments),
+        _grant_club_coverage(Event.club_id, non_none_grants),
         Event.start_at >= from_at,
         Event.start_at < to_at,
         Event.status.in_(CALENDAR_EVENT_STATUSES),
@@ -238,7 +237,7 @@ def list_instructor_schedule_items_page(
     ).where(*event_conditions)
 
     occurrence_conditions: list[sa.ColumnElement[bool]] = [
-        _assignment_club_coverage(EventOccurrence.club_id, non_none_assignments),
+        _grant_club_coverage(EventOccurrence.club_id, non_none_grants),
         EventOccurrence.starts_at >= from_at,
         EventOccurrence.starts_at < to_at,
         EventOccurrence.status.in_(CALENDAR_OCCURRENCE_STATUSES),

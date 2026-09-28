@@ -26,7 +26,13 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentPrincipal, get_current_principal
 from app.authorization.context import normalize_scope_type
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.event_recurrence import EventOccurrence, EventSeries
 from app.db.event_recurrence_relationships import (
     EventOccurrenceGroupTarget,
@@ -331,10 +337,16 @@ def _grant_permission(
         role = Role(code=f"role-{uuid.uuid4().hex[:8]}", name="Test role")
         session.add(role)
         session.commit()
-        session.add(RolePermission(role_id=role.id, permission_id=permission.id))
+        session.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+                scopes=[RolePermissionScope(scope_type=scope_type)],
+            )
+        )
         session.add(
             UserRoleAssignment(
-                user_id=user_id, role_id=role.id, scope_type=scope_type, club_id=club_id
+                user_id=user_id, role_id=role.id, club_id=club_id
             )
         )
         session.commit()

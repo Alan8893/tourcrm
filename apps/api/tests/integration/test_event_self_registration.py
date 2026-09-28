@@ -174,7 +174,13 @@ def _grant_permission(
     scope_type: str = "all",
     club_id: uuid.UUID | None = None,
 ) -> None:
-    from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+    from app.db.authorization import (
+        Permission,
+        Role,
+        RolePermission,
+        RolePermissionScope,
+        UserRoleAssignment,
+    )
 
     with session_scope() as session:
         permission = session.execute(
@@ -187,10 +193,16 @@ def _grant_permission(
         role = Role(code=f"role-{uuid.uuid4().hex[:8]}", name="Test role")
         session.add(role)
         session.commit()
-        session.add(RolePermission(role_id=role.id, permission_id=permission.id))
+        session.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+                scopes=[RolePermissionScope(scope_type=scope_type)],
+            )
+        )
         session.add(
             UserRoleAssignment(
-                user_id=user_id, role_id=role.id, scope_type=scope_type, club_id=club_id
+                user_id=user_id, role_id=role.id, club_id=club_id
             )
         )
         session.commit()

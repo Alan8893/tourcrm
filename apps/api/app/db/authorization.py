@@ -1,5 +1,5 @@
 """Authorization foundation: Role, Permission, RolePermission,
-UserRoleAssignment (Issue #19).
+RolePermissionScope, UserRoleAssignment (Issue #19, AUTH-2A).
 
 Canonical sources: docs/03-architecture/domain-model.md §7,
 docs/03-architecture/database-schema.md §6, docs/03-architecture/data-model.md §4,
@@ -9,11 +9,11 @@ ADR-0013 (canonical scope vocabulary).
 
 This is persistence/domain foundation only, per ADR-0005's model
 `User -> Role -> Permission -> Scope`: Role is a named set of Permissions
-(via RolePermission); UserRoleAssignment attaches a Role to a User, with an
-independent `scope_type`/`scope_ref_id` describing how far that assignment
-reaches. A user may hold several roles/assignments at once; effective
-permissions are the union of assigned roles' permissions (resolved by a
-future authorization layer, not here).
+(via RolePermission), each grant carrying its own scopes (via
+RolePermissionScope, AUTH-2A); UserRoleAssignment attaches a Role to a
+User in a Club for a validity interval. A user may hold several roles at
+once; effective permissions are the union of assigned roles' permission
+grants, each evaluated against its own scopes (app.authorization.service).
 
 Non-goals here (see Issue #19): authentication, authorization enforcement,
 API endpoints, explicit deny, object-level authorization, GuardianRelationship,
@@ -36,6 +36,11 @@ from app.db.identity import Club, User
 # of `own_events` and `own_records` is not a global scope (ADR-0013) — so
 # neither appears here; a new scope requires updating that ADR first.
 CANONICAL_SCOPE_TYPES = ("all", "self", "children", "own_groups", "own_events", "none")
+
+# AUTH-2A (PO decision): the value written into the legacy
+# `user_role_assignments.scope_type` column for every new assignment.
+# Authorization never reads that column.
+LEGACY_ASSIGNMENT_SCOPE_TYPE = "all"
 
 # database-schema.md §6/roles-and-permissions.md §3: the four baseline roles.
 # Issue #19: the canonical code is `admin`, not `administrator` (that word
@@ -162,10 +167,10 @@ class Role(Base):
         sa.Boolean, nullable=False, server_default=sa.text("false")
     )
 
-    # passive_deletes=True: role_id is part of role_permissions' own primary
-    # key, so it cannot be nulled out by the ORM's own dependency processor
-    # on delete (unlike a plain FK) — the database's own ON DELETE CASCADE
-    # (see RolePermission) must handle it instead.
+    # passive_deletes=True: role_permissions.role_id is NOT NULL, so it
+    # cannot be nulled out by the ORM's own dependency processor on delete
+    # — the database's own ON DELETE CASCADE (see RolePermission) must
+    # handle it instead.
     role_permissions: Mapped[list["RolePermission"]] = relationship(
         back_populates="role", passive_deletes=True
     )
@@ -201,12 +206,14 @@ class RolePermission(Base):
     docs/03-architecture/domain-model.md §7; database-schema.md §6.3
     `role_permissions`; data-model.md §4.
 
-    Composite primary key `(role_id, permission_id)`, no separate surrogate
-    `id` — database-schema.md §6.3 states the primary key explicitly as
-    this pair, unlike every other table in this codebase so far (see final
-    report "Documentation follow-up" re: data-model.md §2.1's general "every
-    entity has an id" statement). The pair PK also is the duplicate-grant
-    protection Issue #19 requires — a duplicate insert violates it directly.
+    AUTH-2A: a grant is the unit that carries authorization scope — its
+    `RolePermissionScope` rows say how far *this* permission of *this*
+    role reaches (`UserRoleAssignment -> RolePermission ->
+    RolePermissionScope`). The surrogate `id` exists so a scope row can
+    reference exactly one grant; `(role_id, permission_id)` stays unique
+    (`uq_role_permissions_role_id_permission_id`) and remains the
+    duplicate-grant protection Issue #19 requires. A grant with no scope
+    rows grants nothing (fail closed).
 
     `ON DELETE CASCADE` on both FKs: database-schema.md §24 permits cascade
     on association tables "when the child has no standalone historical
@@ -216,32 +223,81 @@ class RolePermission(Base):
 
     __tablename__ = "role_permissions"
 
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     role_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), sa.ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True
+        UUID(as_uuid=True), sa.ForeignKey("roles.id", ondelete="CASCADE"), nullable=False
     )
     permission_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), sa.ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True
+        UUID(as_uuid=True), sa.ForeignKey("permissions.id", ondelete="CASCADE"), nullable=False
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "role_id", "permission_id", name="uq_role_permissions_role_id_permission_id"
+        ),
     )
 
     role: Mapped["Role"] = relationship(back_populates="role_permissions")
     permission: Mapped["Permission"] = relationship(back_populates="role_permissions")
+    # passive_deletes=True: the database's own ON DELETE CASCADE on
+    # role_permission_scopes.role_permission_id removes a grant's scopes.
+    scopes: Mapped[list["RolePermissionScope"]] = relationship(
+        back_populates="role_permission", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class RolePermissionScope(Base):
+    """One ADR-0013 scope of one RolePermission grant (AUTH-2A).
+
+    A grant may carry several scopes (e.g. `children` + `self`); the
+    caller is allowed through that grant when *any* of its own scopes
+    matches. Scopes of one grant never apply to another grant — even of
+    the same role. Unique per `(role_permission_id, scope_type)`.
+    """
+
+    __tablename__ = "role_permission_scopes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    role_permission_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("role_permissions.id", ondelete="CASCADE"), nullable=False
+    )
+    scope_type: Mapped[str] = mapped_column(sa.String(32), nullable=False)
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "role_permission_id",
+            "scope_type",
+            name="uq_role_permission_scopes_role_permission_id_scope_type",
+        ),
+        sa.CheckConstraint(
+            "scope_type IN ('all','self','children','own_groups','own_events','none')",
+            name="ck_role_permission_scopes_scope_type_valid",
+        ),
+    )
+
+    role_permission: Mapped["RolePermission"] = relationship(back_populates="scopes")
 
 
 class UserRoleAssignment(Base):
-    """A Role assigned to a User, with an independent scope and a
-    historical `[valid_from, valid_to)` validity interval (Issue #74,
-    implementing ADR-0026 §1).
+    """A Role assigned to a User, with a historical `[valid_from,
+    valid_to)` validity interval (Issue #74, implementing ADR-0026 §1).
 
     docs/03-architecture/domain-model.md §7; database-schema.md §6.4
     `user_role_assignments`; ADR-0005 (`User -> Role -> Permission -> Scope`);
     ADR-0013 (canonical scope vocabulary); ADR-0026 §1 (temporal validity/
     revoke semantics); docs/02-requirements/roles-and-permissions.md §19.
 
-    Scope is a property of the assignment, not of the role itself — a role
-    is a fixed set of permissions; `scope_type`/`scope_ref_id` say how far a
-    *particular* assignment of that role reaches. Explicit deny is out of
-    scope (roles-and-permissions.md §13 / auth-and-authorization.md §15:
-    role permissions are additive; a deny model needs its own ADR).
+    AUTH-2A: authorization scope is a property of each permission grant
+    (`RolePermission -> RolePermissionScope`), never of the assignment.
+    An assignment only says *which* role a user holds, in which Club
+    (`club_id`) and when. One role is held through at most one open-ended
+    assignment per (user, Club) — `uq_user_role_assignments_one_active_role`
+    — whatever the legacy `scope_type`. `scope_type`/`scope_ref_id` are
+    legacy columns kept for schema compatibility until a separate cleanup
+    removes them: new rows always store `LEGACY_ASSIGNMENT_SCOPE_TYPE` and
+    no authorization decision reads them. Explicit deny is out of scope
+    (roles-and-permissions.md §13 / auth-and-authorization.md §15: role
+    permissions are additive; a deny model needs its own ADR).
 
     `valid_from`/`valid_to`: `valid_to = NULL` is an open-ended, currently
     effective assignment. Revoke never deletes or mutates `valid_from`; it
@@ -288,11 +344,11 @@ class UserRoleAssignment(Base):
     club_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), sa.ForeignKey("clubs.id", ondelete="RESTRICT"), nullable=True
     )
-    scope_type: Mapped[str] = mapped_column(sa.String(32), nullable=False)
-    # No FK: the table `scope_ref_id` points into depends on `scope_type`
-    # (e.g. a group vs. an event) and no such table exists yet in this
-    # codebase — same reasoning as Person.photo_file_id in Issue #17.
-    # ADR-0026 §2: not used by any MVP scope — always NULL in this slice.
+    # Legacy (AUTH-2A): not an authorization input — see class docstring.
+    scope_type: Mapped[str] = mapped_column(
+        sa.String(32), nullable=False, default=LEGACY_ASSIGNMENT_SCOPE_TYPE
+    )
+    # Legacy (AUTH-2A). No FK: never used by any MVP scope — always NULL.
     scope_ref_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
     # ADR-0026 §1 / roles-and-permissions.md §19.1 — see class docstring
     # for why this (uniquely among this codebase's temporal entities) has
@@ -346,6 +402,22 @@ class UserRoleAssignment(Base):
             (sa.func.tstzrange(sa.column("valid_from"), sa.column("valid_to")), "&&"),
             using="gist",
             name="ck_user_role_assignments_no_overlapping_active",
+        ),
+        # AUTH-2A: one open-ended assignment per (user, role, Club),
+        # independent of the legacy `scope_type`/`scope_ref_id`. A partial
+        # unique index rather than a scope-less version of the exclusion
+        # constraint above: legacy rows created before AUTH-2A (e.g. AUTH-2's
+        # `own_groups` + `self` pairs, revoked together) legitimately
+        # overlap in their closed history, which must be kept as is. Every
+        # create path starts an open-ended interval, so this is exactly the
+        # "one active role" invariant for them.
+        sa.Index(
+            "uq_user_role_assignments_one_active_role",
+            "user_id",
+            "role_id",
+            sa.func.coalesce(sa.column("club_id"), sa.text(f"'{_NULL_SENTINEL_UUID}'::uuid")),
+            unique=True,
+            postgresql_where=sa.text("valid_to IS NULL"),
         ),
     )
 

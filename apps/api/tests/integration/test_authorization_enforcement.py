@@ -27,7 +27,13 @@ from app.api.errors import register_exception_handlers
 from app.api.request_context import RequestIDMiddleware
 from app.authorization.context import ResourceContext
 from app.authorization.service import Authorizer
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.identity import Person, User
 from app.db.session import get_db, session_scope
 
@@ -137,8 +143,14 @@ def _grant_permission_via_role(
         permission = _make_permission(code=permission_code)
         session.add_all([role, permission])
         session.commit()
-        session.add(RolePermission(role_id=role.id, permission_id=permission.id))
-        session.add(UserRoleAssignment(user_id=user_id, role_id=role.id, scope_type=scope_type))
+        session.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+                scopes=[RolePermissionScope(scope_type=scope_type)],
+            )
+        )
+        session.add(UserRoleAssignment(user_id=user_id, role_id=role.id))
         session.commit()
 
 

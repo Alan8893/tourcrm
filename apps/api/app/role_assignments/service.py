@@ -11,7 +11,7 @@ ADR-0027: the active-ClubMembership check below is a creation-time
 integrity prerequisite only (this module's own concern). It is never
 re-checked later, and ending the target's ClubMembership afterward never
 touches the resulting RoleAssignment row — see
-app.authorization.service.applicable_assignments's own docstring for why
+app.authorization.service.applicable_grants's own docstring for why
 the shared authorization engine has no corresponding check.
 
 This module performs no authorization: the caller (the API router) must
@@ -26,11 +26,19 @@ performs its cross-Club check (create only), audit record, and write
 inside that same transaction — an audit-required mutation never succeeds
 without its audit record (ADR-0024 §5 fail-closed semantics).
 
-The temporal duplicate/overlap invariant (ADR-0026 §1) is a DB-level GiST
-exclusion constraint (app.db.authorization.UserRoleAssignment) — create
-catches the resulting IntegrityError and re-raises it as a typed domain
-error, mirroring app.groups.service.create_group_membership's identical
-pattern for GroupMembership's own duplicate-active constraint.
+The duplicate invariant is enforced by the database
+(app.db.authorization.UserRoleAssignment): AUTH-2A's
+`uq_user_role_assignments_one_active_role` (one open-ended assignment per
+user, role and Club, whatever the legacy `scope_type`) plus the legacy
+ADR-0026 §1 GiST exclusion constraint — create catches the resulting
+IntegrityError and re-raises it as a typed domain error, mirroring
+app.groups.service.create_group_membership's identical pattern for
+GroupMembership's own duplicate-active constraint.
+
+AUTH-2A: a RoleAssignment grants a Role, never a scope. The authorization
+scopes of each of the Role's permissions live on `RolePermissionScope`;
+the legacy `scope_type` column always receives
+`LEGACY_ASSIGNMENT_SCOPE_TYPE` and is not an authorization input.
 """
 
 import uuid
@@ -41,14 +49,20 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit_event
+from app.authentication.bootstrap import ADMIN_ROLE_CODE
 from app.authorization.club_ownership import user_has_active_club_membership
-from app.db.authorization import UserRoleAssignment
+from app.db.authorization import LEGACY_ASSIGNMENT_SCOPE_TYPE, Role, UserRoleAssignment
 from app.role_assignments.lifecycle import (
     InvalidRoleAssignmentTransitionError,
-    validate_role_assignment_scope,
+    validate_role_assignment_club,
 )
 
-_NO_OVERLAPPING_ACTIVE_CONSTRAINT = "ck_user_role_assignments_no_overlapping_active"
+_DUPLICATE_ASSIGNMENT_CONSTRAINTS = frozenset(
+    {
+        "uq_user_role_assignments_one_active_role",
+        "ck_user_role_assignments_no_overlapping_active",
+    }
+)
 
 
 class RoleAssignmentError(Exception):
@@ -69,11 +83,9 @@ class RoleAssignmentClubMembershipMissingError(RoleAssignmentError):
 
 
 class DuplicateRoleAssignmentError(RoleAssignmentError):
-    """ADR-0026 §1: an assignment already exists for this (user_id,
-    role_id, club_id, scope_type, scope_ref_id) tuple with an overlapping
-    `[valid_from, valid_to)` interval — enforced by the
-    `ck_user_role_assignments_no_overlapping_active` GiST exclusion
-    constraint. Sequential historical assignments (no overlap) remain
+    """ADR-0026 §1 / AUTH-2A: the user already holds this role in this
+    Club through an active assignment — whatever that assignment's legacy
+    `scope_type`. Sequential historical assignments (no overlap) remain
     unaffected."""
 
     def __init__(
@@ -82,24 +94,22 @@ class DuplicateRoleAssignmentError(RoleAssignmentError):
         user_id: uuid.UUID,
         role_id: uuid.UUID,
         club_id: Optional[uuid.UUID],
-        scope_type: str,
     ) -> None:
         super().__init__(
-            f"An overlapping RoleAssignment already exists for user {user_id} / "
-            f"role {role_id} / club {club_id} / scope {scope_type!r}"
+            f"An active RoleAssignment already exists for user {user_id} / "
+            f"role {role_id} / club {club_id}"
         )
         self.user_id = user_id
         self.role_id = role_id
         self.club_id = club_id
-        self.scope_type = scope_type
 
 
 _DEADLOCK_DETECTED_SQLSTATE = "40P01"
 
 
-def _is_no_overlapping_active_violation(exc: IntegrityError) -> bool:
+def _is_duplicate_assignment_violation(exc: IntegrityError) -> bool:
     constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
-    return constraint_name == _NO_OVERLAPPING_ACTIVE_CONSTRAINT
+    return constraint_name in _DUPLICATE_ASSIGNMENT_CONSTRAINTS
 
 
 def _is_deadlock(exc: OperationalError) -> bool:
@@ -110,7 +120,7 @@ def _is_deadlock(exc: OperationalError) -> bool:
     # sides are mid-check at once, as a genuine PostgreSQL deadlock
     # (DeadlockDetected, SQLSTATE 40P01) — surfaced by SQLAlchemy as
     # OperationalError, not IntegrityError. Checked by SQLSTATE (driver-
-    # agnostic, matching `_is_no_overlapping_active_violation`'s own
+    # agnostic, matching `_is_duplicate_assignment_violation`'s own
     # `.orig` inspection style) rather than an isinstance check against a
     # psycopg-specific exception class, so an unrelated OperationalError
     # (e.g. a lost connection) is never misclassified as a duplicate.
@@ -122,7 +132,6 @@ def create_role_assignment(
     *,
     user_id: uuid.UUID,
     role_id: uuid.UUID,
-    scope_type: str,
     actor_user_id: uuid.UUID,
     club_id: Optional[uuid.UUID] = None,
     scope_ref_id: Optional[uuid.UUID] = None,
@@ -133,21 +142,30 @@ def create_role_assignment(
     own docstring for why this is never client-suppliable, unlike
     Group/GroupMembership's `valid_from`).
 
+    AUTH-2A: the assignment grants the Role only. No scope is accepted;
+    the legacy `scope_type` column is written as
+    `LEGACY_ASSIGNMENT_SCOPE_TYPE`. `club_id` is required unless the Role
+    is the canonical system `admin` role (`validate_role_assignment_club`).
+
     Raises InvalidRoleAssignmentScopeError (from
-    app.role_assignments.lifecycle) when the (`scope_type`, `club_id`,
-    `scope_ref_id`) combination is not canonical,
+    app.role_assignments.lifecycle) when `club_id`/`scope_ref_id` violate
+    that rule,
     RoleAssignmentClubMembershipMissingError when a club-scoped
     assignment's target User has no active ClubMembership in that Club,
-    and DuplicateRoleAssignmentError when the temporal exclusion
-    invariant would be violated — either as an ExclusionViolation
-    (IntegrityError) or, under a genuine concurrent-insert deadlock
-    (OperationalError, SQLSTATE 40P01 — see `_is_deadlock`), as the
-    deadlock-victim outcome; persisting nothing in either case.
-    Records `role_assignment.created` in the same transaction as the
-    write.
+    and DuplicateRoleAssignmentError when the user already holds the role
+    in that Club — either as a constraint violation (IntegrityError) or,
+    under a genuine concurrent-insert deadlock (OperationalError,
+    SQLSTATE 40P01 — see `_is_deadlock`), as the deadlock-victim outcome;
+    persisting nothing in either case. Records `role_assignment.created`
+    in the same transaction as the write.
     """
-    validate_role_assignment_scope(
-        scope_type=scope_type, club_id=club_id, scope_ref_id=scope_ref_id
+    role = session.get(Role, role_id)
+    validate_role_assignment_club(
+        is_global_admin_role=(
+            role is not None and role.code == ADMIN_ROLE_CODE and role.is_system
+        ),
+        club_id=club_id,
+        scope_ref_id=scope_ref_id,
     )
 
     if club_id is not None:
@@ -166,7 +184,7 @@ def create_role_assignment(
         user_id=user_id,
         role_id=role_id,
         club_id=club_id,
-        scope_type=scope_type,
+        scope_type=LEGACY_ASSIGNMENT_SCOPE_TYPE,
         scope_ref_id=scope_ref_id,
         valid_from=datetime.now(timezone.utc),
     )
@@ -187,16 +205,16 @@ def create_role_assignment(
         session.commit()
     except IntegrityError as exc:
         session.rollback()
-        if _is_no_overlapping_active_violation(exc):
+        if _is_duplicate_assignment_violation(exc):
             raise DuplicateRoleAssignmentError(
-                user_id=user_id, role_id=role_id, club_id=club_id, scope_type=scope_type
+                user_id=user_id, role_id=role_id, club_id=club_id
             ) from exc
         raise
     except OperationalError as exc:
         session.rollback()
         if _is_deadlock(exc):
             raise DuplicateRoleAssignmentError(
-                user_id=user_id, role_id=role_id, club_id=club_id, scope_type=scope_type
+                user_id=user_id, role_id=role_id, club_id=club_id
             ) from exc
         raise
     return assignment

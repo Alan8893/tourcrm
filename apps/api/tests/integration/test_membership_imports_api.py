@@ -30,7 +30,13 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import CurrentPrincipal, get_current_principal
 from app.db.audit import AuditLog
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.documents import File
 from app.db.identity import Club, ClubMembership, Person, User
 from app.db.imports import ImportJob, ImportJobError
@@ -110,10 +116,16 @@ def _grant_permission(
         role = Role(code=f"role-{uuid.uuid4().hex[:8]}", name="Test role")
         session.add(role)
         session.commit()
-        session.add(RolePermission(role_id=role.id, permission_id=permission.id))
+        session.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+                scopes=[RolePermissionScope(scope_type=scope_type)],
+            )
+        )
         session.add(
             UserRoleAssignment(
-                user_id=user_id, role_id=role.id, scope_type=scope_type, club_id=club_id
+                user_id=user_id, role_id=role.id, club_id=club_id
             )
         )
         session.commit()
@@ -621,9 +633,15 @@ def test_non_system_role_named_admin_is_not_an_administrator(client: TestClient)
         role = Role(code=f"admin-lookalike-{uuid.uuid4().hex[:6]}", name="admin", is_system=False)
         session.add(role)
         session.flush()
-        session.add(RolePermission(role_id=role.id, permission_id=permission.id))
         session.add(
-            UserRoleAssignment(user_id=user_id, role_id=role.id, scope_type="all", club_id=club_id)
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+                scopes=[RolePermissionScope(scope_type="all")],
+            )
+        )
+        session.add(
+            UserRoleAssignment(user_id=user_id, role_id=role.id, club_id=club_id)
         )
         session.commit()
     _authenticate_as(user_id)
@@ -943,7 +961,9 @@ def _admin_has_membership_import_grant() -> bool:
     with session_scope() as session:
         return (
             session.execute(
-                select(RolePermission)
+                # Explicit columns: also runs against pre-AUTH-2A schemas
+                # (no role_permissions.id) after a downgrade.
+                select(RolePermission.role_id)
                 .join(Role, Role.id == RolePermission.role_id)
                 .join(Permission, Permission.id == RolePermission.permission_id)
                 .where(Role.code == "admin", Permission.code == "membership.import")

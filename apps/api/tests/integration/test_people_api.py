@@ -26,7 +26,13 @@ from sqlalchemy.exc import IntegrityError
 from app.api.deps import CurrentPrincipal, get_current_principal
 from app.audit.service import record_audit_event
 from app.db.audit import AuditLog
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.events import EventParticipation
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 from app.db.identity import Club, ClubMembership, GuardianRelationship, Person, User
@@ -155,10 +161,16 @@ def _grant_permission(
         role = Role(code=f"role-{uuid.uuid4().hex[:8]}", name="Test role")
         session.add(role)
         session.commit()
-        session.add(RolePermission(role_id=role.id, permission_id=permission.id))
+        session.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+                scopes=[RolePermissionScope(scope_type=scope_type)],
+            )
+        )
         session.add(
             UserRoleAssignment(
-                user_id=user_id, role_id=role.id, scope_type=scope_type, club_id=club_id
+                user_id=user_id, role_id=role.id, club_id=club_id
             )
         )
         session.commit()
@@ -754,8 +766,8 @@ def test_resolve_current_club_id_denies_club_scoped_assignment_pointing_elsewher
     be produced by inserting a second real Club: that would instead make
     `test_create_person_with_multiple_clubs_fails_closed`'s scenario
     apply. This test exercises the resolver's own defensive equality
-    check directly by stubbing `applicable_assignments` to return a
-    club-scoped assignment referencing an arbitrary, unpersisted club id
+    check directly by stubbing `applicable_grants` to return a
+    club-scoped grant referencing an arbitrary, unpersisted club id
     — the shape a corrupted/legacy row would have if the FK were ever
     relaxed — while a single real Club exists in the database.
     """
@@ -767,14 +779,14 @@ def test_resolve_current_club_id_denies_club_scoped_assignment_pointing_elsewher
         session.add(club)
         session.commit()
 
-    class _ElsewhereAssignment:
+    class _ElsewhereGrant:
         scope_type = "all"
         club_id = uuid.uuid4()
 
     monkeypatch.setattr(
         people_authorization,
-        "applicable_assignments",
-        lambda *args, **kwargs: [_ElsewhereAssignment()],
+        "applicable_grants",
+        lambda *args, **kwargs: [_ElsewhereGrant()],
     )
 
     with session_scope() as session, pytest.raises(AuthorizationDenied):

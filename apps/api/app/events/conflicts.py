@@ -104,7 +104,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Session, aliased
 
-from app.authorization.service import applicable_assignments
+from app.authorization.service import applicable_grants
 from app.db.event_recurrence import EventOccurrence, EventSeries
 from app.db.event_recurrence_relationships import (
     EventOccurrenceGroupTarget,
@@ -416,8 +416,8 @@ def _extend_conflict_materialization(
         # No narrowing filter: bounded to Clubs the requester holds
         # `all`-scope event.read access for -- the same bound
         # app.events.calendar._extend_recurring_materialization uses.
-        assignments = applicable_assignments(session, user_id, permission_code)
-        all_scope_club_ids = [a.club_id for a in assignments if a.scope_type == "all"]
+        grants = applicable_grants(session, user_id, permission_code)
+        all_scope_club_ids = [a.club_id for a in grants if a.scope_type == "all"]
         if not all_scope_club_ids:
             return
         stmt = sa.select(EventSeries).where(EventSeries.status == "active", is_terminal)

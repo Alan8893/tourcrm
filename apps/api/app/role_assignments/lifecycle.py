@@ -1,7 +1,6 @@
-"""RoleAssignment scope-combination and revoke-transition validation
-(Issue #74, implementing ADR-0026 §1/§2; amended by Issue #99/TH-0089 for
-the `all + club_id=NULL` combination — see ADR-0026's own "Amendment
-(TH-0089 / Issue #99)" section).
+"""RoleAssignment `club_id` and revoke-transition validation (Issue #74,
+implementing ADR-0026 §1/§2; amended by Issue #99/TH-0089 for the global
+administrator; AUTH-2A).
 
 Canonical sources: docs/03-architecture/adr/ADR-0026-role-assignment-api-
 decisions.md §1/§2/§5 and its TH-0089 amendment, docs/02-requirements/
@@ -11,47 +10,21 @@ Pure Python — no FastAPI import, no database session, no ORM import —
 mirroring app.groups.lifecycle/app.people.lifecycle/app.events.lifecycle
 exactly.
 
-This module validates the (`scope_type`, `club_id`, `scope_ref_id`)
-*combination* ADR-0026 §2 requires. It does NOT validate that
-`scope_type` itself is a canonical ADR-0013 scope, or resolve the
-`assigned_events` alias — that is
-`app.authorization.context.normalize_scope_type`'s job and must be
-called first (see app.role_assignments.service.create_role_assignment).
+## AUTH-2A `club_id` rule (PO decision)
 
-## `all`'s club_id is optional, not merely "required" (TH-0089 amendment)
-
-ADR-0026 §2's original table marked `club_id` "required" for every scope
-except `none`, including `all` — but §5 (`role.manage` authorization),
-in the very same accepted ADR, already described `all + club_id=NULL`
-as a valid, meaningful combination ("the holder may manage
-RoleAssignments in any Club"). Nothing in this codebase could actually
-*create* that combination until this amendment: `app.authorization.
-service`'s read-side `scope_matches`/`club_boundary_matches` and
-`app.role_assignments.authorization.role_assignment_visibility_filter`
-already treat `all + club_id=NULL` as "every Club" wherever they
-encounter it — only this creation-time validator was out of step with
-its own ADR. `all` is therefore the one scope_type whose club_id may be
-either NULL (installation-wide) or a specific Club (club-wide); every
-other scope keeps its original, unchanged rule.
+A RoleAssignment no longer carries an authorization scope (scopes belong
+to each permission grant, `RolePermissionScope`), so ADR-0026 §2's
+per-scope `club_id` table no longer applies to it. The rule is fixed and
+is not derived from the Role's permission set: every RoleAssignment
+requires a `club_id`, except an assignment of the canonical system
+`admin` role, whose permissions all carry the canonical `all` scope — it
+may be global (`club_id = NULL`, installation-wide, per the TH-0089
+amendment) or club-wide. `scope_ref_id` is a legacy column and must be
+NULL.
 """
 
 import uuid
 from typing import Optional
-
-# ADR-0026 §2 / roles-and-permissions.md §19.2 (as amended for TH-0089 /
-# Issue #99 — see module docstring): "required" means club_id must be
-# set; "forbidden" means club_id must be NULL; "optional" (currently only
-# `all`) means either is a valid combination. `scope_ref_id` is
-# unconditionally required to be NULL for every one of these in this MVP
-# slice.
-_CLUB_ID_RULE_BY_SCOPE: dict[str, str] = {
-    "all": "optional",
-    "self": "required",
-    "children": "required",
-    "own_groups": "required",
-    "own_events": "required",
-    "none": "forbidden",
-}
 
 
 class RoleAssignmentLifecycleError(Exception):
@@ -59,8 +32,8 @@ class RoleAssignmentLifecycleError(Exception):
 
 
 class InvalidRoleAssignmentScopeError(RoleAssignmentLifecycleError):
-    """ADR-0026 §2: the (`scope_type`, `club_id`, `scope_ref_id`)
-    combination is not one of the six canonical MVP combinations."""
+    """`club_id`/`scope_ref_id` violate the AUTH-2A RoleAssignment rule
+    (see module docstring)."""
 
 
 class InvalidRoleAssignmentTransitionError(RoleAssignmentLifecycleError):
@@ -75,37 +48,29 @@ class InvalidRoleAssignmentTransitionError(RoleAssignmentLifecycleError):
         self.assignment_id = assignment_id
 
 
-def validate_role_assignment_scope(
+def validate_role_assignment_club(
     *,
-    scope_type: str,
+    is_global_admin_role: bool,
     club_id: Optional[uuid.UUID],
     scope_ref_id: Optional[uuid.UUID],
 ) -> None:
-    """Raises InvalidRoleAssignmentScopeError, and validates nothing else,
-    unless `scope_type` is already one of ADR-0013's canonical scopes
-    (the caller must have already normalized it via
-    `app.authorization.context.normalize_scope_type`) and the
-    (`club_id`, `scope_ref_id`) pairing matches ADR-0026 §2's table for
-    that scope exactly.
+    """Raises InvalidRoleAssignmentScopeError unless `scope_ref_id` is NULL
+    and `club_id` is set — or the Role is the canonical system `admin`
+    role (`is_global_admin_role`), for which `club_id` may also be NULL.
     """
-    if scope_type not in _CLUB_ID_RULE_BY_SCOPE:
-        raise InvalidRoleAssignmentScopeError(
-            f"{scope_type!r} is not a canonical RoleAssignment scope_type"
-        )
     if scope_ref_id is not None:
         raise InvalidRoleAssignmentScopeError(
-            "scope_ref_id is not used by any canonical MVP RoleAssignment scope combination"
+            "scope_ref_id is not used by any canonical MVP RoleAssignment"
         )
-    club_id_rule = _CLUB_ID_RULE_BY_SCOPE[scope_type]
-    if club_id_rule == "required" and club_id is None:
-        raise InvalidRoleAssignmentScopeError(f"scope_type {scope_type!r} requires a club_id")
-    if club_id_rule == "forbidden" and club_id is not None:
-        raise InvalidRoleAssignmentScopeError(f"scope_type {scope_type!r} must not have a club_id")
+    if club_id is None and not is_global_admin_role:
+        raise InvalidRoleAssignmentScopeError(
+            "a club_id is required; only the canonical admin role may be assigned globally"
+        )
 
 
 __all__ = [
     "RoleAssignmentLifecycleError",
     "InvalidRoleAssignmentScopeError",
     "InvalidRoleAssignmentTransitionError",
-    "validate_role_assignment_scope",
+    "validate_role_assignment_club",
 ]

@@ -89,7 +89,7 @@ from app.api.v1.role_assignments_schemas import (
 from app.authentication import account_provisioning
 from app.authentication.rate_limit import RateLimiter, RateLimitExceeded, get_rate_limiter
 from app.authorization.context import ResourceContext
-from app.authorization.service import AuthorizationDenied, Authorizer, applicable_assignments
+from app.authorization.service import AuthorizationDenied, Authorizer, applicable_grants
 from app.db.authorization import UserRoleAssignment
 from app.db.documents import Document
 from app.db.documents import File as FileModel
@@ -635,12 +635,12 @@ def _require_permission_grant(db: Session, *, user_id: uuid.UUID, permission_cod
     """P1 GAP-3 (authorization before existence) for the nested Person
     list endpoints whose own authorization is a per-row scope filter
     rather than a single object check: a caller with *no* currently-
-    effective assignment granting `permission_code` is refused with the
+    effective grant of `permission_code` is refused with the
     generic 403 before `person_id` is looked up. Same gate shape as
     `GET /users` (app.users.authorization.requester_has_directory_access);
     scope/row visibility is still applied afterwards, unchanged.
     """
-    if not applicable_assignments(db, user_id, permission_code):
+    if not applicable_grants(db, user_id, permission_code):
         raise AuthorizationDenied(permission_code)
 
 
@@ -1303,16 +1303,9 @@ def list_person_role_assignments(
     if db.get(Person, person_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
 
-    # AUTH-2: a role may be held as several assignments (one per canonical
-    # scope — app.role_assignments.person_roles module docstring point 2);
-    # this endpoint lists *roles* (people-api.md §24.1), so one item per
-    # role code — the most recent assignment of that role.
-    rows = []
-    seen_role_codes: set[str] = set()
-    for row in person_role_service.list_person_role_assignments(db, person_id=person_id):
-        if row.role.code not in seen_role_codes:
-            seen_role_codes.add(row.role.code)
-            rows.append(row)
+    # AUTH-2A: one active RoleAssignment per role (app.role_assignments.
+    # person_roles module docstring point 2), so each item is one role.
+    rows = person_role_service.list_person_role_assignments(db, person_id=person_id)
     return CollectionResponse(
         items=[_person_role_assignment_out(row, person_id=person_id) for row in rows],
         pagination=Pagination(

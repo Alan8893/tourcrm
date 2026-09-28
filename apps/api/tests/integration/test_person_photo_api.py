@@ -22,7 +22,13 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentPrincipal, get_current_principal
 from app.db.audit import AuditLog
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.documents import File
 from app.db.identity import Person, User
 from app.db.session import session_scope
@@ -67,8 +73,14 @@ def _grant(user_id: uuid.UUID, permission_code: str, scope_type: str) -> None:
         role = Role(code=f"role-{uuid.uuid4().hex[:8]}", name="Test role")
         session.add(role)
         session.commit()
-        session.add(RolePermission(role_id=role.id, permission_id=permission.id))
-        session.add(UserRoleAssignment(user_id=user_id, role_id=role.id, scope_type=scope_type))
+        session.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+                scopes=[RolePermissionScope(scope_type=scope_type)],
+            )
+        )
+        session.add(UserRoleAssignment(user_id=user_id, role_id=role.id))
         session.commit()
 
 
