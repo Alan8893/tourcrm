@@ -57,7 +57,7 @@ Member не может изменять:
 
 ### 3.4 Guardian
 
-`guardian` работает с собственными данными и данными связанных детей в пределах активной `GuardianRelationship`.
+`guardian` работает с данными связанных детей в пределах активной `GuardianRelationship`. Scopes определяются отдельно для каждого permission (§4 и далее); guardian не получает `person.read`/`person.update` через `self`. Scope `self` может быть добавлен конкретному permission guardian только отдельным PO decision (AUTH-2C).
 
 `person.update(children)` разрешён для тех же полей, что и Member:
 

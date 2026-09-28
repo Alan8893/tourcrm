@@ -1,6 +1,6 @@
 # ADR-0035 — People Management Authorization
 
-**Status:** Accepted — 2026-09-17  
+**Status:** Accepted — 2026-09-17; amended by AUTH-2C (Issue #209, 2026-09-28) for Person read/update permissions and scopes  
 **Decision owner:** Product Owner / Architect  
 **Scope:** Person, ClubMembership, GuardianRelationship, People self-profile  
 
@@ -9,6 +9,8 @@
 TH-0096 completed the specification gate for the remaining People management work. During the gate, the authorization model for Person, ClubMembership and GuardianRelationship was made explicit for all four canonical roles: `admin`, `instructor`, `member`, `guardian`.
 
 This ADR is the canonical decision for those People-management authorization rules. Where older text in `docs/02-requirements/roles-and-permissions.md` or `docs/05-api/people-api.md` conflicts with this ADR, this accepted ADR takes precedence until those documents are mechanically reconciled.
+
+**Amendment — AUTH-2C / Issue #209 (2026-09-28):** the Person `person.read` / `person.update` / `person.create` grants and their scopes are now defined by the canonical `docs/02-requirements/role-permission-scope-matrix.md`, with scopes attached per permission grant (ADR-0041). For those grants the matrix takes precedence over this ADR. The AUTH-2C amendments in §2, §3, §4, §10 and §14 below record the current policy; the original 2026-09-17 wording is kept there as history and is superseded. All other decisions of this ADR (ClubMembership, GuardianRelationship lifecycle and visibility, `/me/children`, `own_groups` relationship derivation, IDOR/cross-Club protection, audit) are unchanged.
 
 ## 2. Person creation
 
@@ -22,6 +24,8 @@ Only `admin` receives `person.create` in the current MVP.
 
 `Person` remains a Club-neutral identity: `Person`/`PersonCreateRequest`/`PersonOut` have no `club_id`. In the current MVP there is one initialized Club and the UI does not offer Club selection. Creating a Person and creating a ClubMembership remain distinct *domain entities and distinct service-layer capabilities* — see the TH-0111 amendment below for how the single `POST /persons` *application operation* now composes them.
 
+*AUTH-2C amendment:* since AUTH-2A (ADR-0041) the `all` scope below is the scope of the `person.create` permission grant (`RolePermissionScope`); the legacy `UserRoleAssignment.scope_type` is not an authorization input. The `club_id` rule of this paragraph is unchanged.
+
 Person creation is authorized by an effective `person.create` assignment with `scope_type=all`; `assignment.club_id` does not participate in the authorization decision because Person is Club-neutral and a not-yet-created Person has no target Club to check a boundary against — a club-scoped `all` assignment (e.g. the bootstrap-created primary administrator's own assignment) is exactly as sufficient as a global one (TH-0106 / Issue #131).
 
 **Amendment — TH-0111 / Issue #140 (2026-09-20):** the sentence above ("Creating a Person and creating a ClubMembership remain distinct domain operations even if one UI flow performs them sequentially") described a real gap: a Person created without a ClubMembership was invisible to the very club-scoped admin who created it, because §10's club-scoped `all` scope for `person.read` requires an actual `ClubMembership` row in that Club. The fix is not a widened visibility scope (§10 is unchanged) but making `POST /persons` atomically create the Person's initial active ClubMembership (`membership_type="member"`, `status="active"`, `joined_at=now()`) in the same database transaction — both `person.created` and `membership.created` audit rows commit or roll back together. `Person` and `ClubMembership` remain separate domain entities with separate schemas and no new `club_id` column on `Person`; only the *application operation* backing this one endpoint is now compound. No new endpoint was introduced — `POST /persons` remains the only way to add a person. Authorization is unchanged: `person.create` alone continues to gate this operation; `membership.manage` (§7) is deliberately not additionally required, because every field of the auto-created membership is fixed by policy rather than chosen by the caller, so it carries no discretionary "membership management" decision for `membership.manage` to gate. Role assignment and every other Person relationship (GuardianRelationship, GroupMembership, GroupInstructorAssignment, EventParticipation, User/UserRoleAssignment) remain distinct, later operations triggered from Person detail — this amendment does not extend to them.
@@ -30,7 +34,22 @@ Person creation is authorized by an effective `person.create` assignment with `s
 
 The existing `person.read` and `person.update` permissions remain the basis of access. No separate `person.contact.read` or `person.contact.update` permissions are introduced.
 
-### 3.1 Own Person
+**AUTH-2C amendment (2026-09-28) — current Person policy.** Scope is determined independently for each permission; there is no implicit `self` access merely because the user is authenticated, holds a role, or owns the Person record:
+
+| Role | `person.read` | `person.update` | `person.create` |
+|---|---|---|---|
+| admin | `all` | `all` / all fields | `all` |
+| instructor | `own_groups` | **no permission** | — |
+| member | `self` | `self` / restricted fields | — |
+| guardian | `children` | `children` / restricted fields | — |
+
+Restricted fields for `member`/`self` and `guardian`/`children`: `first_name`, `last_name`, `middle_name`, `phone`, `address`, `photo` / avatar. They cannot change `email`, `birth_date`, `id` or administrative Person fields. The field-level source of truth is `role-permission-scope-matrix.md` §4.1.
+
+If a future permission must give `instructor`, `member` or `guardian` access through `self`, `self` must be granted explicitly for that permission by a separate PO decision. Instructor does not receive `person.update` through §3.1/§3.2 below; guardian does not receive `person.read`/`person.update` through `self`.
+
+The original §3.1/§3.2 rules below are **historical and superseded** by this amendment.
+
+### 3.1 Own Person (historical — superseded by AUTH-2C)
 
 All four roles may read and update their own Person subject to the rules below.
 
@@ -52,7 +71,7 @@ Admin may update their own `birth_date`; this is intentional and resolves the pr
 
 `id` is immutable for every role.
 
-### 3.2 Other Person objects
+### 3.2 Other Person objects (historical — superseded by AUTH-2C)
 
 - `admin`: may read/update Persons within the administrator's authorized `all` scope.
 - `instructor`: may read/update Persons within `own_groups` only.
@@ -63,13 +82,15 @@ Membership, group co-membership, or GuardianRelationship existence does not by i
 
 ## 4. Contact data
 
+**AUTH-2C amendment (2026-09-28):** contact fields are ordinary Person fields governed by the Person policy in §3. `admin` reads/updates them through `all`; `instructor` reads them through `person.read(own_groups)` and cannot update them; `member` reads its own through `person.read(self)` and updates `phone`/`address` through `person.update(self)`; `guardian` reads a child's through `person.read(children)` and updates the child's `phone`/`address` through `person.update(children)`. `email` is updatable only by `admin`. Access comes from these permission grants, not from the existence of a GuardianRelationship. The access policy list below is historical and superseded.
+
 Contact fields are:
 
 - `phone`
 - `email`
 - `address`
 
-Access policy:
+Historical access policy (superseded by AUTH-2C):
 
 - `admin`: may read/update contact fields of Persons in the administrator's authorized scope;
 - `instructor`: may read/update contact fields of Persons in `own_groups`;
@@ -224,7 +245,9 @@ People authorization uses the existing canonical vocabulary:
 - `own_events`
 - `none`
 
-For the People decisions in this ADR, the relevant role-level patterns are:
+**AUTH-2C amendment (2026-09-28):** scopes are not role-level patterns. Each permission grant carries its own scopes (`RolePermissionScope`, ADR-0041); a role does not have a general `self` scope. The current Person scopes are those of §3 (`admin` → `all`; `instructor` → `person.read(own_groups)`; `member` → `self`; `guardian` → `children`). The role-level patterns below are historical and superseded.
+
+For the People decisions in this ADR, the historical role-level patterns were:
 
 ```text
 admin      -> all
@@ -273,11 +296,11 @@ No new audit action is introduced solely by this ADR unless separately accepted 
 ## 14. Consequences
 
 - People authorization is explicit and role/scope based rather than inferred from role names.
-- Member and Guardian have the same self-Person edit model.
+- *(AUTH-2C)* Member edits its own Person (`self`) and Guardian edits children (`children`) with the same restricted field set; the original "Member and Guardian have the same self-Person edit model" consequence is superseded.
 - Admin has full Person update capability in scope, including `birth_date` on their own record.
-- Instructor has operational Person access only through `own_groups`.
+- Instructor has operational Person read access only through `own_groups` and no `person.update` (AUTH-2C).
 - GuardianRelationship management is deliberately administrative; no in-system request workflow is introduced for Instructor/Guardian termination.
-- Contact visibility remains controlled by the accepted Person/object policy and is not inherited from GuardianRelationship.
+- Contact visibility remains controlled by the accepted Person/object policy (per AUTH-2C, the Person permission grants of §3) and is not inherited from GuardianRelationship.
 - Person archiving remains deferred under ADR-0034.
 
 ## 15. Required documentation reconciliation
@@ -299,5 +322,7 @@ Implementation agents must not reinterpret conflicting legacy wording; this ADR 
 - ADR-0024 — Audit Infrastructure
 - ADR-0025 — People / Membership API decisions
 - ADR-0034 — Person archiving deferred
+- ADR-0041 — Permission-level authorization scopes
+- `docs/02-requirements/role-permission-scope-matrix.md` — canonical role/permission/scope matrix (AUTH-2C source of truth for Person grants)
 - `docs/02-requirements/roles-and-permissions.md`
 - `docs/05-api/people-api.md`

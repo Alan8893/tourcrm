@@ -3,13 +3,13 @@
 - **Status:** Accepted
 - **Date:** 2026-09-28
 - **Decision owners:** Product Owner + CTO
-- **Related:** ADR-0013, ADR-0026, ADR-0035, AUTH-1, AUTH-2A
+- **Related:** ADR-0013, ADR-0026, ADR-0035, AUTH-1, AUTH-2A, AUTH-2C (Issue #209)
 
 ## 1. Context
 
 TourCRM uses RBAC with permission scopes. The initial authorization model stored `scope_type` on `UserRoleAssignment`, which made one scope apply to every permission granted by a role.
 
-That model cannot represent the canonical role-permission matrix when different permissions of the same role require different scopes. For example, an instructor may need `person.read(self)` while an operational permission is scoped to `own_groups`; a guardian may need child access for some permissions while retaining self-access for personal data.
+That model cannot represent the canonical role-permission matrix when different permissions of the same role require different scopes, or when one permission requires several scopes. For example, under the canonical matrix an instructor's `event.read` may apply through `own_groups` or `own_events`, while the same role's `person.read` is limited to `own_groups` and the role has no `person.update` at all; a role-level scope would widen or narrow every permission of the role at once.
 
 The implementation of AUTH-2A introduces permission-level scopes through `RolePermissionScope`.
 
@@ -33,6 +33,8 @@ User
 The effective scope for a permission is the union of the scopes configured for that permission across the user's active role assignments. Scopes configured for another permission do not affect it.
 
 The authorization engine MUST NOT use `UserRoleAssignment.scope_type` to authorize a permission.
+
+There is no implicit `self` access (AUTH-2C, Issue #209): a user does not obtain `self` access to a resource merely because they are authenticated, hold a role, or own the record. `self` — like every other scope — applies to a permission only when it is configured on that permission's grant. Which grants carry which scopes is defined by `docs/02-requirements/role-permission-scope-matrix.md`; adding `self` to a grant requires a PO decision for that permission.
 
 ### 2.2 Canonical scopes
 
