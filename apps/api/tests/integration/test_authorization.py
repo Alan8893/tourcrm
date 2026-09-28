@@ -597,7 +597,9 @@ def test_role_assignment_overlap_with_different_role_id_is_allowed() -> None:
 
 
 @requires_postgres
-def test_role_assignment_overlap_with_different_scope_type_is_allowed() -> None:
+def test_two_active_assignments_of_one_role_are_rejected_whatever_the_legacy_scope() -> None:
+    """AUTH-2A: `uq_user_role_assignments_one_active_role` — one active
+    role per (user, role, Club), independent of the legacy `scope_type`."""
     with session_scope() as session:
         person = _make_person()
         user = _make_user(person)
@@ -616,12 +618,43 @@ def test_role_assignment_overlap_with_different_scope_type_is_allowed() -> None:
                 user, role, club_id=club.id, scope_type="own_events", valid_from=_utc(2024, 1, 1)
             )
         )
-        session.commit()  # must not raise: different scope_type, not the same tuple
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+@requires_postgres
+def test_closed_legacy_history_with_different_scopes_may_overlap() -> None:
+    """Legacy (pre-AUTH-2A) closed history — e.g. AUTH-2's `own_groups` +
+    `self` pair revoked together — stays valid: only open-ended rows are
+    subject to the one-active-role index."""
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        club = _make_club()
+        role = _make_role(code="legacy-history")
+        session.add_all([person, user, club, role])
+        session.commit()
+
+        for scope_type in ("own_groups", "self"):
+            session.add(
+                _make_role_assignment(
+                    user,
+                    role,
+                    club_id=club.id,
+                    scope_type=scope_type,
+                    valid_from=_utc(2024, 1, 1),
+                    valid_to=_utc(2024, 6, 1),
+                )
+            )
+        session.add(
+            _make_role_assignment(user, role, club_id=club.id, valid_from=_utc(2024, 6, 1))
+        )
+        session.commit()  # must not raise
 
         rows = session.execute(
             select(UserRoleAssignment).where(UserRoleAssignment.user_id == user.id)
         ).scalars().all()
-        assert len(rows) == 2
+        assert len(rows) == 3
 
 
 @requires_postgres

@@ -16,7 +16,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.api.deps import CurrentPrincipal, get_current_principal
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 from app.db.identity import Club, ClubMembership, GuardianRelationship, Person, User
 from app.db.session import session_scope
@@ -97,9 +103,15 @@ def _grant_all_wizard_permissions(user_id: uuid.UUID, club_id: uuid.UUID) -> Non
                 permission = Permission(code=code)
                 session.add(permission)
                 session.commit()
-            session.add(RolePermission(role_id=role.id, permission_id=permission.id))
+            session.add(
+                RolePermission(
+                    role_id=role.id,
+                    permission_id=permission.id,
+                    scopes=[RolePermissionScope(scope_type="all")],
+                )
+            )
         session.add(
-            UserRoleAssignment(user_id=user_id, role_id=role.id, scope_type="all", club_id=club_id)
+            UserRoleAssignment(user_id=user_id, role_id=role.id, club_id=club_id)
         )
         session.commit()
 

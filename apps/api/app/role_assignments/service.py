@@ -45,18 +45,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit_event
+from app.authentication.bootstrap import ADMIN_ROLE_CODE
 from app.authorization.club_ownership import user_has_active_club_membership
-from app.db.authorization import (
-    LEGACY_ASSIGNMENT_SCOPE_TYPE,
-    RolePermission,
-    RolePermissionScope,
-    UserRoleAssignment,
-)
+from app.db.authorization import LEGACY_ASSIGNMENT_SCOPE_TYPE, Role, UserRoleAssignment
 from app.role_assignments.lifecycle import (
     InvalidRoleAssignmentTransitionError,
     validate_role_assignment_club,
@@ -132,21 +127,6 @@ def _is_deadlock(exc: OperationalError) -> bool:
     return getattr(exc.orig, "sqlstate", None) == _DEADLOCK_DETECTED_SQLSTATE
 
 
-def role_permission_scope_types(session: Session, *, role_id: uuid.UUID) -> set[str]:
-    """Every scope carried by any of `role_id`'s permission grants
-    (AUTH-2A: `RolePermission -> RolePermissionScope`)."""
-    return set(
-        session.execute(
-            sa.select(RolePermissionScope.scope_type)
-            .join(RolePermission, RolePermission.id == RolePermissionScope.role_permission_id)
-            .where(RolePermission.role_id == role_id)
-            .distinct()
-        )
-        .scalars()
-        .all()
-    )
-
-
 def create_role_assignment(
     session: Session,
     *,
@@ -164,13 +144,12 @@ def create_role_assignment(
 
     AUTH-2A: the assignment grants the Role only. No scope is accepted;
     the legacy `scope_type` column is written as
-    `LEGACY_ASSIGNMENT_SCOPE_TYPE`, and the `club_id` rule comes from the
-    scopes of the Role's own permission grants
-    (`validate_role_assignment_club`).
+    `LEGACY_ASSIGNMENT_SCOPE_TYPE`. `club_id` is required unless the Role
+    is the canonical system `admin` role (`validate_role_assignment_club`).
 
     Raises InvalidRoleAssignmentScopeError (from
-    app.role_assignments.lifecycle) when `club_id`/`scope_ref_id` do not
-    fit the Role's permission scopes,
+    app.role_assignments.lifecycle) when `club_id`/`scope_ref_id` violate
+    that rule,
     RoleAssignmentClubMembershipMissingError when a club-scoped
     assignment's target User has no active ClubMembership in that Club,
     and DuplicateRoleAssignmentError when the user already holds the role
@@ -180,8 +159,11 @@ def create_role_assignment(
     persisting nothing in either case. Records `role_assignment.created`
     in the same transaction as the write.
     """
+    role = session.get(Role, role_id)
     validate_role_assignment_club(
-        permission_scope_types=role_permission_scope_types(session, role_id=role_id),
+        is_global_admin_role=(
+            role is not None and role.code == ADMIN_ROLE_CODE and role.is_system
+        ),
         club_id=club_id,
         scope_ref_id=scope_ref_id,
     )
@@ -293,7 +275,6 @@ __all__ = [
     "RoleAssignmentError",
     "RoleAssignmentClubMembershipMissingError",
     "DuplicateRoleAssignmentError",
-    "role_permission_scope_types",
     "create_role_assignment",
     "revoke_role_assignment",
 ]

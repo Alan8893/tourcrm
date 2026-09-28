@@ -1,18 +1,18 @@
-"""AUTH-2 — canonical RoleAssignment scopes for Person Detail and the Person
-wizard (PO decision, GAP-4 option B):
+"""AUTH-2A — one RoleAssignment per role for Person Detail and the Person
+wizard; authorization scope belongs to each permission grant
+(`UserRoleAssignment -> RolePermission -> RolePermissionScope`).
 
-    admin      -> all
-    instructor -> own_groups + self   (two assignments)
-    member     -> self
-    guardian   -> children + self     (two assignments)
+    admin / instructor / member / guardian -> exactly one assignment
 
-Duplicate detection and revoke consider every active assignment of the role
-regardless of scope (historical `all` assignments included, no data
-migration); composite roles are created/revoked atomically. The generic
-`POST /role-assignments` API is unchanged.
+Duplicate detection and revoke are independent of the legacy
+`scope_type`; creation and revoke are atomic; one audit record per
+assignment row. Legacy assignments (any old `scope_type`) count as "has
+the role" and are revoked by the same remove flow.
 
-Accepted limitation (pinned below, deliberately not "fixed"): every
-permission of a two-assignment role is effective through both scopes.
+The scope regressions below grant permissions on the *baseline* roles
+test-locally (every integration test starts from the migrated baseline
+snapshot): the migration itself grants no new permission to
+instructor/member/guardian (AUTH-2A GAP-1).
 
 Self-contained factories, per this codebase's convention of not importing
 helpers across test files.
@@ -27,22 +27,22 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentPrincipal, get_current_principal
 from app.db.audit import AuditLog
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.identity import Club, ClubMembership, GuardianRelationship, Person, User
 from app.db.session import session_scope
 from app.main import app
 from app.role_assignments import service as role_assignment_service
-from app.role_assignments.person_roles import CANONICAL_ROLE_SCOPE_TYPES
 
 from .conftest import requires_postgres
 
-EXPECTED_SCOPES = {
-    "admin": {"all"},
-    "instructor": {"own_groups", "self"},
-    "member": {"self"},
-    "guardian": {"children", "self"},
-}
-ROLES = sorted(EXPECTED_SCOPES)
+ROLES = ["admin", "guardian", "instructor", "member"]
+LEGACY_SCOPES = ["all", "self", "children", "own_groups", "own_events", "none"]
 
 
 @pytest.fixture
@@ -82,10 +82,14 @@ def _grant_admin_permissions(user_id: uuid.UUID, club_id: uuid.UUID) -> None:
             "guardian_relationship.manage",
         ):
             session.add(
-                RolePermission(role_id=role.id, permission_id=_permission(session, code).id)
+                RolePermission(
+                    role_id=role.id,
+                    permission_id=_permission(session, code).id,
+                    scopes=[RolePermissionScope(scope_type="all")],
+                )
             )
         session.add(
-            UserRoleAssignment(user_id=user_id, role_id=role.id, scope_type="all", club_id=club_id)
+            UserRoleAssignment(user_id=user_id, role_id=role.id, club_id=club_id)
         )
         session.commit()
 
@@ -204,27 +208,89 @@ def _remove_role(client: TestClient, person_id: uuid.UUID, role_code: str):  # t
     )
 
 
-def _insert_legacy_all(user_id: uuid.UUID, role_code: str, club_id: uuid.UUID) -> uuid.UUID:
-    """A pre-AUTH-2 assignment: same role, `scope_type='all'`."""
+def _insert_legacy_assignment(
+    user_id: uuid.UUID,
+    role_code: str,
+    club_id: uuid.UUID,
+    scope_type: str,
+    valid_to: datetime.datetime | None = None,
+) -> uuid.UUID:
+    """A pre-AUTH-2A assignment carrying a legacy `scope_type`."""
     with session_scope() as session:
         row = UserRoleAssignment(
             user_id=user_id,
             role_id=_role_id(role_code),
-            scope_type="all",
+            scope_type=scope_type,
             club_id=club_id,
             valid_from=_utc(2024, 1, 1),
+            valid_to=valid_to,
         )
         session.add(row)
         session.commit()
         return row.id
 
 
-# --- 1. Person Detail: canonical scopes ------------------------------------------
+def _grant_on_baseline_role(role_code: str, permission_code: str, *scope_types: str) -> None:
+    """Test-local grant of `permission_code` to a baseline role, carrying
+    exactly `scope_types` on that one grant."""
+    with session_scope() as session:
+        role = session.execute(select(Role).where(Role.code == role_code)).scalar_one()
+        session.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=_permission(session, permission_code).id,
+                scopes=[RolePermissionScope(scope_type=scope_type) for scope_type in scope_types],
+            )
+        )
+        session.commit()
+
+
+def _child_and_stranger(guardian_person_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:
+    with session_scope() as session:
+        child = Person(last_name="Child", first_name="Kid")
+        stranger = Person(last_name="Stranger", first_name="S")
+        session.add_all([child, stranger])
+        session.flush()
+        session.add(
+            GuardianRelationship(
+                guardian_person_id=guardian_person_id,
+                child_person_id=child.id,
+                relationship_type="parent",
+                status="active",
+                valid_from=_utc(2020, 1, 1),
+            )
+        )
+        session.commit()
+        return child.id, stranger.id
+
+
+def _wizard_payload(role_code: str, club_id: uuid.UUID) -> dict:
+    from app.db.groups import Group
+
+    with session_scope() as session:
+        group = Group(club_id=club_id, name="G", status="active", valid_from=_utc(2020, 1, 1))
+        child = Person(last_name="Child", first_name="C")
+        session.add_all([group, child])
+        session.commit()
+        group_id, child_id = group.id, child.id
+    return {
+        "first_name": "Anna",
+        "last_name": f"W-{role_code}",
+        "email": f"{role_code}-{uuid.uuid4().hex[:6]}@example.com",
+        "role_code": role_code,
+        "group_ids": [str(group_id)] if role_code == "member" else [],
+        "child_person_ids": [str(child_id)] if role_code == "guardian" else [],
+    }
+
+
+# --- 1. One RoleAssignment per role -----------------------------------------------
 
 
 @requires_postgres
 @pytest.mark.parametrize("role_code", ROLES)
-def test_person_detail_assigns_canonical_scopes(client: TestClient, role_code: str) -> None:
+def test_person_detail_creates_exactly_one_assignment_per_role(
+    client: TestClient, role_code: str
+) -> None:
     club_id, _, person_id, user_id = _setup()
 
     response = _add_role(client, person_id, role_code)
@@ -232,11 +298,13 @@ def test_person_detail_assigns_canonical_scopes(client: TestClient, role_code: s
     assert response.status_code == 201, response.text
     assert response.json()["role_code"] == role_code
     rows = _active_rows(user_id, role_code)
-    assert {r.scope_type for r in rows} == EXPECTED_SCOPES[role_code]
-    assert len(rows) == len(EXPECTED_SCOPES[role_code])
-    assert all(r.club_id == club_id for r in rows)
-    # One role_assignment.created audit record per assignment row (ADR-0026 §6).
-    assert _audit_count("role_assignment.created", [r.id for r in rows]) == len(rows)
+    assert len(rows) == 1
+    assert rows[0].club_id == club_id
+    # Legacy column, fixed value — not a permission scope.
+    assert rows[0].scope_type == "all"
+    assert str(rows[0].id) == response.json()["id"]
+    # One role_assignment.created audit record for the one row (ADR-0026 §6).
+    assert _audit_count("role_assignment.created", [rows[0].id]) == 1
 
 
 @requires_postgres
@@ -251,48 +319,29 @@ def test_person_detail_lists_each_role_once(client: TestClient, role_code: str) 
     assert [item["role_code"] for item in response.json()["items"]] == [role_code]
 
 
-def test_canonical_scope_table_is_the_po_decision() -> None:
-    assert {code: set(scopes) for code, scopes in CANONICAL_ROLE_SCOPE_TYPES.items()} == (
-        EXPECTED_SCOPES
-    )
-
-
-# --- 2. Wizard: identical scopes ------------------------------------------------------
-
-
 @requires_postgres
 @pytest.mark.parametrize("role_code", ROLES)
-def test_wizard_assigns_the_same_canonical_scopes(client: TestClient, role_code: str) -> None:
-    from app.db.groups import Group
-
+def test_wizard_creates_the_same_single_assignment(client: TestClient, role_code: str) -> None:
     club_id, _, _, _ = _setup()
-    with session_scope() as session:
-        group = Group(club_id=club_id, name="G", status="active", valid_from=_utc(2020, 1, 1))
-        child = Person(last_name="Child", first_name="C")
-        session.add_all([group, child])
-        session.commit()
-        group_id, child_id = group.id, child.id
-    payload: dict = {
-        "first_name": "Anna",
-        "last_name": f"W-{role_code}",
-        "email": f"{role_code}-{uuid.uuid4().hex[:6]}@example.com",
-        "role_code": role_code,
-        "group_ids": [str(group_id)] if role_code == "member" else [],
-        "child_person_ids": [str(child_id)] if role_code == "guardian" else [],
-    }
 
-    response = client.post("/api/v1/persons/wizard", json=payload, headers=_csrf_headers(client))
+    response = client.post(
+        "/api/v1/persons/wizard",
+        json=_wizard_payload(role_code, club_id),
+        headers=_csrf_headers(client),
+    )
 
     assert response.status_code == 201, response.text
     person_id = uuid.UUID(response.json()["person"]["id"])
     with session_scope() as session:
         user_id = session.execute(select(User.id).where(User.person_id == person_id)).scalar_one()
     rows = _active_rows(user_id, role_code)
-    assert {r.scope_type for r in rows} == EXPECTED_SCOPES[role_code]
-    assert len(rows) == len(EXPECTED_SCOPES[role_code])
+    assert len(rows) == 1
+    assert rows[0].club_id == club_id
+    assert rows[0].scope_type == "all"
+    assert _audit_count("role_assignment.created", [rows[0].id]) == 1
 
 
-# --- 3. Duplicate --------------------------------------------------------------------
+# --- 2. Duplicate is independent of scope -------------------------------------------
 
 
 @requires_postgres
@@ -312,10 +361,13 @@ def test_reassigning_a_role_is_duplicate_and_adds_nothing(
 
 
 @requires_postgres
-@pytest.mark.parametrize("role_code", ["instructor", "member", "guardian"])
-def test_legacy_all_assignment_counts_as_duplicate(client: TestClient, role_code: str) -> None:
+@pytest.mark.parametrize("legacy_scope", LEGACY_SCOPES)
+@pytest.mark.parametrize("role_code", ["instructor", "guardian"])
+def test_legacy_assignment_of_any_scope_counts_as_duplicate(
+    client: TestClient, role_code: str, legacy_scope: str
+) -> None:
     club_id, _, person_id, user_id = _setup()
-    legacy_id = _insert_legacy_all(user_id, role_code, club_id)
+    legacy_id = _insert_legacy_assignment(user_id, role_code, club_id, legacy_scope)
 
     response = _add_role(client, person_id, role_code)
 
@@ -324,51 +376,69 @@ def test_legacy_all_assignment_counts_as_duplicate(client: TestClient, role_code
     assert {r.id for r in _all_rows(user_id)} == {legacy_id}
 
 
-# --- 4. Revoke -----------------------------------------------------------------------
+# --- 3. Revoke is independent of scope ----------------------------------------------
 
 
 @requires_postgres
 @pytest.mark.parametrize("role_code", ROLES)
-def test_remove_role_revokes_every_assignment_of_the_role(
-    client: TestClient, role_code: str
-) -> None:
+def test_remove_role_revokes_the_one_assignment(client: TestClient, role_code: str) -> None:
     _, _, person_id, user_id = _setup()
     assert _add_role(client, person_id, role_code).status_code == 201
-    created = _active_rows(user_id, role_code)
+    [created] = _active_rows(user_id, role_code)
 
     response = _remove_role(client, person_id, role_code)
 
     assert response.status_code == 204, response.text
     assert _active_rows(user_id, role_code) == []
-    # Rows are kept (valid_to set), never deleted; one revoked audit per row.
-    assert {r.id for r in _all_rows(user_id)} == {r.id for r in created}
-    assert _audit_count("role_assignment.revoked", [r.id for r in created]) == len(created)
+    # The row is kept (valid_to set), never deleted; one revoked audit.
+    assert {r.id for r in _all_rows(user_id)} == {created.id}
+    assert _audit_count("role_assignment.revoked", [created.id]) == 1
     # Nothing left to revoke.
     assert _remove_role(client, person_id, role_code).status_code == 404
 
 
 @requires_postgres
-@pytest.mark.parametrize("role_code", ["instructor", "member", "guardian"])
-def test_remove_role_revokes_legacy_all_assignment(client: TestClient, role_code: str) -> None:
+@pytest.mark.parametrize("legacy_scope", LEGACY_SCOPES)
+def test_remove_role_revokes_a_legacy_assignment_of_any_scope(
+    client: TestClient, legacy_scope: str
+) -> None:
     club_id, _, person_id, user_id = _setup()
-    _insert_legacy_all(user_id, role_code, club_id)
+    _insert_legacy_assignment(user_id, "guardian", club_id, legacy_scope)
 
-    response = _remove_role(client, person_id, role_code)
+    response = _remove_role(client, person_id, "guardian")
 
     assert response.status_code == 204, response.text
-    assert _active_rows(user_id, role_code) == []
+    assert _active_rows(user_id, "guardian") == []
 
 
-# --- 5. Atomicity -----------------------------------------------------------------------
+@requires_postgres
+def test_revoked_role_stops_granting_every_permission_of_the_role(client: TestClient) -> None:
+    club_id, _, person_id, user_id = _setup()
+    _grant_on_baseline_role("guardian", "person.read", "children", "self")
+    _grant_on_baseline_role("guardian", "person.update", "children", "self")
+    child_id, _ = _child_and_stranger(person_id)
+    assert _add_role(client, person_id, "guardian").status_code == 201
+    assert _remove_role(client, person_id, "guardian").status_code == 204
+
+    _authenticate_as(user_id)
+    assert client.get(f"/api/v1/persons/{child_id}").status_code == 404
+    assert client.get(f"/api/v1/persons/{person_id}").status_code == 404
+    response = client.patch(
+        f"/api/v1/persons/{child_id}", json={"phone": "+100"}, headers=_csrf_headers(client)
+    )
+    assert response.status_code == 404
 
 
-def _fail_on_second_call(monkeypatch, attribute: str) -> None:  # type: ignore[no-untyped-def]
+# --- 4. Atomicity ----------------------------------------------------------------------
+
+
+def _fail_on_call(monkeypatch, attribute: str, call_number: int) -> None:  # type: ignore[no-untyped-def]
     real = getattr(role_assignment_service, attribute)
     calls = {"n": 0}
 
     def wrapper(*args, **kwargs):  # type: ignore[no-untyped-def]
         calls["n"] += 1
-        if calls["n"] == 2:
+        if calls["n"] == call_number:
             raise role_assignment_service.RoleAssignmentClubMembershipMissingError(
                 user_id=uuid.uuid4(), club_id=uuid.uuid4()
             )
@@ -378,87 +448,66 @@ def _fail_on_second_call(monkeypatch, attribute: str) -> None:  # type: ignore[n
 
 
 @requires_postgres
-@pytest.mark.parametrize("role_code", ["instructor", "guardian"])
-def test_composite_role_creation_is_atomic(client: TestClient, monkeypatch, role_code: str) -> None:
-    _, _, person_id, user_id = _setup()
-    _fail_on_second_call(monkeypatch, "create_role_assignment")
-
-    response = _add_role(client, person_id, role_code)
-
-    assert response.status_code == 422, response.text
-    assert _all_rows(user_id) == []
-
-
-@requires_postgres
-@pytest.mark.parametrize("role_code", ["instructor", "guardian"])
-def test_composite_role_revoke_is_atomic(client: TestClient, monkeypatch, role_code: str) -> None:
-    _, _, person_id, user_id = _setup()
-    assert _add_role(client, person_id, role_code).status_code == 201
-    _fail_on_second_call(monkeypatch, "revoke_role_assignment")
+def test_role_revoke_of_legacy_rows_is_atomic(client: TestClient, monkeypatch) -> None:
+    """A role still effective through two legacy rows (one open-ended, one
+    with a future `valid_to`) is revoked as one unit: a failure on the
+    second row persists nothing."""
+    club_id, _, person_id, user_id = _setup()
+    _insert_legacy_assignment(user_id, "guardian", club_id, "children")
+    _insert_legacy_assignment(
+        user_id, "guardian", club_id, "self", valid_to=_utc(2999, 1, 1)
+    )
+    _fail_on_call(monkeypatch, "revoke_role_assignment", 2)
 
     with pytest.raises(role_assignment_service.RoleAssignmentClubMembershipMissingError):
-        _remove_role(client, person_id, role_code)
+        _remove_role(client, person_id, "guardian")
 
-    assert len(_active_rows(user_id, role_code)) == 2
+    assert len(_active_rows(user_id, "guardian")) == 2
 
 
 @requires_postgres
-def test_wizard_composite_role_creation_is_atomic(client: TestClient, monkeypatch) -> None:
-    _setup()
-    _fail_on_second_call(monkeypatch, "create_role_assignment")
-    email = f"instr-{uuid.uuid4().hex[:6]}@example.com"
-
-    response = client.post(
-        "/api/v1/persons/wizard",
-        json={
-            "first_name": "Ivan",
-            "last_name": "Atomic",
-            "email": email,
-            "role_code": "instructor",
-            "group_ids": [],
-            "child_person_ids": [],
-        },
-        headers=_csrf_headers(client),
+def test_role_revoke_of_legacy_rows_revokes_all_of_them(client: TestClient) -> None:
+    club_id, _, person_id, user_id = _setup()
+    _insert_legacy_assignment(user_id, "guardian", club_id, "children")
+    _insert_legacy_assignment(
+        user_id, "guardian", club_id, "self", valid_to=_utc(2999, 1, 1)
     )
+
+    assert _remove_role(client, person_id, "guardian").status_code == 204
+    assert _active_rows(user_id, "guardian") == []
+
+
+@requires_postgres
+@pytest.mark.parametrize("role_code", ["instructor", "guardian"])
+def test_wizard_role_assignment_failure_persists_nothing(
+    client: TestClient, monkeypatch, role_code: str
+) -> None:
+    club_id, _, _, _ = _setup()
+    payload = _wizard_payload(role_code, club_id)
+    _fail_on_call(monkeypatch, "create_role_assignment", 1)
+
+    response = client.post("/api/v1/persons/wizard", json=payload, headers=_csrf_headers(client))
 
     assert response.status_code == 422, response.text
     with session_scope() as session:
-        assert session.execute(select(User).where(User.login_identifier == email)).first() is None
-        assert session.execute(select(Person).where(Person.last_name == "Atomic")).first() is None
+        assert (
+            session.execute(select(User).where(User.login_identifier == payload["email"])).first()
+            is None
+        )
+        assert (
+            session.execute(select(Person).where(Person.last_name == payload["last_name"])).first()
+            is None
+        )
 
 
-# --- 6. Accepted limitation: every permission works through both scopes -----------
+# --- 5. Permission-level scopes through the real Person endpoints -------------------
 
 
 @requires_postgres
-def test_composite_role_permissions_apply_through_both_scopes(client: TestClient) -> None:
-    """PO-accepted limitation of the current model (scope lives on the
-    assignment, not on RolePermission): a guardian's `person.read` grant is
-    effective through `children` AND `self`. Pinned on purpose — do not
-    "fix" here."""
-    club_id, _, person_id, user_id = _setup()
-    with session_scope() as session:
-        guardian_role = session.execute(select(Role).where(Role.code == "guardian")).scalar_one()
-        session.add(
-            RolePermission(
-                role_id=guardian_role.id, permission_id=_permission(session, "person.read").id
-            )
-        )
-        child = Person(last_name="Child", first_name="Kid")
-        stranger = Person(last_name="Stranger", first_name="S")
-        session.add_all([child, stranger])
-        session.flush()
-        session.add(
-            GuardianRelationship(
-                guardian_person_id=person_id,
-                child_person_id=child.id,
-                relationship_type="parent",
-                status="active",
-                valid_from=_utc(2020, 1, 1),
-            )
-        )
-        session.commit()
-        child_id, stranger_id = child.id, stranger.id
+def test_guardian_person_read_works_through_both_of_its_scopes(client: TestClient) -> None:
+    _, _, person_id, user_id = _setup()
+    _grant_on_baseline_role("guardian", "person.read", "children", "self")
+    child_id, stranger_id = _child_and_stranger(person_id)
     assert _add_role(client, person_id, "guardian").status_code == 201
     _authenticate_as(user_id)
 
@@ -467,27 +516,56 @@ def test_composite_role_permissions_apply_through_both_scopes(client: TestClient
     assert client.get(f"/api/v1/persons/{stranger_id}").status_code == 404
 
 
-# --- 7. Generic API unchanged; UNION of roles intact ----------------------------------
+@requires_postgres
+def test_guardian_person_update_works_through_both_of_its_scopes(client: TestClient) -> None:
+    """person.update with `children` + `self`: a child's allowed fields and
+    the guardian's own record are both updatable; field rules unchanged
+    (`children` keeps its restricted field set, `self` its own)."""
+    _, _, person_id, user_id = _setup()
+    _grant_on_baseline_role("guardian", "person.read", "children", "self")
+    _grant_on_baseline_role("guardian", "person.update", "children", "self")
+    child_id, stranger_id = _child_and_stranger(person_id)
+    assert _add_role(client, person_id, "guardian").status_code == 201
+    _authenticate_as(user_id)
+
+    def patch(target: uuid.UUID, body: dict) -> int:
+        return client.patch(
+            f"/api/v1/persons/{target}", json=body, headers=_csrf_headers(client)
+        ).status_code
+
+    assert patch(child_id, {"phone": "+111"}) == 200
+    assert patch(child_id, {"email": "kid@example.com"}) == 403
+    assert patch(person_id, {"phone": "+222"}) == 200
+    assert patch(stranger_id, {"phone": "+333"}) == 404
 
 
 @requires_postgres
-def test_generic_role_assignment_api_still_uses_caller_scope(client: TestClient) -> None:
-    club_id, _, _, user_id = _setup()
+def test_scopes_of_one_permission_do_not_leak_into_another(client: TestClient) -> None:
+    """Scope escalation through another permission is impossible: the
+    guardian's `person.read` reaches the child (`children`), but its
+    `person.update` grant carries only `self` — so the child can be read
+    and not updated. Under the pre-AUTH-2A model (scope on the
+    assignment) the second assignment's `children` scope leaked into every
+    permission of the role."""
+    _, _, person_id, user_id = _setup()
+    _grant_on_baseline_role("guardian", "person.read", "children", "self")
+    _grant_on_baseline_role("guardian", "person.update", "self")
+    child_id, _ = _child_and_stranger(person_id)
+    assert _add_role(client, person_id, "guardian").status_code == 201
+    _authenticate_as(user_id)
 
-    response = client.post(
-        "/api/v1/role-assignments",
-        json={
-            "user_id": str(user_id),
-            "role_id": str(_role_id("member")),
-            "scope_type": "all",
-            "club_id": str(club_id),
-        },
-        headers=_csrf_headers(client),
+    assert client.get(f"/api/v1/persons/{child_id}").status_code == 200
+    response = client.patch(
+        f"/api/v1/persons/{child_id}", json={"phone": "+100"}, headers=_csrf_headers(client)
     )
+    assert response.status_code == 404
+    response = client.patch(
+        f"/api/v1/persons/{person_id}", json={"phone": "+200"}, headers=_csrf_headers(client)
+    )
+    assert response.status_code == 200
 
-    assert response.status_code == 201, response.text
-    assert response.json()["scope_type"] == "all"
-    assert [r.scope_type for r in _active_rows(user_id, "member")] == ["all"]
+
+# --- 6. Roles stay independent (UNION) ------------------------------------------------
 
 
 @requires_postgres
@@ -500,5 +578,5 @@ def test_roles_stay_independent_union(client: TestClient) -> None:
     assert sorted(item["role_code"] for item in listed) == ["guardian", "member"]
 
     assert _remove_role(client, person_id, "guardian").status_code == 204
-    assert [r.scope_type for r in _active_rows(user_id, "member")] == ["self"]
+    assert len(_active_rows(user_id, "member")) == 1
     assert _active_rows(user_id, "guardian") == []

@@ -13,7 +13,7 @@ ClubMembership is a creation-time integrity prerequisite only, never a
 later effectivity condition. It does not delete, revoke, or otherwise
 mutate the RoleAssignment row, and it does NOT make an otherwise
 temporally-effective RoleAssignment ineffective — the shared
-`app.authorization.service.applicable_assignments()`/`Authorizer` engine
+`app.authorization.service.applicable_grants()`/`Authorizer` engine
 deliberately gained no ClubMembership check (ADR-0027 §2: "MUST NOT
 acquire a universal requirement"). `test_ending_target_club_membership_
 leaves_the_role_assignment_effective` below asserts this directly via
@@ -34,7 +34,13 @@ from app.audit.vocabulary import CANONICAL_AUDIT_ACTIONS
 from app.authorization.context import ResourceContext
 from app.authorization.service import can
 from app.db.audit import AuditLog
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.identity import Club, ClubMembership, Person, User
 from app.db.session import session_scope
 from app.role_assignments.lifecycle import (
@@ -152,7 +158,6 @@ def test_create_club_scoped_all_scope_assignment_succeeds_and_is_audited() -> No
             session,
             user_id=user_id,
             role_id=role_id,
-            scope_type="all",
             club_id=club_id,
             actor_user_id=user_id,
         )
@@ -165,35 +170,30 @@ def test_create_club_scoped_all_scope_assignment_succeeds_and_is_audited() -> No
     assert "role_assignment.created" in CANONICAL_AUDIT_ACTIONS
 
 
+def _canonical_admin_role_id(session) -> uuid.UUID:  # type: ignore[no-untyped-def]
+    return session.execute(select(Role.id).where(Role.code == "admin")).scalar_one()
+
+
 @requires_postgres
-def test_create_all_scope_assignment_without_club_id_succeeds_as_global() -> None:
-    """ADR-0026 §2 originally required club_id even for scope `all`,
-    while §5 (`role.manage`, same ADR) already described `all +
-    club_id=NULL` as valid ("the holder may manage RoleAssignments in
-    any Club") — an internal inconsistency surfaced and resolved by the
-    TH-0089 / Issue #99 amendment (see ADR-0026's own amendment section
-    and app.role_assignments.lifecycle's module docstring): `all` is now
-    the one scope whose club_id may be either NULL (installation-wide)
-    or a specific Club. This is exactly the combination
-    app.authentication.bootstrap.bootstrap_initial_administrator uses
-    for the global installation administrator."""
+def test_create_global_admin_assignment_without_club_id_succeeds() -> None:
+    """AUTH-2A PO decision: `club_id = NULL` is allowed only for the
+    canonical system `admin` role (the global installation administrator
+    of the TH-0089 amendment), whose permissions all carry scope `all`."""
     with session_scope() as session:
         person = _make_person()
         user = _make_user(person)
-        role = _make_role()
-        session.add_all([person, user, role])
+        session.add_all([person, user])
         session.commit()
-        user_id, role_id = user.id, role.id
+        user_id, role_id = user.id, _canonical_admin_role_id(session)
 
         assignment = create_role_assignment(
             session,
             user_id=user_id,
             role_id=role_id,
-            scope_type="all",
             actor_user_id=user_id,
         )
         assert assignment.club_id is None
-        assert assignment.scope_type == "all"
+        assert assignment.scope_type == "all"  # legacy column, fixed value
 
         rows = (
             session.execute(select(UserRoleAssignment).where(UserRoleAssignment.user_id == user_id))
@@ -201,6 +201,42 @@ def test_create_all_scope_assignment_without_club_id_succeeds_as_global() -> Non
             .all()
         )
         assert len(rows) == 1
+
+
+@requires_postgres
+@pytest.mark.parametrize("role_code", ["instructor", "member", "guardian", None])
+def test_create_non_admin_assignment_without_club_id_is_rejected(role_code: str | None) -> None:
+    """AUTH-2A PO decision: every non-admin RoleAssignment requires a Club
+    — whatever the Role's permission set (baseline roles and a custom
+    role alike)."""
+    with session_scope() as session:
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([person, user])
+        session.commit()
+        if role_code is None:
+            role = _make_role()
+            session.add(role)
+            session.commit()
+            role_id = role.id
+        else:
+            role_id = session.execute(select(Role.id).where(Role.code == role_code)).scalar_one()
+        user_id = user.id
+
+        with pytest.raises(InvalidRoleAssignmentScopeError):
+            create_role_assignment(
+                session,
+                user_id=user_id,
+                role_id=role_id,
+                actor_user_id=user_id,
+            )
+
+        rows = (
+            session.execute(select(UserRoleAssignment).where(UserRoleAssignment.user_id == user_id))
+            .scalars()
+            .all()
+        )
+        assert rows == []
 
 
 @requires_postgres
@@ -225,12 +261,12 @@ def test_create_club_scoped_assignment_succeeds_with_active_membership() -> None
             session,
             user_id=target_id,
             role_id=role_id,
-            scope_type="own_groups",
             club_id=club_id,
             actor_user_id=actor_id,
         )
         assert assignment.club_id == club_id
-        assert assignment.scope_type == "own_groups"
+        # AUTH-2A: the legacy column always receives `all`.
+        assert assignment.scope_type == "all"
 
 
 @requires_postgres
@@ -251,7 +287,6 @@ def test_create_club_scoped_assignment_without_active_membership_is_rejected() -
                 session,
                 user_id=target_id,
                 role_id=role_id,
-                scope_type="own_events",
                 club_id=club_id,
                 actor_user_id=target_id,
             )
@@ -262,39 +297,6 @@ def test_create_club_scoped_assignment_without_active_membership_is_rejected() -
             session.execute(
                 select(UserRoleAssignment).where(UserRoleAssignment.user_id == target_id)
             )
-            .scalars()
-            .all()
-        )
-        assert rows == []
-
-
-@requires_postgres
-def test_create_assignment_with_invalid_scope_combination_is_rejected() -> None:
-    """`none` requires club_id=NULL — supplying one is an invalid
-    combination (ADR-0026 §2), rejected before any DB write."""
-    with session_scope() as session:
-        club = _make_club()
-        person = _make_person()
-        session.add_all([club, person])
-        session.commit()
-        user = _make_user(person)
-        role = _make_role()
-        session.add_all([user, role])
-        session.commit()
-        user_id, club_id, role_id = user.id, club.id, role.id
-
-        with pytest.raises(InvalidRoleAssignmentScopeError):
-            create_role_assignment(
-                session,
-                user_id=user_id,
-                role_id=role_id,
-                scope_type="none",
-                club_id=club_id,
-                actor_user_id=user_id,
-            )
-
-        rows = (
-            session.execute(select(UserRoleAssignment).where(UserRoleAssignment.user_id == user_id))
             .scalars()
             .all()
         )
@@ -316,7 +318,6 @@ def test_create_assignment_with_non_null_scope_ref_id_is_rejected() -> None:
                 session,
                 user_id=user_id,
                 role_id=role_id,
-                scope_type="all",
                 scope_ref_id=uuid.uuid4(),
                 actor_user_id=user_id,
             )
@@ -340,7 +341,6 @@ def test_create_assignment_rejects_duplicate_overlapping() -> None:
             session,
             user_id=user_id,
             role_id=role_id,
-            scope_type="all",
             club_id=club_id,
             actor_user_id=user_id,
         )
@@ -350,7 +350,6 @@ def test_create_assignment_rejects_duplicate_overlapping() -> None:
                 session,
                 user_id=user_id,
                 role_id=role_id,
-                scope_type="all",
                 club_id=club_id,
                 actor_user_id=user_id,
             )
@@ -381,7 +380,6 @@ def test_reassignment_after_revoke_creates_a_new_row_not_reopening_the_old_one()
             session,
             user_id=user_id,
             role_id=role_id,
-            scope_type="all",
             club_id=club_id,
             actor_user_id=user_id,
         )
@@ -392,7 +390,6 @@ def test_reassignment_after_revoke_creates_a_new_row_not_reopening_the_old_one()
             session,
             user_id=user_id,
             role_id=role_id,
-            scope_type="all",
             club_id=club_id,
             actor_user_id=user_id,
         )
@@ -432,7 +429,6 @@ def test_revoke_sets_valid_to_and_is_audited() -> None:
             session,
             user_id=user_id,
             role_id=role_id,
-            scope_type="all",
             club_id=club_id,
             actor_user_id=user_id,
         )
@@ -465,7 +461,6 @@ def test_revoke_twice_is_rejected_deterministically() -> None:
             session,
             user_id=user_id,
             role_id=role_id,
-            scope_type="all",
             club_id=club_id,
             actor_user_id=user_id,
         )
@@ -494,7 +489,6 @@ def test_revoke_audit_details_contain_no_secrets_or_orm_dump() -> None:
             session,
             user_id=user_id,
             role_id=role_id,
-            scope_type="all",
             club_id=club_id,
             actor_user_id=user_id,
         )
@@ -541,7 +535,13 @@ def test_ending_target_club_membership_leaves_the_role_assignment_effective() ->
         permission = Permission(code=f"resource-{uuid.uuid4().hex[:8]}.read")
         session.add_all([target, membership, role, permission])
         session.commit()
-        session.add(RolePermission(role_id=role.id, permission_id=permission.id))
+        session.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+                scopes=[RolePermissionScope(scope_type="all")],
+            )
+        )
         session.commit()
         target_id, club_id, role_id, membership_id, permission_code = (
             target.id,
@@ -555,7 +555,6 @@ def test_ending_target_club_membership_leaves_the_role_assignment_effective() ->
             session,
             user_id=target_id,
             role_id=role_id,
-            scope_type="all",
             club_id=club_id,
             actor_user_id=target_id,
         )

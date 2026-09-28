@@ -1303,16 +1303,9 @@ def list_person_role_assignments(
     if db.get(Person, person_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
 
-    # AUTH-2: a role may be held as several assignments (one per canonical
-    # scope — app.role_assignments.person_roles module docstring point 2);
-    # this endpoint lists *roles* (people-api.md §24.1), so one item per
-    # role code — the most recent assignment of that role.
-    rows = []
-    seen_role_codes: set[str] = set()
-    for row in person_role_service.list_person_role_assignments(db, person_id=person_id):
-        if row.role.code not in seen_role_codes:
-            seen_role_codes.add(row.role.code)
-            rows.append(row)
+    # AUTH-2A: one active RoleAssignment per role (app.role_assignments.
+    # person_roles module docstring point 2), so each item is one role.
+    rows = person_role_service.list_person_role_assignments(db, person_id=person_id)
     return CollectionResponse(
         items=[_person_role_assignment_out(row, person_id=person_id) for row in rows],
         pagination=Pagination(

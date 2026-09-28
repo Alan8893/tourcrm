@@ -1099,9 +1099,9 @@ def test_concurrent_memberships_in_different_groups_never_conflict() -> None:
 
 @requires_postgres
 def test_concurrent_duplicate_role_assignments_leave_exactly_one() -> None:
-    """Real-concurrency proof for the GiST exclusion constraint backing
-    "no overlapping intervals for the same (user_id, role_id, club_id,
-    scope_type, scope_ref_id)" (ADR-0026 §1): two transactions racing to
+    """Real-concurrency proof for the one-active-role invariant
+    (`uq_user_role_assignments_one_active_role`, AUTH-2A; ADR-0026 §1):
+    two transactions racing to
     create the same overlapping RoleAssignment must never both succeed —
     the DB constraint, not just app.role_assignments.service's
     check-then-insert, is what must hold under a real race."""
@@ -1118,9 +1118,22 @@ def test_concurrent_duplicate_role_assignments_leave_exactly_one() -> None:
                 status="active",
             )
             role = Role(code=f"role-{uuid.uuid4().hex[:8]}", name="Test role")
-            setup.add_all([user, role])
+            club = Club(name=f"Club {uuid.uuid4().hex[:8]}", status="active")
+            setup.add_all([user, role, club])
             setup.commit()
-            user_id, role_id = user.id, role.id
+            # AUTH-2A: a non-admin RoleAssignment always needs a Club (and
+            # the target's active ClubMembership there).
+            setup.add(
+                ClubMembership(
+                    club_id=club.id,
+                    person_id=person.id,
+                    membership_type="member",
+                    status="active",
+                    joined_at=_utc(2020, 1, 1),
+                )
+            )
+            setup.commit()
+            user_id, role_id, club_id = user.id, role.id, club.id
 
         start_gate = threading.Barrier(2, timeout=10)
         result: dict[str, str] = {}
@@ -1133,7 +1146,7 @@ def test_concurrent_duplicate_role_assignments_leave_exactly_one() -> None:
                         session,
                         user_id=user_id,
                         role_id=role_id,
-                        scope_type="none",
+                        club_id=club_id,
                         actor_user_id=user_id,
                     )
                     result[name] = "succeeded"
@@ -1195,15 +1208,28 @@ def test_concurrent_revoke_of_the_same_role_assignment_succeeds_exactly_once() -
                 status="active",
             )
             role = Role(code=f"role-{uuid.uuid4().hex[:8]}", name="Test role")
-            setup.add_all([user, role])
+            club = Club(name=f"Club {uuid.uuid4().hex[:8]}", status="active")
+            setup.add_all([user, role, club])
             setup.commit()
-            user_id, role_id = user.id, role.id
+            # AUTH-2A: a non-admin RoleAssignment always needs a Club (and
+            # the target's active ClubMembership there).
+            setup.add(
+                ClubMembership(
+                    club_id=club.id,
+                    person_id=person.id,
+                    membership_type="member",
+                    status="active",
+                    joined_at=_utc(2020, 1, 1),
+                )
+            )
+            setup.commit()
+            user_id, role_id, club_id = user.id, role.id, club.id
 
             assignment = create_role_assignment(
                 setup,
                 user_id=user_id,
                 role_id=role_id,
-                scope_type="none",
+                club_id=club_id,
                 actor_user_id=user_id,
             )
             assignment_id = assignment.id

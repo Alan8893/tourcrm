@@ -3,6 +3,7 @@ no database required. Constraint-enforcement behavior is covered in
 tests/integration/test_authorization.py.
 """
 
+import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.db.authorization import (
@@ -11,6 +12,7 @@ from app.db.authorization import (
     Permission,
     Role,
     RolePermission,
+    RolePermissionScope,
     UserRoleAssignment,
 )
 
@@ -91,16 +93,32 @@ def test_id_columns_use_uuid_per_adr_0010() -> None:
         assert isinstance(model.__table__.c.id.type, UUID)
 
 
-def test_role_permission_has_no_surrogate_id_column() -> None:
-    # database-schema.md §6.3: the primary key is the (role_id, permission_id)
-    # pair itself, not a separate surrogate id (see PR discussion re:
-    # data-model.md §2.1's general "every entity has an id" statement).
+def test_role_permission_has_surrogate_id_and_unique_pair() -> None:
+    # AUTH-2A: a surrogate `id` lets RolePermissionScope reference one
+    # grant; `(role_id, permission_id)` stays unique.
     columns = set(RolePermission.__table__.c.keys())
-    assert columns == {"role_id", "permission_id"}
-    assert [c.name for c in RolePermission.__table__.primary_key.columns] == [
-        "role_id",
-        "permission_id",
-    ]
+    assert columns == {"id", "role_id", "permission_id"}
+    assert [c.name for c in RolePermission.__table__.primary_key.columns] == ["id"]
+    unique_column_sets = {
+        tuple(c.name for c in constraint.columns)
+        for constraint in RolePermission.__table__.constraints
+        if isinstance(constraint, sa.UniqueConstraint)
+    }
+    assert ("role_id", "permission_id") in unique_column_sets
+
+
+def test_role_permission_scope_references_one_grant_and_is_unique_per_scope() -> None:
+    # AUTH-2A: scope is a property of the permission grant.
+    table = RolePermissionScope.__table__
+    assert set(table.c.keys()) == {"id", "role_permission_id", "scope_type"}
+    [fk] = list(table.c.role_permission_id.foreign_keys)
+    assert fk.column is RolePermission.__table__.c.id
+    unique_column_sets = {
+        tuple(c.name for c in constraint.columns)
+        for constraint in table.constraints
+        if isinstance(constraint, sa.UniqueConstraint)
+    }
+    assert ("role_permission_id", "scope_type") in unique_column_sets
 
 
 def test_foreign_key_columns_match_referenced_primary_key_type() -> None:

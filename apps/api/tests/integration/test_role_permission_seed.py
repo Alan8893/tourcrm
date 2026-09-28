@@ -22,10 +22,16 @@ import inspect
 import uuid
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.authentication.bootstrap import bootstrap_initial_administrator
-from app.db.authorization import DOCUMENTED_PERMISSION_CODES, Permission, Role, RolePermission
+from app.db.authorization import (
+    DOCUMENTED_PERMISSION_CODES,
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+)
 from app.db.session import session_scope
 from app.main import app
 
@@ -65,6 +71,18 @@ def _all_role_permission_pairs() -> set[tuple[str, str]]:
             .join(Permission, Permission.id == RolePermission.permission_id)
         ).all()
         return {(role_code, permission_code) for role_code, permission_code in rows}
+
+
+def _insert_pre_auth_2a_grant(session, role_id: uuid.UUID, permission_id: uuid.UUID) -> None:  # type: ignore[no-untyped-def]
+    """Raw insert: these tests run against schemas downgraded below AUTH-2A
+    (20e1297d4e1a), where `role_permissions` has no `id` column yet."""
+    session.execute(
+        text(
+            "INSERT INTO role_permissions (role_id, permission_id) "
+            "VALUES (:role_id, :permission_id)"
+        ),
+        {"role_id": role_id, "permission_id": permission_id},
+    )
 
 
 def _csrf_headers(client: TestClient) -> dict:
@@ -141,17 +159,11 @@ def test_migration_converges_partial_admin_grants_and_preserves_unrelated_rows(
                 for code in (*partial_codes, "event.read")
             }
             for code in partial_codes:
-                session.add(
-                    RolePermission(role_id=admin_role.id, permission_id=permissions[code].id)
-                )
+                _insert_pre_auth_2a_grant(session, admin_role.id, permissions[code].id)
             # An unrelated/custom grant for a different role — outside this
             # migration's own fixed (admin, canonical-code) list — must
             # survive the migration untouched.
-            session.add(
-                RolePermission(
-                    role_id=instructor_role.id, permission_id=permissions["event.read"].id
-                )
-            )
+            _insert_pre_auth_2a_grant(session, instructor_role.id, permissions["event.read"].id)
             session.commit()
 
         upgrade = run_alembic("upgrade", "head", database_url=database_url)
@@ -159,6 +171,18 @@ def test_migration_converges_partial_admin_grants_and_preserves_unrelated_rows(
 
         assert _admin_permission_codes() == set(DOCUMENTED_PERMISSION_CODES)
         assert ("instructor", "event.read") in _all_role_permission_pairs()
+        # AUTH-2A (20e1297d4e1a) seeds scopes only for canonical grants: the
+        # custom grant survives without a scope, i.e. it grants nothing
+        # rather than being widened.
+        with session_scope() as session:
+            custom_scopes = session.execute(
+                select(RolePermissionScope.scope_type)
+                .join(RolePermission, RolePermission.id == RolePermissionScope.role_permission_id)
+                .join(Role, Role.id == RolePermission.role_id)
+                .join(Permission, Permission.id == RolePermission.permission_id)
+                .where(Role.code == "instructor", Permission.code == "event.read")
+            ).all()
+        assert custom_scopes == []
     finally:
         run_alembic("upgrade", "head", database_url=database_url)
 
@@ -178,7 +202,7 @@ def test_reapplying_admin_seed_after_downgrade_and_upgrade_is_idempotent(
 
     assert _admin_permission_codes() == set(DOCUMENTED_PERMISSION_CODES)
     with session_scope() as session:
-        rows = session.execute(select(RolePermission)).scalars().all()
+        rows = session.execute(select(RolePermission.id)).scalars().all()
         # admin's full canonical set, plus TH-0107's one additional
         # (instructor, user.directory.read) grant (migration 95487f3b616b,
         # re-applied by the same upgrade-to-head above).

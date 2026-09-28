@@ -18,7 +18,13 @@ from sqlalchemy import select
 from app.api.deps import CurrentPrincipal, get_current_principal, require_permission
 from app.authorization.service import Authorizer
 from app.db.authentication import AuthenticatedSession
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.identity import User
 from app.db.session import session_scope
 from app.main import app
@@ -578,8 +584,14 @@ def test_authentication_and_authorization_are_evaluated_independently() -> None:
         permission = Permission(code="widget.read")
         session.add_all([role, permission])
         session.flush()
-        session.add(RolePermission(role_id=role.id, permission_id=permission.id))
-        session.add(UserRoleAssignment(user_id=user.id, role_id=role.id, scope_type="all"))
+        session.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+                scopes=[RolePermissionScope(scope_type="all")],
+            )
+        )
+        session.add(UserRoleAssignment(user_id=user.id, role_id=role.id))
         session.commit()
 
     granted = probe_client.get("/probe/authz-authn-separation")

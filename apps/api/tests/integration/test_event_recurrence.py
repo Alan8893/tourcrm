@@ -34,7 +34,13 @@ from sqlalchemy.exc import IntegrityError
 from app.audit.vocabulary import CANONICAL_AUDIT_ACTIONS
 from app.authorization.service import Authorizer
 from app.db.audit import AuditLog
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.event_recurrence import EventOccurrence, EventOccurrenceException, EventSeries
 from app.db.identity import Club, Person, User
 from app.db.session import session_scope
@@ -91,13 +97,18 @@ def _grant_all_scope(session, *, user_id: uuid.UUID, permission_code: str, club_
     ).scalar_one()
     session.add(role)
     session.commit()
-    session.add(RolePermission(role_id=role.id, permission_id=permission.id))
+    session.add(
+        RolePermission(
+            role_id=role.id,
+            permission_id=permission.id,
+            scopes=[RolePermissionScope(scope_type="all")],
+        )
+    )
     session.add(
         UserRoleAssignment(
             user_id=user_id,
             role_id=role.id,
             club_id=club_id,
-            scope_type="all",
             valid_from=datetime.now(dt_timezone.utc),
         )
     )

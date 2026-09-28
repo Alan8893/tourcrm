@@ -597,7 +597,9 @@ def _admin_has_document_export_grant() -> bool:
     with session_scope() as session:
         return (
             session.execute(
-                select(RolePermission)
+                # Explicit columns: also runs against pre-AUTH-2A schemas
+                # (no role_permissions.id) after a downgrade.
+                select(RolePermission.role_id)
                 .join(Role, Role.id == RolePermission.role_id)
                 .join(Permission, Permission.id == RolePermission.permission_id)
                 .where(Role.code == "admin", Permission.code == "document.export")

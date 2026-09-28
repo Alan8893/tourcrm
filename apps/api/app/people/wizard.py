@@ -17,9 +17,9 @@ individually:
 - app.authentication.account_provisioning.create_user_for_person
   (automatic account provisioning, ADR-0038 — active-with-email or
   pending-stub-without-email, per that module's own docstring)
-- app.role_assignments.person_roles.create_canonical_role_assignments
-  (the initial RoleAssignment set, ADR-0039 / AUTH-2 — the same canonical
-  per-role scope set Person Detail uses, each row created by
+- app.role_assignments.person_roles.create_canonical_role_assignment
+  (the initial RoleAssignment, ADR-0039 / AUTH-2A — one assignment per
+  role, exactly as Person Detail creates it, via
   app.role_assignments.service.create_role_assignment)
 - app.groups.service.create_group_instructor_assignment /
   create_group_membership (Instructor's 0..N groups / Member's 1..N
@@ -72,7 +72,7 @@ from app.db.identity import Club, Person
 from app.groups import service as groups_service
 from app.people import service as people_service
 from app.people.guardian_service import create_guardian_relationship
-from app.role_assignments.person_roles import create_canonical_role_assignments
+from app.role_assignments.person_roles import create_canonical_role_assignment
 
 PersonWizardRoleCode = Literal["admin", "instructor", "member", "guardian"]
 
@@ -249,9 +249,8 @@ def create_person_with_wizard(
             actor_user_id=actor_user_id,
             request_id=request_id,
         )
-        # AUTH-2: identical canonical scope set to Person Detail
-        # (app.role_assignments.person_roles.CANONICAL_ROLE_SCOPE_TYPES).
-        create_canonical_role_assignments(
+        # AUTH-2A: one RoleAssignment, identical to Person Detail.
+        create_canonical_role_assignment(
             deferred,
             user_id=user.id,
             role=role,

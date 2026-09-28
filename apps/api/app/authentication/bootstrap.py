@@ -20,9 +20,9 @@ from app.db.authorization import LEGACY_ASSIGNMENT_SCOPE_TYPE, Role, UserRoleAss
 from app.db.identity import Club, Person, User, normalize_login_identifier
 
 ADMIN_ROLE_CODE = "admin"
-# The scope of every `admin` permission grant (`RolePermissionScope`,
-# AUTH-2A) — displayed by the bootstrap CLI. Not written to the
-# assignment: a RoleAssignment carries no authorization scope.
+# The scope every `admin` permission grant carries (AUTH-2A) — displayed
+# by the bootstrap CLI. Not written to the assignment: a RoleAssignment
+# carries no authorization scope.
 GLOBAL_ADMIN_SCOPE_TYPE = "all"
 
 BOOTSTRAP_ADMIN_FIRST_NAME = "Admin"

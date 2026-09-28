@@ -38,8 +38,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.api.deps import CurrentPrincipal, get_current_principal
+from app.authorization.service import applicable_grants
 from app.db.audit import AuditLog
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.identity import Club, ClubMembership, Person, User
 from app.db.session import session_scope
 from app.main import app
@@ -131,10 +138,16 @@ def _grant_permission(
         role = Role(code=f"role-{uuid.uuid4().hex[:8]}", name="Test role")
         session.add(role)
         session.commit()
-        session.add(RolePermission(role_id=role.id, permission_id=permission.id))
+        session.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+                scopes=[RolePermissionScope(scope_type=scope_type)],
+            )
+        )
         session.add(
             UserRoleAssignment(
-                user_id=user_id, role_id=role.id, scope_type=scope_type, club_id=club_id
+                user_id=user_id, role_id=role.id, club_id=club_id
             )
         )
         session.commit()
@@ -200,7 +213,7 @@ def test_list_role_assignments_unauthenticated_is_401(client: TestClient) -> Non
 def test_create_role_assignment_unauthenticated_is_401(client: TestClient) -> None:
     response = client.post(
         "/api/v1/role-assignments",
-        json={"user_id": str(uuid.uuid4()), "role_id": str(uuid.uuid4()), "scope_type": "none"},
+        json={"user_id": str(uuid.uuid4()), "role_id": str(uuid.uuid4())},
         headers=_csrf_headers(client),
     )
     assert response.status_code == 401
@@ -227,11 +240,11 @@ def test_create_role_assignment_global_role_manage_succeeds(client: TestClient) 
         target_id, _ = _setup_target_with_membership(session, _make_club())
     _grant_permission(caller_id, "role.manage", scope_type="all")
     _authenticate_as(caller_id)
-    role_id = _baseline_role_id("member")
+    role_id = _baseline_role_id("admin")
 
     response = client.post(
         "/api/v1/role-assignments",
-        json={"user_id": str(target_id), "role_id": str(role_id), "scope_type": "none"},
+        json={"user_id": str(target_id), "role_id": str(role_id)},
         headers=_csrf_headers(client),
     )
     assert response.status_code == 201, response.text
@@ -270,7 +283,6 @@ def test_create_role_assignment_club_scoped_role_manage_succeeds_within_own_club
         json={
             "user_id": str(target_id),
             "role_id": str(role_id),
-            "scope_type": "own_groups",
             "club_id": str(club_id),
         },
         headers=_csrf_headers(client),
@@ -306,7 +318,6 @@ def test_create_role_assignment_club_scoped_role_manage_cross_club_is_forbidden(
         json={
             "user_id": str(target_id),
             "role_id": str(role_id),
-            "scope_type": "own_groups",
             "club_id": str(club_b_id),
         },
         headers=_csrf_headers(client),
@@ -342,7 +353,6 @@ def test_create_role_assignment_role_manage_with_non_all_scope_is_ineffective(
         json={
             "user_id": str(target_id),
             "role_id": str(role_id),
-            "scope_type": "own_groups",
             "club_id": str(club_id),
         },
         headers=_csrf_headers(client),
@@ -381,7 +391,7 @@ def test_create_role_assignment_role_name_alone_without_permission_grant_is_forb
 
     response = client.post(
         "/api/v1/role-assignments",
-        json={"user_id": str(target_id), "role_id": str(role_id), "scope_type": "none"},
+        json={"user_id": str(target_id), "role_id": str(role_id)},
         headers=_csrf_headers(client),
     )
     assert response.status_code == 403
@@ -403,20 +413,18 @@ def test_create_role_assignment_without_any_permission_is_forbidden(client: Test
 
     response = client.post(
         "/api/v1/role-assignments",
-        json={"user_id": str(target_id), "role_id": str(role_id), "scope_type": "none"},
+        json={"user_id": str(target_id), "role_id": str(role_id)},
         headers=_csrf_headers(client),
     )
     assert response.status_code == 403
 
 
-# --- Scope combination matrix -----------------------------------------
+# --- AUTH-2A: a RoleAssignment grants a role, never a scope -----------------
 
 
-@requires_postgres
-@pytest.mark.parametrize("scope_type", ["all", "self", "children", "own_groups", "own_events"])
-def test_create_role_assignment_valid_club_scoped_combinations_succeed(
-    client: TestClient, scope_type: str
-) -> None:
+def _caller_and_member_target() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """(caller_id with global `role.manage`, target_id, club_id) — the
+    target has an active ClubMembership in `club_id`."""
     with session_scope() as session:
         club = _make_club()
         session.add(club)
@@ -431,134 +439,131 @@ def test_create_role_assignment_valid_club_scoped_combinations_succeed(
         target_id, _ = _setup_target_with_membership(session, club)
     _grant_permission(caller_id, "role.manage", scope_type="all")
     _authenticate_as(caller_id)
-    role_id = _baseline_role_id("member")
+    return caller_id, target_id, club_id
+
+
+def _role_permission_scope_snapshot(role_id: uuid.UUID) -> set[tuple[uuid.UUID, str]]:
+    with session_scope() as session:
+        rows = session.execute(
+            select(RolePermission.permission_id, RolePermissionScope.scope_type)
+            .join(RolePermissionScope, RolePermissionScope.role_permission_id == RolePermission.id)
+            .where(RolePermission.role_id == role_id)
+        ).all()
+        return {(permission_id, scope_type) for permission_id, scope_type in rows}
+
+
+@requires_postgres
+@pytest.mark.parametrize("role_code", ["instructor", "member", "guardian", "admin"])
+def test_create_role_assignment_club_scoped_succeeds_for_every_baseline_role(
+    client: TestClient, role_code: str
+) -> None:
+    _, target_id, club_id = _caller_and_member_target()
+    role_id = _baseline_role_id(role_code)
+
+    response = client.post(
+        "/api/v1/role-assignments",
+        json={"user_id": str(target_id), "role_id": str(role_id), "club_id": str(club_id)},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 201, response.text
+    # Legacy column, always `all` — not a permission scope.
+    assert response.json()["scope_type"] == "all"
+    with session_scope() as session:
+        rows = (
+            session.execute(
+                select(UserRoleAssignment).where(
+                    UserRoleAssignment.user_id == target_id,
+                    UserRoleAssignment.role_id == role_id,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+
+
+@requires_postgres
+@pytest.mark.parametrize(
+    "caller_scope_type", ["own_groups", "self", "children", "none", "own_records", "all"]
+)
+def test_create_role_assignment_ignores_a_caller_supplied_scope(
+    client: TestClient, caller_scope_type: str
+) -> None:
+    """AUTH-2A: `scope_type` is no longer an input. A legacy client that
+    still sends one can neither choose the stored value nor change any
+    permission scope of the role."""
+    _, target_id, club_id = _caller_and_member_target()
+    role_id = _baseline_role_id("instructor")
+    scopes_before = _role_permission_scope_snapshot(role_id)
 
     response = client.post(
         "/api/v1/role-assignments",
         json={
             "user_id": str(target_id),
             "role_id": str(role_id),
-            "scope_type": scope_type,
             "club_id": str(club_id),
+            "scope_type": caller_scope_type,
         },
         headers=_csrf_headers(client),
     )
     assert response.status_code == 201, response.text
-    assert response.json()["scope_type"] == scope_type
-
-
-@requires_postgres
-def test_create_role_assignment_none_scope_without_club_id_succeeds(client: TestClient) -> None:
+    assert response.json()["scope_type"] == "all"
+    assert _role_permission_scope_snapshot(role_id) == scopes_before
     with session_scope() as session:
-        caller_person = _make_person(first_name="Caller")
-        session.add(caller_person)
-        session.commit()
-        caller = _make_user(caller_person)
-        session.add(caller)
-        session.commit()
-        caller_id = caller.id
-        target_id, _ = _setup_target_with_membership(session, _make_club())
-    _grant_permission(caller_id, "role.manage", scope_type="all")
-    _authenticate_as(caller_id)
-    role_id = _baseline_role_id("member")
-
-    response = client.post(
-        "/api/v1/role-assignments",
-        json={"user_id": str(target_id), "role_id": str(role_id), "scope_type": "none"},
-        headers=_csrf_headers(client),
-    )
-    assert response.status_code == 201, response.text
-    assert response.json()["club_id"] is None
+        # `instructor` holds no `person.read` grant: no scope the caller
+        # sent can make one appear.
+        assert applicable_grants(session, target_id, "person.read") == []
+        directory_grants = applicable_grants(session, target_id, "user.directory.read")
+        assert [grant.scope_type for grant in directory_grants] == ["all"]
 
 
 @requires_postgres
-def test_create_role_assignment_all_scope_without_club_id_succeeds_as_global(
-    client: TestClient,
+@pytest.mark.parametrize("role_code", ["instructor", "member", "guardian"])
+def test_create_non_admin_role_assignment_without_club_id_is_rejected(
+    client: TestClient, role_code: str
 ) -> None:
-    """ADR-0026's TH-0089 amendment: `all` is the one scope whose
-    club_id may be either a specific Club or NULL (installation-wide) —
-    mirroring `none`'s own club_id=NULL success case above, unlike
-    `self`/`children`/`own_groups`/`own_events`, which still require one
-    (see the parametrized rejection test below)."""
-    with session_scope() as session:
-        caller_person = _make_person(first_name="Caller")
-        session.add(caller_person)
-        session.commit()
-        caller = _make_user(caller_person)
-        session.add(caller)
-        session.commit()
-        caller_id = caller.id
-        target_id, _ = _setup_target_with_membership(session, _make_club())
-    _grant_permission(caller_id, "role.manage", scope_type="all")
-    _authenticate_as(caller_id)
-    role_id = _baseline_role_id("member")
+    """AUTH-2A PO decision: a Club is required for every RoleAssignment
+    except the canonical global `admin`."""
+    _, target_id, _ = _caller_and_member_target()
+    role_id = _baseline_role_id(role_code)
 
     response = client.post(
         "/api/v1/role-assignments",
         json={"user_id": str(target_id), "role_id": str(role_id), "scope_type": "all"},
         headers=_csrf_headers(client),
     )
-    assert response.status_code == 201, response.text
-    assert response.json()["club_id"] is None
-    assert response.json()["scope_type"] == "all"
-
-
-@requires_postgres
-@pytest.mark.parametrize(
-    "scope_type,include_club_id",
-    [
-        ("self", False),
-        ("children", False),
-        ("own_groups", False),
-        ("own_events", False),
-        ("none", True),
-    ],
-)
-def test_create_role_assignment_invalid_club_id_combinations_are_rejected(
-    client: TestClient, scope_type: str, include_club_id: bool
-) -> None:
-    with session_scope() as session:
-        club = _make_club()
-        session.add(club)
-        session.commit()
-        caller_person = _make_person(first_name="Caller")
-        session.add(caller_person)
-        session.commit()
-        caller = _make_user(caller_person)
-        session.add(caller)
-        session.commit()
-        caller_id, club_id = caller.id, club.id
-        target_id, _ = _setup_target_with_membership(session, club)
-    _grant_permission(caller_id, "role.manage", scope_type="all")
-    _authenticate_as(caller_id)
-    role_id = _baseline_role_id("member")
-
-    payload: dict[str, object] = {
-        "user_id": str(target_id),
-        "role_id": str(role_id),
-        "scope_type": scope_type,
-    }
-    if include_club_id:
-        payload["club_id"] = str(club_id)
-
-    response = client.post("/api/v1/role-assignments", json=payload, headers=_csrf_headers(client))
     assert response.status_code == 422, response.text
     assert response.json()["error"]["code"] == "invalid_role_assignment_scope"
 
 
 @requires_postgres
-def test_create_role_assignment_rejects_non_null_scope_ref_id(client: TestClient) -> None:
+def test_create_role_assignment_duplicate_ignores_the_legacy_scope_of_the_active_row(
+    client: TestClient,
+) -> None:
+    """AUTH-2A: an active role is a duplicate whatever the legacy
+    `scope_type` of the row that already holds it."""
+    _, target_id, club_id = _caller_and_member_target()
+    role_id = _baseline_role_id("guardian")
     with session_scope() as session:
-        caller_person = _make_person(first_name="Caller")
-        session.add(caller_person)
+        session.add(
+            UserRoleAssignment(
+                user_id=target_id, role_id=role_id, club_id=club_id, scope_type="children"
+            )
+        )
         session.commit()
-        caller = _make_user(caller_person)
-        session.add(caller)
-        session.commit()
-        caller_id = caller.id
-        target_id, _ = _setup_target_with_membership(session, _make_club())
-    _grant_permission(caller_id, "role.manage", scope_type="all")
-    _authenticate_as(caller_id)
+
+    response = client.post(
+        "/api/v1/role-assignments",
+        json={"user_id": str(target_id), "role_id": str(role_id), "club_id": str(club_id)},
+        headers=_csrf_headers(client),
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["error"]["code"] == "duplicate_role_assignment"
+
+
+@requires_postgres
+def test_create_role_assignment_rejects_non_null_scope_ref_id(client: TestClient) -> None:
+    _, target_id, club_id = _caller_and_member_target()
     role_id = _baseline_role_id("member")
 
     response = client.post(
@@ -566,7 +571,7 @@ def test_create_role_assignment_rejects_non_null_scope_ref_id(client: TestClient
         json={
             "user_id": str(target_id),
             "role_id": str(role_id),
-            "scope_type": "none",
+            "club_id": str(club_id),
             "scope_ref_id": str(uuid.uuid4()),
         },
         headers=_csrf_headers(client),
@@ -574,63 +579,6 @@ def test_create_role_assignment_rejects_non_null_scope_ref_id(client: TestClient
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "invalid_role_assignment_scope"
 
-
-@requires_postgres
-def test_create_role_assignment_rejects_own_records_scope(client: TestClient) -> None:
-    with session_scope() as session:
-        caller_person = _make_person(first_name="Caller")
-        session.add(caller_person)
-        session.commit()
-        caller = _make_user(caller_person)
-        session.add(caller)
-        session.commit()
-        caller_id = caller.id
-        target_id, _ = _setup_target_with_membership(session, _make_club())
-    _grant_permission(caller_id, "role.manage", scope_type="all")
-    _authenticate_as(caller_id)
-    role_id = _baseline_role_id("member")
-
-    response = client.post(
-        "/api/v1/role-assignments",
-        json={"user_id": str(target_id), "role_id": str(role_id), "scope_type": "own_records"},
-        headers=_csrf_headers(client),
-    )
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "invalid_role_assignment_scope"
-
-
-@requires_postgres
-def test_create_role_assignment_assigned_events_alias_normalizes_to_own_events(
-    client: TestClient,
-) -> None:
-    with session_scope() as session:
-        club = _make_club()
-        session.add(club)
-        session.commit()
-        caller_person = _make_person(first_name="Caller")
-        session.add(caller_person)
-        session.commit()
-        caller = _make_user(caller_person)
-        session.add(caller)
-        session.commit()
-        caller_id, club_id = caller.id, club.id
-        target_id, _ = _setup_target_with_membership(session, club)
-    _grant_permission(caller_id, "role.manage", scope_type="all")
-    _authenticate_as(caller_id)
-    role_id = _baseline_role_id("instructor")
-
-    response = client.post(
-        "/api/v1/role-assignments",
-        json={
-            "user_id": str(target_id),
-            "role_id": str(role_id),
-            "scope_type": "assigned_events",
-            "club_id": str(club_id),
-        },
-        headers=_csrf_headers(client),
-    )
-    assert response.status_code == 201, response.text
-    assert response.json()["scope_type"] == "own_events"
 
 
 # --- Cross-Club / ClubMembership integrity ---------------------------------
@@ -667,7 +615,6 @@ def test_create_role_assignment_club_scoped_without_active_membership_is_rejecte
         json={
             "user_id": str(target_id),
             "role_id": str(role_id),
-            "scope_type": "all",
             "club_id": str(club_id),
         },
         headers=_csrf_headers(client),
@@ -706,7 +653,6 @@ def test_create_role_assignment_membership_in_another_club_is_rejected(
         json={
             "user_id": str(target_id),
             "role_id": str(role_id),
-            "scope_type": "all",
             "club_id": str(club_a_id),
         },
         headers=_csrf_headers(client),
@@ -747,7 +693,6 @@ def test_create_role_assignment_with_ended_membership_is_rejected(client: TestCl
         json={
             "user_id": str(target_id),
             "role_id": str(role_id),
-            "scope_type": "all",
             "club_id": str(club_id),
         },
         headers=_csrf_headers(client),
@@ -781,7 +726,6 @@ def test_ending_target_club_membership_leaves_the_role_assignment_row_untouched(
         json={
             "user_id": str(target_id),
             "role_id": str(role_id),
-            "scope_type": "own_groups",
             "club_id": str(club_id),
         },
         headers=_csrf_headers(client),
@@ -814,7 +758,7 @@ def test_role_manage_remains_effective_after_callers_own_club_membership_ends(
     assignment remains valid/effective according to its own temporal
     interval — proven through the real authorization boundary (the
     caller can still use these endpoints in that Club), not just by
-    inspecting the row. The shared Authorizer/applicable_assignments
+    inspecting the row. The shared Authorizer/applicable_grants
     engine is not modified to make this pass (ADR-0027 §2)."""
     with session_scope() as session:
         club = _make_club()
@@ -841,7 +785,6 @@ def test_role_manage_remains_effective_after_callers_own_club_membership_ends(
         json={
             "user_id": str(other_target_id),
             "role_id": str(role_id),
-            "scope_type": "all",
             "club_id": str(club_id),
         },
         headers=_csrf_headers(client),
@@ -875,7 +818,7 @@ def test_create_role_assignment_invalid_user_id_is_422(client: TestClient) -> No
 
     response = client.post(
         "/api/v1/role-assignments",
-        json={"user_id": str(uuid.uuid4()), "role_id": str(role_id), "scope_type": "none"},
+        json={"user_id": str(uuid.uuid4()), "role_id": str(role_id)},
         headers=_csrf_headers(client),
     )
     assert response.status_code == 422
@@ -898,7 +841,7 @@ def test_create_role_assignment_invalid_role_id_is_422(client: TestClient) -> No
 
     response = client.post(
         "/api/v1/role-assignments",
-        json={"user_id": str(target_id), "role_id": str(uuid.uuid4()), "scope_type": "none"},
+        json={"user_id": str(target_id), "role_id": str(uuid.uuid4())},
         headers=_csrf_headers(client),
     )
     assert response.status_code == 422
@@ -921,9 +864,9 @@ def test_create_role_assignment_duplicate_overlapping_is_409(client: TestClient)
         target_id, _ = _setup_target_with_membership(session, _make_club())
     _grant_permission(caller_id, "role.manage", scope_type="all")
     _authenticate_as(caller_id)
-    role_id = _baseline_role_id("member")
+    role_id = _baseline_role_id("admin")
     headers = _csrf_headers(client)
-    payload = {"user_id": str(target_id), "role_id": str(role_id), "scope_type": "none"}
+    payload = {"user_id": str(target_id), "role_id": str(role_id)}
 
     first = client.post("/api/v1/role-assignments", json=payload, headers=headers)
     assert first.status_code == 201, first.text
@@ -950,16 +893,16 @@ def test_list_role_assignments_filters_by_user_id(client: TestClient) -> None:
         target_b_id, _ = _setup_target_with_membership(session, _make_club())
     _grant_permission(caller_id, "role.manage", scope_type="all")
     _authenticate_as(caller_id)
-    role_id = _baseline_role_id("member")
+    role_id = _baseline_role_id("admin")
     headers = _csrf_headers(client)
     client.post(
         "/api/v1/role-assignments",
-        json={"user_id": str(target_a_id), "role_id": str(role_id), "scope_type": "none"},
+        json={"user_id": str(target_a_id), "role_id": str(role_id)},
         headers=headers,
     )
     client.post(
         "/api/v1/role-assignments",
-        json={"user_id": str(target_b_id), "role_id": str(role_id), "scope_type": "none"},
+        json={"user_id": str(target_b_id), "role_id": str(role_id)},
         headers=headers,
     )
 
@@ -996,7 +939,6 @@ def test_list_role_assignments_filters_by_club_id_and_role_id(client: TestClient
         json={
             "user_id": str(target_a_id),
             "role_id": str(member_role_id),
-            "scope_type": "all",
             "club_id": str(club_a_id),
         },
         headers=headers,
@@ -1007,7 +949,6 @@ def test_list_role_assignments_filters_by_club_id_and_role_id(client: TestClient
         json={
             "user_id": str(target_b_id),
             "role_id": str(instructor_role_id),
-            "scope_type": "all",
             "club_id": str(club_b_id),
         },
         headers=headers,
@@ -1038,12 +979,12 @@ def test_list_role_assignments_has_ended_filters(client: TestClient) -> None:
         target_id, _ = _setup_target_with_membership(session, _make_club())
     _grant_permission(caller_id, "role.manage", scope_type="all")
     _authenticate_as(caller_id)
-    role_id = _baseline_role_id("member")
+    role_id = _baseline_role_id("admin")
     headers = _csrf_headers(client)
 
     created = client.post(
         "/api/v1/role-assignments",
-        json={"user_id": str(target_id), "role_id": str(role_id), "scope_type": "none"},
+        json={"user_id": str(target_id), "role_id": str(role_id)},
         headers=headers,
     )
     assignment_id = created.json()["id"]
@@ -1054,7 +995,7 @@ def test_list_role_assignments_has_ended_filters(client: TestClient) -> None:
         other_target_id, _ = _setup_target_with_membership(session, _make_club())
     still_open = client.post(
         "/api/v1/role-assignments",
-        json={"user_id": str(other_target_id), "role_id": str(role_id), "scope_type": "none"},
+        json={"user_id": str(other_target_id), "role_id": str(role_id)},
         headers=headers,
     )
     assert still_open.status_code == 201, still_open.text
@@ -1145,7 +1086,6 @@ def test_list_role_assignments_cross_club_enumeration_is_blocked(client: TestCli
         json={
             "user_id": str(target_b_id),
             "role_id": str(role_id),
-            "scope_type": "all",
             "club_id": str(club_b_id),
         },
         headers=_csrf_headers(client),
@@ -1176,12 +1116,12 @@ def test_revoke_role_assignment_then_repeat_is_conflict(client: TestClient) -> N
         target_id, _ = _setup_target_with_membership(session, _make_club())
     _grant_permission(caller_id, "role.manage", scope_type="all")
     _authenticate_as(caller_id)
-    role_id = _baseline_role_id("member")
+    role_id = _baseline_role_id("admin")
     headers = _csrf_headers(client)
 
     created = client.post(
         "/api/v1/role-assignments",
-        json={"user_id": str(target_id), "role_id": str(role_id), "scope_type": "none"},
+        json={"user_id": str(target_id), "role_id": str(role_id)},
         headers=headers,
     )
     assignment_id = created.json()["id"]
@@ -1232,7 +1172,6 @@ def test_revoke_role_assignment_idor_hides_nonexistent_and_unauthorized(
         json={
             "user_id": str(target_id),
             "role_id": str(role_id),
-            "scope_type": "all",
             "club_id": str(club_id),
         },
         headers=_csrf_headers(client),
@@ -1286,7 +1225,6 @@ def test_revoke_role_assignment_cross_club_caller_gets_same_404(client: TestClie
         json={
             "user_id": str(target_id),
             "role_id": str(role_id),
-            "scope_type": "all",
             "club_id": str(club_b_id),
         },
         headers=_csrf_headers(client),
@@ -1319,12 +1257,12 @@ def test_full_role_assignment_lifecycle_produces_only_canonical_audit_actions(
         target_id, _ = _setup_target_with_membership(session, _make_club())
     _grant_permission(caller_id, "role.manage", scope_type="all")
     _authenticate_as(caller_id)
-    role_id = _baseline_role_id("member")
+    role_id = _baseline_role_id("admin")
     headers = _csrf_headers(client)
 
     created = client.post(
         "/api/v1/role-assignments",
-        json={"user_id": str(target_id), "role_id": str(role_id), "scope_type": "none"},
+        json={"user_id": str(target_id), "role_id": str(role_id)},
         headers=headers,
     )
     assignment_id = created.json()["id"]

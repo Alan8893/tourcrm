@@ -27,7 +27,13 @@ import app.imports.preview as preview_module
 from app.api.deps import CurrentPrincipal, get_current_principal
 from app.db.attendance import Attendance
 from app.db.audit import AuditLog
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.documents import File
 from app.db.events import EventParticipation
 from app.db.groups import GroupInstructorAssignment, GroupMembership
@@ -116,9 +122,15 @@ def _importer(club_id: uuid.UUID) -> uuid.UUID:
         role = Role(code=f"role-{uuid.uuid4().hex[:8]}", name="Test role")
         session.add(role)
         session.flush()
-        session.add(RolePermission(role_id=role.id, permission_id=permission.id))
         session.add(
-            UserRoleAssignment(user_id=user_id, role_id=role.id, scope_type="all", club_id=club_id)
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+                scopes=[RolePermissionScope(scope_type="all")],
+            )
+        )
+        session.add(
+            UserRoleAssignment(user_id=user_id, role_id=role.id, club_id=club_id)
         )
         session.commit()
     return user_id

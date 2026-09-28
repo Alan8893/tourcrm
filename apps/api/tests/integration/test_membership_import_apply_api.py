@@ -34,7 +34,13 @@ from app.authentication import account_provisioning
 from app.db.attendance import Attendance
 from app.db.audit import AuditLog
 from app.db.authentication import PasswordResetChallenge
-from app.db.authorization import Permission, Role, RolePermission, UserRoleAssignment
+from app.db.authorization import (
+    Permission,
+    Role,
+    RolePermission,
+    RolePermissionScope,
+    UserRoleAssignment,
+)
 from app.db.documents import File
 from app.db.events import EventParticipation
 from app.db.groups import GroupInstructorAssignment, GroupMembership
@@ -113,10 +119,16 @@ def _grant(user_id: uuid.UUID, *, club_id: uuid.UUID | None, scope_type: str = "
         role = Role(code=f"role-{uuid.uuid4().hex[:8]}", name="Test role")
         session.add(role)
         session.flush()
-        session.add(RolePermission(role_id=role.id, permission_id=permission.id))
+        session.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+                scopes=[RolePermissionScope(scope_type=scope_type)],
+            )
+        )
         session.add(
             UserRoleAssignment(
-                user_id=user_id, role_id=role.id, scope_type=scope_type, club_id=club_id
+                user_id=user_id, role_id=role.id, club_id=club_id
             )
         )
         session.commit()
