@@ -48,14 +48,15 @@ Two call shapes, exactly matching app.events.authorization's own split:
   authorization runs *inside* the SQL query itself, never fetch-then-
   filter-in-Python.
 
-`children` is participation-only here (no group-target alternative path):
-ADR-0029/ADR-0030 both define occurrence `children` as exactly
-"occurrence-level participation ... plus active GuardianRelationship and
-... membership checks" — unlike app.events.authorization's own `Event`
-`_child_condition`, which ADR-0023 additionally allows via group
-membership + group targeting. Inventing that second path for occurrences,
-which neither ADR mentions, would be exactly the kind of undocumented
-extension this task must not make.
+`children` follows ADR-0042/ADR-0043 (TH-0172 / Issue #213): an
+occurrence is readable through an eligible child via EITHER an active
+`EventOccurrenceParticipant` row (the original ADR-0029/ADR-0030 path) OR
+the child's active `GroupMembership` in a Group with an active
+`EventOccurrenceGroupTarget` for the occurrence — the same two paths, and
+the same relationship/lifecycle checks, as app.events.authorization's own
+`Event` `_child_condition`. ADR-0043 §2 makes the group path mandatory: a
+Guardian must not have to wait for the child's direct participation to
+see a recurring group activity.
 
 Every nested EXISTS below that references the outer occurrence explicitly
 correlates against `EventOccurrence`/the immediately-enclosing aliased
@@ -82,11 +83,12 @@ from app.db.event_recurrence_relationships import (
     EventOccurrenceParticipant,
     EventOccurrenceStaffAssignment,
 )
-from app.db.groups import Group, GroupInstructorAssignment
+from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 from app.db.identity import ClubMembership, GuardianRelationship, User
 
 _ACTIVE_CLUB_MEMBERSHIP_STATUS = "active"
 _ACTIVE_GUARDIAN_RELATIONSHIP_STATUS = "active"
+_ACTIVE_GROUP_MEMBERSHIP_STATUS = "active"
 
 
 def _active_interval(valid_from: Any, valid_to: Any) -> sa.ColumnElement[bool]:
@@ -154,13 +156,15 @@ def _self_condition(occurrence_id: Any, person_id: Any) -> sa.ColumnElement[bool
 def _child_condition(
     occurrence_id: Any, occurrence_club_id: Any, guardian_person_id: Any
 ) -> sa.ColumnElement[bool]:
-    """ADR-0029/ADR-0030: guardian access requires an active
-    GuardianRelationship AND the child's active ClubMembership in the
-    occurrence's Club AND the guardian's own active ClubMembership in
-    that same Club AND an active `EventOccurrenceParticipant` row for the
-    child on this occurrence. Participation-only (no group-target
-    alternative) — see module docstring. Never unrestricted guardian
-    access, never plain `guardian_person_id` filtering alone.
+    """ADR-0029/ADR-0030 + ADR-0042/ADR-0043: guardian access requires an
+    active GuardianRelationship AND the child's active ClubMembership in
+    the occurrence's Club AND the guardian's own active ClubMembership in
+    that same Club, AND (an active `EventOccurrenceParticipant` row for
+    the child on this occurrence OR the child's active GroupMembership in
+    a Group with an active `EventOccurrenceGroupTarget` for this
+    occurrence). Mirrors app.events.authorization's `Event`
+    `_child_condition` path-for-path. Never unrestricted guardian access,
+    never plain `guardian_person_id` filtering alone.
     """
     guardian_has_membership = sa.exists(
         sa.select(ClubMembership.id).where(
@@ -173,6 +177,8 @@ def _child_condition(
     gr = aliased(GuardianRelationship)
     child_membership = aliased(ClubMembership)
     participation = aliased(EventOccurrenceParticipant)
+    group_membership = aliased(GroupMembership)
+    group_target = aliased(EventOccurrenceGroupTarget)
 
     # Correlated two levels deep (past `eligible_child_exists` up to the
     # true outer occurrence/club_id) — explicit `.correlate(...)` rather
@@ -185,6 +191,18 @@ def _child_condition(
             _active_interval(participation.valid_from, participation.valid_to),
         )
         .correlate(EventOccurrence, gr)
+    )
+    child_via_group_target = sa.exists(
+        sa.select(group_membership.id)
+        .join(group_target, group_target.group_id == group_membership.group_id)
+        .where(
+            group_membership.club_membership_id == child_membership.id,
+            group_membership.membership_status == _ACTIVE_GROUP_MEMBERSHIP_STATUS,
+            _active_interval(group_membership.valid_from, group_membership.valid_to),
+            group_target.occurrence_id == occurrence_id,
+            _active_interval(group_target.valid_from, group_target.valid_to),
+        )
+        .correlate(EventOccurrence, child_membership)
     )
 
     eligible_child_exists = sa.exists(
@@ -201,7 +219,7 @@ def _child_condition(
             gr.guardian_person_id == guardian_person_id,
             gr.status == _ACTIVE_GUARDIAN_RELATIONSHIP_STATUS,
             _active_interval(gr.valid_from, gr.valid_to),
-            child_via_participation,
+            sa.or_(child_via_participation, child_via_group_target),
         )
     )
 
