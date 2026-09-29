@@ -112,12 +112,12 @@ def test_admin_role_permission_count_matches_canonical_catalog_exactly() -> None
 
 # --- (6) no instructor/member/guardian grants are introduced ---------------
 #
-# TH-0107 (migration 95487f3b616b, after this one in the chain) is the one
-# deliberate exception: `instructor` receives exactly one grant,
-# `user.directory.read`, via its own migration/PO decision — see that
-# migration's docstring and app.users.authorization. `member`/`guardian`
-# still receive nothing, and `instructor` receives nothing beyond that one
-# permission, at head.
+# Two deliberate exceptions, each via its own later migration/PO decision:
+# TH-0107 (migration 95487f3b616b) grants `instructor` exactly
+# `user.directory.read` (see app.users.authorization), and TH-0172 /
+# ADR-0043 (migration 127da2741f20) grants `guardian` exactly `event.read`
+# (scope `children`). `member` still receives nothing, and `instructor`/
+# `guardian` receive nothing beyond those, at head.
 
 
 @requires_postgres
@@ -132,7 +132,7 @@ def test_non_admin_baseline_roles_receive_no_unexpected_grants() -> None:
                 .where(Role.code != "admin")
             ).all()
         )
-        assert rows == {("instructor", "user.directory.read")}
+        assert rows == {("instructor", "user.directory.read"), ("guardian", "event.read")}
 
 
 # --- (2)/(4) partial-state convergence + unrelated rows survive ------------
@@ -203,10 +203,11 @@ def test_reapplying_admin_seed_after_downgrade_and_upgrade_is_idempotent(
     assert _admin_permission_codes() == set(DOCUMENTED_PERMISSION_CODES)
     with session_scope() as session:
         rows = session.execute(select(RolePermission.id)).scalars().all()
-        # admin's full canonical set, plus TH-0107's one additional
-        # (instructor, user.directory.read) grant (migration 95487f3b616b,
-        # re-applied by the same upgrade-to-head above).
-        assert len(rows) == len(DOCUMENTED_PERMISSION_CODES) + 1
+        # admin's full canonical set, plus TH-0107's (instructor,
+        # user.directory.read) grant (migration 95487f3b616b) and TH-0172's
+        # (guardian, event.read) grant (migration 127da2741f20), both
+        # re-applied by the same upgrade-to-head above.
+        assert len(rows) == len(DOCUMENTED_PERMISSION_CODES) + 2
 
 
 # --- (5) downgrade removes only rows this migration introduced -------------

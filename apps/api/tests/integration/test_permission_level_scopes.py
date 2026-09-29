@@ -279,6 +279,8 @@ def test_canonical_grants_carry_exactly_the_decided_scopes() -> None:
 
     expected = {("admin", code): {"all"} for code in DOCUMENTED_PERMISSION_CODES}
     expected[("instructor", "user.directory.read")] = {"all"}
+    # TH-0172 / ADR-0043, migration 127da2741f20.
+    expected[("guardian", "event.read")] = {"children"}
     assert by_grant == expected
 
 
