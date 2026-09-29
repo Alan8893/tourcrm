@@ -6,6 +6,7 @@ import {
   buildMonthGrid,
   formatDateParam,
   isSameDay,
+  monthGridRange,
   monthLabel,
   monthRange,
   parseDateParam,
@@ -58,6 +59,33 @@ describe("monthRange", () => {
   });
 });
 
+describe("monthGridRange (Issue #212 first-week visibility)", () => {
+  it("starts at the first displayed cell, including previous-month dates of the first week", () => {
+    // 1 September 2026 is a Tuesday: the first displayed week starts Monday 31 August.
+    const { from, to } = monthGridRange(new Date(2026, 8, 15));
+    const fromDate = new Date(from);
+    expect(formatDateParam(fromDate)).toBe("2026-08-31");
+    expect(fromDate.getHours()).toBe(0);
+    // Exclusive upper bound: local midnight after the 42nd cell (11 October).
+    expect(formatDateParam(new Date(to))).toBe("2026-10-12");
+  });
+
+  it("covers exactly the cells buildMonthGrid displays", () => {
+    const date = new Date(2026, 2, 15);
+    const grid = buildMonthGrid(date);
+    const { from, to } = monthGridRange(date);
+    expect(new Date(from).getTime()).toBe(startOfDay(grid[0].date).getTime());
+    expect(new Date(to).getTime()).toBe(addDays(startOfDay(grid[41].date), 1).getTime());
+  });
+
+  it("an instant on a visible previous-month date falls inside the requested range", () => {
+    const { from, to } = monthGridRange(new Date(2026, 8, 1));
+    const aug31Event = new Date(2026, 7, 31, 18, 0).getTime();
+    expect(aug31Event).toBeGreaterThanOrEqual(new Date(from).getTime());
+    expect(aug31Event).toBeLessThan(new Date(to).getTime());
+  });
+});
+
 describe("buildMonthGrid", () => {
   it("returns a 42-day Monday-start grid covering the month", () => {
     const grid = buildMonthGrid(new Date(2026, 2, 15)); // March 2026
@@ -76,6 +104,14 @@ describe("buildMonthGrid", () => {
     const grid = buildMonthGrid(new Date(2026, 2, 1), today);
     const todayCell = grid.find((day) => day.isToday);
     expect(todayCell && formatDateParam(todayCell.date)).toBe("2026-03-10");
+  });
+
+  it("keeps the first displayed week, including its previous-month dates", () => {
+    const grid = buildMonthGrid(new Date(2026, 8, 15)); // September 2026
+    const firstWeek = grid.slice(0, 7);
+    expect(formatDateParam(firstWeek[0].date)).toBe("2026-08-31");
+    expect(firstWeek[0].inCurrentMonth).toBe(false);
+    expect(firstWeek.slice(1).every((day) => day.inCurrentMonth)).toBe(true);
   });
 
   it("does not mark any day as today when today falls outside the grid", () => {

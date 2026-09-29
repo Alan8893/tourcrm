@@ -26,6 +26,29 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("HomePage — quick actions follow role-aware navigation (Issue #212)", () => {
+  it.each([
+    { role: "admin", groups: true },
+    { role: "instructor", groups: true },
+    { role: "member", groups: true },
+    { role: "guardian", groups: false },
+  ])("$role: «Перейти к группам» shown: $groups", async ({ role, groups }) => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse(role) },
+      { match: "/me/children", response: { items: [], pagination: { page: 1, page_size: 1, total: 0, pages: 0 } } },
+      { match: "/events", response: emptyEvents() },
+    ]);
+
+    renderWithProviders(<HomePage />);
+
+    await screen.findByText("Ближайшие события");
+    await waitFor(() =>
+      expect(Boolean(screen.queryByRole("link", { name: /Перейти к группам/ }))).toBe(groups),
+    );
+    expect(screen.getByRole("link", { name: /Все события/ })).toBeInTheDocument();
+  });
+});
+
 describe("HomePage — guardian «Мои дети» section", () => {
   it("does not render the section for a non-guardian role", async () => {
     stubFetch([

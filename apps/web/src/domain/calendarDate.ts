@@ -82,6 +82,21 @@ export function monthRange(date: Date): MonthRange {
   return { from: from.toISOString(), to: to.toISOString() };
 }
 
+/** The `[from,to)` request range for the whole visible month grid
+ * (`buildMonthGrid`): local midnight of the grid's first cell through local
+ * midnight after its last cell. The first displayed week keeps its
+ * previous-month dates (and the last weeks their next-month dates), so the
+ * calendar must also request those days — otherwise an event on e.g.
+ * 31 August stays invisible while September is displayed
+ * (docs/04-ux/information-architecture.md §8.0 "first-week visibility",
+ * Issue #212). */
+export function monthGridRange(date: Date): MonthRange {
+  const grid = buildMonthGrid(date);
+  const from = startOfDay(grid[0].date);
+  const to = addDays(startOfDay(grid[grid.length - 1].date), 1);
+  return { from: from.toISOString(), to: to.toISOString() };
+}
+
 export type MonthGridDay = {
   date: Date;
   key: string;

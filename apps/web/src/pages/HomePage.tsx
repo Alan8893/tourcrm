@@ -11,6 +11,7 @@ import { useCurrentUser, displayName } from "../api/auth";
 import { useUpcomingEvents } from "../api/events";
 import { personFullName, useMyChildren, type Child } from "../api/people";
 import { eventStatusIcon, eventStatusLabel } from "../domain/statusMapping";
+import { isNavigationItemVisible } from "../shell/navigation";
 import styles from "./HomePage.module.css";
 
 /**
@@ -28,6 +29,9 @@ export function HomePage() {
   // — never a new top-level nav item (NAVIGATION_ITEMS is closed) and
   // never a new ProfileMenu entry or route.
   const isGuardian = meQuery.data?.role_assignments.some((a) => a.role_code === "guardian") ?? false;
+  // Issue #212: the Groups quick action follows the role-aware navigation
+  // (e.g. Guardian has no Groups section) — no link into a hidden section.
+  const showGroupsAction = isNavigationItemVisible(meQuery.data?.role_assignments ?? [], "groups");
 
   const name = meQuery.data ? displayName(meQuery.data.user) : null;
 
@@ -37,13 +41,15 @@ export function HomePage() {
       <p className={styles.subtitle}>Вот что происходит в клубе прямо сейчас.</p>
 
       <div className={styles.quickActions}>
-        <Link to="/groups">
-          <Button variant="primary" icon="nav.groups">
-            Перейти к группам
-          </Button>
-        </Link>
+        {showGroupsAction ? (
+          <Link to="/groups">
+            <Button variant="primary" icon="nav.groups">
+              Перейти к группам
+            </Button>
+          </Link>
+        ) : null}
         <Link to="/events">
-          <Button variant="secondary" icon="nav.events">
+          <Button variant={showGroupsAction ? "secondary" : "primary"} icon="nav.events">
             Все события
           </Button>
         </Link>

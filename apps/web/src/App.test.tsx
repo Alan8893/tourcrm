@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 
 import { App } from "./App";
 import { stubFetch } from "./test/renderWithProviders";
 
-function meResponse() {
+function meResponse(roleCodes: string[] = ["admin"]) {
   return {
     user: {
       id: "u1",
@@ -20,7 +20,7 @@ function meResponse() {
         photo_file_id: null,
       },
     },
-    role_assignments: [{ role_code: "admin", club_id: "club-1", scope_type: "all" }],
+    role_assignments: roleCodes.map((role_code) => ({ role_code, club_id: "club-1", scope_type: "all" })),
   };
 }
 
@@ -105,5 +105,87 @@ describe("App", () => {
 
     expect(await screen.findByRole("heading", { name: "Люди" })).toBeInTheDocument();
     expect(screen.queryByText(/появится в одном из следующих этапов/)).not.toBeInTheDocument();
+  });
+});
+
+describe("App — direct navigation to role-hidden sections (Issue #212)", () => {
+  const emptyCollection = { items: [], pagination: { page: 1, page_size: 20, total: 0, pages: 0 } };
+
+  async function renderAt(path: string, roleCodes: string[]) {
+    window.history.pushState({}, "", path);
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse(roleCodes) },
+      { match: "/persons", response: emptyCollection },
+      { match: "/groups", response: emptyCollection },
+    ]);
+    // App owns a module-level QueryClient; a fresh module keeps another
+    // test's cached `/auth/me` (a different role) out of this one.
+    vi.resetModules();
+    const { App: FreshApp } = await import("./App");
+    render(<FreshApp />);
+    return fetchMock;
+  }
+
+  function requested(fetchMock: ReturnType<typeof stubFetch>, fragment: string) {
+    return fetchMock.mock.calls.some(([input]) => String(input).includes(fragment));
+  }
+
+  it.each([
+    { name: "Member → /people", roles: ["member"], path: "/people", fragment: "/persons" },
+    { name: "Member → /people/:id", roles: ["member"], path: "/people/p9", fragment: "/persons" },
+    { name: "Guardian → /people", roles: ["guardian"], path: "/people", fragment: "/persons" },
+    { name: "Guardian → /groups", roles: ["guardian"], path: "/groups", fragment: "/groups" },
+    { name: "Guardian → /groups/:id", roles: ["guardian"], path: "/groups/g1", fragment: "/groups" },
+    { name: "Instructor → /reports", roles: ["instructor"], path: "/reports", fragment: "/reports" },
+    { name: "Member → /reports", roles: ["member"], path: "/reports", fragment: "/reports" },
+    { name: "Guardian → /reports", roles: ["guardian"], path: "/reports", fragment: "/reports" },
+  ])("$name renders the 403 state, not the section's page or its management UI", async ({ roles, path, fragment }) => {
+    const fetchMock = await renderAt(path, roles);
+
+    expect(await screen.findByText("Раздел недоступен")).toBeInTheDocument();
+    // The shell (navigation) stays; the hidden section's page does not render.
+    expect(screen.getByRole("navigation", { name: "Основная навигация" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Добавить человека" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Создать группу/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/появится в одном из следующих этапов/)).not.toBeInTheDocument();
+    expect(requested(fetchMock, fragment)).toBe(false);
+  });
+
+  it("Administrator can open Reports directly", async () => {
+    await renderAt("/reports", ["admin"]);
+
+    expect(await screen.findByRole("heading", { name: "Отчёты" })).toBeInTheDocument();
+    expect(screen.queryByText("Раздел недоступен")).not.toBeInTheDocument();
+  });
+
+  it.each([["instructor"], ["member"], ["guardian"]])(
+    "%s can open Achievements directly (visible although not implemented yet)",
+    async (role) => {
+      await renderAt("/achievements", [role]);
+
+      expect(await screen.findByRole("heading", { name: "Достижения" })).toBeInTheDocument();
+      expect(screen.queryByText("Раздел недоступен")).not.toBeInTheDocument();
+    },
+  );
+
+  it("Member can open Groups directly", async () => {
+    await renderAt("/groups", ["member"]);
+
+    expect(await screen.findByRole("heading", { name: "Группы" })).toBeInTheDocument();
+    expect(screen.queryByText("Раздел недоступен")).not.toBeInTheDocument();
+  });
+
+  it("multi-role UNION: Member + Instructor can open People directly", async () => {
+    const fetchMock = await renderAt("/people", ["member", "instructor"]);
+
+    expect(await screen.findByRole("heading", { name: "Люди" })).toBeInTheDocument();
+    expect(screen.queryByText("Раздел недоступен")).not.toBeInTheDocument();
+    await waitFor(() => expect(requested(fetchMock, "/persons")).toBe(true));
+  });
+
+  it("multi-role UNION: Guardian + Administrator can open Reports directly", async () => {
+    await renderAt("/reports", ["guardian", "admin"]);
+
+    expect(await screen.findByRole("heading", { name: "Отчёты" })).toBeInTheDocument();
   });
 });

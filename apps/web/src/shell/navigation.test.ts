@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { NAVIGATION_ITEMS, visibleNavigationItems } from "./navigation";
+import { NAVIGATION_ITEMS, isNavigationItemVisible, visibleNavigationItems } from "./navigation";
 
 function labelsFor(...roleCodes: string[]) {
   return visibleNavigationItems(roleCodes.map((role_code) => ({ role_code }))).map(
@@ -88,5 +88,32 @@ describe("visibleNavigationItems (TH-0120 role-aware navigation, UNION)", () => 
   it("grants nothing for a role code outside the canonical matrix", () => {
     expect(labelsFor("unknown_role")).toEqual([]);
     expect(labelsFor("unknown_role", "guardian")).toEqual(labelsFor("guardian"));
+  });
+});
+
+describe("isNavigationItemVisible (Issue #212)", () => {
+  const roles = (...codes: string[]) => codes.map((role_code) => ({ role_code }));
+
+  it("Reports is visible only when an Administrator assignment is present", () => {
+    expect(isNavigationItemVisible(roles("admin"), "reports")).toBe(true);
+    expect(isNavigationItemVisible(roles("instructor"), "reports")).toBe(false);
+    expect(isNavigationItemVisible(roles("member"), "reports")).toBe(false);
+    expect(isNavigationItemVisible(roles("guardian"), "reports")).toBe(false);
+    expect(isNavigationItemVisible(roles("instructor", "member", "guardian"), "reports")).toBe(false);
+    expect(isNavigationItemVisible(roles("guardian", "admin"), "reports")).toBe(true);
+  });
+
+  it("Achievements is visible for every canonical role", () => {
+    for (const role of ["admin", "instructor", "member", "guardian"]) {
+      expect(isNavigationItemVisible(roles(role), "achievements")).toBe(true);
+    }
+  });
+
+  it("uses UNION across roles and grants nothing without a matrix role", () => {
+    expect(isNavigationItemVisible(roles("guardian"), "groups")).toBe(false);
+    expect(isNavigationItemVisible(roles("guardian", "member"), "groups")).toBe(true);
+    expect(isNavigationItemVisible(roles("member"), "people")).toBe(false);
+    expect(isNavigationItemVisible(roles("member", "instructor"), "people")).toBe(true);
+    expect(isNavigationItemVisible([], "home")).toBe(false);
   });
 });

@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { EventsPage } from "./EventsPage";
 import styles from "./EventsPage.module.css";
 import { renderWithProviders, renderWithHistory, stubFetch } from "../test/renderWithProviders";
-import { formatDateParam, monthLabel, monthRange } from "../domain/calendarDate";
+import { formatDateParam, monthLabel, monthGridRange } from "../domain/calendarDate";
 
 function meResponse(overrides: Partial<{ userId: string; roleCode: string }> = {}) {
   return {
@@ -140,7 +140,7 @@ function eventDetailResponse(overrides: Partial<Record<string, unknown>> = {}) {
 const FIXED_DATE = "2026-03-15"; // Sunday, unrelated to "today" in any timezone this suite runs in.
 
 function fixedRange() {
-  return monthRange(new Date(2026, 2, 15));
+  return monthGridRange(new Date(2026, 2, 15));
 }
 
 afterEach(() => {
@@ -150,7 +150,7 @@ afterEach(() => {
 describe("EventsPage — initial state", () => {
   it("opens on the current month with today selected when the URL carries no date", async () => {
     const today = new Date();
-    const range = monthRange(today);
+    const range = monthGridRange(today);
     stubFetch([
       { match: "/auth/me", response: meResponse() },
       { match: "/groups?status=active", response: groupsResponse() },
@@ -186,9 +186,9 @@ describe("EventsPage — initial state", () => {
 
   it("Today returns to the current month and selects today", async () => {
     const today = new Date();
-    const todayRange = monthRange(today);
+    const todayRange = monthGridRange(today);
     const farFuture = new Date(today.getFullYear() + 2, 0, 1);
-    const farRange = monthRange(farFuture);
+    const farRange = monthGridRange(farFuture);
 
     stubFetch([
       { match: "/auth/me", response: meResponse() },
@@ -212,8 +212,8 @@ describe("EventsPage — initial state", () => {
 
 describe("EventsPage — month navigation", () => {
   it("requests the next month's [from,to) range and updates the label", async () => {
-    const marchRange = monthRange(new Date(2026, 2, 15));
-    const aprilRange = monthRange(new Date(2026, 3, 15));
+    const marchRange = monthGridRange(new Date(2026, 2, 15));
+    const aprilRange = monthGridRange(new Date(2026, 3, 15));
     const fetchMock = stubFetch([
       { match: "/auth/me", response: meResponse() },
       { match: "/groups?status=active", response: groupsResponse() },
@@ -286,8 +286,8 @@ describe("EventsPage — month navigation", () => {
 
 describe("EventsPage — filters", () => {
   it("persists filters across month navigation and Reset clears them", async () => {
-    const marchRange = monthRange(new Date(2026, 2, 15));
-    const aprilRange = monthRange(new Date(2026, 3, 15));
+    const marchRange = monthGridRange(new Date(2026, 2, 15));
+    const aprilRange = monthGridRange(new Date(2026, 3, 15));
     const fetchMock = stubFetch([
       { match: "/auth/me", response: meResponse() },
       { match: "/groups?status=active", response: groupsResponse([{ id: "g1", name: "Орлы" }]) },
@@ -532,8 +532,8 @@ describe("EventsPage — instructor/user filter (TH-0107)", () => {
   });
 
   it("persists the selected instructor across month navigation", async () => {
-    const marchRange = monthRange(new Date(2026, 2, 15));
-    const aprilRange = monthRange(new Date(2026, 3, 15));
+    const marchRange = monthGridRange(new Date(2026, 2, 15));
+    const aprilRange = monthGridRange(new Date(2026, 3, 15));
     stubFetch([
       { match: "/auth/me", response: meResponse() },
       { match: "/groups?status=active", response: groupsResponse() },
@@ -557,7 +557,7 @@ describe("EventsPage — instructor/user filter (TH-0107)", () => {
 describe("EventsPage — browser history (ADR-0036 Back/Forward)", () => {
   it("pushes a history entry per month navigation, and Back/Forward restores the exact previous/next state", async () => {
     const range = fixedRange();
-    const nextRange = monthRange(new Date(2026, 3, 15));
+    const nextRange = monthGridRange(new Date(2026, 3, 15));
     stubFetch([
       { match: "/auth/me", response: meResponse() },
       { match: "/groups?status=active", response: groupsResponse() },
@@ -681,6 +681,73 @@ describe("EventsPage — timezone display", () => {
     const timeA = rowA.closest("button")?.querySelector(`.${styles.eventRowTime}`)?.textContent;
     const timeB = rowB.closest("button")?.querySelector(`.${styles.eventRowTime}`)?.textContent;
     expect(timeA).toBe(timeB);
+  });
+});
+
+describe("EventsPage — first displayed week / adjacent-month events (Issue #212)", () => {
+  // 1 September 2026 is a Tuesday, so the September grid's first week
+  // starts on Monday 31 August — a previous-month date.
+  const SEPTEMBER_DATE = "2026-09-15";
+  const aug31Start = new Date(2026, 7, 31, 18, 0);
+  const aug31End = new Date(2026, 7, 31, 20, 0);
+  const aug31Item = {
+    id: "ev-aug31",
+    title: "Вечерний сбор",
+    start_at: aug31Start.toISOString(),
+    end_at: aug31End.toISOString(),
+  };
+
+  it.each(["admin", "instructor", "member", "guardian"])(
+    "%s: keeps the first week visible and shows the 31 August event while viewing September",
+    async (roleCode) => {
+      const septemberRange = monthGridRange(new Date(2026, 8, 15));
+      const fetchMock = stubFetch([
+        { match: "/auth/me", response: meResponse({ roleCode }) },
+        { match: "/groups?status=active", response: groupsResponse() },
+        { match: encodeURIComponent(septemberRange.from), response: calendarResponse([aug31Item]) },
+      ]);
+
+      renderWithProviders(<EventsPage />, { route: `/events?date=${SEPTEMBER_DATE}` });
+
+      expect(await screen.findByText("Сентябрь 2026")).toBeInTheDocument();
+      const grid = await screen.findByRole("grid");
+      const firstCell = within(grid).getAllByRole("gridcell")[0];
+      // The adjacent-month cell is rendered (styled as outside), not hidden.
+      expect(firstCell).toHaveClass(styles.monthCellOutside);
+      expect(within(firstCell).getByText("31")).toBeInTheDocument();
+      expect(await within(firstCell).findByText(/Вечерний сбор/)).toBeInTheDocument();
+
+      // The request covers the whole grid, starting at local midnight of 31 August.
+      const calendarCall = fetchMock.mock.calls
+        .map(([input]) => String(input))
+        .find((url) => url.includes("/events/calendar"));
+      expect(calendarCall).toBeDefined();
+      const from = new URL(calendarCall!, "http://localhost").searchParams.get("from");
+      expect(formatDateParam(new Date(from!))).toBe("2026-08-31");
+    },
+  );
+
+  it("selecting the adjacent-month cell opens that day's events", async () => {
+    const septemberRange = monthGridRange(new Date(2026, 8, 15));
+    const augustRange = monthGridRange(new Date(2026, 7, 31));
+    stubFetch([
+      { match: "/auth/me", response: meResponse({ roleCode: "member" }) },
+      { match: "/groups?status=active", response: groupsResponse() },
+      { match: encodeURIComponent(septemberRange.from), response: calendarResponse([aug31Item]) },
+      { match: encodeURIComponent(augustRange.from), response: calendarResponse([aug31Item]) },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${SEPTEMBER_DATE}` });
+
+    const grid = await screen.findByRole("grid");
+    const firstCell = within(grid).getAllByRole("gridcell")[0];
+    await within(firstCell).findByText(/Вечерний сбор/);
+
+    const user = userEvent.setup();
+    await user.click(firstCell);
+
+    const row = await screen.findByText("Вечерний сбор", { selector: `.${styles.eventRowTitle}` });
+    expect(row.closest("button")).toBeInTheDocument();
   });
 });
 
