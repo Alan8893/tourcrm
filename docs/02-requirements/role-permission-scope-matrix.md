@@ -81,7 +81,7 @@ Guardian не может изменять:
 |---|---|---|---|---|
 | `person.read` | `all` | `own_groups` | `self` | `children` |
 | `person.create` | `all` | — | — | — |
-| `person.update` | `all`, all fields | — | `self`, restricted fields | `children`, restricted fields |
+| `person.update` | `all`, all fields | — | — | `children`, restricted fields |
 
 ### 4.1 Field-level policy for `person.update`
 
@@ -122,13 +122,32 @@ Instructor works only with groups to which the instructor is actually assigned.
 
 | Permission | admin | instructor | member | guardian |
 |---|---|---|---|---|
-| `event.read` | `all` | applicable `own_groups` / `own_events` | own participation | children's participation |
+| `event.read` | `all` | applicable `own_groups` / `own_events` | own participation | `children` |
 | `event.create` | `all` | according to documented event policy and scope | — | — |
 | `event.update` | `all` | assigned/owned scope | — | — |
 | `event.cancel` | `all` | permission + scope | — | — |
 | `event.manage` | `all` | assigned/owned scope | — | — |
 
-This document does not replace the dedicated Event authorization contract.
+### 7.1 Guardian `event.read(children)` policy
+
+For Guardian, `event.read(children)` is defined by the dedicated Event authorization contract in ADR-0042 and ADR-0043.
+
+An Event is readable when at least one accessible child satisfies **either** of these paths:
+
+1. the child has an active `GroupMembership` in a Group targeted by the Event; or
+2. the child has a direct `EventParticipation` for the Event.
+
+For a Guardian with multiple accessible children, the authorized event set is the **UNION** across all children.
+
+The same authorization semantics apply to event list, calendar, direct Event detail and recurring EventOccurrence access. Calendar/date/filter parameters may only narrow the already authorized set; they must never expand it.
+
+For recurring occurrences, the group-membership → occurrence-group-target path is mandatory. Guardian does not need direct registration/participation merely to see a recurring group activity.
+
+**Visibility is not registration.** A Guardian seeing a group event means that the activity is relevant to the child's group; it does not imply or modify `EventParticipation`.
+
+The purpose of this policy is to let a Guardian see available/proposed activities and discuss participation with the child. Event visibility therefore must not depend on the child already being registered for the specific event.
+
+The frontend must not reconstruct these relationships itself. Backend authorization remains the source of truth.
 
 ## 8. Attendance
 
@@ -201,4 +220,4 @@ TourCRM MVP operates with exactly one Club. `ClubMembership` remains the domain 
 
 ---
 
-**PO decision status:** approved 2026-09-27.
+**PO decision status:** approved 2026-09-29.
