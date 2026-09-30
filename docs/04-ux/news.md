@@ -74,6 +74,19 @@ News has the following lifecycle states:
 
 Only `published` news participates in the Home block and ordinary-user News list.
 
+Allowed lifecycle transitions (PO decision, PR #229 / TH-0120):
+
+- `draft → published`;
+- `draft → archived`;
+- `published → archived`.
+
+`archived` is a terminal state:
+
+- an archived News cannot be edited (content, audience, Event link or image);
+- restoring an archived News (to `draft` or `published`) is not supported in the MVP.
+
+No other transitions exist.
+
 An Administrator may create, edit, publish/archive and delete News according to the management UI contract.
 
 Deletion is a soft-delete/archive operation; the implementation must preserve the record rather than physically deleting the News object unless a later retention policy explicitly changes this rule.
