@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { PageHeader } from "../components/ui/PageHeader";
 import { FilterSelect, type FilterOption } from "../components/ui/FilterSelect";
@@ -68,6 +68,7 @@ import {
   type MonthGridDay,
 } from "../domain/calendarDate";
 import { useMediaQuery } from "../hooks/useMediaQuery";
+import { hasAdministratorRole } from "../shell/navigation";
 import styles from "./EventsPage.module.css";
 
 const MOBILE_QUERY = "(max-width: 767.98px)";
@@ -852,6 +853,12 @@ function EventDetailDialog({
   const query = item.kind === "event" ? eventQuery : occurrenceQuery;
   const cancelled = item.status === "cancelled";
   const [documentsOpen, setDocumentsOpen] = useState(false);
+  // Participant Export is canonically Administrator-only
+  // (participant-export-api.md §1-§2, import-export-ui.md §8), unlike the
+  // `document.*` workflow below — so here a role check is the documented
+  // visibility rule. Backend authorization stays authoritative.
+  const meQuery = useCurrentUser();
+  const isAdmin = hasAdministratorRole(meQuery.data?.role_assignments ?? []);
 
   return (
     <Dialog open title={item.title} description={eventTypeLabel(item.event_type)} onClose={onClose}>
@@ -899,6 +906,18 @@ function EventDetailDialog({
           <Button variant="secondary" onClick={() => setDocumentsOpen(true)}>
             Документы для соревнования
           </Button>
+        ) : null}
+        {/* TH-0118.5 contextual action (import-export-ui.md §5.2): opens
+            the Export master with this Event pre-selected; the Group +
+            Event variant is chosen there and resolved by the backend.
+            Only a real Event (not a recurring occurrence) is an export
+            target (`event_id`, participant-export-api.md §3). */}
+        {item.kind === "event" && isAdmin ? (
+          <Link to={`/reports/export?context=event&event_id=${item.id}`}>
+            <Button variant="secondary" icon="action.download">
+              Экспорт участников
+            </Button>
+          </Link>
         ) : null}
       </div>
       {item.kind === "event" ? (

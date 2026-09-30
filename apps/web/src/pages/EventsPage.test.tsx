@@ -1921,3 +1921,77 @@ describe("EventsPage — «Документы для соревнования» 
     anchorClick.mockRestore();
   });
 });
+
+describe("EventsPage — Participant Export contextual action (TH-0118.5)", () => {
+  function stubEvent(roleCode: string, kind: "event" | "occurrence" = "event") {
+    const range = fixedRange();
+    stubFetch([
+      { match: "/auth/me", response: meResponse({ roleCode }) },
+      { match: "/groups?status=active", response: groupsResponse() },
+      {
+        match: encodeURIComponent(range.from),
+        response: calendarResponse([
+          calendarItem({
+            id: kind === "event" ? "ev-1" : "occ-1",
+            kind,
+            title: "Ориентирование",
+            start_at: "2026-03-15T17:00:00+03:00",
+            end_at: "2026-03-15T19:00:00+03:00",
+            series_id: kind === "occurrence" ? "series-1" : null,
+          }),
+        ]),
+      },
+      {
+        match: "/events/occurrences/occ-1",
+        response: {
+          id: "occ-1",
+          series_id: "series-1",
+          club_id: "club-1",
+          name: "Ориентирование",
+          description: null,
+          event_type: "lesson",
+          starts_at: "2026-03-15T17:00:00+03:00",
+          ends_at: "2026-03-15T19:00:00+03:00",
+          timezone: "Europe/Moscow",
+          status: "published",
+          cancellation_reason: null,
+        },
+      },
+      { match: "/events/ev-1", response: eventDetailResponse() },
+    ]);
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+  }
+
+  it("offers Administrator an export of this Event's participants, and no Event import", async () => {
+    stubEvent("admin");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByText("Ориентирование"));
+
+    expect(await screen.findByRole("link", { name: "Экспорт участников" })).toHaveAttribute(
+      "href",
+      "/reports/export?context=event&event_id=ev-1",
+    );
+    expect(screen.queryByRole("link", { name: /Импорт/ })).not.toBeInTheDocument();
+  });
+
+  it.each([["instructor"], ["member"], ["guardian"]])("does not offer the export to %s", async (role) => {
+    stubEvent(role);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByText("Ориентирование"));
+
+    expect(await screen.findByRole("dialog", { name: "Ориентирование" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Экспорт участников" })).not.toBeInTheDocument();
+  });
+
+  it("does not offer the export for a single recurring occurrence", async () => {
+    stubEvent("admin", "occurrence");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByText("Ориентирование"));
+
+    expect(await screen.findByRole("dialog", { name: "Ориентирование" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Экспорт участников" })).not.toBeInTheDocument();
+  });
+});

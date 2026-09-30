@@ -42,6 +42,7 @@ from app.exports.fields import (
     field_permission,
     membership_status_source,
 )
+from app.exports.filters import CANONICAL_PARTICIPATION_STATUSES
 from app.imports.authorization import resolve_sole_club_id
 from app.people.lifecycle import CANONICAL_MEMBERSHIP_STATUSES
 
@@ -145,6 +146,19 @@ def _validate_context_filters(request: ParticipantExportRequest) -> None:
         )
 
 
+def _validate_participation_status(request: ParticipantExportRequest) -> None:
+    """The canonical MVP participation vocabulary (app.exports.filters);
+    omitted → every status. Applicability to the context is checked first
+    by `_validate_context_filters`."""
+    status = request.participation_status
+    if status is not None and status not in CANONICAL_PARTICIPATION_STATUSES:
+        raise ExportRequestError(
+            "invalid_participation_status",
+            "Unsupported participation_status",
+            {"context": request.context, "allowed": sorted(CANONICAL_PARTICIPATION_STATUSES)},
+        )
+
+
 def _resolve_membership_status(request: ParticipantExportRequest) -> str:
     status = (
         request.membership_status
@@ -197,6 +211,7 @@ def validate_export_request(
     allowlist validation (no database access). Returns the effective
     membership status and the selected columns in request order."""
     _validate_context_filters(request)
+    _validate_participation_status(request)
     membership_status = _resolve_membership_status(request)
     columns = _validate_fields(request)
     return membership_status, columns

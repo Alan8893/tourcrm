@@ -141,3 +141,36 @@ export function saveBlob(blob: Blob, filename: string): void {
   link.remove();
   URL.revokeObjectURL(url);
 }
+
+/** Opens the browser/system print dialog for an already-fetched HTML
+ * document (the Participant Export `print` representation). The document
+ * is loaded into a hidden same-origin iframe via a transient object URL;
+ * the iframe and URL are cleaned up after printing. No new window is
+ * opened, so popup blockers do not interfere after the async request. */
+export function printHtmlBlob(blob: Blob): void {
+  const url = URL.createObjectURL(blob);
+  const frame = document.createElement("iframe");
+  frame.setAttribute("aria-hidden", "true");
+  frame.style.position = "fixed";
+  frame.style.width = "0";
+  frame.style.height = "0";
+  frame.style.border = "0";
+  frame.style.right = "0";
+  frame.style.bottom = "0";
+  const cleanup = () => {
+    frame.remove();
+    URL.revokeObjectURL(url);
+  };
+  frame.onload = () => {
+    const printWindow = frame.contentWindow;
+    if (!printWindow) {
+      cleanup();
+      return;
+    }
+    printWindow.addEventListener("afterprint", cleanup, { once: true });
+    printWindow.focus();
+    printWindow.print();
+  };
+  frame.src = url;
+  document.body.appendChild(frame);
+}

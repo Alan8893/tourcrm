@@ -3,6 +3,7 @@ Issue #218; docs/05-api/participant-export-api.md, PO decisions GAP-1..7
 recorded on Issue #218).
 
     GET  /memberships/exports/fields   canonical export-field allowlist
+    GET  /memberships/exports/filters  canonical filter values (participation_status)
     POST /memberships/exports          synchronous export (xlsx | pdf | print)
 
 Administrator-only. Every format goes through the same single
@@ -35,6 +36,8 @@ from app.api.errors import APIError
 from app.api.v1.membership_exports_schemas import (
     ExportFieldOut,
     ExportFieldsOut,
+    ExportFilterOptionOut,
+    ExportFiltersOut,
     ParticipantExportRequest,
 )
 from app.db.session import get_db
@@ -42,6 +45,7 @@ from app.exports import rendering
 from app.exports import service as export_service
 from app.exports.authorization import require_club_administrator
 from app.exports.fields import EXPORT_CONTEXTS, EXPORT_FIELDS
+from app.exports.filters import PARTICIPATION_STATUS_OPTIONS
 from app.imports.authorization import resolve_sole_club_id
 
 router = APIRouter(prefix="/memberships/exports", tags=["membership-exports"])
@@ -83,6 +87,24 @@ def list_export_fields(
                 contexts=[context for context in EXPORT_CONTEXTS if context in field.contexts],
             )
             for field in EXPORT_FIELDS
+        ]
+    )
+
+
+@router.get("/filters", response_model=ExportFiltersOut)
+def list_export_filters(
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+) -> ExportFiltersOut:
+    """Backend-authoritative filter vocabularies for the export wizard —
+    currently the canonical MVP `participation_status` values with their
+    display labels (app.exports.filters). Same Administrator check as
+    `/fields`; `POST` re-validates every submitted value."""
+    require_club_administrator(db, user_id=principal.user_id, club_id=resolve_sole_club_id(db))
+    return ExportFiltersOut(
+        participation_status=[
+            ExportFilterOptionOut(value=option.value, label=option.label)
+            for option in PARTICIPATION_STATUS_OPTIONS
         ]
     )
 

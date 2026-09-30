@@ -163,6 +163,9 @@ _MEMBERSHIP_EXPORT_PATHS = {
     # canonical export-field allowlist; no saved templates (#217).
     "/api/v1/memberships/exports",
     "/api/v1/memberships/exports/fields",
+    # PR #226 PO decision: backend-authoritative filter vocabularies
+    # (participation_status values + labels) for the export wizard.
+    "/api/v1/memberships/exports/filters",
 }
 
 _GUARDIAN_RELATIONSHIP_PATHS = {
@@ -296,6 +299,11 @@ def test_membership_export_endpoints_and_request_schema_are_exact(real_client) -
 
     assert set(paths["/api/v1/memberships/exports"]) == {"post"}
     assert set(paths["/api/v1/memberships/exports/fields"]) == {"get"}
+    assert set(paths["/api/v1/memberships/exports/filters"]) == {"get"}
+    filters_schema = schema["components"]["schemas"]["ExportFiltersOut"]
+    assert set(filters_schema["properties"]) == {"participation_status"}
+    option_schema = schema["components"]["schemas"]["ExportFilterOptionOut"]
+    assert set(option_schema["properties"]) == {"value", "label"}
     responses = paths["/api/v1/memberships/exports"]["post"]["responses"]
     assert set(responses["200"]["content"]) == {
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

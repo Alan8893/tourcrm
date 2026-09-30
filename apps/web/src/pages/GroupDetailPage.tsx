@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 
 import { PageHeader } from "../components/ui/PageHeader";
 import { Tabs } from "../components/ui/Tabs";
@@ -64,11 +64,25 @@ export function GroupDetailPage() {
           <StatusBadge status={groupStatusIcon(group.status)} label={groupStatusLabel(group.status)} />
         }
         actions={
-          group.status === "active" ? (
-            <Button variant="destructive" onClick={() => setConfirmArchive(true)}>
-              Архивировать
-            </Button>
-          ) : undefined
+          <>
+            {/* TH-0118.5 contextual action (import-export-ui.md §5.1):
+                opens the Export master with this Group pre-selected.
+                Participant Export is Administrator-only; Import into a
+                Group is not offered — the Import MVP creates no
+                GroupMembership. */}
+            {isAdmin ? (
+              <Link to={`/reports/export?context=group&group_id=${group.id}`}>
+                <Button variant="secondary" icon="action.download">
+                  Экспорт участников
+                </Button>
+              </Link>
+            ) : null}
+            {group.status === "active" ? (
+              <Button variant="destructive" onClick={() => setConfirmArchive(true)}>
+                Архивировать
+              </Button>
+            ) : null}
+          </>
         }
       />
 

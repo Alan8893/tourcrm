@@ -23,7 +23,8 @@ class ParticipantExportRequest(BaseModel):
     # .membership_status for `group`/`group_event`; defaults to `active`.
     membership_status: str | None = Field(default=None, min_length=1, max_length=32)
     # EventParticipation.registration_status; `event`/`group_event` only;
-    # omitted → every status.
+    # omitted → every status. Closed canonical vocabulary published by
+    # `GET /memberships/exports/filters` (app.exports.filters).
     participation_status: str | None = Field(default=None, min_length=1, max_length=32)
     # Validated against the canonical allowlist by the backend; the frontend
     # is never the source of truth for which fields exist.
@@ -41,3 +42,16 @@ class ExportFieldsOut(BaseModel):
     """`GET /memberships/exports/fields` — the canonical allowlist."""
 
     items: list[ExportFieldOut]
+
+
+class ExportFilterOptionOut(BaseModel):
+    value: str
+    label: str
+
+
+class ExportFiltersOut(BaseModel):
+    """`GET /memberships/exports/filters` — backend-authoritative values
+    (and display labels) for export filters whose vocabulary the frontend
+    must not hardcode."""
+
+    participation_status: list[ExportFilterOptionOut]

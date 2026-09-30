@@ -4,6 +4,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { NotificationProvider } from "./components/ui/Notification";
 import { AppShell } from "./shell/AppShell";
 import { SectionGuard } from "./shell/SectionGuard";
+import { AdministratorGuard } from "./shell/AdministratorGuard";
 import { LoginPage } from "./pages/LoginPage";
 import { PasswordResetRequestPage } from "./pages/PasswordResetRequestPage";
 import { HomePage } from "./pages/HomePage";
@@ -13,6 +14,9 @@ import { GroupsPage } from "./pages/GroupsPage";
 import { GroupDetailPage } from "./pages/GroupDetailPage";
 import { EventsPage } from "./pages/EventsPage";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
+import { ReportsPage } from "./pages/ReportsPage";
+import { ExportPage } from "./pages/ExportPage";
+import { ImportPage } from "./pages/ImportPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 
@@ -42,6 +46,11 @@ export function App() {
                   backend authorization stays authoritative). */}
               <Route element={<SectionGuard section="people" />}>
                 <Route path="people" element={<PeoplePage />} />
+                {/* TH-0118.5: «Люди → Импорт» — Administrator-only inside a
+                    section Instructor also sees, hence the nested guard. */}
+                <Route element={<AdministratorGuard />}>
+                  <Route path="people/import" element={<ImportPage />} />
+                </Route>
                 <Route path="people/:personId" element={<PersonDetailPage />} />
               </Route>
               <Route element={<SectionGuard section="groups" />}>
@@ -55,7 +64,11 @@ export function App() {
                 <Route path="achievements" element={<PlaceholderPage title="Достижения" />} />
               </Route>
               <Route element={<SectionGuard section="reports" />}>
-                <Route path="reports" element={<PlaceholderPage title="Отчёты" />} />
+                <Route path="reports" element={<ReportsPage />} />
+                {/* TH-0118.5: «Отчёты → Экспорт» (Administrator-only section). */}
+                <Route element={<AdministratorGuard />}>
+                  <Route path="reports/export" element={<ExportPage />} />
+                </Route>
               </Route>
               <Route element={<SectionGuard section="settings" />}>
                 <Route path="settings" element={<SettingsPage />} />

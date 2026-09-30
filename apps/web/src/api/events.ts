@@ -29,6 +29,20 @@ export function useUpcomingEvents(limit = 5) {
   });
 }
 
+/** Event picker for the Participant Export wizard: `GET /api/v1/events`
+ * with the backend's own title `search` filter, newest first. Visibility
+ * and authorization are resolved entirely server-side. */
+export function useEventSearch(search: string, enabled = true) {
+  const trimmed = search.trim();
+  const query = new URLSearchParams({ sort: "-start_at", page_size: "20" });
+  if (trimmed) query.set("search", trimmed);
+  return useQuery<CollectionResponse<EventSummary>, ApiError>({
+    queryKey: ["events", "search", trimmed],
+    queryFn: () => apiFetch<CollectionResponse<EventSummary>>(`/events?${query.toString()}`),
+    enabled,
+  });
+}
+
 // --- Calendar (GET /api/v1/events/calendar, events-api.md §16) -------------
 
 /** One `GET /events/calendar` row — either an ordinary `Event` (`kind:

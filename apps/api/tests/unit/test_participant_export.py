@@ -17,6 +17,10 @@ from app.exports.fields import (
     field_permission,
     membership_status_source,
 )
+from app.exports.filters import (
+    CANONICAL_PARTICIPATION_STATUSES,
+    PARTICIPATION_STATUS_OPTIONS,
+)
 from app.exports.queries import GuardianContact
 from app.exports.rendering import (
     format_cell,
@@ -218,6 +222,38 @@ def test_membership_status_vocabulary_follows_context_record(context: str, statu
 )
 def test_membership_status_accepted_for_context_record(context: str, status: str) -> None:
     assert validate_export_request(_request(context, membership_status=status))[0] == status
+
+
+# --- participation_status vocabulary (PR #226 PO decision) ----------------
+
+
+def test_participation_status_vocabulary_is_the_implemented_mvp_statuses() -> None:
+    # ADR-0037: the only statuses the self-registration workflow writes.
+    from app.events.participation import CANCELLED_STATUS, REGISTERED_STATUS
+
+    assert CANONICAL_PARTICIPATION_STATUSES == {REGISTERED_STATUS, CANCELLED_STATUS}
+    assert [option.value for option in PARTICIPATION_STATUS_OPTIONS] == ["registered", "cancelled"]
+    assert all(option.label for option in PARTICIPATION_STATUS_OPTIONS)
+
+
+@pytest.mark.parametrize("context", ["event", "group_event"])
+@pytest.mark.parametrize("status", ["registered", "cancelled"])
+def test_canonical_participation_status_accepted(context: str, status: str) -> None:
+    validate_export_request(_request(context, participation_status=status))
+
+
+@pytest.mark.parametrize("context", ["event", "group_event"])
+@pytest.mark.parametrize("status", ["invited", "waitlisted", "declined", "removed", "Registered"])
+def test_unknown_participation_status_rejected(context: str, status: str) -> None:
+    error = _error(_request(context, participation_status=status))
+    assert error.code == "invalid_participation_status"
+    assert error.details["allowed"] == ["cancelled", "registered"]
+
+
+def test_participation_status_on_non_event_context_is_not_applicable_first() -> None:
+    # Applicability is reported before the vocabulary check.
+    error = _error(_request("club", participation_status="invited"))
+    assert error.code == "export_filter_not_applicable"
 
 
 def test_invalid_context_rejected() -> None:

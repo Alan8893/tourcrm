@@ -185,3 +185,38 @@ describe("GroupDetailPage", () => {
     ).toBe(true);
   });
 });
+
+describe("GroupDetailPage — Participant Export contextual action (TH-0118.5)", () => {
+  function renderGroup(roleCode: string) {
+    stubFetch([
+      { match: "/auth/me", response: meResponse(roleCode) },
+      { match: "/groups/g1/members", response: emptyCollection() },
+      { match: "/groups/g1/schedule?from=", response: emptyCollection() },
+      { match: "/groups/g1", response: GROUP },
+    ]);
+    renderWithProviders(
+      <Routes>
+        <Route path="/groups/:groupId" element={<GroupDetailPage />} />
+      </Routes>,
+      { route: "/groups/g1" },
+    );
+  }
+
+  it("offers Administrator an export of this Group's participants, and no Group import", async () => {
+    renderGroup("admin");
+
+    expect(await screen.findByRole("link", { name: "Экспорт участников" })).toHaveAttribute(
+      "href",
+      "/reports/export?context=group&group_id=g1",
+    );
+    expect(screen.queryByRole("link", { name: /Импорт/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Импорт/ })).not.toBeInTheDocument();
+  });
+
+  it.each([["instructor"], ["member"]])("does not offer the export to %s", async (role) => {
+    renderGroup(role);
+
+    expect(await screen.findByRole("heading", { name: "Ориентирование" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Экспорт участников" })).not.toBeInTheDocument();
+  });
+});
