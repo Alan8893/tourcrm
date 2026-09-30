@@ -40,6 +40,8 @@ def test_canonical_vocabularies_match_the_domain_document() -> None:
         "write_off",
         "adjustment",
         "writeoff_reversal",
+        "repair_start",
+        "repair_end",
     }
     assert SYSTEM_UNIT_NAMES == ("шт", "м", "комплект", "пара")
 

@@ -40,6 +40,7 @@ from app.db.inventory import (
     NAME_MAX_LENGTH,
     UNIT_NAME_MAX_LENGTH,
     InventoryCategory,
+    InventoryInstance,
     InventoryItem,
     InventoryMovement,
     InventoryStorageLocation,
@@ -49,7 +50,9 @@ from app.inventory.lifecycle import (
     InvalidLocationParentError,
     ensure_accounting_mode_change_allowed,
     ensure_editable,
+    ensure_item_has_no_active_instances,
     ensure_location_archivable,
+    ensure_location_has_no_instances,
     ensure_selectable,
     ensure_unit_change_allowed,
     ensure_unit_mutable,
@@ -57,7 +60,12 @@ from app.inventory.lifecycle import (
     validate_accounting_mode,
     validate_cost_minor,
 )
-from app.inventory.vocabulary import ACTIVE, ARCHIVED
+from app.inventory.vocabulary import (
+    ACTIVE,
+    ARCHIVED,
+    INSTANCE_STATES_IN_STORAGE,
+    INSTANCE_WRITTEN_OFF,
+)
 
 # Key of the transaction-scoped PostgreSQL advisory lock serializing
 # storage-location tree mutations. Nothing outside this module takes it.
@@ -396,6 +404,18 @@ def archive_location(
         )
     ).scalar_one()
     ensure_location_archivable(has_active_children=has_active_children)
+    # GAP-3. Instance operations that bring an instance into a location
+    # hold a share lock on that location's row; the router holds this
+    # location's row lock, so the check cannot race them.
+    has_instances = session.execute(
+        sa.select(
+            sa.exists().where(
+                InventoryInstance.storage_location_id == location.id,
+                InventoryInstance.state.in_(INSTANCE_STATES_IN_STORAGE),
+            )
+        )
+    ).scalar_one()
+    ensure_location_has_no_instances(has_instances=has_instances)
     _archive(location, updated_by=updated_by)
     session.commit()
     session.refresh(location)
@@ -531,12 +551,21 @@ def update_item(
 
 
 def archive_item(session: Session, *, item: InventoryItem, updated_by: uuid.UUID) -> InventoryItem:
-    """inventory.md §17 п.4 forbids archiving with non-zero stock, active
-    instances or unfinished issues. None of these exist in the Foundation
-    model (stock, instances and issues arrive with their own slices, which
-    add the corresponding precondition here), so archiving an active item
-    is always allowed at this stage."""
+    """inventory.md §17 п.4 forbids archiving with non-zero stock, instances
+    not in `written_off` or unfinished issues. Instances are checked here
+    (Slice 2); stock and issues add their preconditions with their slices.
+    A receipt holds a share lock on the item row and the router holds this
+    item's row lock, so a new instance cannot slip in during the check."""
     ensure_editable(item.status, kind=KIND_ITEM)
+    has_active_instances = session.execute(
+        sa.select(
+            sa.exists().where(
+                InventoryInstance.item_id == item.id,
+                InventoryInstance.state != INSTANCE_WRITTEN_OFF,
+            )
+        )
+    ).scalar_one()
+    ensure_item_has_no_active_instances(has_active_instances=has_active_instances)
     _archive(item, updated_by=updated_by)
     session.commit()
     session.refresh(item)

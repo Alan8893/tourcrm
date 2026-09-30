@@ -405,6 +405,17 @@ Foundation (TH-0121, implemented):
 
 Списки принимают `status=active|archived|all` (по умолчанию `active`) и `page`/`page_size`.
 
+Slice 2 — экземпляры (implemented):
+
+- `GET /inventory/instances` — фильтры `item_id`, `state`, `storage_location_id`, `page`/`page_size`; без `state` возвращаются все экземпляры, кроме `written_off`
+- `POST /inventory/instances` — поступление экземпляра (`receipt`): `item_id`, `storage_location_id`, необязательные `unit_cost_minor`, `manufacturer_barcode`, `manufacturer_serial_number`, `description`
+- `GET /inventory/instances/{instance_id}`, `PATCH /inventory/instances/{instance_id}` (только `manufacturer_barcode`, `manufacturer_serial_number`, `description`; не для `written_off`)
+- `POST /inventory/instances/{instance_id}/transfer` — `to_location_id`, необязательный `comment`
+- `POST /inventory/instances/{instance_id}/repair-start`, `POST /inventory/instances/{instance_id}/repair-end` — без тела
+- `POST /inventory/instances/{instance_id}/write-off` — обязательный `comment` (причина)
+- `GET /inventory/instances/{instance_id}/movements` — хронологическая история экземпляра
+- `POST /inventory/movements/{movement_id}/reverse` — отмена списания экземпляра; необязательный `storage_location_id`, обязателен только если исходное место архивировано
+
 ## 20. Finance
 
 - `GET /financial-accounts`

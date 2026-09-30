@@ -6,7 +6,20 @@ already have a movement? is the referenced record archived?) are resolved
 by app.inventory.service and passed in.
 """
 
-from app.inventory.vocabulary import ACTIVE, ARCHIVED, CANONICAL_ACCOUNTING_MODES
+from app.inventory.vocabulary import (
+    ACCOUNTING_MODE_INSTANCE,
+    ACTIVE,
+    ARCHIVED,
+    CANONICAL_ACCOUNTING_MODES,
+    INSTANCE_AVAILABLE,
+    INSTANCE_IN_REPAIR,
+    INSTANCE_WRITTEN_OFF,
+    MOVEMENT_REPAIR_END,
+    MOVEMENT_REPAIR_START,
+    MOVEMENT_TRANSFER,
+    MOVEMENT_WRITE_OFF,
+    MOVEMENT_WRITEOFF_REVERSAL,
+)
 
 
 class InventoryDomainError(Exception):
@@ -66,6 +79,143 @@ class InvalidLocationParentError(InventoryDomainError):
 
     def __init__(self) -> None:
         super().__init__("A storage location cannot be placed under itself or its descendant")
+
+
+class ItemNotInstanceModeError(InventoryDomainError):
+    """Instances exist only for `instance`-mode nomenclature (§7)."""
+
+    def __init__(self) -> None:
+        super().__init__("Instances can be created only for instance-mode items")
+
+
+class ItemHasActiveInstancesError(InventoryDomainError):
+    """§17 п.4: an item with instances not in `written_off` cannot be archived."""
+
+    def __init__(self) -> None:
+        super().__init__("Item has instances that are not written off")
+
+
+class LocationHasInstancesError(InventoryDomainError):
+    """§10 п.4 (GAP-3): a location holding available/in_repair instances
+    cannot be archived."""
+
+    def __init__(self) -> None:
+        super().__init__("Storage location holds available or in-repair instances")
+
+
+class InvalidInstanceTransitionError(InventoryDomainError):
+    """§7.4: the movement is not allowed from the instance's current state."""
+
+    def __init__(self, state: str, movement_type: str) -> None:
+        super().__init__(f"Movement {movement_type!r} is not allowed for an instance in {state!r}")
+        self.state = state
+        self.movement_type = movement_type
+
+
+class InstanceWrittenOffError(InventoryDomainError):
+    """§7.5 (R5): a written-off instance is read-only."""
+
+    def __init__(self) -> None:
+        super().__init__("Written-off instance is read-only")
+
+
+class InvalidReversalTargetError(InventoryDomainError):
+    """E: only an instance `write_off` can be reversed in Slice 2."""
+
+    def __init__(self) -> None:
+        super().__init__("Only an instance write-off movement can be reversed")
+
+
+class WriteOffAlreadyReversedError(InventoryDomainError):
+    """E: a write-off can be reversed only once."""
+
+    def __init__(self) -> None:
+        super().__init__("This write-off has already been reversed")
+
+
+class ReversalLocationRequiredError(InventoryDomainError):
+    """§16 п.3 (GAP-2): the original location is archived — another active
+    location must be given."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The original storage location is archived; an active storage_location_id is required"
+        )
+
+
+class ReversalLocationNotAllowedError(InventoryDomainError):
+    """§16 п.3 (GAP-2): the original location is active — the instance
+    always returns there."""
+
+    def __init__(self) -> None:
+        super().__init__("The original storage location is active; the instance returns there")
+
+
+# §7.4: movement -> (states it may start from, resulting state or None when
+# the state is kept). `receipt` creates the instance and is not listed.
+INSTANCE_TRANSITIONS: dict[str, tuple[frozenset[str], str | None]] = {
+    MOVEMENT_TRANSFER: (frozenset({INSTANCE_AVAILABLE, INSTANCE_IN_REPAIR}), None),
+    MOVEMENT_REPAIR_START: (frozenset({INSTANCE_AVAILABLE}), INSTANCE_IN_REPAIR),
+    MOVEMENT_REPAIR_END: (frozenset({INSTANCE_IN_REPAIR}), INSTANCE_AVAILABLE),
+    MOVEMENT_WRITE_OFF: (frozenset({INSTANCE_AVAILABLE, INSTANCE_IN_REPAIR}), INSTANCE_WRITTEN_OFF),
+    MOVEMENT_WRITEOFF_REVERSAL: (frozenset({INSTANCE_WRITTEN_OFF}), INSTANCE_AVAILABLE),
+}
+
+
+def next_instance_state(state: str, movement_type: str) -> str:
+    """The instance state after `movement_type`; raises when the movement
+    is not allowed from `state`."""
+    allowed_from, target = INSTANCE_TRANSITIONS[movement_type]
+    if state not in allowed_from:
+        raise InvalidInstanceTransitionError(state, movement_type)
+    return state if target is None else target
+
+
+def ensure_instance_editable(state: str) -> None:
+    if state == INSTANCE_WRITTEN_OFF:
+        raise InstanceWrittenOffError()
+
+
+def ensure_instance_mode(accounting_mode: str) -> None:
+    if accounting_mode != ACCOUNTING_MODE_INSTANCE:
+        raise ItemNotInstanceModeError()
+
+
+def format_inventory_number(sequence: int) -> str:
+    """Q2: `INV-000123`; widens past six digits (`INV-1000000`)."""
+    if sequence < 1:
+        raise ValueError("inventory number sequence starts at 1")
+    return f"INV-{sequence:06d}"
+
+
+def normalize_optional_text(value: str | None, *, max_length: int, field: str) -> str | None:
+    """Trim; an empty value clears the field."""
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) > max_length:
+        raise InvalidInventoryDataError(f"{field} must be at most {max_length} characters")
+    return text
+
+
+def normalize_write_off_reason(value: str, *, max_length: int) -> str:
+    """Q8: the write-off reason is mandatory free text."""
+    reason = normalize_optional_text(value, max_length=max_length, field="comment")
+    if reason is None:
+        raise InvalidInventoryDataError("comment (write-off reason) is required")
+    return reason
+
+
+def ensure_location_has_no_instances(*, has_instances: bool) -> None:
+    if has_instances:
+        raise LocationHasInstancesError()
+
+
+def ensure_item_has_no_active_instances(*, has_active_instances: bool) -> None:
+    if has_active_instances:
+        raise ItemHasActiveInstancesError()
 
 
 def normalize_name(value: str, *, max_length: int) -> str:
@@ -138,6 +288,24 @@ __all__ = [
     "UnitLockedError",
     "LocationHasActiveChildrenError",
     "InvalidLocationParentError",
+    "ItemNotInstanceModeError",
+    "ItemHasActiveInstancesError",
+    "LocationHasInstancesError",
+    "InvalidInstanceTransitionError",
+    "InstanceWrittenOffError",
+    "InvalidReversalTargetError",
+    "WriteOffAlreadyReversedError",
+    "ReversalLocationRequiredError",
+    "ReversalLocationNotAllowedError",
+    "INSTANCE_TRANSITIONS",
+    "next_instance_state",
+    "ensure_instance_editable",
+    "ensure_instance_mode",
+    "format_inventory_number",
+    "normalize_optional_text",
+    "normalize_write_off_reason",
+    "ensure_location_has_no_instances",
+    "ensure_item_has_no_active_instances",
     "normalize_name",
     "validate_accounting_mode",
     "validate_cost_minor",
