@@ -1995,3 +1995,54 @@ describe("EventsPage — Participant Export contextual action (TH-0118.5)", () =
     expect(screen.queryByRole("link", { name: "Экспорт участников" })).not.toBeInTheDocument();
   });
 });
+
+describe("EventsPage — deep link from a News item (TH-0120 / Issue #227)", () => {
+  it("lands on the Event's day and opens that Event's detail", async () => {
+    const range = fixedRange();
+    stubFetch([
+      { match: "/auth/me", response: meResponse({ roleCode: "guardian" }) },
+      { match: "/groups?status=active", response: groupsResponse() },
+      {
+        match: encodeURIComponent(range.from),
+        response: calendarResponse([
+          calendarItem({
+            id: "ev-1",
+            title: "Ориентирование",
+            start_at: "2026-03-15T17:00:00+03:00",
+            end_at: "2026-03-15T19:00:00+03:00",
+          }),
+        ]),
+      },
+      { match: "/events/ev-1", response: eventDetailResponse() },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}&event=ev-1` });
+
+    expect(await screen.findByRole("dialog", { name: "Ориентирование" })).toBeInTheDocument();
+  });
+
+  it("opens nothing for an id the backend calendar does not return", async () => {
+    const range = fixedRange();
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse({ roleCode: "member" }) },
+      { match: "/groups?status=active", response: groupsResponse() },
+      {
+        match: encodeURIComponent(range.from),
+        response: calendarResponse([
+          calendarItem({
+            id: "ev-1",
+            title: "Ориентирование",
+            start_at: "2026-03-15T17:00:00+03:00",
+            end_at: "2026-03-15T19:00:00+03:00",
+          }),
+        ]),
+      },
+    ]);
+
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}&event=hidden` });
+
+    expect(await screen.findByText("Ориентирование")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/events/hidden"))).toBe(false);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+});

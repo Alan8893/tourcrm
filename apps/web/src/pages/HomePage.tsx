@@ -9,9 +9,12 @@ import { ErrorState } from "../components/ui/ErrorState";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { useCurrentUser, displayName } from "../api/auth";
 import { useUpcomingEvents } from "../api/events";
+import { NEWS_HOME_LIMIT, useNewsList } from "../api/news";
 import { personFullName, useMyChildren, type Child } from "../api/people";
 import { eventStatusIcon, eventStatusLabel } from "../domain/statusMapping";
-import { isNavigationItemVisible } from "../shell/navigation";
+import { hasAdministratorRole, isNavigationItemVisible } from "../shell/navigation";
+import { ManageNewsLink, NewsCard } from "./NewsCard";
+import newsStyles from "./News.module.css";
 import styles from "./HomePage.module.css";
 
 /**
@@ -56,6 +59,9 @@ export function HomePage() {
       </div>
 
       {isGuardian ? <MyChildrenSection /> : null}
+
+      {/* TH-0120 / Issue #227: News is placed before «Ближайшие события». */}
+      <NewsSection isAdmin={hasAdministratorRole(meQuery.data?.role_assignments ?? [])} />
 
       <h2 className={styles.sectionTitle}>Ближайшие события</h2>
 
@@ -102,6 +108,64 @@ export function HomePage() {
         </ul>
       ) : null}
     </div>
+  );
+}
+
+/** Home «Новости» block (TH-0120 / Issue #227; docs/04-ux/news.md §3):
+ * the latest published News the backend returns for this user (up to
+ * `NEWS_HOME_LIMIT`), with «Все новости» for everyone and the contextual
+ * «Управление новостями» for the Administrator only. No audience logic
+ * runs here — the list is already filtered server-side. */
+function NewsSection({ isAdmin }: { isAdmin: boolean }) {
+  const newsQuery = useNewsList({ status: "published", pageSize: NEWS_HOME_LIMIT });
+
+  return (
+    <section className={newsStyles.homeBlock} aria-labelledby="home-news-title">
+      <div className={newsStyles.sectionHeader}>
+        <h2 id="home-news-title" className={newsStyles.sectionTitle}>
+          Новости
+        </h2>
+        <div className={newsStyles.sectionActions}>
+          <Link to="/news">
+            <Button variant="secondary">Все новости</Button>
+          </Link>
+          {isAdmin ? <ManageNewsLink /> : null}
+        </div>
+      </div>
+
+      {newsQuery.isLoading ? <Loading label="Загружаем новости…" /> : null}
+
+      {newsQuery.isError ? (
+        <ErrorState
+          illustration={newsQuery.error.status === 403 ? "403" : "error"}
+          title="Не удалось загрузить новости"
+          description={newsQuery.error.message}
+          action={
+            <Button variant="secondary" onClick={() => newsQuery.refetch()}>
+              Повторить
+            </Button>
+          }
+        />
+      ) : null}
+
+      {newsQuery.isSuccess && newsQuery.data.items.length === 0 ? (
+        <EmptyState
+          illustration="no-results"
+          title="Новостей пока нет"
+          description="Здесь появятся объявления клуба."
+        />
+      ) : null}
+
+      {newsQuery.isSuccess && newsQuery.data.items.length > 0 ? (
+        <ul className={newsStyles.grid}>
+          {newsQuery.data.items.slice(0, NEWS_HOME_LIMIT).map((news) => (
+            <li key={news.id}>
+              <NewsCard news={news} />
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
   );
 }
 

@@ -35,6 +35,7 @@ describe("HomePage — quick actions follow role-aware navigation (Issue #212)",
   ])("$role: «Перейти к группам» shown: $groups", async ({ role, groups }) => {
     stubFetch([
       { match: "/auth/me", response: meResponse(role) },
+      { match: "/news", response: emptyEvents() },
       { match: "/me/children", response: { items: [], pagination: { page: 1, page_size: 1, total: 0, pages: 0 } } },
       { match: "/events", response: emptyEvents() },
     ]);
@@ -53,6 +54,7 @@ describe("HomePage — guardian «Мои дети» section", () => {
   it("does not render the section for a non-guardian role", async () => {
     stubFetch([
       { match: "/auth/me", response: meResponse("member") },
+      { match: "/news", response: emptyEvents() },
       { match: "/events", response: emptyEvents() },
     ]);
 
@@ -65,6 +67,7 @@ describe("HomePage — guardian «Мои дети» section", () => {
   it("shows a loading state while children are being fetched", async () => {
     stubFetch([
       { match: "/auth/me", response: meResponse("guardian") },
+      { match: "/news", response: emptyEvents() },
       { match: "/events", response: emptyEvents() },
       { match: "/me/children", response: { items: [], pagination: { page: 1, page_size: 1, total: 0, pages: 0 } } },
     ]);
@@ -78,6 +81,7 @@ describe("HomePage — guardian «Мои дети» section", () => {
   it("renders exactly the safe projection for each child and nothing else", async () => {
     stubFetch([
       { match: "/auth/me", response: meResponse("guardian") },
+      { match: "/news", response: emptyEvents() },
       { match: "/events", response: emptyEvents() },
       {
         match: "/me/children",
@@ -108,6 +112,7 @@ describe("HomePage — guardian «Мои дети» section", () => {
   it("shows an empty state when the guardian has no current children", async () => {
     stubFetch([
       { match: "/auth/me", response: meResponse("guardian") },
+      { match: "/news", response: emptyEvents() },
       { match: "/events", response: emptyEvents() },
       { match: "/me/children", response: { items: [], pagination: { page: 1, page_size: 1, total: 0, pages: 0 } } },
     ]);
@@ -120,6 +125,7 @@ describe("HomePage — guardian «Мои дети» section", () => {
   it("shows an error state with a working retry action", async () => {
     const fetchMock = stubFetch([
       { match: "/auth/me", response: meResponse("guardian") },
+      { match: "/news", response: emptyEvents() },
       { match: "/events", response: emptyEvents() },
       {
         match: "/me/children",

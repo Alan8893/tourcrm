@@ -23,6 +23,7 @@ from app.db import (
     groups,  # noqa: E402,F401  (registers models on Base.metadata)
     identity,  # noqa: E402,F401  (registers models on Base.metadata)
     imports,  # noqa: E402,F401  (registers models on Base.metadata)
+    news,  # noqa: E402,F401  (registers models on Base.metadata)
 )
 from app.db.base import Base  # noqa: E402
 
