@@ -140,6 +140,10 @@ def list_inventory_item_movements(
     """Chronological, immutable history of the item (§13)."""
     club_id = require_inventory_administrator(db, user_id=principal.user_id)
     item = _item_or_404(db, item_id=item_id, club_id=club_id)
+    try:
+        ensure_quantity_mode(item.accounting_mode)
+    except INVENTORY_DOMAIN_ERRORS as exc:
+        raise_inventory_domain_error(exc)
     rows, total = list_item_movements(
         db,
         item_id=item.id,

@@ -21,6 +21,7 @@ from sqlalchemy import select
 from app.api.deps import CurrentPrincipal, get_current_principal
 from app.db.authorization import Role, UserRoleAssignment
 from app.db.identity import Club, Person, User
+from app.db.inventory import InventoryItemStock
 from app.db.session import session_scope
 from app.main import app
 
@@ -548,3 +549,25 @@ def test_history_is_chronological_filterable_and_paginated(client, world, stock)
     page = _ok(client.get(_url(stock["item"], "movements"), params={"page": 2, "page_size": 3}))
     assert page["pagination"] == {"page": 2, "page_size": 3, "total": 4, "pages": 2}
     assert [m["movement_type"] for m in page["items"]] == ["writeoff_reversal"]
+
+
+def test_stock_never_lists_rows_of_instance_items(client, world, stock) -> None:
+    instance_item = _item(client, "instance")
+    with session_scope() as session:
+        session.add(
+            InventoryItemStock(
+                item_id=uuid.UUID(instance_item["id"]),
+                storage_location_id=uuid.UUID(stock["location"]["id"]),
+                quantity=3,
+            )
+        )
+        session.commit()
+    items = _ok(client.get(f"{_BASE}/stock"))["items"]
+    assert {(r["item_id"], r["quantity"]) for r in items} == {(stock["item"]["id"], 7)}
+    assert _ok(client.get(f"{_BASE}/stock", params={"item_id": instance_item["id"]}))["items"] == []
+
+
+def test_history_rejects_instance_items(client, world, stock) -> None:
+    instance_item = _item(client, "instance")
+    _error(client.get(_url(instance_item, "movements")), 422, "item_not_quantity_mode")
+    assert [m["movement_type"] for m in _history(client, stock["item"])] == ["receipt"]

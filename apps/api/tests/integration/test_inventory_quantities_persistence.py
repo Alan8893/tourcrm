@@ -3,6 +3,7 @@ consistency of Inventory Slice 3 — quantity movements (Issue #230;
 docs/04-domain/inventory.md §6, §13, §16, §17), against real PostgreSQL."""
 
 import threading
+import time
 import uuid
 from collections import defaultdict
 from collections.abc import Callable
@@ -10,7 +11,7 @@ from typing import Any
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 
 from app.db.identity import Club, Person, User
 from app.db.inventory import (
@@ -26,7 +27,9 @@ from app.db.inventory import (
 from app.db.session import session_scope
 from app.inventory import quantities, service
 from app.inventory.lifecycle import (
+    ArchivedReferenceError,
     InsufficientStockError,
+    InventoryRecordArchivedError,
     ItemHasStockError,
     LocationHasStockError,
     WriteOffAlreadyReversedError,
@@ -143,14 +146,16 @@ def _write_off(setup: Setup, quantity: int, location_id=None) -> InventoryMoveme
         return movement
 
 
-def _reverse(setup: Setup, movement_id: uuid.UUID) -> InventoryMovement:
+def _reverse(
+    setup: Setup, movement_id: uuid.UUID, location_id: uuid.UUID | None = None
+) -> InventoryMovement:
     with session_scope() as session:
         movement = quantities.reverse_write_off(
             session,
             club_id=setup.club_id,
             item_id=setup.item_id,
             movement_id=movement_id,
-            storage_location_id=None,
+            storage_location_id=location_id,
             created_by=setup.user_id,
         )
         session.expunge(movement)
@@ -183,7 +188,10 @@ def _journal_stock(setup: Setup) -> dict[uuid.UUID, int]:
     return {location_id: quantity for location_id, quantity in totals.items() if quantity}
 
 
-def _run_concurrently(workers: list[Callable[[], Any]]) -> list[Any]:
+def _run_concurrently(workers: list[Callable[[], Any]], timeout: float = 60) -> list[Any]:
+    """Starts every worker at once; returns each result or raised exception.
+    Fails the test if any worker is still running after `timeout` seconds
+    (a hang); daemon threads keep a hung worker from blocking the run."""
     barrier = threading.Barrier(len(workers))
     results: list[Any] = [None] * len(workers)
 
@@ -194,11 +202,16 @@ def _run_concurrently(workers: list[Callable[[], Any]]) -> list[Any]:
         except Exception as exc:  # collected for the assertions
             results[index] = exc
 
-    threads = [threading.Thread(target=run, args=(i, w)) for i, w in enumerate(workers)]
+    threads = [
+        threading.Thread(target=run, args=(i, w), daemon=True) for i, w in enumerate(workers)
+    ]
     for thread in threads:
         thread.start()
+    deadline = time.monotonic() + timeout
     for thread in threads:
-        thread.join(timeout=60)
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    hung = [i for i, thread in enumerate(threads) if thread.is_alive()]
+    assert not hung, f"workers {hung} still running after {timeout}s"
     return results
 
 
@@ -447,3 +460,117 @@ def test_projection_equals_the_sum_of_movements(setup) -> None:
     )
     assert _stock(setup) == _journal_stock(setup)
     assert all(quantity > 0 for quantity in _stock(setup).values())
+
+
+def _location_with_id(setup: Setup, location_id: uuid.UUID) -> uuid.UUID:
+    with session_scope() as session:
+        session.add(
+            InventoryStorageLocation(
+                id=location_id,
+                club_id=setup.club_id,
+                name=f"Полка {uuid.uuid4().hex[:6]}",
+                status="active",
+                created_by=setup.user_id,
+            )
+        )
+        session.commit()
+    return location_id
+
+
+@pytest.mark.parametrize("round_", range(5))
+def test_reversal_to_a_new_location_and_transfer_do_not_deadlock(setup, round_) -> None:
+    """The write-off's original location is archived, so the reversal goes
+    to a new active location. The new location sorts before the original
+    one — the reverse of the order the reversal names them in — while a
+    transfer and archive attempts lock the same two rows concurrently."""
+    new_id = _location_with_id(setup, uuid.UUID(f"0{uuid.uuid4().hex[1:]}"))
+    original_id = _location_with_id(setup, uuid.UUID(f"f{uuid.uuid4().hex[1:]}"))
+    _receive(setup, 2, original_id)
+    write_off_id = _write_off(setup, 2, original_id).id
+    assert _archive_location(setup, original_id) == "archived"
+    _receive(setup, 5, new_id)
+
+    results = _run_concurrently(
+        [
+            lambda: _reverse(setup, write_off_id, new_id),
+            lambda: _transfer(setup, 1, new_id, original_id),
+            lambda: _transfer(setup, 1, new_id, setup.target_id),
+            lambda: _archive_location(setup, original_id),
+            lambda: _archive_location(setup, new_id),
+        ],
+        timeout=30,
+    )
+
+    assert not [r for r in results if isinstance(r, DBAPIError)], results
+    reversal, into_archived, transfer, archive_original, archive_new = results
+    assert isinstance(reversal, InventoryMovement), results
+    assert reversal.to_location_id == new_id and reversal.quantity == 2
+    assert isinstance(into_archived, ArchivedReferenceError), results
+    assert isinstance(transfer, InventoryMovement), results
+    assert isinstance(archive_original, InventoryRecordArchivedError), results
+    assert isinstance(archive_new, LocationHasStockError), results
+    assert _stock(setup) == {new_id: 6, setup.target_id: 1}
+    assert _stock(setup) == _journal_stock(setup)
+
+
+def _wait_for_a_lock_wait(timeout: float = 10) -> None:
+    """Returns once another backend waits on a storage-location row lock."""
+    deadline = time.monotonic() + timeout
+    with session_scope() as monitor:
+        while time.monotonic() < deadline:
+            waiting = monitor.execute(
+                sa.text(
+                    "SELECT count(*) FROM pg_stat_activity"
+                    " WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()"
+                    " AND datname = current_database()"
+                    " AND query ILIKE '%inventory_storage_locations%'"
+                )
+            ).scalar_one()
+            monitor.rollback()  # a fresh pg_stat_activity snapshot next time
+            if waiting:
+                return
+            time.sleep(0.02)
+    pytest.fail(f"no lock wait on a storage location within {timeout}s")
+
+
+def test_reversal_locks_locations_in_the_same_order_as_transfer(setup) -> None:
+    """Deterministic: with the (lower-id) new location held, the reversal
+    must wait on it before touching the (higher-id) archived original —
+    the id order `transfer` uses — so it holds no lock on the original."""
+    new_id = _location_with_id(setup, uuid.UUID(f"0{uuid.uuid4().hex[1:]}"))
+    original_id = _location_with_id(setup, uuid.UUID(f"f{uuid.uuid4().hex[1:]}"))
+    _receive(setup, 2, original_id)
+    write_off_id = _write_off(setup, 2, original_id).id
+    assert _archive_location(setup, original_id) == "archived"
+    results: list[Any] = []
+
+    def reverse() -> None:
+        try:
+            results.append(_reverse(setup, write_off_id, new_id))
+        except Exception as exc:  # collected for the assertions
+            results.append(exc)
+
+    reversal = threading.Thread(target=reverse, daemon=True)
+    with session_scope() as blocker:
+        blocker.execute(
+            sa.select(InventoryStorageLocation.id)
+            .where(InventoryStorageLocation.id == new_id)
+            .with_for_update()
+        )
+        reversal.start()
+        _wait_for_a_lock_wait()
+        with session_scope() as probe:
+            try:
+                probe.execute(
+                    sa.select(InventoryStorageLocation.id)
+                    .where(InventoryStorageLocation.id == original_id)
+                    .with_for_update(nowait=True)
+                )
+            except OperationalError:
+                pytest.fail("the reversal locked the original location out of id order")
+            probe.rollback()
+        blocker.rollback()
+    reversal.join(timeout=30)
+    assert not reversal.is_alive(), "the reversal is still running after 30s"
+    assert len(results) == 1 and isinstance(results[0], InventoryMovement), results
+    assert _stock(setup) == {new_id: 2}

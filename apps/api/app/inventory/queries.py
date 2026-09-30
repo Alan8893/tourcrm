@@ -20,7 +20,7 @@ from app.db.inventory import (
     InventoryStorageLocation,
     InventoryUnit,
 )
-from app.inventory.vocabulary import INSTANCE_WRITTEN_OFF
+from app.inventory.vocabulary import ACCOUNTING_MODE_QUANTITY, INSTANCE_WRITTEN_OFF
 
 InventoryRecord = TypeVar(
     "InventoryRecord", InventoryCategory, InventoryUnit, InventoryStorageLocation, InventoryItem
@@ -160,6 +160,7 @@ def list_stock(
     location."""
     conditions: list[sa.ColumnElement[bool]] = [
         InventoryItem.club_id == club_id,
+        InventoryItem.accounting_mode == ACCOUNTING_MODE_QUANTITY,
         InventoryItemStock.quantity > 0,
     ]
     if item_id is not None:

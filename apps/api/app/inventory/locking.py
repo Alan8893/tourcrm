@@ -9,6 +9,7 @@ app.inventory.service can never race a concurrent operation.
 """
 
 import uuid
+from collections.abc import Iterable
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
@@ -45,6 +46,29 @@ def share_locked_location(
     return location
 
 
+def share_locked_locations(
+    session: Session, *, club_id: uuid.UUID, location_ids: Iterable[uuid.UUID | None]
+) -> dict[uuid.UUID, InventoryStorageLocation]:
+    """Share-locks several locations of the Club in one deterministic order
+    (`None` and duplicates dropped, ids sorted), so operations touching the
+    same locations never wait on each other in opposite order. Ids that are
+    not locations of the Club are absent from the result; the caller
+    decides how to report them."""
+    locked: dict[uuid.UUID, InventoryStorageLocation] = {}
+    for location_id in sorted({i for i in location_ids if i is not None}, key=str):
+        location = session.execute(
+            sa.select(InventoryStorageLocation)
+            .where(
+                InventoryStorageLocation.id == location_id,
+                InventoryStorageLocation.club_id == club_id,
+            )
+            .with_for_update(read=True)
+        ).scalar_one_or_none()
+        if location is not None:
+            locked[location_id] = location
+    return locked
+
+
 def selectable_location(
     session: Session, *, club_id: uuid.UUID, location_id: uuid.UUID
 ) -> InventoryStorageLocation:
@@ -54,4 +78,9 @@ def selectable_location(
     return location
 
 
-__all__ = ["share_locked_item", "share_locked_location", "selectable_location"]
+__all__ = [
+    "share_locked_item",
+    "share_locked_location",
+    "share_locked_locations",
+    "selectable_location",
+]

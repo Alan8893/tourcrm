@@ -40,6 +40,7 @@ from app.db.inventory import (
     InventoryItem,
     InventoryItemStock,
     InventoryMovement,
+    InventoryStorageLocation,
 )
 from app.inventory.lifecycle import (
     InvalidInventoryDataError,
@@ -55,8 +56,8 @@ from app.inventory.lifecycle import (
     validate_cost_minor,
     validate_quantity,
 )
-from app.inventory.locking import selectable_location, share_locked_item, share_locked_location
-from app.inventory.service import KIND_ITEM
+from app.inventory.locking import selectable_location, share_locked_item, share_locked_locations
+from app.inventory.service import KIND_ITEM, KIND_LOCATION, InventoryReferenceNotFoundError
 from app.inventory.vocabulary import (
     ACTIVE,
     MOVEMENT_RECEIPT,
@@ -72,6 +73,17 @@ class InventoryWriteOffNotFoundError(Exception):
     def __init__(self, movement_id: uuid.UUID) -> None:
         super().__init__(f"Inventory movement {movement_id} does not exist for this item")
         self.movement_id = movement_id
+
+
+def _selectable(
+    locations: dict[uuid.UUID, InventoryStorageLocation], location_id: uuid.UUID
+) -> InventoryStorageLocation:
+    """An already share-locked location that must exist and be active."""
+    location = locations.get(location_id)
+    if location is None:
+        raise InventoryReferenceNotFoundError(KIND_LOCATION, location_id)
+    ensure_selectable(location.status, kind=KIND_LOCATION)
+    return location
 
 
 def _quantity_item(session: Session, *, club_id: uuid.UUID, item_id: uuid.UUID) -> InventoryItem:
@@ -193,8 +205,11 @@ def transfer(
     if from_location_id == to_location_id:
         raise InvalidInventoryDataError("from_location_id and to_location_id must differ")
     item = _quantity_item(session, club_id=club_id, item_id=item_id)
+    locations = share_locked_locations(
+        session, club_id=club_id, location_ids=[from_location_id, to_location_id]
+    )
     for location_id in sorted({from_location_id, to_location_id}, key=str):
-        selectable_location(session, club_id=club_id, location_id=location_id)
+        _selectable(locations, location_id)
     stock = _locked_stocks(
         session, item_id=item.id, location_ids=[from_location_id, to_location_id], create=True
     )
@@ -276,9 +291,15 @@ def reverse_write_off(
     ):
         raise InvalidReversalTargetError()
 
-    original = share_locked_location(
-        session, club_id=club_id, location_id=original_write_off.from_location_id
+    # Both locations are locked up front, in the same order as `transfer`.
+    locations = share_locked_locations(
+        session,
+        club_id=club_id,
+        location_ids=[original_write_off.from_location_id, storage_location_id],
     )
+    original = locations.get(original_write_off.from_location_id)
+    if original is None:
+        raise InventoryReferenceNotFoundError(KIND_LOCATION, original_write_off.from_location_id)
     if original.status == ACTIVE:
         if storage_location_id is not None and storage_location_id != original.id:
             raise ReversalLocationNotAllowedError()
@@ -286,9 +307,7 @@ def reverse_write_off(
     else:
         if storage_location_id is None:
             raise ReversalLocationRequiredError()
-        target_id = selectable_location(
-            session, club_id=club_id, location_id=storage_location_id
-        ).id
+        target_id = _selectable(locations, storage_location_id).id
 
     stock = _locked_stocks(session, item_id=item.id, location_ids=[target_id], create=True)
     already_reversed = session.execute(
