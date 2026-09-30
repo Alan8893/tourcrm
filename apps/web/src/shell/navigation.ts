@@ -85,3 +85,13 @@ export function isNavigationItemVisible(
 ): boolean {
   return visibleNavigationItems(roleAssignments).some((item) => item.id === id);
 }
+
+/** Whether the user holds the canonical `admin` role assignment — the
+ * visibility rule for Administrator-only actions such as Participant
+ * Import/Export (docs/04-ux/import-export-ui.md §2, §8). UI visibility
+ * only; the backend remains the authorization source of truth. */
+export function hasAdministratorRole(
+  roleAssignments: readonly Pick<RoleAssignmentSummary, "role_code">[],
+): boolean {
+  return roleAssignments.some(({ role_code }) => role_code === "admin");
+}

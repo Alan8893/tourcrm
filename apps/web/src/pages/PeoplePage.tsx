@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import { PageHeader } from "../components/ui/PageHeader";
 import { SearchInput } from "../components/ui/SearchInput";
@@ -61,9 +61,18 @@ export function PeoplePage() {
         description="Участники и представители клуба."
         actions={
           canCreatePerson ? (
-            <Button variant="primary" icon="action.add" onClick={() => setCreateOpen(true)}>
-              Добавить человека
-            </Button>
+            <>
+              {/* TH-0118.5: «Люди → Импорт» (import-export-ui.md §3.1,
+                  §5.3) — Administrator-only, like person creation. */}
+              <Link to="/people/import">
+                <Button variant="secondary" icon="action.upload">
+                  Импорт
+                </Button>
+              </Link>
+              <Button variant="primary" icon="action.add" onClick={() => setCreateOpen(true)}>
+                Добавить человека
+              </Button>
+            </>
           ) : undefined
         }
       />

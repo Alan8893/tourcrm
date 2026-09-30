@@ -22,19 +22,25 @@ export function SectionGuard({ section }: SectionGuardProps) {
   const { data } = useCurrentUser();
 
   if (!isNavigationItemVisible(data?.role_assignments ?? [], section)) {
-    return (
-      <ErrorState
-        illustration="403"
-        title="Раздел недоступен"
-        description="У вас нет доступа к этому разделу."
-        action={
-          <Link to="/">
-            <Button variant="primary">На главную</Button>
-          </Link>
-        }
-      />
-    );
+    return <SectionForbidden />;
   }
 
   return <Outlet />;
+}
+
+/** The standard 403 state of a guarded route — shared by `SectionGuard`
+ * and `AdministratorGuard` so both render the identical forbidden page. */
+export function SectionForbidden() {
+  return (
+    <ErrorState
+      illustration="403"
+      title="Раздел недоступен"
+      description="У вас нет доступа к этому разделу."
+      action={
+        <Link to="/">
+          <Button variant="primary">На главную</Button>
+        </Link>
+      }
+    />
+  );
 }
