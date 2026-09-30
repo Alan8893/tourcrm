@@ -384,21 +384,9 @@ Persistence, participant requirement checks, and management endpoints are implem
 - `DELETE /events/{event_id}/document-requirements/{requirement_id}` (implemented, TH-0117.5)
 - `GET /events/{event_id}/document-requirements/{person_id}` (implemented, TH-0117.4)
 
-## 19. Equipment
+## 19. Inventory / Склад
 
-- `GET /equipment`
-- `POST /equipment`
-- `GET /equipment/{id}`
-- `PATCH /equipment/{id}`
-- `POST /equipment/{id}/retire`
-- `GET /equipment/{id}/history`
-- `GET /equipment/{id}/issues`
-- `POST /equipment-issues`
-- `GET /equipment-issues/{id}`
-- `PATCH /equipment-issues/{id}`
-- `POST /equipment-issues/{id}/return`
-- `POST /equipment-issues/{id}/cancel`
-- `POST /equipment-maintenance`
+Прежний список `/equipment*`, `/equipment-issues*`, `/equipment-maintenance` **отозван** (Issue #230 / TH-0121): он описывал заменённую Equipment-модель. Канонический домен — `docs/04-domain/inventory.md`. Все складские эндпоинты — только для Administrator, в пространстве `/api/v1/inventory/*`; конкретные эндпоинты вносятся сюда реализующими срезами.
 
 ## 20. Finance
 

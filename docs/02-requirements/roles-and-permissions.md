@@ -201,8 +201,8 @@ Feature setting не может расширить permissions.
 | Documents: управление | `all` | ❌ | ❌ | ❌ |
 | Consent: чтение | ✅ | по необходимости | self | children |
 | Consent: управление | ✅ | по policy | ❌ | ограниченно |
-| Equipment: чтение | ✅ | по назначению | ❌ | ❌ |
-| Equipment: управление | ✅ | по permission | ❌ | ❌ |
+| Inventory / Склад: чтение | ✅ | ❌ | ❌ | ❌ |
+| Inventory / Склад: управление | ✅ | ❌ | ❌ | ❌ |
 | Finance: чтение | ✅ | по permission | self-related | self-related |
 | Finance: управление | ✅ | по permission | ❌ | ❌ |
 | Audit: чтение | ✅ | ❌ | ❌ | ❌ |

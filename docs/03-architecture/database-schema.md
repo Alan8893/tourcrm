@@ -675,6 +675,8 @@ Checking a requirement against a specific Person's documents (`valid` / `missing
 
 ## 16. Equipment
 
+> **Superseded** by `docs/04-domain/inventory.md` (Issue #230 / TH-0121). Таблицы ниже — исторический набросок; физическая схема склада фиксируется реализацией соответствующих срезов.
+
 ### `equipment`
 
 - `id` PK
