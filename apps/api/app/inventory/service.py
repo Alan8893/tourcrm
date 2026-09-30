@@ -15,8 +15,11 @@ Rules enforced here (pure checks live in app.inventory.lifecycle):
   movement. The check reads `inventory_movements` under the item's row
   lock; the slice that writes movements must take the same item row lock
   before inserting, so the check and a first movement cannot interleave;
-- active-name uniqueness (G15) is checked up front for a clean error and
-  backed by the partial unique indexes of app.db.inventory;
+- active-name uniqueness, case-insensitive (G15, PO decisions A/B), is
+  checked up front for a clean error and backed by the partial unique
+  indexes of app.db.inventory. A custom unit also may not reuse the name
+  of a system unit (B) — system units are always active, so the same
+  active-name index covers them;
 - storage-location tree changes (create/re-parent/archive) are serialized
   by one transaction-scoped advisory lock, so two concurrent re-parents
   can never together form a cycle and a child can never be added to a
@@ -62,6 +65,8 @@ _LOCATION_TREE_LOCK_KEY = 121_230_010
 
 _NAME_CONFLICT_CONSTRAINTS = frozenset(
     {
+        "uq_inventory_categories_active_name",
+        "uq_inventory_units_active_name",
         "uq_inventory_items_active_name",
         "uq_inventory_storage_locations_active_child_name",
         "uq_inventory_storage_locations_active_root_name",
@@ -82,7 +87,7 @@ class InventoryReferenceNotFoundError(Exception):
 
 
 class InventoryNameConflictError(Exception):
-    """G15: an active record with the same name already exists."""
+    """G15/A/B: an active record with the same name already exists."""
 
     def __init__(self, kind: str) -> None:
         super().__init__(f"An active {kind} with this name already exists")
@@ -121,18 +126,34 @@ def _archive(record: Any, *, updated_by: uuid.UUID) -> None:
 # --- categories ----------------------------------------------------------------
 
 
+def _active_category_name_taken(
+    session: Session, *, club_id: uuid.UUID, name: str, exclude_id: uuid.UUID | None = None
+) -> bool:
+    conditions = [
+        InventoryCategory.club_id == club_id,
+        InventoryCategory.status == ACTIVE,
+        sa.func.lower(InventoryCategory.name) == name.lower(),
+    ]
+    if exclude_id is not None:
+        conditions.append(InventoryCategory.id != exclude_id)
+    return session.execute(sa.select(sa.exists().where(*conditions))).scalar_one()
+
+
 def create_category(
     session: Session, *, club_id: uuid.UUID, name: str, created_by: uuid.UUID
 ) -> InventoryCategory:
+    normalized = normalize_name(name, max_length=NAME_MAX_LENGTH)
+    if _active_category_name_taken(session, club_id=club_id, name=normalized):
+        raise InventoryNameConflictError(KIND_CATEGORY)
     category = InventoryCategory(
         id=uuid.uuid4(),
         club_id=club_id,
-        name=normalize_name(name, max_length=NAME_MAX_LENGTH),
+        name=normalized,
         status=ACTIVE,
         created_by=created_by,
     )
     session.add(category)
-    session.commit()
+    _commit(session, kind=KIND_CATEGORY)
     session.refresh(category)
     return category
 
@@ -141,9 +162,14 @@ def update_category(
     session: Session, *, category: InventoryCategory, name: str, updated_by: uuid.UUID
 ) -> InventoryCategory:
     ensure_editable(category.status, kind=KIND_CATEGORY)
-    category.name = normalize_name(name, max_length=NAME_MAX_LENGTH)
+    normalized = normalize_name(name, max_length=NAME_MAX_LENGTH)
+    if _active_category_name_taken(
+        session, club_id=category.club_id, name=normalized, exclude_id=category.id
+    ):
+        raise InventoryNameConflictError(KIND_CATEGORY)
+    category.name = normalized
     category.updated_by = updated_by
-    session.commit()
+    _commit(session, kind=KIND_CATEGORY)
     session.refresh(category)
     return category
 
@@ -162,19 +188,41 @@ def archive_category(
 # --- units ---------------------------------------------------------------------
 
 
+def _active_unit_name_taken(
+    session: Session,
+    *,
+    club_id: uuid.UUID | None,
+    name: str,
+    exclude_id: uuid.UUID | None = None,
+) -> bool:
+    """B: an active custom unit of the Club or any system unit (always
+    active) with the same name, compared case-insensitively."""
+    conditions = [
+        InventoryUnit.status == ACTIVE,
+        sa.or_(InventoryUnit.is_system.is_(True), InventoryUnit.club_id == club_id),
+        sa.func.lower(InventoryUnit.name) == name.lower(),
+    ]
+    if exclude_id is not None:
+        conditions.append(InventoryUnit.id != exclude_id)
+    return session.execute(sa.select(sa.exists().where(*conditions))).scalar_one()
+
+
 def create_unit(
     session: Session, *, club_id: uuid.UUID, name: str, created_by: uuid.UUID
 ) -> InventoryUnit:
+    normalized = normalize_name(name, max_length=UNIT_NAME_MAX_LENGTH)
+    if _active_unit_name_taken(session, club_id=club_id, name=normalized):
+        raise InventoryNameConflictError(KIND_UNIT)
     unit = InventoryUnit(
         id=uuid.uuid4(),
         club_id=club_id,
-        name=normalize_name(name, max_length=UNIT_NAME_MAX_LENGTH),
+        name=normalized,
         is_system=False,
         status=ACTIVE,
         created_by=created_by,
     )
     session.add(unit)
-    session.commit()
+    _commit(session, kind=KIND_UNIT)
     session.refresh(unit)
     return unit
 
@@ -184,9 +232,12 @@ def update_unit(
 ) -> InventoryUnit:
     ensure_unit_mutable(is_system=unit.is_system)
     ensure_editable(unit.status, kind=KIND_UNIT)
-    unit.name = normalize_name(name, max_length=UNIT_NAME_MAX_LENGTH)
+    normalized = normalize_name(name, max_length=UNIT_NAME_MAX_LENGTH)
+    if _active_unit_name_taken(session, club_id=unit.club_id, name=normalized, exclude_id=unit.id):
+        raise InventoryNameConflictError(KIND_UNIT)
+    unit.name = normalized
     unit.updated_by = updated_by
-    session.commit()
+    _commit(session, kind=KIND_UNIT)
     session.refresh(unit)
     return unit
 

@@ -10,11 +10,16 @@ TH-0121 / Issue #230 (docs/04-domain/inventory.md):
   (self-referencing tree), `inventory_items` (nomenclature): closed
   `active`/`archived` lifecycle with `archived_at` tied to the status
   (CHECK), every FK RESTRICT — no physical deletion. Active-name
-  uniqueness (G15) as partial unique indexes over `lower(name)`.
+  uniqueness (G15, PO decisions A/B) as partial unique indexes over
+  `lower(name)`; the unit index spans system and custom units, so a custom
+  unit cannot reuse a system unit name.
 - `inventory_items` has no quantity/stock/state/location column; the
   current cost is `current_cost_minor` (RUB kopecks, >= 0, nullable).
 - `inventory_movements`: the append-only movement journal (item, closed
-  movement-type vocabulary, creator, time). No movement is created here.
+  movement-type vocabulary incl. `writeoff_reversal`, creator, time).
+  `reverses_movement_id` links a `writeoff_reversal` to its `write_off`
+  (CHECK: set exactly for that type; UNIQUE: one reversal per write-off —
+  PO decision E). No movement is created here.
 - Seeds the four system units `шт`, `м`, `комплект`, `пара` (G11): no
   Club, no creator, permanently active (CHECK).
 
@@ -63,6 +68,7 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index('ix_inventory_categories_club_id_status', 'inventory_categories', ['club_id', 'status'], unique=False)
+    op.create_index('uq_inventory_categories_active_name', 'inventory_categories', ['club_id', sa.text('lower(name)')], unique=True, postgresql_where=sa.text("status = 'active'"))
     op.create_table('inventory_storage_locations',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('club_id', sa.UUID(), nullable=False),
@@ -108,6 +114,7 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index('ix_inventory_units_club_id_status', 'inventory_units', ['club_id', 'status'], unique=False)
+    op.create_index('uq_inventory_units_active_name', 'inventory_units', [sa.text('lower(name)')], unique=True, postgresql_where=sa.text("status = 'active'"))
     op.create_index('uq_inventory_units_system_name', 'inventory_units', [sa.text('lower(name)')], unique=True, postgresql_where=sa.text('is_system'))
     op.create_table('inventory_items',
     sa.Column('id', sa.UUID(), nullable=False),
@@ -142,12 +149,16 @@ def upgrade() -> None:
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('item_id', sa.UUID(), nullable=False),
     sa.Column('movement_type', sa.String(length=32), nullable=False),
+    sa.Column('reverses_movement_id', sa.UUID(), nullable=True),
     sa.Column('created_by', sa.UUID(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.CheckConstraint("movement_type IN ('adjustment','issue','receipt','return','transfer','write_off')", name='ck_inventory_movements_movement_type_valid'),
+    sa.CheckConstraint("(movement_type = 'writeoff_reversal') = (reverses_movement_id IS NOT NULL)", name='ck_inventory_movements_reversal_reference'),
+    sa.CheckConstraint("movement_type IN ('adjustment','issue','receipt','return','transfer','write_off','writeoff_reversal')", name='ck_inventory_movements_movement_type_valid'),
     sa.ForeignKeyConstraint(['created_by'], ['users.id'], ondelete='RESTRICT'),
     sa.ForeignKeyConstraint(['item_id'], ['inventory_items.id'], ondelete='RESTRICT'),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['reverses_movement_id'], ['inventory_movements.id'], ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('reverses_movement_id', name='uq_inventory_movements_reverses_movement_id')
     )
     op.create_index('ix_inventory_movements_item_id_created_at', 'inventory_movements', ['item_id', 'created_at'], unique=False)
     # ### end Alembic commands ###
@@ -179,6 +190,7 @@ def downgrade() -> None:
     op.drop_index('ix_inventory_items_category_id', table_name='inventory_items')
     op.drop_table('inventory_items')
     op.drop_index('uq_inventory_units_system_name', table_name='inventory_units', postgresql_where=sa.text('is_system'))
+    op.drop_index('uq_inventory_units_active_name', table_name='inventory_units', postgresql_where=sa.text("status = 'active'"))
     op.drop_index('ix_inventory_units_club_id_status', table_name='inventory_units')
     op.drop_table('inventory_units')
     op.drop_index('uq_inventory_storage_locations_active_root_name', table_name='inventory_storage_locations', postgresql_where=sa.text("status = 'active' AND parent_id IS NULL"))
@@ -186,6 +198,7 @@ def downgrade() -> None:
     op.drop_index('ix_inventory_storage_locations_parent_id', table_name='inventory_storage_locations')
     op.drop_index('ix_inventory_storage_locations_club_id_status', table_name='inventory_storage_locations')
     op.drop_table('inventory_storage_locations')
+    op.drop_index('uq_inventory_categories_active_name', table_name='inventory_categories', postgresql_where=sa.text("status = 'active'"))
     op.drop_index('ix_inventory_categories_club_id_status', table_name='inventory_categories')
     op.drop_table('inventory_categories')
     # ### end Alembic commands ###

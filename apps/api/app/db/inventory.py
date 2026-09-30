@@ -9,8 +9,11 @@ Canonical source: docs/04-domain/inventory.md.
   `archived_at` is set exactly when `status = 'archived'`.
 - System units (inventory.md §9, G11) have `is_system = true`, no Club and
   no creator; the CHECK below keeps them permanently `active`.
-- Name uniqueness (G15) is a partial unique index over `lower(name)` of
-  *active* rows only, so an archived row never blocks its old name.
+- Name uniqueness (G15, PO decisions A/B) is a partial unique index over
+  `lower(name)` of *active* rows only, so an archived row never blocks its
+  old name. For units the index spans system and custom units together,
+  so a custom unit can never reuse a system unit name (B); TourCRM has a
+  single Club, so this is also the per-Club rule.
 - `inventory_items` deliberately has no quantity/stock/state/location
   column (inventory.md §5 п.4-5, §13): the stock of an item is derived
   from its movements, never edited directly.
@@ -21,6 +24,11 @@ Canonical source: docs/04-domain/inventory.md.
   the slices that implement each movement workflow. Rows are immutable:
   the ORM refuses any UPDATE/DELETE of a loaded movement (see
   `_refuse_movement_mutation`); corrections are compensating movements.
+  A `writeoff_reversal` (PO decision E) references the reversed
+  `write_off` through `reverses_movement_id`: the CHECK ties the column to
+  that type, the unique constraint allows one reversal per write-off, and
+  `_require_reversed_write_off` refuses a reference to any other type.
+  The reversal workflow itself belongs to later slices.
 
 Plain FK columns, no ORM `relationship()` objects — the same shape as
 app.db.news/app.db.groups.
@@ -40,6 +48,7 @@ from app.inventory.vocabulary import (
     CANONICAL_ACCOUNTING_MODES,
     CANONICAL_INVENTORY_STATUSES,
     CANONICAL_MOVEMENT_TYPES,
+    MOVEMENT_WRITE_OFF,
 )
 
 
@@ -109,6 +118,13 @@ class InventoryCategory(Base):
 
     __table_args__ = (
         *_lifecycle_checks("inventory_categories"),
+        sa.Index(
+            "uq_inventory_categories_active_name",
+            "club_id",
+            sa.func.lower(sa.column("name")),
+            unique=True,
+            postgresql_where=sa.text("status = 'active'"),
+        ),
         sa.Index("ix_inventory_categories_club_id_status", "club_id", "status"),
     )
 
@@ -145,6 +161,12 @@ class InventoryUnit(Base):
         sa.CheckConstraint(
             "is_system OR (club_id IS NOT NULL AND created_by IS NOT NULL)",
             name="ck_inventory_units_custom_unit_shape",
+        ),
+        sa.Index(
+            "uq_inventory_units_active_name",
+            sa.func.lower(sa.column("name")),
+            unique=True,
+            postgresql_where=sa.text("status = 'active'"),
         ),
         sa.Index(
             "uq_inventory_units_system_name",
@@ -273,6 +295,11 @@ class InventoryMovement(Base):
         UUID(as_uuid=True), sa.ForeignKey("inventory_items.id", ondelete="RESTRICT"), nullable=False
     )
     movement_type: Mapped[str] = mapped_column(sa.String(32), nullable=False)
+    reverses_movement_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("inventory_movements.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     created_by: Mapped[uuid.UUID] = _user_fk(nullable=False)
     created_at: Mapped[datetime] = _created_at()
 
@@ -280,6 +307,13 @@ class InventoryMovement(Base):
         sa.CheckConstraint(
             f"movement_type IN ({_MOVEMENT_TYPE_VALUES})",
             name="ck_inventory_movements_movement_type_valid",
+        ),
+        sa.CheckConstraint(
+            "(movement_type = 'writeoff_reversal') = (reverses_movement_id IS NOT NULL)",
+            name="ck_inventory_movements_reversal_reference",
+        ),
+        sa.UniqueConstraint(
+            "reverses_movement_id", name="uq_inventory_movements_reverses_movement_id"
         ),
         sa.Index("ix_inventory_movements_item_id_created_at", "item_id", "created_at"),
     )
@@ -293,6 +327,27 @@ class InventoryMovementImmutableError(Exception):
             f"Inventory movement {movement_id} is immutable; record a compensating movement"
         )
         self.movement_id = movement_id
+
+
+class InventoryReversalTargetError(Exception):
+    """A `writeoff_reversal` references something other than a `write_off`."""
+
+    def __init__(self, movement_id: uuid.UUID) -> None:
+        super().__init__(f"Inventory movement {movement_id} is not a write-off")
+        self.movement_id = movement_id
+
+
+@event.listens_for(InventoryMovement, "before_insert")
+def _require_reversed_write_off(_mapper: Any, connection: Any, target: InventoryMovement) -> None:
+    if target.reverses_movement_id is None:
+        return
+    reversed_type = connection.execute(
+        sa.select(InventoryMovement.movement_type).where(
+            InventoryMovement.id == target.reverses_movement_id
+        )
+    ).scalar_one_or_none()
+    if reversed_type is not None and reversed_type != MOVEMENT_WRITE_OFF:
+        raise InventoryReversalTargetError(target.reverses_movement_id)
 
 
 @event.listens_for(InventoryMovement, "before_update")
@@ -310,4 +365,5 @@ __all__ = [
     "InventoryItem",
     "InventoryMovement",
     "InventoryMovementImmutableError",
+    "InventoryReversalTargetError",
 ]

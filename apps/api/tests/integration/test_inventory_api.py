@@ -124,7 +124,8 @@ def _system_unit(client: TestClient, name: str) -> dict:
     return next(u for u in response.json()["items"] if u["is_system"] and u["name"] == name)
 
 
-def _category(client: TestClient, name: str = "Снаряжение") -> dict:
+def _category(client: TestClient, name: str | None = None) -> dict:
+    name = name or f"Снаряжение {uuid.uuid4().hex[:6]}"
     return _created(_post(client, _CATEGORIES, {"name": name}))
 
 
@@ -698,3 +699,52 @@ def test_location_can_be_reparented_and_made_root(client, world) -> None:
     assert root.json()["parent_id"] is None
     null_name = _patch(client, f"{_LOCATIONS}/{rack['id']}", {"name": None})
     assert null_name.status_code == 422
+
+
+# --- B: category / custom-unit name uniqueness ------------------------------------
+
+
+def test_category_name_unique_among_active_case_insensitive(client, world) -> None:
+    _as(world.admin)
+    first = _category(client, "Палатки")
+    duplicate = _post(client, _CATEGORIES, {"name": "  ПАЛАТКИ "})
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "name_conflict"
+
+    other = _category(client, "Каски")
+    rename = _patch(client, f"{_CATEGORIES}/{other['id']}", {"name": "палатки"})
+    assert rename.status_code == 409
+    # Renaming a category to its own name (different case) is not a conflict.
+    same = _patch(client, f"{_CATEGORIES}/{first['id']}", {"name": "ПАЛАТКИ"})
+    assert same.status_code == 200
+
+    # An archived category does not occupy its name.
+    assert _post(client, f"{_CATEGORIES}/{first['id']}/archive").status_code == 200
+    assert _post(client, _CATEGORIES, {"name": "Палатки"}).status_code == 201
+
+
+def test_custom_unit_name_unique_among_active_case_insensitive(client, world) -> None:
+    _as(world.admin)
+    first = _created(_post(client, _UNITS, {"name": "рулон"}))
+    duplicate = _post(client, _UNITS, {"name": "РУЛОН"})
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "name_conflict"
+
+    other = _created(_post(client, _UNITS, {"name": "мешок"}))
+    rename = _patch(client, f"{_UNITS}/{other['id']}", {"name": "Рулон"})
+    assert rename.status_code == 409
+
+    assert _post(client, f"{_UNITS}/{first['id']}/archive").status_code == 200
+    assert _post(client, _UNITS, {"name": "рулон"}).status_code == 201
+
+
+@pytest.mark.parametrize("name", ["шт", "ШТ", " М ", "Комплект", "ПАРА"])
+def test_custom_unit_cannot_take_a_system_unit_name(client, world, name) -> None:
+    _as(world.admin)
+    response = _post(client, _UNITS, {"name": name})
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "name_conflict"
+
+    custom = _created(_post(client, _UNITS, {"name": "упаковка"}))
+    rename = _patch(client, f"{_UNITS}/{custom['id']}", {"name": name})
+    assert rename.status_code == 409

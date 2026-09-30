@@ -20,13 +20,15 @@ CANONICAL_ACCOUNTING_MODES: frozenset[str] = frozenset(
     {ACCOUNTING_MODE_QUANTITY, ACCOUNTING_MODE_INSTANCE}
 )
 
-# inventory.md §13 п.2: the minimal canonical movement types.
+# inventory.md §13 п.2: the canonical movement types (Foundation set).
 MOVEMENT_RECEIPT = "receipt"
 MOVEMENT_TRANSFER = "transfer"
 MOVEMENT_ISSUE = "issue"
 MOVEMENT_RETURN = "return"
 MOVEMENT_WRITE_OFF = "write_off"
 MOVEMENT_ADJUSTMENT = "adjustment"
+# PO decision E: the compensating movement of an erroneous write-off.
+MOVEMENT_WRITEOFF_REVERSAL = "writeoff_reversal"
 
 CANONICAL_MOVEMENT_TYPES: frozenset[str] = frozenset(
     {
@@ -36,6 +38,7 @@ CANONICAL_MOVEMENT_TYPES: frozenset[str] = frozenset(
         MOVEMENT_RETURN,
         MOVEMENT_WRITE_OFF,
         MOVEMENT_ADJUSTMENT,
+        MOVEMENT_WRITEOFF_REVERSAL,
     }
 )
 
@@ -55,6 +58,7 @@ __all__ = [
     "MOVEMENT_RETURN",
     "MOVEMENT_WRITE_OFF",
     "MOVEMENT_ADJUSTMENT",
+    "MOVEMENT_WRITEOFF_REVERSAL",
     "CANONICAL_MOVEMENT_TYPES",
     "SYSTEM_UNIT_NAMES",
 ]

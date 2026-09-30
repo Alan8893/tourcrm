@@ -15,6 +15,7 @@ from app.db.inventory import (
     InventoryItem,
     InventoryMovement,
     InventoryMovementImmutableError,
+    InventoryReversalTargetError,
     InventoryStorageLocation,
     InventoryUnit,
 )
@@ -51,7 +52,12 @@ def _system_unit_id(session, name: str) -> uuid.UUID:
 
 
 def _item(session, club_id: uuid.UUID, user_id: uuid.UUID, **overrides) -> InventoryItem:
-    category = InventoryCategory(club_id=club_id, name="Кат", status="active", created_by=user_id)
+    category = InventoryCategory(
+        club_id=club_id,
+        name=f"Кат {uuid.uuid4().hex[:6]}",
+        status="active",
+        created_by=user_id,
+    )
     session.add(category)
     session.flush()
     values = {
@@ -208,3 +214,136 @@ def test_has_movements_reflects_the_journal(owner) -> None:
         session.add(InventoryMovement(item_id=item.id, movement_type="receipt", created_by=user_id))
         session.flush()
         assert inventory_service.has_movements(session, item.id) is True
+
+
+# --- B: category / unit name indexes ----------------------------------------------
+
+
+def test_category_active_name_unique_index(owner) -> None:
+    club_id, user_id = owner
+    with session_scope() as session:
+        session.add(
+            InventoryCategory(club_id=club_id, name="Каски", status="active", created_by=user_id)
+        )
+        session.flush()
+        session.add(
+            InventoryCategory(
+                club_id=club_id,
+                name="каски",
+                status="archived",
+                archived_at=sa.func.now(),
+                created_by=user_id,
+            )
+        )
+        session.flush()
+        session.add(
+            InventoryCategory(club_id=club_id, name="КАСКИ", status="active", created_by=user_id)
+        )
+        with pytest.raises(IntegrityError):
+            session.flush()
+
+
+@pytest.mark.parametrize("name", ["рулон", "РУЛОН", "шт"])
+def test_unit_active_name_unique_index_covers_system_units(owner, name) -> None:
+    club_id, user_id = owner
+    with session_scope() as session:
+        session.add(
+            InventoryUnit(
+                club_id=club_id, name="Рулон", is_system=False, status="active", created_by=user_id
+            )
+        )
+        session.flush()
+        session.add(
+            InventoryUnit(
+                club_id=club_id, name=name, is_system=False, status="active", created_by=user_id
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.flush()
+
+
+# --- E: write-off reversal foundation ---------------------------------------------
+
+
+def _movement(session, item_id, user_id, movement_type, reverses=None) -> InventoryMovement:
+    movement = InventoryMovement(
+        item_id=item_id,
+        movement_type=movement_type,
+        reverses_movement_id=reverses,
+        created_by=user_id,
+    )
+    session.add(movement)
+    session.flush()
+    return movement
+
+
+def test_writeoff_reversal_references_the_write_off_once(owner) -> None:
+    club_id, user_id = owner
+    with session_scope() as session:
+        item = _item(session, club_id, user_id)
+        write_off = _movement(session, item.id, user_id, "write_off")
+        reversal = _movement(session, item.id, user_id, "writeoff_reversal", write_off.id)
+        assert reversal.reverses_movement_id == write_off.id
+
+        session.add(
+            InventoryMovement(
+                item_id=item.id,
+                movement_type="writeoff_reversal",
+                reverses_movement_id=write_off.id,
+                created_by=user_id,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.flush()
+
+
+def test_writeoff_reversal_requires_a_reference(owner) -> None:
+    club_id, user_id = owner
+    with session_scope() as session:
+        item = _item(session, club_id, user_id)
+        session.add(
+            InventoryMovement(
+                item_id=item.id, movement_type="writeoff_reversal", created_by=user_id
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.flush()
+
+
+def test_only_a_writeoff_reversal_may_carry_a_reference(owner) -> None:
+    club_id, user_id = owner
+    with session_scope() as session:
+        item = _item(session, club_id, user_id)
+        write_off = _movement(session, item.id, user_id, "write_off")
+        session.add(
+            InventoryMovement(
+                item_id=item.id,
+                movement_type="adjustment",
+                reverses_movement_id=write_off.id,
+                created_by=user_id,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.flush()
+
+
+@pytest.mark.parametrize("target_type", ["receipt", "adjustment", "writeoff_reversal"])
+def test_writeoff_reversal_may_only_reverse_a_write_off(owner, target_type) -> None:
+    club_id, user_id = owner
+    with session_scope() as session:
+        item = _item(session, club_id, user_id)
+        if target_type == "writeoff_reversal":
+            write_off = _movement(session, item.id, user_id, "write_off")
+            target = _movement(session, item.id, user_id, "writeoff_reversal", write_off.id)
+        else:
+            target = _movement(session, item.id, user_id, target_type)
+        session.add(
+            InventoryMovement(
+                item_id=item.id,
+                movement_type="writeoff_reversal",
+                reverses_movement_id=target.id,
+                created_by=user_id,
+            )
+        )
+        with pytest.raises(InventoryReversalTargetError):
+            session.flush()
