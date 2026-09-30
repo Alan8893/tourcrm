@@ -416,6 +416,18 @@ Slice 2 — экземпляры (implemented):
 - `GET /inventory/instances/{instance_id}/movements` — хронологическая история экземпляра
 - `POST /inventory/movements/{movement_id}/reverse` — отмена списания экземпляра; необязательный `storage_location_id`, обязателен только если исходное место архивировано
 
+Slice 3 — quantity-остатки и движения (implemented):
+
+- `GET /inventory/stock` — ненулевые остатки quantity-номенклатуры по местам; фильтры `item_id`, `storage_location_id`, `page`/`page_size`
+- `GET /inventory/items/{item_id}/stock` — ненулевые остатки одной quantity-номенклатуры по местам
+- `GET /inventory/items/{item_id}/movements` — хронологическая история номенклатуры; фильтр `storage_location_id` (движения из места или в место), `page`/`page_size`
+- `POST /inventory/items/{item_id}/receipts` — `storage_location_id`, `quantity`, необязательные `unit_cost_minor` (за единицу), `comment`
+- `POST /inventory/items/{item_id}/transfers` — `from_location_id`, `to_location_id`, `quantity`, необязательный `comment`
+- `POST /inventory/items/{item_id}/write-offs` — `storage_location_id`, `quantity`, обязательный `comment` (причина)
+- `POST /inventory/items/{item_id}/write-offs/{movement_id}/reverse` — полная отмена quantity-списания; необязательный `storage_location_id`, обязателен только если исходное место архивировано
+
+Операции возвращают созданное движение (`201`). Прямого изменения остатка (`PUT`/`PATCH`/`DELETE`) нет.
+
 ## 20. Finance
 
 - `GET /financial-accounts`

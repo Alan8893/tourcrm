@@ -39,8 +39,13 @@ Canonical source: docs/04-domain/inventory.md.
   (`_refuse_instance_identity_change`).
 - Movement columns added with Slice 2: `instance_id`,
   `from_location_id`/`to_location_id`, `unit_cost_minor` (receipt cost,
-  §11 п.6) and `comment` (the write-off reason, Q8). `quantity` arrives
-  with the quantity-movement slice.
+  §11 п.6) and `comment` (the write-off reason, Q8).
+- Slice 3 (quantity movements): `quantity` is set exactly on movements
+  without an instance (CHECK) and is a positive integer. The current stock
+  of a quantity item per storage location is the projection
+  `inventory_item_stocks`, changed only by app.inventory.quantities in the
+  same transaction as the movement that causes the change; the journal
+  stays the historical source of truth.
 
 Plain FK columns, no ORM `relationship()` objects — the same shape as
 app.db.news/app.db.groups.
@@ -405,6 +410,7 @@ class InventoryMovement(Base):
         sa.ForeignKey("inventory_storage_locations.id", ondelete="RESTRICT"),
         nullable=True,
     )
+    quantity: Mapped[Optional[int]] = mapped_column(sa.Integer, nullable=True)
     unit_cost_minor: Mapped[Optional[int]] = mapped_column(sa.BigInteger, nullable=True)
     comment: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
     reverses_movement_id: Mapped[Optional[uuid.UUID]] = mapped_column(
@@ -433,11 +439,47 @@ class InventoryMovement(Base):
             "AND unit_cost_minor >= 0)",
             name="ck_inventory_movements_unit_cost_on_receipt",
         ),
+        sa.CheckConstraint(
+            "(instance_id IS NULL) = (quantity IS NOT NULL)",
+            name="ck_inventory_movements_quantity_matches_instance",
+        ),
+        sa.CheckConstraint(
+            "quantity IS NULL OR quantity > 0",
+            name="ck_inventory_movements_quantity_positive",
+        ),
         sa.UniqueConstraint(
             "reverses_movement_id", name="uq_inventory_movements_reverses_movement_id"
         ),
         sa.Index("ix_inventory_movements_item_id_created_at", "item_id", "created_at"),
         sa.Index("ix_inventory_movements_instance_id_created_at", "instance_id", "created_at"),
+    )
+
+
+class InventoryItemStock(Base):
+    """Current stock of a quantity item in one storage location (Slice 3) —
+    a projection of the movement journal, never edited directly."""
+
+    __tablename__ = "inventory_item_stocks"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("inventory_items.id", ondelete="RESTRICT"), nullable=False
+    )
+    storage_location_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("inventory_storage_locations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    quantity: Mapped[int] = mapped_column(sa.Integer, nullable=False)
+
+    __table_args__ = (
+        sa.CheckConstraint("quantity >= 0", name="ck_inventory_item_stocks_quantity_non_negative"),
+        sa.UniqueConstraint(
+            "item_id",
+            "storage_location_id",
+            name="uq_inventory_item_stocks_item_id_storage_location_id",
+        ),
+        sa.Index("ix_inventory_item_stocks_storage_location_id", "storage_location_id"),
     )
 
 
@@ -490,6 +532,7 @@ __all__ = [
     "InventoryItem",
     "InventoryInstance",
     "InventoryInstanceIdentityError",
+    "InventoryItemStock",
     "InventoryMovement",
     "InventoryMovementImmutableError",
     "InventoryReversalTargetError",

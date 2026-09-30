@@ -81,7 +81,9 @@ def _committed_item_with_movement(
 ) -> tuple[uuid.UUID, uuid.UUID]:
     with session_scope() as session:
         item = _item(session, club_id, user_id)
-        movement = InventoryMovement(item_id=item.id, movement_type="receipt", created_by=user_id)
+        movement = InventoryMovement(
+            quantity=1, item_id=item.id, movement_type="receipt", created_by=user_id
+        )
         session.add(movement)
         session.commit()
         return item.id, movement.id
@@ -168,10 +170,16 @@ def test_movement_types_are_the_canonical_set(owner) -> None:
         item = _item(session, club_id, user_id)
         for movement_type in ("receipt", "transfer", "issue", "return", "write_off", "adjustment"):
             session.add(
-                InventoryMovement(item_id=item.id, movement_type=movement_type, created_by=user_id)
+                InventoryMovement(
+                    quantity=1, item_id=item.id, movement_type=movement_type, created_by=user_id
+                )
             )
         session.flush()
-        session.add(InventoryMovement(item_id=item.id, movement_type="repair", created_by=user_id))
+        session.add(
+            InventoryMovement(
+                quantity=1, item_id=item.id, movement_type="repair", created_by=user_id
+            )
+        )
         with pytest.raises(IntegrityError):
             session.flush()
 
@@ -211,7 +219,11 @@ def test_has_movements_reflects_the_journal(owner) -> None:
     with session_scope() as session:
         item = _item(session, club_id, user_id)
         assert inventory_service.has_movements(session, item.id) is False
-        session.add(InventoryMovement(item_id=item.id, movement_type="receipt", created_by=user_id))
+        session.add(
+            InventoryMovement(
+                quantity=1, item_id=item.id, movement_type="receipt", created_by=user_id
+            )
+        )
         session.flush()
         assert inventory_service.has_movements(session, item.id) is True
 
@@ -267,6 +279,7 @@ def test_unit_active_name_unique_index_covers_system_units(owner, name) -> None:
 
 def _movement(session, item_id, user_id, movement_type, reverses=None) -> InventoryMovement:
     movement = InventoryMovement(
+        quantity=1,
         item_id=item_id,
         movement_type=movement_type,
         reverses_movement_id=reverses,
@@ -287,6 +300,7 @@ def test_writeoff_reversal_references_the_write_off_once(owner) -> None:
 
         session.add(
             InventoryMovement(
+                quantity=1,
                 item_id=item.id,
                 movement_type="writeoff_reversal",
                 reverses_movement_id=write_off.id,
@@ -303,7 +317,7 @@ def test_writeoff_reversal_requires_a_reference(owner) -> None:
         item = _item(session, club_id, user_id)
         session.add(
             InventoryMovement(
-                item_id=item.id, movement_type="writeoff_reversal", created_by=user_id
+                quantity=1, item_id=item.id, movement_type="writeoff_reversal", created_by=user_id
             )
         )
         with pytest.raises(IntegrityError):
@@ -317,6 +331,7 @@ def test_only_a_writeoff_reversal_may_carry_a_reference(owner) -> None:
         write_off = _movement(session, item.id, user_id, "write_off")
         session.add(
             InventoryMovement(
+                quantity=1,
                 item_id=item.id,
                 movement_type="adjustment",
                 reverses_movement_id=write_off.id,
@@ -339,6 +354,7 @@ def test_writeoff_reversal_may_only_reverse_a_write_off(owner, target_type) -> N
             target = _movement(session, item.id, user_id, target_type)
         session.add(
             InventoryMovement(
+                quantity=1,
                 item_id=item.id,
                 movement_type="writeoff_reversal",
                 reverses_movement_id=target.id,

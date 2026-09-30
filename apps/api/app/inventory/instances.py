@@ -42,7 +42,6 @@ from app.db.inventory import (
     InventoryInstance,
     InventoryItem,
     InventoryMovement,
-    InventoryStorageLocation,
 )
 from app.inventory.lifecycle import (
     InvalidInventoryDataError,
@@ -59,10 +58,9 @@ from app.inventory.lifecycle import (
     normalize_write_off_reason,
     validate_cost_minor,
 )
+from app.inventory.locking import selectable_location, share_locked_item, share_locked_location
 from app.inventory.service import (
     KIND_ITEM,
-    KIND_LOCATION,
-    InventoryReferenceNotFoundError,
 )
 from app.inventory.vocabulary import (
     ACTIVE,
@@ -86,46 +84,6 @@ class InventoryMovementNotFoundError(Exception):
     def __init__(self, movement_id: uuid.UUID) -> None:
         super().__init__(f"Inventory movement {movement_id} does not exist")
         self.movement_id = movement_id
-
-
-# --- locking helpers -------------------------------------------------------------
-
-
-def _share_locked_item(
-    session: Session, *, club_id: uuid.UUID, item_id: uuid.UUID
-) -> InventoryItem:
-    item = session.execute(
-        sa.select(InventoryItem)
-        .where(InventoryItem.id == item_id, InventoryItem.club_id == club_id)
-        .with_for_update(read=True)
-    ).scalar_one_or_none()
-    if item is None:
-        raise InventoryReferenceNotFoundError(KIND_ITEM, item_id)
-    return item
-
-
-def _share_locked_location(
-    session: Session, *, club_id: uuid.UUID, location_id: uuid.UUID
-) -> InventoryStorageLocation:
-    location = session.execute(
-        sa.select(InventoryStorageLocation)
-        .where(
-            InventoryStorageLocation.id == location_id,
-            InventoryStorageLocation.club_id == club_id,
-        )
-        .with_for_update(read=True)
-    ).scalar_one_or_none()
-    if location is None:
-        raise InventoryReferenceNotFoundError(KIND_LOCATION, location_id)
-    return location
-
-
-def _selectable_location(
-    session: Session, *, club_id: uuid.UUID, location_id: uuid.UUID
-) -> InventoryStorageLocation:
-    location = _share_locked_location(session, club_id=club_id, location_id=location_id)
-    ensure_selectable(location.status, kind=KIND_LOCATION)
-    return location
 
 
 def _next_inventory_number(session: Session) -> str:
@@ -197,10 +155,10 @@ def receive_instance(
     text = normalize_optional_text(description, max_length=TEXT_MAX_LENGTH, field="description")
     cost = validate_cost_minor(unit_cost_minor)
 
-    item = _share_locked_item(session, club_id=club_id, item_id=item_id)
+    item = share_locked_item(session, club_id=club_id, item_id=item_id)
     ensure_selectable(item.status, kind=KIND_ITEM)
     ensure_instance_mode(item.accounting_mode)
-    location = _selectable_location(session, club_id=club_id, location_id=storage_location_id)
+    location = selectable_location(session, club_id=club_id, location_id=storage_location_id)
 
     instance = InventoryInstance(
         id=uuid.uuid4(),
@@ -281,7 +239,7 @@ def transfer_instance(
     next_instance_state(instance.state, MOVEMENT_TRANSFER)
     if to_location_id == instance.storage_location_id:
         raise InvalidInventoryDataError("The instance is already in this storage location")
-    target = _selectable_location(
+    target = selectable_location(
         session, club_id=_club_id_of(session, instance), location_id=to_location_id
     )
     session.add(
@@ -393,7 +351,7 @@ def reverse_write_off(
     new_state = next_instance_state(instance.state, MOVEMENT_WRITEOFF_REVERSAL)
 
     original = (
-        _share_locked_location(session, club_id=club_id, location_id=write_off.from_location_id)
+        share_locked_location(session, club_id=club_id, location_id=write_off.from_location_id)
         if write_off.from_location_id is not None
         else None
     )
@@ -404,7 +362,7 @@ def reverse_write_off(
     else:
         if storage_location_id is None:
             raise ReversalLocationRequiredError()
-        target = _selectable_location(session, club_id=club_id, location_id=storage_location_id)
+        target = selectable_location(session, club_id=club_id, location_id=storage_location_id)
 
     session.add(
         _movement(
