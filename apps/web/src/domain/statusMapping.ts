@@ -33,6 +33,32 @@ export function groupStatusLabel(status: GroupStatus): string {
   }
 }
 
+/** News lifecycle (TH-0120 / docs/04-ux/news.md §5). Shown to the
+ * Administrator only — ordinary readers only ever receive `published`. */
+export type NewsStatus = "draft" | "published" | "archived";
+
+export function newsStatusIcon(status: NewsStatus): StatusIconId {
+  switch (status) {
+    case "draft":
+      return "status.planned";
+    case "published":
+      return "status.success";
+    case "archived":
+      return "status.archived";
+  }
+}
+
+export function newsStatusLabel(status: NewsStatus): string {
+  switch (status) {
+    case "draft":
+      return "Черновик";
+    case "published":
+      return "Опубликована";
+    case "archived":
+      return "В архиве";
+  }
+}
+
 /** `User.status` (TH-0113 / ADR-0038) — the same canonical account-
  * lifecycle vocabulary auth-and-authorization.md §4 documents; never a
  * new invented value. */

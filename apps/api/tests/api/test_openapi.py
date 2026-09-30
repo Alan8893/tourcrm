@@ -168,6 +168,17 @@ _MEMBERSHIP_EXPORT_PATHS = {
     "/api/v1/memberships/exports/filters",
 }
 
+# TH-0120 / Issue #227 (docs/04-ux/news.md): News / Announcements. No
+# `DELETE /api/v1/news/{news_id}` — deletion is the archive action and the
+# News record is never physically removed.
+_NEWS_PATHS = {
+    "/api/v1/news",
+    "/api/v1/news/{news_id}",
+    "/api/v1/news/{news_id}/publish",
+    "/api/v1/news/{news_id}/archive",
+    "/api/v1/news/{news_id}/image",
+}
+
 _GUARDIAN_RELATIONSHIP_PATHS = {
     "/api/v1/persons/{person_id}/guardian-relationships",
     "/api/v1/guardian-relationships/{relationship_id}",
@@ -254,9 +265,30 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _ROLE_ASSIGNMENT_PATHS
         | _EVENT_RECURRENCE_PATHS
         | _DOCUMENT_PATHS
+        | _NEWS_PATHS
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()
+
+
+def test_news_endpoints_expose_only_their_canonical_methods(real_client) -> None:
+    """TH-0120 / Issue #227: no physical DELETE of a News; lifecycle
+    changes only through the publish/archive actions (no request body);
+    the image is a multipart sub-resource like the profile photo."""
+    schema = real_client.get("/openapi.json").json()
+    paths = schema["paths"]
+
+    assert set(paths["/api/v1/news"]) == {"get", "post"}
+    assert set(paths["/api/v1/news/{news_id}"]) == {"get", "patch"}
+    assert set(paths["/api/v1/news/{news_id}/publish"]) == {"post"}
+    assert set(paths["/api/v1/news/{news_id}/archive"]) == {"post"}
+    assert set(paths["/api/v1/news/{news_id}/image"]) == {"get", "put", "delete"}
+    for action in ("publish", "archive"):
+        assert "requestBody" not in paths[f"/api/v1/news/{{news_id}}/{action}"]["post"]
+    image_body = paths["/api/v1/news/{news_id}/image"]["put"]["requestBody"]
+    assert set(image_body["content"]) == {"multipart/form-data"}
+    update_schema = schema["components"]["schemas"]["NewsUpdateRequest"]
+    assert "status" not in update_schema["properties"]
 
 
 def test_membership_import_endpoints_expose_only_their_canonical_methods(real_client) -> None:

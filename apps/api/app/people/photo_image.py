@@ -49,6 +49,25 @@ def normalize_profile_photo(content: bytes) -> bytes:
     the backend does not trust that) is reduced to its centered square —
     a deterministic normalization, not an automatic composition choice.
     """
+    rgb = decode_uploaded_image(content)
+    square = ImageOps.fit(
+        rgb,
+        (PHOTO_OUTPUT_SIZE, PHOTO_OUTPUT_SIZE),
+        method=Image.Resampling.LANCZOS,
+        centering=(0.5, 0.5),
+    )
+    return encode_webp(square)
+
+
+def decode_uploaded_image(content: bytes) -> Image.Image:
+    """Validate and decode an uploaded JPEG/PNG/WebP from its actual
+    content into an EXIF-orientation-normalized RGB image. Raises
+    `PhotoTooLargeError`/`InvalidPhotoError`.
+
+    Shared by every image upload that is stored through `FileStorage`
+    (profile photo; News image, app.news.image) so the allowlist,
+    size ceiling and decompression-bomb protection exist exactly once.
+    """
     if len(content) > MAX_PHOTO_UPLOAD_BYTES:
         raise PhotoTooLargeError()
     if not content:
@@ -70,7 +89,7 @@ def normalize_profile_photo(content: bytes) -> bytes:
                 image.seek(0)
                 image.load()
                 oriented = ImageOps.exif_transpose(image)
-                rgb = _flatten_to_rgb(oriented)
+                return _flatten_to_rgb(oriented)
     except InvalidPhotoError:
         raise
     except (
@@ -83,16 +102,12 @@ def normalize_profile_photo(content: bytes) -> bytes:
     ) as exc:
         raise InvalidPhotoError("Image content could not be decoded") from exc
 
-    square = ImageOps.fit(
-        rgb,
-        (PHOTO_OUTPUT_SIZE, PHOTO_OUTPUT_SIZE),
-        method=Image.Resampling.LANCZOS,
-        centering=(0.5, 0.5),
-    )
+
+def encode_webp(image: Image.Image) -> bytes:
     output = io.BytesIO()
     # No `exif=`/`icc_profile=` passed: the stored image carries no source
     # metadata (EXIF/GPS never survives normalization).
-    square.save(output, format="WEBP", quality=_WEBP_QUALITY)
+    image.save(output, format="WEBP", quality=_WEBP_QUALITY)
     return output.getvalue()
 
 
@@ -115,4 +130,6 @@ __all__ = [
     "InvalidPhotoError",
     "PhotoTooLargeError",
     "normalize_profile_photo",
+    "decode_uploaded_image",
+    "encode_webp",
 ]

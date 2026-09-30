@@ -204,6 +204,25 @@ export function EventsPage() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [detailItem, setDetailItem] = useState<CalendarItem | null>(null);
+
+  // TH-0120 / Issue #227: a linked Event opened from News arrives as
+  // `?date=<its day>&event=<event id>` — the calendar lands on that day
+  // (existing `date` URL state) and the Event's detail opens once it is
+  // among the loaded, backend-authorized calendar items. Nothing opens
+  // for an id the calendar does not return.
+  const [searchParams] = useSearchParams();
+  const deepLinkEventId = searchParams.get("event");
+  const [openedDeepLinkId, setOpenedDeepLinkId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!deepLinkEventId || openedDeepLinkId === deepLinkEventId) return;
+    const match = calendarQuery.data?.find(
+      (item) => item.kind === "event" && item.id === deepLinkEventId,
+    );
+    if (match) {
+      setDetailItem(match);
+      setOpenedDeepLinkId(deepLinkEventId);
+    }
+  }, [deepLinkEventId, openedDeepLinkId, calendarQuery.data]);
   const [editingItem, setEditingItem] = useState<CalendarItem | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   // The picker dialog knows a selected instructor's name at the moment it

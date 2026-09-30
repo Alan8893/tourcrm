@@ -18,6 +18,10 @@ import { ReportsPage } from "./pages/ReportsPage";
 import { ExportPage } from "./pages/ExportPage";
 import { ImportPage } from "./pages/ImportPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { NewsListPage } from "./pages/NewsListPage";
+import { NewsDetailPage } from "./pages/NewsDetailPage";
+import { NewsManagePage } from "./pages/NewsManagePage";
+import { NewsFormPage } from "./pages/NewsFormPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 
 const queryClient = new QueryClient({
@@ -70,6 +74,17 @@ export function App() {
                   <Route path="reports/export" element={<ExportPage />} />
                 </Route>
               </Route>
+              {/* TH-0120 / Issue #227: News is reachable from Home («Все
+                  новости») for all four roles — not a navigation section,
+                  so no SectionGuard. Management is a contextual,
+                  Administrator-only page (UX guard; backend authoritative). */}
+              <Route path="news" element={<NewsListPage />} />
+              <Route element={<AdministratorGuard />}>
+                <Route path="news/manage" element={<NewsManagePage />} />
+                <Route path="news/manage/new" element={<NewsFormPage />} />
+                <Route path="news/manage/:newsId/edit" element={<NewsFormPage />} />
+              </Route>
+              <Route path="news/:newsId" element={<NewsDetailPage />} />
               <Route element={<SectionGuard section="settings" />}>
                 <Route path="settings" element={<SettingsPage />} />
               </Route>
