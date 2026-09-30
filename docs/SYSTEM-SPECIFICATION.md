@@ -133,6 +133,8 @@ Financial records are auditable and must not be silently overwritten.
 
 ## 12. Equipment
 
+> **Superseded** by `docs/04-domain/inventory.md` (Issue #230 / TH-0121): склад — Administrator-only домен клубного имущества с номенклатурой (режимы `quantity`/`instance`) и неизменяемым журналом движений. Текст ниже — исторический.
+
 Equipment records contain inventory identity, state, storage location, lifecycle status, and acquisition metadata where applicable.
 
 Issue/return records preserve history and link equipment use to people and events. Current inventory state must be derivable from authoritative issue/return operations.

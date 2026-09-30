@@ -42,7 +42,7 @@ LAN deployment:
 - `/routes`
 - `/achievements`
 - `/documents`
-- `/equipment`
+- `/inventory` (склад; `docs/04-domain/inventory.md`)
 - `/payments`
 
 В URL использовать lowercase kebab-case только для многословных ресурсов, если ресурс действительно является самостоятельным REST resource.
