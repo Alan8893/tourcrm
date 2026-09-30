@@ -28,68 +28,116 @@ Import и Export не являются самостоятельными глоб
 
 Новый пункт `Экспорт`, `Импорт` или `Импорт / Экспорт` в глобальную navigation не добавляется.
 
-Для Administrator операции работы с массовыми данными участников логически относятся к разделу **Отчёты** и должны быть доступны из его рабочего контекста.
+### 3.1 Import → Люди
 
-Таким образом, `Отчёты` является основным navigation entry point для административных операций, связанных с подготовкой выгрузок участников.
+**Основной entry point для Participant Import — раздел `Люди`.**
 
-## 4. Contextual actions
+Логика: Import изменяет состав людей и membership-данные системы, поэтому пользовательский смысл операции относится к управлению людьми, а не к отчётности.
 
-Помимо основного entry point через `Отчёты`, Import / Export должен быть доступен как contextual action там, где пользователь уже находится в соответствующем доменном контексте.
+В разделе `Люди` Administrator получает действие/подраздел `Импорт`.
 
-### 4.1 Group context
+Целевой сценарий:
+
+`Люди → Импорт → upload → preview → approve → apply → report`
+
+### 3.2 Export → Отчёты
+
+**Основной entry point для Participant Export — раздел `Отчёты`.**
+
+Export рассматривается как **master-модуль формирования выгрузки**, а не как одна фиксированная операция «скачать участников».
+
+Целевой сценарий:
+
+`Отчёты → Экспорт → выбор датасета → выбор полей → фильтры → формат → экспорт`
+
+## 4. Export master module
+
+Export UI должен быть универсальным мастером, который позволяет Administrator сформировать нужный набор данных под конкретную задачу.
+
+### 4.1 Dataset / context
+
+Administrator сначала выбирает, **что именно выгружается**. В текущем backend contract поддерживаются соответствующие canonical contexts, включая:
+
+- club;
+- group;
+- event;
+- group + event.
+
+Frontend не должен самостоятельно рассчитывать dataset. Контекст и ограничения передаются в backend, который является authoritative.
+
+### 4.2 Fields
+
+После выбора dataset Administrator выбирает необходимые поля через **multi-select**.
+
+Набор доступных полей приходит с backend через:
+
+`GET /api/v1/memberships/exports/fields`
+
+Frontend не создаёт второй независимый справочник разрешённых полей.
+
+Причина: разные задачи требуют разного состава данных. Например:
+
+- заявка/список для МЧС может требовать ФИО, дату рождения, телефоны и представителей;
+- список для организаторов мероприятия может требовать другой набор;
+- рабочий список инструктора может требовать только операционно необходимые поля.
+
+### 4.3 Filters
+
+После выбора dataset Administrator задаёт доступные для него фильтры, например:
+
+- группа;
+- событие;
+- статус членства;
+- статус участия.
+
+Состав и допустимые комбинации фильтров определяются backend contract.
+
+### 4.4 Output format
+
+Administrator выбирает:
+
+- XLSX — рабочая/редактируемая выгрузка;
+- PDF — готовая к распространению/печати выгрузка;
+- Print — печатное представление.
+
+Все форматы должны использовать один и тот же выбранный dataset и один набор выбранных полей.
+
+### 4.5 Future extension
+
+В дальнейшем мастер может получить сохранённые шаблоны наборов полей и фильтров. Это **не входит в текущий UI slice** и остаётся technical debt `#217`.
+
+## 5. Contextual actions
+
+Помимо основных entry points через `Люди` и `Отчёты`, операции могут быть доступны как contextual action там, где пользователь уже находится в соответствующем доменном контексте.
+
+### 5.1 Group context
 
 В контексте конкретной группы Administrator может выполнить:
 
 - Export участников группы;
-- Import участников в группу — после появления соответствующего backend import contract.
+- Import участников в группу — **только после отдельного backend/domain contract**, так как текущий Participant Import MVP не создаёт GroupMembership.
 
-Context передаётся в backend как `group` или другой соответствующий canonical context; frontend не пересчитывает dataset самостоятельно.
-
-### 4.2 Event context
+### 5.2 Event context
 
 В контексте конкретного события Administrator может выполнить:
 
 - Export участников события;
 - Export участников группы в контексте события, если это поддержано backend contract;
-- Import в событие только после отдельного утверждения соответствующего domain contract.
+- Import в событие — только после отдельного утверждения соответствующего domain contract.
 
 Frontend не должен самостоятельно определять membership/participation intersection.
 
-### 4.3 Club-level context
+### 5.3 People context
 
-Для выгрузки всего клуба основной entry point — `Отчёты`.
+В контексте раздела `Люди` Administrator получает contextual action `Импорт` как shortcut к основному Import workflow.
 
-UI должен предоставлять административный workflow для выбора контекста и набора данных, соответствующий backend export contract.
-
-## 5. Export UI
-
-Backend Participant Export API уже реализован.
-
-Frontend Export UI должен использовать существующий API и не дублировать его бизнес-правила.
-
-Минимальный workflow:
-
-1. Administrator открывает `Отчёты` или contextual action.
-2. Выбирает контекст выгрузки.
-3. При необходимости выбирает группу и/или событие.
-4. Выбирает фильтры, доступные для выбранного контекста.
-5. Выбирает поля через backend field allowlist.
-6. Выбирает формат:
-   - XLSX;
-   - PDF;
-   - Print.
-7. Запускает экспорт.
-8. Frontend показывает результат и ошибки backend.
-
-Состав и доступность полей определяет backend endpoint `GET /api/v1/memberships/exports/fields`. Frontend не должен поддерживать второй независимый allowlist.
+Если в будущем появятся операции массового изменения существующих людей, их placement должен рассматриваться отдельно; Import не должен автоматически превращаться в generic bulk-edit механизм.
 
 ## 6. Import UI
 
-Import UI реализуется **после завершения backend Import slices**.
+Backend Participant Import уже реализован и является authoritative для frontend.
 
-Frontend не должен придумывать API или бизнес-правила до появления canonical backend contract.
-
-Целевой workflow:
+Frontend использует существующий workflow:
 
 ```text
 upload
@@ -103,13 +151,29 @@ upload
 
 Upload не должен автоматически применять изменения.
 
+Текущий MVP Import создаёт только:
+
+- Person;
+- User;
+- ClubMembership.
+
+Import UI **не должен** добавлять выбор или редактирование RoleAssignment, GroupMembership, GroupInstructorAssignment или GuardianRelationship до отдельного утверждения соответствующего backend contract.
+
+### 6.1 Source-file handling
+
+После успешного завершения импорта исходный CSV/XLSX удаляется.
+
+Результат ImportJob, counters, errors/warnings и audit history сохраняются.
+
+Для `failed` и `partially_completed` исходный файл пока сохраняется, чтобы администратор мог разобраться с результатом или повторить операцию.
+
 ## 7. Implementation order
 
 Реализация выполняется в следующем порядке:
 
 1. Participant Export backend — **done (#219)**.
-2. Participant Import backend — следующий этап.
-3. Единый frontend slice Import + Export UI — после готовности Import backend contract.
+2. Participant Import backend — **done (#187, #188, #194)**.
+3. Единый frontend slice Import + Export UI — **текущий этап (#225)**.
 4. Saved export templates — отдельный technical debt (`#217`), не включается автоматически в UI slice.
 
 ## 8. Navigation and role visibility
@@ -126,14 +190,12 @@ TourCRM остаётся одноклубным продуктом на уров
 
 Существующий backend `Club` сохраняется только как техническая сущность до будущего рефакторинга. UI не должен вводить выбор клуба или multi-club workflows.
 
-## 10. Future extension
-
-Будущий шаблонный механизм экспорта может позволить Administrator сохранять часто используемые наборы полей/фильтров. Это не входит в текущий Import / Export UI scope и остаётся отдельным technical debt (`#217`).
-
-## 11. Canonical references
+## 10. Canonical references
 
 - `docs/04-ux/information-architecture.md`
+- `docs/05-api/participant-import-api.md`
 - `docs/05-api/participant-export-api.md`
 - `docs/05-api/people-api.md`
 - GitHub Issue #174 — TH-0118: Participant Import & Export
+- GitHub Issue #225 — TH-0118.5: Participant Import + Export frontend UI
 - GitHub PR #219 — Participant Export backend
