@@ -29,6 +29,9 @@ MOVEMENT_WRITE_OFF = "write_off"
 MOVEMENT_ADJUSTMENT = "adjustment"
 # PO decision E: the compensating movement of an erroneous write-off.
 MOVEMENT_WRITEOFF_REVERSAL = "writeoff_reversal"
+# inventory.md §7.3 (Q6, R1): repair of an instance.
+MOVEMENT_REPAIR_START = "repair_start"
+MOVEMENT_REPAIR_END = "repair_end"
 
 CANONICAL_MOVEMENT_TYPES: frozenset[str] = frozenset(
     {
@@ -39,8 +42,28 @@ CANONICAL_MOVEMENT_TYPES: frozenset[str] = frozenset(
         MOVEMENT_WRITE_OFF,
         MOVEMENT_ADJUSTMENT,
         MOVEMENT_WRITEOFF_REVERSAL,
+        MOVEMENT_REPAIR_START,
+        MOVEMENT_REPAIR_END,
     }
 )
+
+# Movements that only exist for instance-accounted items.
+INSTANCE_ONLY_MOVEMENT_TYPES: frozenset[str] = frozenset(
+    {MOVEMENT_REPAIR_START, MOVEMENT_REPAIR_END}
+)
+
+# inventory.md §7.2 (Q5): instance states.
+INSTANCE_AVAILABLE = "available"
+INSTANCE_ISSUED = "issued"
+INSTANCE_IN_REPAIR = "in_repair"
+INSTANCE_WRITTEN_OFF = "written_off"
+
+CANONICAL_INSTANCE_STATES: frozenset[str] = frozenset(
+    {INSTANCE_AVAILABLE, INSTANCE_ISSUED, INSTANCE_IN_REPAIR, INSTANCE_WRITTEN_OFF}
+)
+# inventory.md §7.2 п.5 (R3): states in which the instance is in a storage
+# location; in every other state it has none.
+INSTANCE_STATES_IN_STORAGE: frozenset[str] = frozenset({INSTANCE_AVAILABLE, INSTANCE_IN_REPAIR})
 
 # inventory.md §9 п.2 (PO decision G11): seeded by migration, immutable.
 SYSTEM_UNIT_NAMES: tuple[str, ...] = ("шт", "м", "комплект", "пара")
@@ -59,6 +82,15 @@ __all__ = [
     "MOVEMENT_WRITE_OFF",
     "MOVEMENT_ADJUSTMENT",
     "MOVEMENT_WRITEOFF_REVERSAL",
+    "MOVEMENT_REPAIR_START",
+    "MOVEMENT_REPAIR_END",
+    "INSTANCE_ONLY_MOVEMENT_TYPES",
+    "INSTANCE_AVAILABLE",
+    "INSTANCE_ISSUED",
+    "INSTANCE_IN_REPAIR",
+    "INSTANCE_WRITTEN_OFF",
+    "CANONICAL_INSTANCE_STATES",
+    "INSTANCE_STATES_IN_STORAGE",
     "CANONICAL_MOVEMENT_TYPES",
     "SYSTEM_UNIT_NAMES",
 ]

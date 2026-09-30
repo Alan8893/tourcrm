@@ -30,7 +30,7 @@ the id exists. A record of another Club is a 404.
 
 import logging
 import uuid
-from typing import Any, NoReturn, TypeVar
+from typing import Any, TypeVar
 
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel
@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import CurrentPrincipal, require_authenticated_principal, require_csrf_token
 from app.api.errors import APIError
 from app.api.schemas import CollectionResponse, Pagination
+from app.api.v1.inventory_errors import INVENTORY_DOMAIN_ERRORS, raise_inventory_domain_error
 from app.api.v1.inventory_schemas import (
     InventoryCategoryCreateRequest,
     InventoryCategoryOut,
@@ -63,17 +64,6 @@ from app.db.inventory import (
 from app.db.session import get_db
 from app.inventory import service as inventory_service
 from app.inventory.authorization import require_inventory_administrator
-from app.inventory.lifecycle import (
-    AccountingModeLockedError,
-    ArchivedReferenceError,
-    InvalidInventoryDataError,
-    InvalidLocationParentError,
-    InventoryDomainError,
-    InventoryRecordArchivedError,
-    LocationHasActiveChildrenError,
-    SystemUnitImmutableError,
-    UnitLockedError,
-)
 from app.inventory.queries import InventoryRecord, get_record, list_records
 
 logger = logging.getLogger("tourcrm.api.inventory")
@@ -82,37 +72,8 @@ router = APIRouter(prefix="/inventory", tags=["inventory"])
 
 OutT = TypeVar("OutT", bound=BaseModel)
 
-_DOMAIN_ERRORS = (
-    InventoryDomainError,
-    inventory_service.InventoryReferenceNotFoundError,
-    inventory_service.InventoryNameConflictError,
-)
-
-
-def _raise_for_domain_error(exc: Exception) -> NoReturn:
-    conflict = status.HTTP_409_CONFLICT
-    unprocessable = status.HTTP_422_UNPROCESSABLE_ENTITY
-    if isinstance(exc, InventoryRecordArchivedError):
-        raise APIError(conflict, "inventory_record_archived", str(exc)) from exc
-    if isinstance(exc, SystemUnitImmutableError):
-        raise APIError(conflict, "system_unit_immutable", str(exc)) from exc
-    if isinstance(exc, AccountingModeLockedError):
-        raise APIError(conflict, "accounting_mode_locked", str(exc)) from exc
-    if isinstance(exc, UnitLockedError):
-        raise APIError(conflict, "unit_locked", str(exc)) from exc
-    if isinstance(exc, LocationHasActiveChildrenError):
-        raise APIError(conflict, "location_has_active_children", str(exc)) from exc
-    if isinstance(exc, inventory_service.InventoryNameConflictError):
-        raise APIError(conflict, "name_conflict", str(exc)) from exc
-    if isinstance(exc, ArchivedReferenceError):
-        raise APIError(unprocessable, "archived_reference", str(exc)) from exc
-    if isinstance(exc, inventory_service.InventoryReferenceNotFoundError):
-        raise APIError(unprocessable, "invalid_reference", str(exc)) from exc
-    if isinstance(exc, InvalidLocationParentError):
-        raise APIError(unprocessable, "invalid_parent", str(exc)) from exc
-    if isinstance(exc, InvalidInventoryDataError):
-        raise APIError(unprocessable, "invalid_inventory_data", str(exc)) from exc
-    raise exc
+_DOMAIN_ERRORS = INVENTORY_DOMAIN_ERRORS
+_raise_for_domain_error = raise_inventory_domain_error
 
 
 def _not_found(label: str) -> APIError:

@@ -13,10 +13,13 @@ from sqlalchemy.orm import Session
 
 from app.db.inventory import (
     InventoryCategory,
+    InventoryInstance,
     InventoryItem,
+    InventoryMovement,
     InventoryStorageLocation,
     InventoryUnit,
 )
+from app.inventory.vocabulary import INSTANCE_WRITTEN_OFF
 
 InventoryRecord = TypeVar(
     "InventoryRecord", InventoryCategory, InventoryUnit, InventoryStorageLocation, InventoryItem
@@ -73,4 +76,80 @@ def list_records(
     return list(rows), total
 
 
-__all__ = ["get_record", "list_records"]
+def get_instance(
+    session: Session, *, instance_id: uuid.UUID, club_id: uuid.UUID, for_update: bool = False
+) -> InventoryInstance | None:
+    """The instance if its item belongs to `club_id`."""
+    stmt = (
+        sa.select(InventoryInstance)
+        .join(InventoryItem, InventoryItem.id == InventoryInstance.item_id)
+        .where(InventoryInstance.id == instance_id, InventoryItem.club_id == club_id)
+    )
+    if for_update:
+        stmt = stmt.with_for_update(of=InventoryInstance)
+    return session.execute(stmt).scalar_one_or_none()
+
+
+def list_instances(
+    session: Session,
+    *,
+    club_id: uuid.UUID,
+    item_id: uuid.UUID | None,
+    state: str | None,
+    storage_location_id: uuid.UUID | None,
+    page: int,
+    page_size: int,
+) -> tuple[list[InventoryInstance], int]:
+    """Without a `state` filter every instance except `written_off` (GAP-4);
+    ordered by inventory number."""
+    conditions: list[sa.ColumnElement[bool]] = [InventoryItem.club_id == club_id]
+    if state is None:
+        conditions.append(InventoryInstance.state != INSTANCE_WRITTEN_OFF)
+    else:
+        conditions.append(InventoryInstance.state == state)
+    if item_id is not None:
+        conditions.append(InventoryInstance.item_id == item_id)
+    if storage_location_id is not None:
+        conditions.append(InventoryInstance.storage_location_id == storage_location_id)
+    joined = sa.select(InventoryInstance).join(
+        InventoryItem, InventoryItem.id == InventoryInstance.item_id
+    )
+    total = session.execute(
+        sa.select(sa.func.count()).select_from(joined.where(*conditions).subquery())
+    ).scalar_one()
+    rows = (
+        session.execute(
+            joined.where(*conditions)
+            .order_by(
+                sa.func.length(InventoryInstance.inventory_number),
+                InventoryInstance.inventory_number,
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows), total
+
+
+def list_instance_movements(session: Session, *, instance_id: uuid.UUID) -> list[InventoryMovement]:
+    """Chronological history of one instance (§13)."""
+    return list(
+        session.execute(
+            sa.select(InventoryMovement)
+            .where(InventoryMovement.instance_id == instance_id)
+            .order_by(InventoryMovement.created_at, InventoryMovement.id)
+        )
+        .scalars()
+        .all()
+    )
+
+
+__all__ = [
+    "get_record",
+    "list_records",
+    "get_instance",
+    "list_instances",
+    "list_instance_movements",
+]

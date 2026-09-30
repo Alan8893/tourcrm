@@ -29,6 +29,18 @@ Canonical source: docs/04-domain/inventory.md.
   that type, the unique constraint allows one reversal per write-off, and
   `_require_reversed_write_off` refuses a reference to any other type.
   The reversal workflow itself belongs to later slices.
+- `inventory_instances` (Slice 2, inventory.md §7): one physical object of
+  an `instance`-mode item. `state` and `storage_location_id` are a
+  projection of the movement journal — only app.inventory.instances
+  changes them, in the same transaction as the movement that causes the
+  change. The CHECK ties the location to the state (R3): set exactly for
+  `available`/`in_repair`. `inventory_number` (`INV-000123`, Q2/Q3) and
+  `item_id` (Q10) are immutable: the ORM refuses to change them
+  (`_refuse_instance_identity_change`).
+- Movement columns added with Slice 2: `instance_id`,
+  `from_location_id`/`to_location_id`, `unit_cost_minor` (receipt cost,
+  §11 п.6) and `comment` (the write-off reason, Q8). `quantity` arrives
+  with the quantity-movement slice.
 
 Plain FK columns, no ORM `relationship()` objects — the same shape as
 app.db.news/app.db.groups.
@@ -46,8 +58,12 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 from app.inventory.vocabulary import (
     CANONICAL_ACCOUNTING_MODES,
+    CANONICAL_INSTANCE_STATES,
     CANONICAL_INVENTORY_STATUSES,
     CANONICAL_MOVEMENT_TYPES,
+    INSTANCE_ONLY_MOVEMENT_TYPES,
+    INSTANCE_STATES_IN_STORAGE,
+    MOVEMENT_RECEIPT,
     MOVEMENT_WRITE_OFF,
 )
 
@@ -59,6 +75,9 @@ def _values(vocabulary: frozenset[str]) -> str:
 _STATUS_VALUES = _values(CANONICAL_INVENTORY_STATUSES)
 _MODE_VALUES = _values(CANONICAL_ACCOUNTING_MODES)
 _MOVEMENT_TYPE_VALUES = _values(CANONICAL_MOVEMENT_TYPES)
+_INSTANCE_STATE_VALUES = _values(CANONICAL_INSTANCE_STATES)
+_IN_STORAGE_STATE_VALUES = _values(INSTANCE_STATES_IN_STORAGE)
+_INSTANCE_ONLY_MOVEMENT_VALUES = _values(INSTANCE_ONLY_MOVEMENT_TYPES)
 
 NAME_MAX_LENGTH = 255
 UNIT_NAME_MAX_LENGTH = 64
@@ -284,6 +303,82 @@ class InventoryItem(Base):
     )
 
 
+INVENTORY_NUMBER_MAX_LENGTH = 32
+MANUFACTURER_CODE_MAX_LENGTH = 255
+TEXT_MAX_LENGTH = 2000
+
+
+class InventoryInstance(Base):
+    """One physical object of an `instance`-mode item (inventory.md §7)."""
+
+    __tablename__ = "inventory_instances"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    # The Club is the item's Club (no own column): TourCRM has a single Club,
+    # so the unique inventory number is also unique within the Club (Q2).
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("inventory_items.id", ondelete="RESTRICT"), nullable=False
+    )
+    inventory_number: Mapped[str] = mapped_column(
+        sa.String(INVENTORY_NUMBER_MAX_LENGTH), nullable=False
+    )
+    manufacturer_barcode: Mapped[Optional[str]] = mapped_column(
+        sa.String(MANUFACTURER_CODE_MAX_LENGTH), nullable=True
+    )
+    manufacturer_serial_number: Mapped[Optional[str]] = mapped_column(
+        sa.String(MANUFACTURER_CODE_MAX_LENGTH), nullable=True
+    )
+    description: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
+    state: Mapped[str] = mapped_column(sa.String(16), nullable=False)
+    storage_location_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("inventory_storage_locations.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    created_by: Mapped[uuid.UUID] = _user_fk(nullable=False)
+    updated_by: Mapped[Optional[uuid.UUID]] = _user_fk(nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+    __table_args__ = (
+        sa.CheckConstraint(
+            f"state IN ({_INSTANCE_STATE_VALUES})", name="ck_inventory_instances_state_valid"
+        ),
+        sa.CheckConstraint(
+            f"(state IN ({_IN_STORAGE_STATE_VALUES})) = (storage_location_id IS NOT NULL)",
+            name="ck_inventory_instances_location_matches_state",
+        ),
+        sa.CheckConstraint(
+            "inventory_number ~ '^INV-[0-9]{6,}$'",
+            name="ck_inventory_instances_inventory_number_format",
+        ),
+        sa.UniqueConstraint("inventory_number", name="uq_inventory_instances_inventory_number"),
+        sa.Index("ix_inventory_instances_item_id_state", "item_id", "state"),
+        sa.Index("ix_inventory_instances_storage_location_id", "storage_location_id"),
+        sa.Index("ix_inventory_instances_state", "state"),
+    )
+
+
+class InventoryInstanceIdentityError(Exception):
+    """An instance's item or Inventory ID was about to be changed."""
+
+    def __init__(self, instance_id: uuid.UUID) -> None:
+        super().__init__(
+            f"Inventory instance {instance_id}: item and inventory number are immutable"
+        )
+        self.instance_id = instance_id
+
+
+@event.listens_for(InventoryInstance, "before_update")
+def _refuse_instance_identity_change(
+    _mapper: Any, _connection: Any, target: InventoryInstance
+) -> None:
+    state = sa.inspect(target)
+    for attribute in ("item_id", "inventory_number"):
+        if state.attrs[attribute].history.has_changes():
+            raise InventoryInstanceIdentityError(target.id)
+
+
 class InventoryMovement(Base):
     """Append-only movement journal row (inventory.md §13). No `updated_at`
     / `updated_by`: a movement is never updated."""
@@ -295,6 +390,23 @@ class InventoryMovement(Base):
         UUID(as_uuid=True), sa.ForeignKey("inventory_items.id", ondelete="RESTRICT"), nullable=False
     )
     movement_type: Mapped[str] = mapped_column(sa.String(32), nullable=False)
+    instance_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("inventory_instances.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    from_location_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("inventory_storage_locations.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    to_location_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("inventory_storage_locations.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    unit_cost_minor: Mapped[Optional[int]] = mapped_column(sa.BigInteger, nullable=True)
+    comment: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
     reverses_movement_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("inventory_movements.id", ondelete="RESTRICT"),
@@ -312,10 +424,20 @@ class InventoryMovement(Base):
             "(movement_type = 'writeoff_reversal') = (reverses_movement_id IS NOT NULL)",
             name="ck_inventory_movements_reversal_reference",
         ),
+        sa.CheckConstraint(
+            f"movement_type NOT IN ({_INSTANCE_ONLY_MOVEMENT_VALUES}) OR instance_id IS NOT NULL",
+            name="ck_inventory_movements_instance_only_types",
+        ),
+        sa.CheckConstraint(
+            f"unit_cost_minor IS NULL OR (movement_type = '{MOVEMENT_RECEIPT}' "
+            "AND unit_cost_minor >= 0)",
+            name="ck_inventory_movements_unit_cost_on_receipt",
+        ),
         sa.UniqueConstraint(
             "reverses_movement_id", name="uq_inventory_movements_reverses_movement_id"
         ),
         sa.Index("ix_inventory_movements_item_id_created_at", "item_id", "created_at"),
+        sa.Index("ix_inventory_movements_instance_id_created_at", "instance_id", "created_at"),
     )
 
 
@@ -362,7 +484,12 @@ __all__ = [
     "InventoryCategory",
     "InventoryUnit",
     "InventoryStorageLocation",
+    "INVENTORY_NUMBER_MAX_LENGTH",
+    "MANUFACTURER_CODE_MAX_LENGTH",
+    "TEXT_MAX_LENGTH",
     "InventoryItem",
+    "InventoryInstance",
+    "InventoryInstanceIdentityError",
     "InventoryMovement",
     "InventoryMovementImmutableError",
     "InventoryReversalTargetError",

@@ -190,7 +190,20 @@ _INVENTORY_PATHS = {
     for suffix in ("", f"/{{{record}}}", f"/{{{record}}}/archive")
 }
 # TH-0121 / Issue #230: Inventory Foundation reference data and
-# nomenclature only — no movement/issue/return/stocktake endpoint yet.
+# nomenclature.
+
+_INVENTORY_INSTANCE_PATHS = {
+    "/api/v1/inventory/instances",
+    "/api/v1/inventory/instances/{instance_id}",
+    "/api/v1/inventory/instances/{instance_id}/transfer",
+    "/api/v1/inventory/instances/{instance_id}/repair-start",
+    "/api/v1/inventory/instances/{instance_id}/repair-end",
+    "/api/v1/inventory/instances/{instance_id}/write-off",
+    "/api/v1/inventory/instances/{instance_id}/movements",
+    "/api/v1/inventory/movements/{movement_id}/reverse",
+}
+# Inventory Slice 2 (Issue #230): instances and their movements only — no
+# issue/return/stocktake/quantity-movement endpoint yet.
 
 _GUARDIAN_RELATIONSHIP_PATHS = {
     "/api/v1/persons/{person_id}/guardian-relationships",
@@ -280,6 +293,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _DOCUMENT_PATHS
         | _NEWS_PATHS
         | _INVENTORY_PATHS
+        | _INVENTORY_INSTANCE_PATHS
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()
@@ -333,6 +347,41 @@ def test_inventory_endpoints_expose_only_their_canonical_methods(real_client) ->
             "accounting_mode",
             "current_cost_minor",
         }
+
+
+def test_inventory_instance_endpoints_expose_only_their_canonical_methods(real_client) -> None:
+    """Inventory Slice 2: no DELETE; state/location/item/inventory number
+    are not writable through PATCH; repair actions take no body."""
+    schema = real_client.get("/openapi.json").json()
+    paths = schema["paths"]
+    base = "/api/v1/inventory/instances"
+
+    assert set(paths[base]) == {"get", "post"}
+    assert set(paths[f"{base}/{{instance_id}}"]) == {"get", "patch"}
+    assert set(paths[f"{base}/{{instance_id}}/movements"]) == {"get"}
+    for action in ("transfer", "repair-start", "repair-end", "write-off"):
+        assert set(paths[f"{base}/{{instance_id}}/{action}"]) == {"post"}
+    for action in ("repair-start", "repair-end"):
+        assert "requestBody" not in paths[f"{base}/{{instance_id}}/{action}"]["post"]
+    assert set(paths["/api/v1/inventory/movements/{movement_id}/reverse"]) == {"post"}
+
+    schemas = schema["components"]["schemas"]
+    assert set(schemas["InventoryInstanceUpdateRequest"]["properties"]) == {
+        "manufacturer_barcode",
+        "manufacturer_serial_number",
+        "description",
+    }
+    assert set(schemas["InventoryInstanceCreateRequest"]["properties"]) == {
+        "item_id",
+        "storage_location_id",
+        "unit_cost_minor",
+        "manufacturer_barcode",
+        "manufacturer_serial_number",
+        "description",
+    }
+    assert schemas["InventoryInstanceWriteOffRequest"]["required"] == ["comment"]
+    list_parameters = {p["name"] for p in paths[base]["get"]["parameters"]}
+    assert {"item_id", "state", "storage_location_id"} <= list_parameters
 
 
 def test_membership_import_endpoints_expose_only_their_canonical_methods(real_client) -> None:
