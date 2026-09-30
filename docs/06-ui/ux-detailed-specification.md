@@ -260,7 +260,7 @@ Dashboard адаптируется по роли.
 - attendance tasks;
 - pending member information;
 - active trips;
-- equipment assigned to instructor/events.
+- equipment assigned to instructor/events — *приостановлено (Issue #230): Instructor не имеет доступа к складу; видимость выданного получателю имущества — открытый вопрос `docs/04-domain/inventory.md` §21.*
 
 ### Member widgets
 
@@ -615,6 +615,8 @@ UI must never imply that a consent exists merely because a document upload exist
 ---
 
 ## 16. Equipment UX
+
+> **Superseded** by `docs/04-domain/inventory.md` (Issue #230 / TH-0121). Раздел «Склад» доступен только Administrator; UX склада определяется отдельным срезом Inventory UI. Текст ниже — исторический.
 
 ### Inventory
 

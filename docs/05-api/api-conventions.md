@@ -35,7 +35,7 @@ Use plural resource nouns in lowercase kebab-free paths:
 /routes
 /achievements
 /documents
-/equipment
+/inventory
 /finance/payments
 /notifications
 /knowledge/articles

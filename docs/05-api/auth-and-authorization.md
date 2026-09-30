@@ -284,6 +284,8 @@ Explicit deny policy допускается, если она будет введ
 - `settings.manage`;
 - `role.manage`.
 
+Коды `equipment.read`/`equipment.manage` остаются в каталоге, но складской домен их не использует: доступ к складу — только Administrator через `is_club_administrator` (`docs/04-domain/inventory.md` §3, PO decision G7).
+
 Этот список является каноническим каталогом. Примеры из старых версий этого документа (`member.read`, `member.update`, `equipment.issue`, `document.download`) не являются permissions TourCRM и не должны использоваться в реализации.
 
 ## 18. Authorization failure

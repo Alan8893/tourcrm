@@ -540,6 +540,8 @@ Document.person_id -> Person.id
 
 ## 24. Equipment
 
+> **Superseded** by `docs/04-domain/inventory.md` (Issue #230 / TH-0121). Разделы 24–25 сохранены исторически и не являются действующей моделью.
+
 Единица имущества клуба.
 
 Хранит:

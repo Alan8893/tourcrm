@@ -65,7 +65,7 @@ Before changing a decision, check for an existing ADR. Superseded decisions must
 | Achievements/skills/rating | `04-modules/achievements-skills-and-rating.md` |
 | Documents and consents | `04-modules/documents-and-consents.md` |
 | Finance | `04-modules/finance.md` |
-| Equipment | `04-modules/equipment.md` |
+| Inventory / Склад | `04-domain/inventory.md` (supersedes `04-modules/equipment.md`) |
 | Notifications/communications | `04-modules/notifications-and-communications.md` |
 | Knowledge base | `04-modules/knowledge-base.md` |
 | TourSlet integration | `04-modules/tourslet-integration.md` |
