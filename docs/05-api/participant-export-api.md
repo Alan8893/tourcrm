@@ -104,6 +104,8 @@ Authorization, context resolution, filtering и field allowlisting выполн�
 
 Если выбран Group context, строка содержит Person и выбранный Group context.
 
+Для `group` и `group_event` membership status определяется записью GroupMembership (Issue #218, GAP-2): Person включается по статусу GroupMembership независимо от статуса ClubMembership — например, при ClubMembership `suspended` и GroupMembership `active` Person остаётся в результате.
+
 Если выбран Event context, строка содержит Person и Event context, включая выбранный статус participation при его наличии.
 
 Если выбраны Group + Event, результат содержит только Person, одновременно удовлетворяющих GroupMembership и EventParticipation для выбранного Event, согласно canonical Event visibility/participation policy.
