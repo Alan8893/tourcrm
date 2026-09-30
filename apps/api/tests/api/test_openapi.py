@@ -179,6 +179,19 @@ _NEWS_PATHS = {
     "/api/v1/news/{news_id}/image",
 }
 
+_INVENTORY_PATHS = {
+    f"/api/v1/inventory/{collection}{suffix}"
+    for collection, record in (
+        ("categories", "category_id"),
+        ("units", "unit_id"),
+        ("storage-locations", "location_id"),
+        ("items", "item_id"),
+    )
+    for suffix in ("", f"/{{{record}}}", f"/{{{record}}}/archive")
+}
+# TH-0121 / Issue #230: Inventory Foundation reference data and
+# nomenclature only — no movement/issue/return/stocktake endpoint yet.
+
 _GUARDIAN_RELATIONSHIP_PATHS = {
     "/api/v1/persons/{person_id}/guardian-relationships",
     "/api/v1/guardian-relationships/{relationship_id}",
@@ -266,6 +279,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _EVENT_RECURRENCE_PATHS
         | _DOCUMENT_PATHS
         | _NEWS_PATHS
+        | _INVENTORY_PATHS
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()
@@ -289,6 +303,36 @@ def test_news_endpoints_expose_only_their_canonical_methods(real_client) -> None
     assert set(image_body["content"]) == {"multipart/form-data"}
     update_schema = schema["components"]["schemas"]["NewsUpdateRequest"]
     assert "status" not in update_schema["properties"]
+
+
+def test_inventory_endpoints_expose_only_their_canonical_methods(real_client) -> None:
+    """TH-0121 / Issue #230: no physical DELETE (archive is the only
+    removal, inventory.md §17); archive actions take no body; no request
+    schema can set a nomenclature quantity/stock/status."""
+    schema = real_client.get("/openapi.json").json()
+    paths = schema["paths"]
+
+    for collection, record in (
+        ("categories", "category_id"),
+        ("units", "unit_id"),
+        ("storage-locations", "location_id"),
+        ("items", "item_id"),
+    ):
+        base = f"/api/v1/inventory/{collection}"
+        assert set(paths[base]) == {"get", "post"}
+        assert set(paths[f"{base}/{{{record}}}"]) == {"get", "patch"}
+        assert set(paths[f"{base}/{{{record}}}/archive"]) == {"post"}
+        assert "requestBody" not in paths[f"{base}/{{{record}}}/archive"]["post"]
+
+    schemas = schema["components"]["schemas"]
+    for name in ("InventoryItemCreateRequest", "InventoryItemUpdateRequest"):
+        assert set(schemas[name]["properties"]) == {
+            "name",
+            "category_id",
+            "unit_id",
+            "accounting_mode",
+            "current_cost_minor",
+        }
 
 
 def test_membership_import_endpoints_expose_only_their_canonical_methods(real_client) -> None:

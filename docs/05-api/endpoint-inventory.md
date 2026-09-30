@@ -386,7 +386,24 @@ Persistence, participant requirement checks, and management endpoints are implem
 
 ## 19. Inventory / Склад
 
-Прежний список `/equipment*`, `/equipment-issues*`, `/equipment-maintenance` **отозван** (Issue #230 / TH-0121): он описывал заменённую Equipment-модель. Канонический домен — `docs/04-domain/inventory.md`. Все складские эндпоинты — только для Administrator, в пространстве `/api/v1/inventory/*`; конкретные эндпоинты вносятся сюда реализующими срезами.
+Прежний список `/equipment*`, `/equipment-issues*`, `/equipment-maintenance` **отозван** (Issue #230 / TH-0121): он описывал заменённую Equipment-модель. Канонический домен — `docs/04-domain/inventory.md`. Все складские эндпоинты — только для Administrator (чтение включительно; Instructor/Member/Guardian — `403`), в пространстве `/api/v1/inventory/*`; конкретные эндпоинты вносятся сюда реализующими срезами. Физического удаления нет — только необратимое `archive`.
+
+Foundation (TH-0121, implemented):
+
+- `GET /inventory/categories`, `POST /inventory/categories`
+- `GET /inventory/categories/{category_id}`, `PATCH /inventory/categories/{category_id}`
+- `POST /inventory/categories/{category_id}/archive`
+- `GET /inventory/units`, `POST /inventory/units` (системные единицы `шт`, `м`, `комплект`, `пара` — только чтение)
+- `GET /inventory/units/{unit_id}`, `PATCH /inventory/units/{unit_id}`
+- `POST /inventory/units/{unit_id}/archive`
+- `GET /inventory/storage-locations`, `POST /inventory/storage-locations`
+- `GET /inventory/storage-locations/{location_id}`, `PATCH /inventory/storage-locations/{location_id}` (переименование и смена родителя)
+- `POST /inventory/storage-locations/{location_id}/archive`
+- `GET /inventory/items`, `POST /inventory/items`
+- `GET /inventory/items/{item_id}`, `PATCH /inventory/items/{item_id}`
+- `POST /inventory/items/{item_id}/archive`
+
+Списки принимают `status=active|archived|all` (по умолчанию `active`) и `page`/`page_size`.
 
 ## 20. Finance
 
