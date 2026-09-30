@@ -37,6 +37,22 @@ MVP поддерживает контекстные фильтры, необхо
 
 Фильтр должен выполняться backend до построения экспортного результата.
 
+### 4.1 Participation status (PO decision, PR #226)
+
+Для текущего MVP canonical-значения фильтра `participation_status` (`EventParticipation.registration_status`, только контексты `event` и `group_event`):
+
+- `registered`;
+- `cancelled`.
+
+Основание — ADR-0037 и фактически реализованный self-registration workflow: только эти статусы записываются в `EventParticipation`. Справочные значения ADR-0020 §4 (`invited`, `waitlisted`, `declined`, `removed`) сохраняются в документации как относящиеся к будущему lifecycle и в этот фильтр не входят; расширение списка — отдельное решение PO после реализации admin status management (`events-api.md` §21).
+
+Backend — единственный источник значений и их отображаемых подписей:
+
+- `GET /api/v1/memberships/exports/filters` (Administrator-only, как и остальной export) возвращает `{"participation_status": [{"value", "label"}]}`;
+- `POST /api/v1/memberships/exports` отклоняет любое другое значение `participation_status` с `422 invalid_participation_status` (аналогично `invalid_membership_status`); отсутствие фильтра означает все статусы.
+
+Frontend не содержит собственного списка этих значений и не подставляет fallback-список при ошибке загрузки metadata.
+
 ## 5. Export fields
 
 Administrator самостоятельно выбирает поля через multi-select.

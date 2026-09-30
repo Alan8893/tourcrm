@@ -13,9 +13,11 @@ import { useNotify } from "../components/ui/notificationContext";
 import { printHtmlBlob, saveBlob, type ApiError } from "../api/client";
 import {
   useExportFields,
+  useExportFilters,
   useRunParticipantExport,
   type ExportContext,
   type ExportField,
+  type ExportFilterOption,
   type ExportFormat,
   type ParticipantExportRequest,
 } from "../api/exports";
@@ -85,11 +87,11 @@ const GROUP_MEMBERSHIP_STATUS_OPTIONS: FilterOption[] = [
   { value: "ended", label: "Завершённые" },
 ];
 
-const PARTICIPATION_STATUS_OPTIONS: FilterOption[] = [
-  { value: "", label: "Любой статус" },
-  { value: "registered", label: "Зарегистрированы" },
-  { value: "cancelled", label: "Регистрация отменена" },
-];
+/** "No participation filter" — the request then omits
+ * `participation_status` and the backend returns every status. Not a
+ * business value; every real status comes from
+ * `GET /memberships/exports/filters`. */
+const ANY_PARTICIPATION_STATUS: FilterOption = { value: "", label: "Любой статус" };
 
 function membershipStatusOptions(context: ExportContext): FilterOption[] {
   return GROUP_CONTEXTS.has(context)
@@ -161,11 +163,16 @@ export function ExportPage() {
 
   const needsGroup = context !== null && GROUP_CONTEXTS.has(context);
   const needsEvent = context !== null && EVENT_CONTEXTS.has(context);
+  // Backend-authoritative participation statuses — loaded only when an
+  // Event context can use them. Without them the filters step cannot be
+  // completed: no fallback list is ever substituted.
+  const filtersQuery = useExportFilters(needsEvent);
 
   const stepComplete = [
     context !== null,
     selectedFields.length > 0,
-    (!needsGroup || groupId !== "") && (!needsEvent || eventId !== ""),
+    (!needsGroup || groupId !== "") &&
+      (!needsEvent || (eventId !== "" && filtersQuery.isSuccess)),
     true,
     true,
   ];
@@ -255,6 +262,7 @@ export function ExportPage() {
             onMembershipStatusChange={setMembershipStatus}
             participationStatus={participationStatus}
             onParticipationStatusChange={setParticipationStatus}
+            filtersQuery={filtersQuery}
           />
         ) : null}
 
@@ -277,6 +285,7 @@ export function ExportPage() {
             eventId={eventId}
             membershipStatus={membershipStatus}
             participationStatus={participationStatus}
+            participationOptions={filtersQuery.data?.participation_status ?? []}
             format={format}
             pending={runExport.isPending}
             error={runExport.error}
@@ -439,6 +448,7 @@ function FiltersStep({
   onMembershipStatusChange,
   participationStatus,
   onParticipationStatusChange,
+  filtersQuery,
 }: {
   context: ExportContext;
   groupId: string;
@@ -450,6 +460,7 @@ function FiltersStep({
   onMembershipStatusChange: (value: string) => void;
   participationStatus: string;
   onParticipationStatusChange: (value: string) => void;
+  filtersQuery: ReturnType<typeof useExportFilters>;
 }) {
   const inGroupContext = GROUP_CONTEXTS.has(context);
   const inEventContext = EVENT_CONTEXTS.has(context);
@@ -466,10 +477,9 @@ function FiltersStep({
           onChange={onMembershipStatusChange}
         />
         {inEventContext ? (
-          <FilterSelect
-            label="Статус участия в событии"
+          <ParticipationStatusFilter
+            filtersQuery={filtersQuery}
             value={participationStatus}
-            options={PARTICIPATION_STATUS_OPTIONS}
             onChange={onParticipationStatusChange}
           />
         ) : null}
@@ -478,6 +488,40 @@ function FiltersStep({
         <EventFilter event={event} eventId={eventId} onChange={onEventChange} />
       ) : null}
     </div>
+  );
+}
+
+function ParticipationStatusFilter({
+  filtersQuery,
+  value,
+  onChange,
+}: {
+  filtersQuery: ReturnType<typeof useExportFilters>;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  if (filtersQuery.isLoading) return <Loading label="Загружаем статусы участия…" />;
+  if (filtersQuery.isError) {
+    return (
+      <div className={`${styles.notice} ${styles.noticeError}`} role="alert">
+        <p className={styles.muted}>
+          Не удалось загрузить статусы участия: {filtersQuery.error.message}. Продолжить экспорт
+          по событию можно после повторной загрузки.
+        </p>
+        <Button variant="secondary" onClick={() => void filtersQuery.refetch()}>
+          Повторить
+        </Button>
+      </div>
+    );
+  }
+  if (!filtersQuery.data) return null;
+  return (
+    <FilterSelect
+      label="Статус участия в событии"
+      value={value}
+      options={[ANY_PARTICIPATION_STATUS, ...filtersQuery.data.participation_status]}
+      onChange={onChange}
+    />
   );
 }
 
@@ -614,6 +658,7 @@ function SummaryStep({
   eventId,
   membershipStatus,
   participationStatus,
+  participationOptions,
   format,
   pending,
   error,
@@ -626,6 +671,7 @@ function SummaryStep({
   eventId: string;
   membershipStatus: string;
   participationStatus: string;
+  participationOptions: ExportFilterOption[];
   format: ExportFormat;
   pending: boolean;
   error: ApiError | null;
@@ -640,8 +686,9 @@ function SummaryStep({
     membershipStatusOptions(context).find((option) => option.value === membershipStatus)?.label ??
     membershipStatus;
   const participationLabel =
-    PARTICIPATION_STATUS_OPTIONS.find((option) => option.value === participationStatus)?.label ??
-    participationStatus;
+    [ANY_PARTICIPATION_STATUS, ...participationOptions].find(
+      (option) => option.value === participationStatus,
+    )?.label ?? participationStatus;
 
   return (
     <div className={styles.panel}>

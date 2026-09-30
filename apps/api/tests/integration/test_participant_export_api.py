@@ -41,6 +41,7 @@ pytestmark = requires_postgres
 
 _URL = "/api/v1/memberships/exports"
 _FIELDS_URL = "/api/v1/memberships/exports/fields"
+_FILTERS_URL = "/api/v1/memberships/exports/filters"
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _READ_PERMISSIONS = (
     "person.read",
@@ -474,7 +475,9 @@ def test_empty_result_set(client, scenario) -> None:
         context="group_event",
         group_id=str(scenario.group_id),
         event_id=str(scenario.event_id),
-        participation_status="declined",
+        # Canonical value with no matching row in the scenario (PR #226:
+        # non-canonical values such as `declined` are now rejected).
+        participation_status="cancelled",
     )
     assert _print_rows(response) == []
     assert "Участники не найдены." in response.text
@@ -632,6 +635,7 @@ def test_unauthenticated_is_401(client) -> None:
     )
     assert response.status_code == 401
     assert client.get(_FIELDS_URL).status_code == 401
+    assert client.get(_FILTERS_URL).status_code == 401
 
 
 def test_missing_csrf_token_is_rejected(client, scenario) -> None:
@@ -658,6 +662,7 @@ def test_non_administrator_with_all_read_grants_is_denied(client, scenario, fmt)
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "forbidden"
     assert client.get(_FIELDS_URL).status_code == 403
+    assert client.get(_FILTERS_URL).status_code == 403
 
 
 @pytest.mark.parametrize("role_code", ["instructor", "member", "guardian"])
@@ -861,3 +866,63 @@ def test_fields_endpoint_returns_canonical_allowlist(client, scenario) -> None:
     assert by_code["group.name"]["contexts"] == ["group", "group_event"]
     assert by_code["event.starts_at"]["contexts"] == ["event", "group_event"]
     assert by_code["person.last_name"]["label"] == "Фамилия"
+
+
+# --- filters metadata endpoint (PR #226 PO decision) ------------------------
+
+
+def test_filters_endpoint_returns_canonical_participation_statuses(client, scenario) -> None:
+    response = client.get(_FILTERS_URL)
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"participation_status"}
+    assert body["participation_status"] == [
+        {"value": "registered", "label": "Зарегистрирован"},
+        {"value": "cancelled", "label": "Регистрация отменена"},
+    ]
+
+
+def test_filters_endpoint_values_match_the_self_registration_vocabulary(client, scenario) -> None:
+    from app.events.participation import CANCELLED_STATUS, REGISTERED_STATUS
+
+    values = {item["value"] for item in client.get(_FILTERS_URL).json()["participation_status"]}
+    assert values == {REGISTERED_STATUS, CANCELLED_STATUS}
+
+
+@pytest.mark.parametrize("role_code", ["instructor", "member", "guardian"])
+def test_filters_endpoint_denied_to_other_system_roles(client, scenario, role_code) -> None:
+    user_id = _user_without_admin_role(scenario.club_id)
+    _assign_system_role(user_id, role_code, club_id=scenario.club_id)
+    _authenticate_as(user_id)
+    response = client.get(_FILTERS_URL)
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+
+
+@pytest.mark.parametrize("context", ["event", "group_event"])
+def test_export_accepts_every_participation_status_from_metadata(
+    client, scenario, context
+) -> None:
+    options = client.get(_FILTERS_URL).json()["participation_status"]
+    target = {"event_id": str(scenario.event_id)}
+    if context == "group_event":
+        target["group_id"] = str(scenario.group_id)
+    for option in options:
+        response = _export(
+            client, context=context, participation_status=option["value"], **target
+        )
+        assert response.status_code == 200, (option, response.text)
+
+
+@pytest.mark.parametrize("status", ["declined", "invited", "waitlisted", "removed", "unknown"])
+def test_export_rejects_non_canonical_participation_status(client, scenario, status) -> None:
+    response = _export(
+        client,
+        context="event",
+        event_id=str(scenario.event_id),
+        participation_status=status,
+    )
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "invalid_participation_status"
+    assert error["details"]["allowed"] == ["cancelled", "registered"]

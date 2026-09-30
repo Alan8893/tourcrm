@@ -7,6 +7,7 @@ import { ExportPage } from "./ExportPage";
 import { renderWithProviders } from "../test/renderWithProviders";
 import { mockApi, type MockApiHandler } from "../test/mockApi";
 import { printHtmlBlob, saveBlob } from "../api/client";
+import exportPageSource from "./ExportPage.tsx?raw";
 
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
@@ -64,10 +65,21 @@ const EVENTS = {
   pagination: { page: 1, page_size: 20, total: 1, pages: 1 },
 };
 
+/** `GET /memberships/exports/filters`. The labels (and the second value)
+ * deliberately differ from anything the frontend could know, proving the
+ * options come from the backend rather than a local list. */
+const FILTERS = {
+  participation_status: [
+    { value: "registered", label: "Записан (backend)" },
+    { value: "backend_only_status", label: "Статус только с backend" },
+  ],
+};
+
 function exportBackend(extra: MockApiHandler[] = [], exportHandler?: Partial<MockApiHandler>) {
   return mockApi([
     ...extra,
     { method: "GET", match: "/memberships/exports/fields", body: FIELDS },
+    { method: "GET", match: "/memberships/exports/filters", body: FILTERS },
     { method: "POST", match: "/memberships/exports", body: {}, ...exportHandler },
     { method: "GET", match: "/groups", body: GROUPS },
     { method: "GET", match: "/events/ev-1", body: { ...EVENTS.items[0], group_ids: [], instructor_ids: [] } },
@@ -351,7 +363,10 @@ describe("ExportPage — master wizard", () => {
     await user.selectOptions(await screen.findByLabelText("Группа"), "g1");
     expect(screen.getByRole("button", { name: "Далее" })).toBeDisabled();
     await user.click(await screen.findByRole("button", { name: /Поход на Эльбрус/ }));
-    await user.selectOptions(screen.getByLabelText("Статус участия в событии"), "registered");
+    await user.selectOptions(
+      await screen.findByLabelText("Статус участия в событии"),
+      "backend_only_status",
+    );
     await next(user);
     await next(user);
     await user.click(screen.getByRole("button", { name: "Экспортировать" }));
@@ -361,7 +376,7 @@ describe("ExportPage — master wizard", () => {
       context: "group_event",
       group_id: "g1",
       event_id: "ev-1",
-      participation_status: "registered",
+      participation_status: "backend_only_status",
       fields: ["event.name"],
       format: "xlsx",
       membership_status: "active",
@@ -419,5 +434,122 @@ describe("ExportPage — contextual entry points", () => {
       event_id: "ev-1",
       fields: ["event.name"],
     });
+  });
+});
+
+describe("ExportPage — participation status metadata (backend-authoritative)", () => {
+  async function openEventFilters(user: User) {
+    await user.click(screen.getByRole("radio", { name: /Участники события/ }));
+    await next(user);
+    await user.click(await screen.findByRole("checkbox", { name: "Мероприятие" }));
+    await next(user);
+  }
+
+  it("loads the participation statuses from the backend and shows exactly those options", async () => {
+    const fetchMock = exportBackend();
+    renderExport();
+    const user = userEvent.setup();
+
+    await openEventFilters(user);
+
+    const select = await screen.findByLabelText("Статус участия в событии");
+    expect(within(select).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "Любой статус",
+      "Записан (backend)",
+      "Статус только с backend",
+    ]);
+    expect(
+      within(select)
+        .getAllByRole("option")
+        .map((option) => (option as HTMLOptionElement).value),
+    ).toEqual(["", "registered", "backend_only_status"]);
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes("/memberships/exports/filters")),
+    ).toBe(true);
+  });
+
+  it("does not load participation metadata for a dataset without an Event", async () => {
+    const fetchMock = exportBackend();
+    renderExport();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("radio", { name: /Все участники/ }));
+    await next(user);
+    await user.click(await screen.findByRole("checkbox", { name: "Фамилия" }));
+    await next(user);
+
+    expect(screen.queryByLabelText("Статус участия в событии")).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes("/memberships/exports/filters")),
+    ).toBe(false);
+  });
+
+  it("sends the selected backend value and shows its backend label in the summary", async () => {
+    const fetchMock = exportBackend();
+    renderExport();
+    const user = userEvent.setup();
+
+    await openEventFilters(user);
+    await user.selectOptions(await screen.findByLabelText("Статус участия в событии"), "registered");
+    await user.click(await screen.findByRole("button", { name: /Поход на Эльбрус/ }));
+    await next(user);
+    await next(user);
+
+    expect(
+      within(screen.getByLabelText("Параметры экспорта")).getByText("Записан (backend)"),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Экспортировать" }));
+
+    await waitFor(() => expect(exportRequestBody(fetchMock)).toBeDefined());
+    expect(exportRequestBody(fetchMock)).toMatchObject({
+      context: "event",
+      event_id: "ev-1",
+      participation_status: "registered",
+    });
+  });
+
+  it("omits participation_status when no status is chosen", async () => {
+    const fetchMock = exportBackend();
+    renderExport();
+    const user = userEvent.setup();
+
+    await openEventFilters(user);
+    await screen.findByLabelText("Статус участия в событии");
+    await user.click(await screen.findByRole("button", { name: /Поход на Эльбрус/ }));
+    await next(user);
+    await next(user);
+    await user.click(screen.getByRole("button", { name: "Экспортировать" }));
+
+    await waitFor(() => expect(exportRequestBody(fetchMock)).toBeDefined());
+    expect(exportRequestBody(fetchMock)).not.toHaveProperty("participation_status");
+  });
+
+  it("shows an error state on metadata failure, offers no fallback values and blocks the step", async () => {
+    exportBackend([
+      {
+        method: "GET",
+        match: "/memberships/exports/filters",
+        status: 500,
+        body: { error: { code: "internal_error", message: "Сбой сервера" } },
+      },
+    ]);
+    renderExport();
+    const user = userEvent.setup();
+
+    await openEventFilters(user);
+    await user.click(await screen.findByRole("button", { name: /Поход на Эльбрус/ }));
+
+    const alert = await screen.findByText(/Не удалось загрузить статусы участия/);
+    expect(alert).toHaveTextContent("Сбой сервера");
+    // No select and no invented list of statuses.
+    expect(screen.queryByLabelText("Статус участия в событии")).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Зарегистрирован|отменена/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/registered|cancelled/)).not.toBeInTheDocument();
+    // An Event export cannot continue without the backend vocabulary.
+    expect(screen.getByRole("button", { name: "Далее" })).toBeDisabled();
+  });
+
+  it("keeps no hardcoded participation status values in the wizard source", () => {
+    expect(exportPageSource).not.toMatch(/["'`](registered|cancelled)["'`]/);
   });
 });
