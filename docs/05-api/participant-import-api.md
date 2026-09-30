@@ -347,31 +347,43 @@ PATCH/PUT/DELETE для ImportJob не предусмотрены.
 - background worker/async import;
 - multi-club UI/business model.
 
-## 19. Remaining PO decisions before extending Import
-
-Эти вопросы не блокируют уже реализованный TH-0118.1–TH-0118.3, но должны быть решены до расширения контракта или нового implementation slice:
+## 19. Source-file retention and capacity policy
 
 ### 19.1. Source-file retention
 
-Не зафиксировано, сколько времени после завершения/ошибки ImportJob хранится исходный CSV/XLSX и когда он удаляется.
+Исходный CSV/XLSX является временным импортным артефактом и не является историческим документом клуба.
 
-**PO decision required:** retention policy и момент cleanup.
+После **успешного `completed` apply** исходный файл должен быть удалён.
+
+Для `failed` и `partially_completed` исходный файл пока сохраняется, чтобы администратор мог проверить результат и повторить операцию. Автоматическая cleanup-политика для этих состояний не входит в текущий MVP и может быть определена отдельно.
+
+После удаления source file сохраняются:
+
+- ImportJob;
+- status;
+- counters;
+- row-level errors/warnings;
+- audit records.
+
+Таким образом, история операции сохраняется без хранения исходного персонального файла.
 
 ### 19.2. Upload size / row limits
 
-Канонического максимального размера файла или количества строк пока нет.
+В текущем MVP **не устанавливается продуктовый лимит на размер файла или количество строк**.
 
-**PO decision required:** нужен ли лимит в MVP и какие значения использовать.
+Ожидаемый рабочий сценарий — до примерно 500 строк за импорт (участники и представители), ориентировочно один раз в год. Для такого объёма отдельная async/background infrastructure не требуется.
 
-### 19.3. Future contextual relations
+Если фактические объёмы существенно вырастут, ограничения и архитектура выполнения могут быть пересмотрены отдельным PO decision.
+
+## 20. Future contextual relations
 
 Если в будущем Import должен создавать RoleAssignment, GroupMembership, GroupInstructorAssignment или GuardianRelationship, это требует отдельного PO contract: правила выбора существующих сущностей, конфликтов, duplicates и rollback нельзя выводить из текущего MVP.
 
-### 19.4. Historical import
+## 21. Historical import
 
 Импорт туристского опыта, существовавшего до TourCRM, остаётся отдельным technical debt (#221), а не частью Participant Import.
 
-## 20. Source of truth / implementation history
+## 22. Source of truth / implementation history
 
 Бизнес- и API-контракт сформирован решениями TH-0118 и реализован следующими backend slices:
 
