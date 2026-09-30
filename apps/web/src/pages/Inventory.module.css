@@ -1,0 +1,123 @@
+.toolbar {
+  display: flex;
+  gap: var(--space-4);
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: var(--space-5);
+}
+
+.toolbar > * {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rowHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+}
+
+.rowTitle {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.rowTitleLink {
+  color: inherit;
+  text-decoration: none;
+}
+
+.rowTitleLink:hover,
+.rowTitleLink:focus-visible {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
+.rowAside {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--space-3) var(--space-5);
+  margin: var(--space-3) 0 0;
+}
+
+.metaEntry {
+  min-width: 0;
+}
+
+.metaLabel {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.metaValue {
+  margin: 0;
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.quantity {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tree {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tree .tree {
+  margin-top: var(--space-2);
+  padding-left: var(--space-5);
+  border-left: 1px solid var(--color-border);
+}
+
+.treeItem + .treeItem {
+  margin-top: var(--space-2);
+}
+
+.treeRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  overflow-wrap: anywhere;
+}
+
+.section {
+  margin-top: var(--space-6);
+}
+
+.sectionTitle {
+  margin: 0 0 var(--space-4);
+  font-size: var(--font-size-lg);
+}
+
+@media (max-width: 767.98px) {
+  .tree .tree {
+    padding-left: var(--space-3);
+  }
+}

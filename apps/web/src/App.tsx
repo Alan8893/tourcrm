@@ -18,6 +18,9 @@ import { ReportsPage } from "./pages/ReportsPage";
 import { ExportPage } from "./pages/ExportPage";
 import { ImportPage } from "./pages/ImportPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { InventoryPage } from "./pages/InventoryPage";
+import { InventoryItemPage } from "./pages/InventoryItemPage";
+import { InventoryInstancePage } from "./pages/InventoryInstancePage";
 import { NewsListPage } from "./pages/NewsListPage";
 import { NewsDetailPage } from "./pages/NewsDetailPage";
 import { NewsManagePage } from "./pages/NewsManagePage";
@@ -85,6 +88,13 @@ export function App() {
                 <Route path="news/manage/:newsId/edit" element={<NewsFormPage />} />
               </Route>
               <Route path="news/:newsId" element={<NewsDetailPage />} />
+              {/* Issue #230: «Склад» is Administrator-only (docs/04-domain/
+                  inventory.md §3; UX guard, backend authoritative). */}
+              <Route element={<AdministratorGuard />}>
+                <Route path="inventory" element={<InventoryPage />} />
+                <Route path="inventory/items/:itemId" element={<InventoryItemPage />} />
+                <Route path="inventory/instances/:instanceId" element={<InventoryInstancePage />} />
+              </Route>
               <Route element={<SectionGuard section="settings" />}>
                 <Route path="settings" element={<SettingsPage />} />
               </Route>
