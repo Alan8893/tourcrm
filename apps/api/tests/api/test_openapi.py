@@ -157,6 +157,14 @@ _MEMBERSHIP_IMPORT_PATHS = {
     "/api/v1/memberships/imports/{import_id}/apply",
 }
 
+_MEMBERSHIP_EXPORT_PATHS = {
+    # TH-0118.4 / Issue #218 (participant-export-api.md): synchronous,
+    # Administrator-only participant export (xlsx/pdf/print) and the
+    # canonical export-field allowlist; no saved templates (#217).
+    "/api/v1/memberships/exports",
+    "/api/v1/memberships/exports/fields",
+}
+
 _GUARDIAN_RELATIONSHIP_PATHS = {
     "/api/v1/persons/{person_id}/guardian-relationships",
     "/api/v1/guardian-relationships/{relationship_id}",
@@ -235,6 +243,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _PERSON_PHOTO_PATHS
         | _MEMBERSHIP_PATHS
         | _MEMBERSHIP_IMPORT_PATHS
+        | _MEMBERSHIP_EXPORT_PATHS
         | _GUARDIAN_RELATIONSHIP_PATHS
         | _ME_PATHS
         | _GROUP_PATHS
@@ -276,6 +285,43 @@ def test_membership_import_endpoints_expose_only_their_canonical_methods(real_cl
     request_body = paths["/api/v1/memberships/imports"]["post"]["requestBody"]
     assert set(request_body["content"]) == {"multipart/form-data"}
     assert "201" in paths["/api/v1/memberships/imports"]["post"]["responses"]
+
+
+def test_membership_export_endpoints_and_request_schema_are_exact(real_client) -> None:
+    """TH-0118.4 / Issue #218: one POST export endpoint for every format
+    (xlsx/pdf/print) and one GET allowlist endpoint — no per-format paths,
+    and the request schema admits no dataset source such as `person_ids`."""
+    schema = real_client.get("/openapi.json").json()
+    paths = schema["paths"]
+
+    assert set(paths["/api/v1/memberships/exports"]) == {"post"}
+    assert set(paths["/api/v1/memberships/exports/fields"]) == {"get"}
+    responses = paths["/api/v1/memberships/exports"]["post"]["responses"]
+    assert set(responses["200"]["content"]) == {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/pdf",
+        "text/html",
+    }
+
+    request_schema = schema["components"]["schemas"]["ParticipantExportRequest"]
+    assert set(request_schema["properties"]) == {
+        "context",
+        "group_id",
+        "event_id",
+        "membership_status",
+        "participation_status",
+        "fields",
+        "format",
+    }
+    assert request_schema["additionalProperties"] is False
+    assert set(request_schema["required"]) == {"context", "fields", "format"}
+    assert request_schema["properties"]["context"]["enum"] == [
+        "club",
+        "group",
+        "event",
+        "group_event",
+    ]
+    assert request_schema["properties"]["format"]["enum"] == ["xlsx", "pdf", "print"]
 
 
 def test_document_metadata_patch_endpoint_and_schemas_are_exact(real_client) -> None:
