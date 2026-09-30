@@ -245,6 +245,7 @@ def _scenario() -> Scenario:
     - Борисов Борис — active CM; an ended and a later active GM in the
       Group (historical duplicate); not participating;
     - Васильева Вера — active CM; no Group; `declined` for the Event;
+      guardians Андреева Алла (no phone) and Юдин Юрий;
     - Григорьев Глеб — suspended CM; active GM in the Group; registered;
     - Дмитриева Дарья — two active CMs of different types (duplicate);
     - Егоров Егор — ended GM only; no Event.
@@ -295,6 +296,9 @@ def _scenario() -> Scenario:
         vera = _make_person(session, "Васильева", "Вера")
         _make_club_membership(session, club, vera)
         _participate(session, event, vera, status="declined")
+        # The first guardian in the stable order has no phone.
+        _guardian(session, _make_person(session, "Андреева", "Алла"), vera)
+        _guardian(session, _make_person(session, "Юдин", "Юрий", phone="+72"), vera)
 
         gleb = _make_person(session, "Григорьев", "Глеб")
         gleb_cm = _make_club_membership(session, club, gleb, status="suspended")
@@ -388,6 +392,24 @@ def test_group_context_defaults_to_active_group_membership(client, scenario) -> 
         ["Борисов", "Юные туристы", "active"],
         ["Григорьев", "Юные туристы", "active"],
     ]
+
+
+@pytest.mark.parametrize("context", ["group", "group_event"])
+def test_group_contexts_use_group_membership_status_not_club_membership_status(
+    client, scenario, context
+) -> None:
+    """Regression (PR #219 review; GAP-2): in `group`/`group_event` the
+    membership record is GroupMembership. Григорьев has ClubMembership
+    `suspended` but GroupMembership `active` — he stays included, and
+    `membership.status` reports the GroupMembership status."""
+    body = {"context": context, "group_id": str(scenario.group_id)}
+    if context == "group_event":
+        body["event_id"] = str(scenario.event_id)
+    response = _export(client, fields=["person.last_name", "membership.status"], **body)
+    assert ["Григорьев", "active"] in _print_rows(response)
+    # The same Person is excluded from `club` by the default `active`
+    # ClubMembership filter.
+    assert "Григорьев" not in _last_names(_export(client, context="club"))
 
 
 def test_group_context_membership_status_ended(client, scenario) -> None:
@@ -492,8 +514,33 @@ def test_guardian_fields_join_active_guardians_in_stable_order(client, scenario)
         client, context="club", fields=["person.last_name", "guardian.name", "guardian.phone"]
     )
     rows = {row[0]: row[1:] for row in _print_rows(response)}
-    assert rows["Алексеева"] == ["Петров Пётр Петрович; Сидорова Ольга", "+71"]
+    assert rows["Алексеева"] == ["Петров Пётр Петрович; Сидорова Ольга", "+71; —"]
     assert rows["Борисов"] == ["", ""]
+
+
+@pytest.mark.parametrize("fmt", ["print", "xlsx"])
+def test_guardian_phones_stay_aligned_with_guardian_names(client, scenario, fmt) -> None:
+    """Regression (PR #219 review): name and phone come from the same
+    guardian list, position by position — a guardian without a phone keeps
+    its slot as `—` instead of shifting the following phones left."""
+    response = _export(
+        client,
+        context="club",
+        format=fmt,
+        fields=["person.last_name", "guardian.name", "guardian.phone"],
+    )
+    if fmt == "print":
+        rows = {row[0]: row[1:] for row in _print_rows(response)}
+    else:
+        sheet = load_workbook(io.BytesIO(response.content)).active
+        rows = {
+            row[0]: list(row[1:]) for row in sheet.iter_rows(min_row=2, values_only=True)
+        }
+    assert rows["Васильева"] == ["Андреева Алла; Юдин Юрий", "—; +72"]
+    assert rows["Алексеева"] == ["Петров Пётр Петрович; Сидорова Ольга", "+71; —"]
+    for names, phones in rows.values():
+        if names:
+            assert len(names.split("; ")) == len(phones.split("; "))
 
 
 def test_guardian_fields_are_never_included_implicitly(client, scenario) -> None:

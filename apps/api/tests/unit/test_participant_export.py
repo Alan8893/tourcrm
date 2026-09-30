@@ -17,6 +17,7 @@ from app.exports.fields import (
     field_permission,
     membership_status_source,
 )
+from app.exports.queries import GuardianContact
 from app.exports.rendering import (
     format_cell,
     render_pdf,
@@ -27,6 +28,7 @@ from app.exports.service import (
     ExportRequestError,
     ParticipantExportDataset,
     ParticipantExportRequest,
+    guardian_cells,
     validate_export_request,
 )
 
@@ -221,6 +223,24 @@ def test_membership_status_accepted_for_context_record(context: str, status: str
 def test_invalid_context_rejected() -> None:
     error = _error(ParticipantExportRequest(context="person_ids", fields=("person.last_name",)))
     assert error.code == "invalid_export_context"
+
+
+# --- guardian cells ---------------------------------------------------------
+
+
+def test_guardian_cells_keep_phone_positions_aligned_with_names() -> None:
+    contacts = [
+        GuardianContact(name="Андреева Алла", phone=None),
+        GuardianContact(name="Петров Пётр Петрович", phone="+7 900 000-00-01"),
+        GuardianContact(name="Сидорова Ольга", phone=""),
+    ]
+    names, phones = guardian_cells(contacts)
+    assert names == "Андреева Алла; Петров Пётр Петрович; Сидорова Ольга"
+    assert phones == "—; +7 900 000-00-01; —"
+
+
+def test_guardian_cells_without_guardians_are_empty() -> None:
+    assert guardian_cells([]) == (None, None)
 
 
 # --- renderers ----------------------------------------------------------------

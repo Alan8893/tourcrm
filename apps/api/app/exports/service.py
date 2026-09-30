@@ -20,6 +20,7 @@ never changes Person, Membership, GroupMembership or EventParticipation
 """
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
@@ -47,6 +48,8 @@ from app.people.lifecycle import CANONICAL_MEMBERSHIP_STATUSES
 # GAP-3: ClubMembership and GroupMembership default to `active`;
 # EventParticipation defaults to every status (no filter).
 DEFAULT_MEMBERSHIP_STATUS = "active"
+# Positional placeholder for a guardian without a phone in `guardian.phone`.
+MISSING_GUARDIAN_PHONE = "—"
 
 CellValue = str | date | datetime | None
 
@@ -88,6 +91,21 @@ class ParticipantExportDataset:
     generated_at: datetime
     columns: tuple[ExportField, ...]
     rows: tuple[tuple[CellValue, ...], ...]
+
+
+def guardian_cells(
+    contacts: Sequence[queries.GuardianContact],
+) -> tuple[str | None, str | None]:
+    """`guardian.name` and `guardian.phone` cells (GAP-4) built from the one
+    stable guardian list, position by position: the n-th phone always
+    belongs to the n-th name. A guardian without a phone keeps its position
+    as `MISSING_GUARDIAN_PHONE` rather than being dropped. No guardian →
+    both cells empty."""
+    if not contacts:
+        return None, None
+    names = "; ".join(contact.name for contact in contacts)
+    phones = "; ".join(contact.phone or MISSING_GUARDIAN_PHONE for contact in contacts)
+    return names, phones
 
 
 def _validate_context_filters(request: ParticipantExportRequest) -> None:
@@ -284,11 +302,9 @@ def build_participant_export(
         if code == "event_participation.status":
             return person.participation_status
         if code == "guardian.name":
-            names = [g.name for g in guardians.get(person.person_id, [])]
-            return "; ".join(names) or None
+            return guardian_cells(guardians.get(person.person_id, []))[0]
         if code == "guardian.phone":
-            phones = [g.phone for g in guardians.get(person.person_id, []) if g.phone]
-            return "; ".join(phones) or None
+            return guardian_cells(guardians.get(person.person_id, []))[1]
         raise ValueError(f"Unhandled export field {code!r}")
 
     rows = tuple(tuple(cell(f.code, person) for f in columns) for person in persons)
@@ -302,11 +318,13 @@ def build_participant_export(
 
 __all__ = [
     "DEFAULT_MEMBERSHIP_STATUS",
+    "MISSING_GUARDIAN_PHONE",
     "CellValue",
     "ExportRequestError",
     "ExportTargetNotFoundError",
     "ParticipantExportDataset",
     "ParticipantExportRequest",
     "build_participant_export",
+    "guardian_cells",
     "validate_export_request",
 ]

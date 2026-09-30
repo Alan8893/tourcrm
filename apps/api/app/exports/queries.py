@@ -132,6 +132,10 @@ def list_export_persons(
     if context in ("club", "event"):
         stmt = stmt.where(_club_membership_exists(club_id=club_id, status=membership_status))
     elif context in ("group", "group_event"):
+        # GAP-2: the membership record here is GroupMembership only —
+        # ClubMembership.status is deliberately not filtered, so e.g. a
+        # `suspended` ClubMembership with an `active` GroupMembership stays
+        # included (participant-export-api.md §8).
         assert group_id is not None
         stmt = stmt.where(
             _group_membership_exists(club_id=club_id, group_id=group_id, status=membership_status)
