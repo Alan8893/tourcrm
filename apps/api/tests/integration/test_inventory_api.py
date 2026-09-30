@@ -146,7 +146,10 @@ def _record_first_movement(item_id: str, created_by: uuid.UUID) -> None:
     with session_scope() as session:
         session.add(
             InventoryMovement(
-                item_id=uuid.UUID(item_id), movement_type="receipt", created_by=created_by
+                quantity=1,
+                item_id=uuid.UUID(item_id),
+                movement_type="receipt",
+                created_by=created_by,
             )
         )
         session.commit()

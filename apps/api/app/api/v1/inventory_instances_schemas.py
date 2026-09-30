@@ -101,6 +101,8 @@ class InventoryMovementOut(BaseModel):
     movement_type: MovementTypeLiteral
     from_location_id: Optional[UUID]
     to_location_id: Optional[UUID]
+    # Quantity movements only (Slice 3); `null` for instance movements.
+    quantity: Optional[int]
     unit_cost_minor: Optional[int]
     comment: Optional[str]
     reverses_movement_id: Optional[UUID]

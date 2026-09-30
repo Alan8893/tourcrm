@@ -8,6 +8,7 @@ by app.inventory.service and passed in.
 
 from app.inventory.vocabulary import (
     ACCOUNTING_MODE_INSTANCE,
+    ACCOUNTING_MODE_QUANTITY,
     ACTIVE,
     ARCHIVED,
     CANONICAL_ACCOUNTING_MODES,
@@ -86,6 +87,38 @@ class ItemNotInstanceModeError(InventoryDomainError):
 
     def __init__(self) -> None:
         super().__init__("Instances can be created only for instance-mode items")
+
+
+class ItemNotQuantityModeError(InventoryDomainError):
+    """Stock movements exist only for `quantity`-mode nomenclature (§6)."""
+
+    def __init__(self) -> None:
+        super().__init__("Stock operations are available only for quantity-mode items")
+
+
+class InsufficientStockError(InventoryDomainError):
+    """§6: stock of a location can never become negative."""
+
+    def __init__(self, available: int, requested: int) -> None:
+        super().__init__(
+            f"Insufficient stock: {available} available, {requested} requested"
+        )
+        self.available = available
+        self.requested = requested
+
+
+class ItemHasStockError(InventoryDomainError):
+    """§17 п.4: a quantity item with non-zero stock cannot be archived."""
+
+    def __init__(self) -> None:
+        super().__init__("Item has non-zero stock")
+
+
+class LocationHasStockError(InventoryDomainError):
+    """§17 п.5: a storage location holding quantity stock cannot be archived."""
+
+    def __init__(self) -> None:
+        super().__init__("Storage location holds non-zero quantity stock")
 
 
 class ItemHasActiveInstancesError(InventoryDomainError):
@@ -174,6 +207,33 @@ def next_instance_state(state: str, movement_type: str) -> str:
 def ensure_instance_editable(state: str) -> None:
     if state == INSTANCE_WRITTEN_OFF:
         raise InstanceWrittenOffError()
+
+
+def ensure_quantity_mode(accounting_mode: str) -> None:
+    if accounting_mode != ACCOUNTING_MODE_QUANTITY:
+        raise ItemNotQuantityModeError()
+
+
+def validate_quantity(value: int) -> int:
+    """§6 п.1: a whole, positive number of units."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise InvalidInventoryDataError("quantity must be a positive integer")
+    return value
+
+
+def ensure_sufficient_stock(*, available: int, requested: int) -> None:
+    if requested > available:
+        raise InsufficientStockError(available, requested)
+
+
+def ensure_item_has_no_stock(*, total_stock: int) -> None:
+    if total_stock > 0:
+        raise ItemHasStockError()
+
+
+def ensure_location_has_no_stock(*, has_stock: bool) -> None:
+    if has_stock:
+        raise LocationHasStockError()
 
 
 def ensure_instance_mode(accounting_mode: str) -> None:
@@ -289,6 +349,15 @@ __all__ = [
     "LocationHasActiveChildrenError",
     "InvalidLocationParentError",
     "ItemNotInstanceModeError",
+    "ItemNotQuantityModeError",
+    "InsufficientStockError",
+    "ItemHasStockError",
+    "LocationHasStockError",
+    "ensure_quantity_mode",
+    "validate_quantity",
+    "ensure_sufficient_stock",
+    "ensure_item_has_no_stock",
+    "ensure_location_has_no_stock",
     "ItemHasActiveInstancesError",
     "LocationHasInstancesError",
     "InvalidInstanceTransitionError",

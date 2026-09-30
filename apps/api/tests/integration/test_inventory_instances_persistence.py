@@ -183,7 +183,10 @@ def test_repair_movements_require_an_instance(setup) -> None:
     with session_scope() as session:
         session.add(
             InventoryMovement(
-                item_id=setup.item_id, movement_type="repair_start", created_by=setup.user_id
+                quantity=1,
+                item_id=setup.item_id,
+                movement_type="repair_start",
+                created_by=setup.user_id,
             )
         )
         with pytest.raises(IntegrityError):
@@ -195,6 +198,7 @@ def test_unit_cost_only_on_receipt_and_non_negative(setup, movement_type, cost) 
     with session_scope() as session:
         session.add(
             InventoryMovement(
+                quantity=1,
                 item_id=setup.item_id,
                 movement_type=movement_type,
                 unit_cost_minor=cost,

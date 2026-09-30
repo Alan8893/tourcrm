@@ -15,6 +15,7 @@ from app.db.inventory import (
     InventoryCategory,
     InventoryInstance,
     InventoryItem,
+    InventoryItemStock,
     InventoryMovement,
     InventoryStorageLocation,
     InventoryUnit,
@@ -146,7 +147,81 @@ def list_instance_movements(session: Session, *, instance_id: uuid.UUID) -> list
     )
 
 
+def list_stock(
+    session: Session,
+    *,
+    club_id: uuid.UUID,
+    item_id: uuid.UUID | None,
+    storage_location_id: uuid.UUID | None,
+    page: int,
+    page_size: int,
+) -> tuple[list[InventoryItemStock], int]:
+    """Non-zero stock rows of quantity items (Slice 3), ordered by item and
+    location."""
+    conditions: list[sa.ColumnElement[bool]] = [
+        InventoryItem.club_id == club_id,
+        InventoryItemStock.quantity > 0,
+    ]
+    if item_id is not None:
+        conditions.append(InventoryItemStock.item_id == item_id)
+    if storage_location_id is not None:
+        conditions.append(InventoryItemStock.storage_location_id == storage_location_id)
+    joined = (
+        sa.select(InventoryItemStock)
+        .join(InventoryItem, InventoryItem.id == InventoryItemStock.item_id)
+        .where(*conditions)
+    )
+    total = session.execute(sa.select(sa.func.count()).select_from(joined.subquery())).scalar_one()
+    rows = (
+        session.execute(
+            joined.order_by(InventoryItemStock.item_id, InventoryItemStock.storage_location_id)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows), total
+
+
+def list_item_movements(
+    session: Session,
+    *,
+    item_id: uuid.UUID,
+    storage_location_id: uuid.UUID | None,
+    page: int,
+    page_size: int,
+) -> tuple[list[InventoryMovement], int]:
+    """Chronological history of one item (§13); with `storage_location_id`
+    only the movements from or to that location."""
+    conditions: list[sa.ColumnElement[bool]] = [InventoryMovement.item_id == item_id]
+    if storage_location_id is not None:
+        conditions.append(
+            sa.or_(
+                InventoryMovement.from_location_id == storage_location_id,
+                InventoryMovement.to_location_id == storage_location_id,
+            )
+        )
+    total = session.execute(
+        sa.select(sa.func.count()).select_from(InventoryMovement).where(*conditions)
+    ).scalar_one()
+    rows = (
+        session.execute(
+            sa.select(InventoryMovement)
+            .where(*conditions)
+            .order_by(InventoryMovement.created_at, InventoryMovement.id)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows), total
+
+
 __all__ = [
+    "list_stock",
+    "list_item_movements",
     "get_record",
     "list_records",
     "get_instance",
