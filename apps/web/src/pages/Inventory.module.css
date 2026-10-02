@@ -140,8 +140,155 @@
   font-size: var(--font-size-lg);
 }
 
+/* --- contextual actions ------------------------------------------------ */
+
+/* A group of operation buttons on a card, a section or a page header;
+   wraps instead of widening the page on a phone. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.pageActions {
+  margin-bottom: var(--space-5);
+}
+
+.cardActions {
+  composes: actions;
+  margin-top: var(--space-3);
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.sectionHeader .sectionTitle {
+  margin: 0;
+}
+
+.treeActions {
+  composes: actions;
+  margin-left: auto;
+}
+
+.muted {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+/* --- forms (inside the shared Dialog) ---------------------------------- */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.form select,
+.form input,
+.form textarea {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.form select {
+  text-overflow: ellipsis;
+}
+
+.textarea {
+  min-height: 80px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font: inherit;
+  resize: vertical;
+}
+
+.textarea:focus-visible {
+  border-color: var(--color-accent);
+}
+
+.formError {
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-danger);
+  background: var(--color-danger-soft);
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.formActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.legend {
+  padding: 0 var(--space-1);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.checkList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.checkItem {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.checkItem input {
+  width: auto;
+  margin-top: 3px;
+  flex: none;
+}
+
+/* --- issue detail ------------------------------------------------------- */
+
+.removedLine {
+  opacity: 0.75;
+}
+
 @media (max-width: 767.98px) {
   .tree .tree {
     padding-left: var(--space-3);
+  }
+
+  .formActions > * {
+    flex: 1 1 auto;
   }
 }

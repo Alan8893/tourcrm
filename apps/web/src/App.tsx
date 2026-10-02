@@ -21,6 +21,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { InventoryPage } from "./pages/InventoryPage";
 import { InventoryItemPage } from "./pages/InventoryItemPage";
 import { InventoryInstancePage } from "./pages/InventoryInstancePage";
+import { InventoryIssuePage } from "./pages/InventoryIssuePage";
 import { NewsListPage } from "./pages/NewsListPage";
 import { NewsDetailPage } from "./pages/NewsDetailPage";
 import { NewsManagePage } from "./pages/NewsManagePage";
@@ -94,6 +95,7 @@ export function App() {
                 <Route path="inventory" element={<InventoryPage />} />
                 <Route path="inventory/items/:itemId" element={<InventoryItemPage />} />
                 <Route path="inventory/instances/:instanceId" element={<InventoryInstancePage />} />
+                <Route path="inventory/issues/:issueId" element={<InventoryIssuePage />} />
               </Route>
               <Route element={<SectionGuard section="settings" />}>
                 <Route path="settings" element={<SettingsPage />} />

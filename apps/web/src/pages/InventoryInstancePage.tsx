@@ -1,6 +1,13 @@
+import { useState } from "react";
 import { useParams } from "react-router-dom";
 
-import { useInventoryInstance, useInventoryInstanceMovements } from "../api/inventory";
+import {
+  useInventoryInstance,
+  useInventoryInstanceMovements,
+  type InventoryInstance,
+  type InventoryMovement,
+} from "../api/inventory";
+import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Loading } from "../components/ui/Loading";
@@ -9,12 +16,71 @@ import { StatusBadge } from "../components/ui/StatusBadge";
 import { locationPath } from "../domain/inventoryFormat";
 import { instanceStateIcon, instanceStateLabel } from "../domain/statusMapping";
 import { unitName, useInventoryLookups } from "../hooks/useInventoryLookups";
+import {
+  InstanceEditDialog,
+  InstanceRepairDialog,
+  InstanceTransferDialog,
+  InstanceWriteOffDialog,
+  ReverseWriteOffDialog,
+} from "./InventoryForms";
 import { InventoryQueryError, MetaList, MovementList } from "./InventoryShared";
 import styles from "./Inventory.module.css";
 
-/** One instance (Inventory ID): its identity, state and location, then
- * its chronological movement history. */
+type InstanceOperation =
+  | { kind: "edit" | "transfer" | "repair-start" | "repair-end" | "write-off" }
+  | { kind: "reverse"; movement: InventoryMovement };
+
+/** Operations offered for the instance's current state, as documented in
+ * docs/04-domain/inventory.md §7.4 (state and location are never edited
+ * directly). An issued instance is operated from its issue. The backend
+ * re-checks every transition. */
+function InstanceActions({
+  instance,
+  onOperation,
+}: {
+  instance: InventoryInstance;
+  onOperation: (operation: InstanceOperation) => void;
+}) {
+  switch (instance.state) {
+    case "available":
+    case "in_repair":
+      return (
+        <div className={`${styles.actions} ${styles.pageActions}`} role="group" aria-label="Операции с экземпляром">
+          <Button variant="primary" onClick={() => onOperation({ kind: "transfer" })}>
+            Переместить
+          </Button>
+          {instance.state === "available" ? (
+            <Button variant="secondary" onClick={() => onOperation({ kind: "repair-start" })}>
+              В ремонт
+            </Button>
+          ) : (
+            <Button variant="secondary" onClick={() => onOperation({ kind: "repair-end" })}>
+              Завершить ремонт
+            </Button>
+          )}
+          <Button variant="secondary" icon="action.edit" onClick={() => onOperation({ kind: "edit" })}>
+            Изменить
+          </Button>
+          <Button variant="destructive" onClick={() => onOperation({ kind: "write-off" })}>
+            Списать
+          </Button>
+        </div>
+      );
+    case "issued":
+      return (
+        <p className={styles.muted}>
+          Экземпляр выдан. Возврат и утеря оформляются в карточке выдачи (вкладка «Выдачи»).
+        </p>
+      );
+    case "written_off":
+      return <p className={styles.muted}>Экземпляр списан. Отменить ошибочное списание можно в истории движений.</p>;
+  }
+}
+
+/** One instance (Inventory ID): its identity, state and location, its
+ * operations, then its chronological movement history. */
 export function InventoryInstancePage() {
+  const [operation, setOperation] = useState<InstanceOperation | null>(null);
   const { instanceId } = useParams<{ instanceId: string }>();
   const instanceQuery = useInventoryInstance(instanceId);
   const movementsQuery = useInventoryInstanceMovements(instanceId);
@@ -51,9 +117,16 @@ export function InventoryInstancePage() {
   }
   const instance = instanceQuery.data;
   if (!instance) return null;
+  const close = () => setOperation(null);
+  const reversed = new Set((movementsQuery.data ?? []).map((movement) => movement.reverses_movement_id));
+  // The latest write-off of a written-off instance is the one to reverse.
+  const lastWriteOff =
+    instance.state === "written_off"
+      ? [...(movementsQuery.data ?? [])].reverse().find((movement) => movement.movement_type === "write_off")
+      : undefined;
 
   return (
-    <div>
+    <div className={styles.page}>
       <PageHeader
         title={instance.inventory_number}
         description={item?.name}
@@ -62,6 +135,7 @@ export function InventoryInstancePage() {
           <StatusBadge status={instanceStateIcon(instance.state)} label={instanceStateLabel(instance.state)} />
         }
       />
+      <InstanceActions instance={instance} onOperation={setOperation} />
       <Card>
         <MetaList
           entries={[
@@ -88,9 +162,38 @@ export function InventoryInstancePage() {
           <EmptyState illustration="empty-inventory" title="Движений пока нет" />
         ) : null}
         {movementsQuery.isSuccess && movementsQuery.data.length > 0 ? (
-          <MovementList movements={movementsQuery.data} lookups={lookups} unit={unitName(item, lookups)} />
+          <MovementList
+            movements={movementsQuery.data}
+            lookups={lookups}
+            unit={unitName(item, lookups)}
+            actions={(movement) =>
+              movement.movement_type !== "write_off" ? null : reversed.has(movement.id) ? (
+                <span className={styles.muted}>Списание отменено</span>
+              ) : movement.id === lastWriteOff?.id ? (
+                <Button variant="secondary" onClick={() => setOperation({ kind: "reverse", movement })}>
+                  Отменить списание
+                </Button>
+              ) : null
+            }
+          />
         ) : null}
       </section>
+      {operation?.kind === "edit" ? <InstanceEditDialog instance={instance} onClose={close} /> : null}
+      {operation?.kind === "transfer" ? (
+        <InstanceTransferDialog instance={instance} lookups={lookups} onClose={close} />
+      ) : null}
+      {operation?.kind === "repair-start" || operation?.kind === "repair-end" ? (
+        <InstanceRepairDialog instance={instance} action={operation.kind} onClose={close} />
+      ) : null}
+      {operation?.kind === "write-off" ? <InstanceWriteOffDialog instance={instance} onClose={close} /> : null}
+      {operation?.kind === "reverse" ? (
+        <ReverseWriteOffDialog
+          movement={operation.movement}
+          accountingMode="instance"
+          lookups={lookups}
+          onClose={close}
+        />
+      ) : null}
     </div>
   );
 }
