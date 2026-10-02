@@ -4,6 +4,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
+import buttonStyles from "../components/ui/Button.module.css";
+import { Icon } from "../components/ui/Icon";
 import { Stepper } from "../components/ui/Stepper";
 import { Loading } from "../components/ui/Loading";
 import { ErrorState } from "../components/ui/ErrorState";
@@ -26,6 +28,16 @@ import {
 } from "../api/imports";
 import type { StatusIconId } from "../assets/icons";
 import styles from "./ImportExport.module.css";
+
+/** Downloadable import templates (Issue #228): static files holding only
+ * the canonical header row, generated from the backend import contract
+ * (`python -m app.cli.generate_import_templates`, apps/api) and guarded
+ * by tests/unit/test_import_templates.py — the frontend keeps no column
+ * list of its own. */
+const IMPORT_TEMPLATES = [
+  { href: "/templates/participant-import-template.csv", label: "Скачать пример CSV" },
+  { href: "/templates/participant-import-template.xlsx", label: "Скачать пример XLSX" },
+] as const;
 
 /**
  * Participant Import — «Люди → Импорт» (TH-0118.5, docs/04-ux/
@@ -229,6 +241,25 @@ function UploadStep({ onUploaded }: { onUploaded: (importId: string) => void }) 
           представители импортом не назначаются.
         </li>
       </ul>
+      <div className={styles.templateActions}>
+        <p className={styles.muted}>
+          Шаблоны содержат только строку заголовков. Добавьте под ней строки с данными участников
+          и загрузите файл ниже.
+        </p>
+        <div className={styles.actionsStart}>
+          {IMPORT_TEMPLATES.map((template) => (
+            <a
+              key={template.href}
+              href={template.href}
+              download
+              className={`${buttonStyles.button} ${buttonStyles.secondary} ${styles.templateLink}`}
+            >
+              <Icon id="action.download" size={20} />
+              {template.label}
+            </a>
+          ))}
+        </div>
+      </div>
       <form
         className={styles.panel}
         onSubmit={(event) => {
