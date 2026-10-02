@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import { apiFetch, ApiError, type CollectionResponse } from "./client";
 
@@ -130,10 +130,12 @@ export function useInventoryUnits() {
   });
 }
 
-export function useInventoryStorageLocations(status: InventoryStatusFilter = "all") {
+/** Every storage location, active and archived — the tree and the
+ * id → name lookup; status filtering happens on this one list. */
+export function useInventoryStorageLocations() {
   return useQuery<InventoryStorageLocation[], ApiError>({
-    queryKey: ["inventory", "storage-locations", status],
-    queryFn: () => fetchAllPages<InventoryStorageLocation>("/inventory/storage-locations", { status }),
+    queryKey: ["inventory", "storage-locations", "all"],
+    queryFn: () => fetchAllPages<InventoryStorageLocation>("/inventory/storage-locations", { status: "all" }),
   });
 }
 
@@ -152,6 +154,7 @@ export function useInventoryItems(params: { status: InventoryStatusFilter; page:
       apiFetch<CollectionResponse<InventoryItem>>(
         `/inventory/items?${queryString({ ...params, page_size: INVENTORY_PAGE_SIZE })}`,
       ),
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -175,16 +178,16 @@ export function useInventoryStock(params: { itemId: string; locationId: string; 
           page_size: INVENTORY_PAGE_SIZE,
         })}`,
       ),
+    placeholderData: keepPreviousData,
   });
 }
 
+/** Every non-zero stock row of one quantity item — all pages, so an
+ * item held in more locations than one page is never cut off. */
 export function useInventoryItemStock(itemId: string | undefined) {
-  return useQuery<CollectionResponse<InventoryStock>, ApiError>({
+  return useQuery<InventoryStock[], ApiError>({
     queryKey: ["inventory", "items", "stock", itemId],
-    queryFn: () =>
-      apiFetch<CollectionResponse<InventoryStock>>(
-        `/inventory/items/${itemId}/stock?page_size=${MAX_PAGE_SIZE}`,
-      ),
+    queryFn: () => fetchAllPages<InventoryStock>(`/inventory/items/${itemId}/stock`),
     enabled: Boolean(itemId),
   });
 }
@@ -197,6 +200,7 @@ export function useInventoryItemMovements(itemId: string | undefined, page: numb
         `/inventory/items/${itemId}/movements?${queryString({ page, page_size: INVENTORY_PAGE_SIZE })}`,
       ),
     enabled: Boolean(itemId),
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -207,7 +211,7 @@ export function useInventoryInstances(params: {
   page: number;
 }) {
   return useQuery<CollectionResponse<InventoryInstance>, ApiError>({
-    queryKey: ["inventory", "instances", params.itemId, params.state, params.locationId, params.page],
+    queryKey: ["inventory", "instances", "list", params.itemId, params.state, params.locationId, params.page],
     queryFn: () =>
       apiFetch<CollectionResponse<InventoryInstance>>(
         `/inventory/instances?${queryString({
@@ -218,6 +222,7 @@ export function useInventoryInstances(params: {
           page_size: INVENTORY_PAGE_SIZE,
         })}`,
       ),
+    placeholderData: keepPreviousData,
   });
 }
 

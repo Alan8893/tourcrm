@@ -4,7 +4,6 @@ import { Link, useSearchParams } from "react-router-dom";
 import {
   useInventoryItems,
   useInventoryStock,
-  useInventoryStorageLocations,
   type InstanceState,
   type InventoryStatusFilter,
 } from "../api/inventory";
@@ -21,17 +20,16 @@ import {
   accountingModeLabel,
   buildLocationTree,
   formatCostMinor,
+  formatQuantity,
+  isInventoryTab,
   locationPath,
-  recordStatusIcon,
-  recordStatusLabel,
+  type InventoryTab,
   type LocationTreeNode,
 } from "../domain/inventoryFormat";
+import { recordStatusIcon, recordStatusLabel } from "../domain/statusMapping";
 import { unitName, useInventoryLookups, type InventoryLookups } from "../hooks/useInventoryLookups";
 import { InstanceList, InventoryQueryError, MetaList } from "./InventoryShared";
 import styles from "./Inventory.module.css";
-
-const TABS = ["items", "locations", "stock", "instances"] as const;
-type TabId = (typeof TABS)[number];
 
 const STATUS_OPTIONS: FilterOption[] = [
   { value: "active", label: "Активные" },
@@ -39,18 +37,15 @@ const STATUS_OPTIONS: FilterOption[] = [
   { value: "all", label: "Все" },
 ];
 
-function isTabId(value: string | null): value is TabId {
-  return TABS.includes(value as TabId);
-}
-
 /** «Склад» (docs/04-domain/inventory.md, Administrator only): a
  * read-only overview of the existing inventory backend — items, storage
  * locations, quantity stock and instances. The active tab lives in the
- * URL so Back from an item returns to the same tab. */
+ * URL so Back from an item returns to the same tab; links to an item
+ * also carry it as router state for the item page's «← Склад» link. */
 export function InventoryPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get("tab");
-  const activeTab: TabId = isTabId(tabParam) ? tabParam : "items";
+  const activeTab: InventoryTab = isInventoryTab(tabParam) ? tabParam : "items";
   const { lookups, isLoading, error, refetch } = useInventoryLookups();
 
   function selectTab(id: string) {
@@ -71,7 +66,7 @@ export function InventoryPage() {
           onChange={selectTab}
           items={[
             { id: "items", label: "Номенклатура", content: <ItemsTab lookups={lookups} /> },
-            { id: "locations", label: "Места хранения", content: <LocationsTab /> },
+            { id: "locations", label: "Места хранения", content: <LocationsTab lookups={lookups} /> },
             { id: "stock", label: "Остатки", content: <StockTab lookups={lookups} /> },
             { id: "instances", label: "Экземпляры", content: <InstancesTab lookups={lookups} /> },
           ]}
@@ -109,7 +104,7 @@ function ItemsTab({ lookups }: { lookups: InventoryLookups }) {
       ) : null}
       {query.isSuccess && query.data.items.length === 0 ? (
         <EmptyState
-          illustration={status === "active" ? "empty-groups" : "no-results"}
+          illustration={status === "active" ? "empty-inventory" : "no-results"}
           title={status === "active" ? "Номенклатуры пока нет" : "Ничего не найдено"}
           description={
             status === "active"
@@ -126,7 +121,11 @@ function ItemsTab({ lookups }: { lookups: InventoryLookups }) {
                 <Card>
                   <div className={styles.rowHeader}>
                     <h3 className={styles.rowTitle}>
-                      <Link to={`/inventory/items/${item.id}`} className={styles.rowTitleLink}>
+                      <Link
+                        to={`/inventory/items/${item.id}`}
+                        state={{ inventoryTab: "items" }}
+                        className={styles.rowTitleLink}
+                      >
                         {item.name}
                       </Link>
                     </h3>
@@ -159,9 +158,13 @@ function ItemsTab({ lookups }: { lookups: InventoryLookups }) {
   );
 }
 
-function LocationsTab() {
+function LocationsTab({ lookups }: { lookups: InventoryLookups }) {
   const [status, setStatus] = useState<InventoryStatusFilter>("active");
-  const query = useInventoryStorageLocations(status);
+  // The lookups already hold every location (active and archived); the
+  // status filter narrows that one list instead of a second request.
+  const locations = [...lookups.locations.values()].filter(
+    (location) => status === "all" || location.status === status,
+  );
 
   return (
     <div>
@@ -173,17 +176,9 @@ function LocationsTab() {
           onChange={(value) => setStatus(value as InventoryStatusFilter)}
         />
       </div>
-      {query.isLoading ? <Loading label="Загружаем места хранения…" /> : null}
-      {query.isError ? (
-        <InventoryQueryError
-          error={query.error}
-          title="Не удалось загрузить места хранения"
-          onRetry={() => void query.refetch()}
-        />
-      ) : null}
-      {query.isSuccess && query.data.length === 0 ? (
+      {locations.length === 0 ? (
         <EmptyState
-          illustration={status === "active" ? "empty-groups" : "no-results"}
+          illustration={status === "active" ? "empty-inventory" : "no-results"}
           title={status === "active" ? "Мест хранения пока нет" : "Ничего не найдено"}
           description={
             status === "active"
@@ -191,15 +186,30 @@ function LocationsTab() {
               : "Попробуйте выбрать другой статус."
           }
         />
-      ) : null}
-      {query.isSuccess && query.data.length > 0 ? (
-        <LocationTree nodes={buildLocationTree(query.data)} label="Места хранения" />
-      ) : null}
+      ) : (
+        <LocationTree
+          nodes={buildLocationTree(locations)}
+          lookups={lookups}
+          label="Места хранения"
+          topLevel
+        />
+      )}
     </div>
   );
 }
 
-function LocationTree({ nodes, label }: { nodes: LocationTreeNode[]; label?: string }) {
+type LocationTreeProps = {
+  nodes: LocationTreeNode[];
+  lookups: InventoryLookups;
+  label?: string;
+  /** The tree's own roots (not a nested child list). */
+  topLevel?: boolean;
+};
+
+/** A top-level node whose parent is outside the current selection (e.g.
+ * an archived shelf of an active rack under «В архиве») shows its
+ * parent's full path, so its place in the hierarchy is never lost. */
+function LocationTree({ nodes, lookups, label, topLevel = false }: LocationTreeProps) {
   return (
     <ul className={styles.tree} aria-label={label}>
       {nodes.map((node) => (
@@ -209,8 +219,13 @@ function LocationTree({ nodes, label }: { nodes: LocationTreeNode[]; label?: str
             {node.location.status === "archived" ? (
               <StatusBadge status={recordStatusIcon("archived")} label={recordStatusLabel("archived")} />
             ) : null}
+            {topLevel && node.location.parent_id ? (
+              <span className={styles.treeContext}>
+                {`Входит в: ${locationPath(node.location.parent_id, lookups.locations)}`}
+              </span>
+            ) : null}
           </div>
-          {node.children.length > 0 ? <LocationTree nodes={node.children} /> : null}
+          {node.children.length > 0 ? <LocationTree nodes={node.children} lookups={lookups} /> : null}
         </li>
       ))}
     </ul>
@@ -280,7 +295,7 @@ function StockTab({ lookups }: { lookups: InventoryLookups }) {
       ) : null}
       {query.isSuccess && query.data.items.length === 0 ? (
         <EmptyState
-          illustration={filtered ? "no-results" : "empty-groups"}
+          illustration={filtered ? "no-results" : "empty-inventory"}
           title={filtered ? "Ничего не найдено" : "Остатков пока нет"}
           description={
             filtered
@@ -299,12 +314,16 @@ function StockTab({ lookups }: { lookups: InventoryLookups }) {
                   <Card>
                     <div className={styles.rowHeader}>
                       <h3 className={styles.rowTitle}>
-                        <Link to={`/inventory/items/${row.item_id}`} className={styles.rowTitleLink}>
+                        <Link
+                          to={`/inventory/items/${row.item_id}`}
+                          state={{ inventoryTab: "stock" }}
+                          className={styles.rowTitleLink}
+                        >
                           {item?.name ?? "Позиция"}
                         </Link>
                       </h3>
                       <span className={styles.quantity}>
-                        {`${row.quantity} ${unitName(item, lookups)}`.trim()}
+                        {formatQuantity(row.quantity, unitName(item, lookups))}
                       </span>
                     </div>
                     <MetaList

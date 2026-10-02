@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("renders exactly the seven approved navigation items, the brand logo and a profile area, and lands on Home", async () => {
+  it("renders exactly the eight approved navigation items, the brand logo and a profile area, and lands on Home", async () => {
     stubFetch([
       { match: "/auth/me", response: meResponse() },
       {
@@ -49,10 +49,11 @@ describe("App", () => {
       "События",
       "Достижения",
       "Отчёты",
+      "Склад",
       "Настройки",
     ];
     const links = within(nav).getAllByRole("link");
-    expect(links).toHaveLength(7);
+    expect(links).toHaveLength(8);
     expectedItems.forEach((label) => {
       expect(within(nav).getByRole("link", { name: label })).toBeInTheDocument();
     });

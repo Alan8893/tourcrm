@@ -14,11 +14,11 @@ import { StatusBadge } from "../components/ui/StatusBadge";
 import {
   formatCostMinor,
   formatMovementDate,
-  instanceStateIcon,
-  instanceStateLabel,
+  formatQuantity,
   locationPath,
   movementTypeLabel,
 } from "../domain/inventoryFormat";
+import { instanceStateIcon, instanceStateLabel } from "../domain/statusMapping";
 import type { InventoryLookups } from "../hooks/useInventoryLookups";
 import styles from "./Inventory.module.css";
 
@@ -26,13 +26,24 @@ export type InventoryQueryErrorProps = {
   error: ApiError;
   title: string;
   onRetry: () => void;
+  /** On a detail page: the path parameter (`item_id`, `instance_id`)
+   * whose `422 validation_error` — an id that is not a UUID — means the
+   * record cannot exist, so it is shown as «не найдено», not retried. */
+  pathParam?: string;
 };
+
+function isInvalidPathParam(error: ApiError, pathParam: string | undefined): boolean {
+  if (!pathParam || error.status !== 422 || error.code !== "validation_error") return false;
+  const fields = (error.details as { fields?: Array<{ field?: string }> } | undefined)?.fields;
+  return Array.isArray(fields) && fields.some((entry) => entry.field === pathParam);
+}
 
 /** Error state of an inventory request: `403` gets the standard
  * forbidden illustration (Administrator-only section); `401` means the
  * session ended, so the shell's `/auth/me` is re-checked and AppShell
- * hands the visitor to `/login`; anything else can be retried. */
-export function InventoryQueryError({ error, title, onRetry }: InventoryQueryErrorProps) {
+ * hands the visitor to `/login`; `404` (or an invalid id in the path)
+ * is «не найдено»; anything else can be retried. */
+export function InventoryQueryError({ error, title, onRetry, pathParam }: InventoryQueryErrorProps) {
   const queryClient = useQueryClient();
   const unauthenticated = error.status === 401;
 
@@ -49,7 +60,7 @@ export function InventoryQueryError({ error, title, onRetry }: InventoryQueryErr
       />
     );
   }
-  if (error.status === 404) {
+  if (error.status === 404 || isInvalidPathParam(error, pathParam)) {
     return <ErrorState illustration="404" title={title} description="Запись не найдена." />;
   }
   return (
@@ -103,7 +114,7 @@ export function MovementList({ movements, lookups, unit }: MovementListProps) {
           entries.push({ label: "Куда", value: locationPath(movement.to_location_id, lookups.locations) });
         }
         if (movement.quantity !== null) {
-          entries.push({ label: "Количество", value: `${movement.quantity} ${unit}`.trim() });
+          entries.push({ label: "Количество", value: formatQuantity(movement.quantity, unit) });
         }
         if (movement.movement_type === "receipt" && movement.unit_cost_minor !== null) {
           entries.push({ label: "Стоимость за единицу", value: formatCostMinor(movement.unit_cost_minor) });
@@ -156,7 +167,7 @@ export function InstanceList({ lookups, filters, filtered, showItem, onPageChang
   if (query.data.items.length === 0) {
     return (
       <EmptyState
-        illustration={filtered ? "no-results" : "empty-groups"}
+        illustration={filtered ? "no-results" : "empty-inventory"}
         title={filtered ? "Ничего не найдено" : "Экземпляров пока нет"}
         description={
           filtered

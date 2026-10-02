@@ -42,6 +42,7 @@ const LOCATIONS = [
   { id: "l1", parent_id: null, name: "Склад клуба", status: "active" },
   { id: "l2", parent_id: "l1", name: "Стеллаж А", status: "active" },
   { id: "l3", parent_id: null, name: "Старый подвал", status: "archived" },
+  { id: "l4", parent_id: "l1", name: "Полка Б", status: "archived" },
 ];
 const ROPE = {
   id: "i-rope",
@@ -103,9 +104,7 @@ function inventoryApi(overrides: Router = () => undefined): Router {
       case "/api/v1/inventory/units":
         return { body: page(UNITS) };
       case "/api/v1/inventory/storage-locations":
-        return {
-          body: page(search.get("status") === "active" ? LOCATIONS.filter((l) => l.status === "active") : LOCATIONS),
-        };
+        return { body: page(LOCATIONS) };
       case "/api/v1/inventory/items":
         return { body: page([ROPE, JUMAR]) };
       default:
@@ -147,6 +146,17 @@ function requestedInventory(fetchMock: ReturnType<typeof stubApi>) {
   return fetchMock.mock.calls.some(([input]) => String(input).includes("/inventory"));
 }
 
+/** Query parameters of every request made to `path`, in order. */
+function requestParams(fetchMock: ReturnType<typeof stubApi>, path: string): URLSearchParams[] {
+  return fetchMock.mock.calls
+    .map(([input]) => new URL(String(input), "http://localhost"))
+    .filter((url) => url.pathname === path)
+    .map((url) => url.searchParams);
+}
+
+/** Russian digit grouping uses a (narrow) no-break space. */
+const GROUPED_1234567 = /^1[\s\u00a0\u202f]234[\s\u00a0\u202f]567 м$/;
+
 /** The App's QueryClient retries a failed query once (after ~1 s) before
  * reporting the error. */
 const RETRIED = { timeout: 5000 };
@@ -166,23 +176,61 @@ describe("Inventory — access", () => {
   });
 
   it.each([["instructor"], ["member"], ["guardian"]])(
-    "%s gets the 403 state and no inventory request is made",
+    "%s gets the 403 state, no «Склад» navigation item and no inventory request",
     async (role) => {
       const fetchMock = stubApi([role], inventoryApi());
       await renderAt("/inventory");
 
       expect(await screen.findByText("Раздел недоступен")).toBeInTheDocument();
       expect(screen.queryByRole("heading", { name: "Склад" })).not.toBeInTheDocument();
+      const nav = screen.getByRole("navigation", { name: "Основная навигация" });
+      expect(within(nav).queryByRole("link", { name: "Склад" })).not.toBeInTheDocument();
       expect(requestedInventory(fetchMock)).toBe(false);
     },
   );
 
-  it("does not add «Склад» to any role's navigation", async () => {
+  it.each([
+    ["instructor", "/inventory/items/i-rope"],
+    ["member", "/inventory/items/i-rope"],
+    ["guardian", "/inventory/items/i-rope"],
+    ["instructor", "/inventory/instances/inst-1"],
+    ["member", "/inventory/instances/inst-1"],
+    ["guardian", "/inventory/instances/inst-1"],
+  ])("%s gets the 403 state on %s and no inventory request", async (role, path) => {
+    const fetchMock = stubApi([role], inventoryApi());
+    await renderAt(path);
+
+    expect(await screen.findByText("Раздел недоступен")).toBeInTheDocument();
+    expect(requestedInventory(fetchMock)).toBe(false);
+  });
+
+  it("Administrator sees «Склад» in the navigation between «Отчёты» and «Настройки»", async () => {
     stubApi(["admin"], inventoryApi());
     await renderAt("/inventory");
 
     const nav = await screen.findByRole("navigation", { name: "Основная навигация" });
-    expect(within(nav).queryByRole("link", { name: "Склад" })).not.toBeInTheDocument();
+    const labels = within(nav).getAllByRole("link").map((link) => link.textContent);
+    expect(labels.slice(labels.indexOf("Отчёты"), labels.indexOf("Отчёты") + 3)).toEqual([
+      "Отчёты",
+      "Склад",
+      "Настройки",
+    ]);
+    const inventoryLink = within(nav).getByRole("link", { name: "Склад" });
+    expect(inventoryLink).toHaveAttribute("href", "/inventory");
+    expect(inventoryLink).toHaveAttribute("aria-current", "page");
+    expect(inventoryLink.querySelector("img")?.getAttribute("src")).toBe(
+      "/assets/ui/icons/navigation/inventory/inventory_24px.webp",
+    );
+  });
+
+  it("multi-role Guardian + Administrator opens «Склад»", async () => {
+    stubApi(["guardian", "admin"], inventoryApi());
+    await renderAt("/inventory");
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Склад" })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Основная навигация" });
+    expect(within(nav).getByRole("link", { name: "Склад" })).toBeInTheDocument();
+    expect(screen.queryByText("Раздел недоступен")).not.toBeInTheDocument();
   });
 
   it("sends an unauthenticated visitor to /login", async () => {
@@ -247,7 +295,10 @@ describe("Inventory — states", () => {
     stubApi(["admin"], inventoryApi((path) => (path === "/api/v1/inventory/items" ? { body: page([]) } : undefined)));
     await renderAt("/inventory");
 
-    expect(await screen.findByText("Номенклатуры пока нет")).toBeInTheDocument();
+    const title = await screen.findByText("Номенклатуры пока нет");
+    expect(title.parentElement?.querySelector("img")?.getAttribute("src")).toBe(
+      "/assets/ui/illustrations/empty-inventory_128px.webp",
+    );
   });
 
   it("shows an error state and retries", async () => {
@@ -471,5 +522,219 @@ describe("Inventory — item pages and movement history", () => {
 
     expect(await screen.findByText("Движений пока нет")).toBeInTheDocument();
     expect(screen.getByText("Остатка нет")).toBeInTheDocument();
+  });
+});
+
+describe("Inventory — filters, pagination and review fixes", () => {
+  it("requests the next items page through Pagination", async () => {
+    const fetchMock = stubApi(
+      ["admin"],
+      inventoryApi((path, search) => {
+        if (path !== "/api/v1/inventory/items" || search.get("page_size") === "200") return undefined;
+        const pageNumber = Number(search.get("page"));
+        return { body: page([pageNumber === 1 ? ROPE : JUMAR], pageNumber, 2) };
+      }),
+    );
+    await renderAt("/inventory");
+
+    await screen.findByRole("link", { name: "Верёвка 10 мм" });
+    await userEvent.click(screen.getByRole("button", { name: "Далее" }));
+    expect(await screen.findByRole("link", { name: "Жумар" })).toBeInTheDocument();
+    const last = requestParams(fetchMock, "/api/v1/inventory/items").at(-1);
+    expect(last?.get("page")).toBe("2");
+    expect(last?.get("page_size")).toBe("20");
+    expect(last?.get("status")).toBe("active");
+  });
+
+  it("sends the stock filters item_id and storage_location_id", async () => {
+    const fetchMock = stubApi(
+      ["admin"],
+      inventoryApi((path) => (path === "/api/v1/inventory/stock" ? { body: page([]) } : undefined)),
+    );
+    await renderAt("/inventory?tab=stock");
+
+    await userEvent.selectOptions(await screen.findByLabelText("Номенклатура"), "i-rope");
+    await userEvent.selectOptions(screen.getByLabelText("Место хранения"), "l2");
+    await waitFor(() => {
+      const last = requestParams(fetchMock, "/api/v1/inventory/stock").at(-1);
+      expect(last?.get("item_id")).toBe("i-rope");
+      expect(last?.get("storage_location_id")).toBe("l2");
+      expect(last?.get("page")).toBe("1");
+    });
+  });
+
+  it("sends the instance filters item_id, state=written_off and storage_location_id", async () => {
+    const fetchMock = stubApi(
+      ["admin"],
+      inventoryApi((path) => (path === "/api/v1/inventory/instances" ? { body: page([]) } : undefined)),
+    );
+    await renderAt("/inventory?tab=instances");
+
+    await userEvent.selectOptions(await screen.findByLabelText("Номенклатура"), "i-jumar");
+    await userEvent.selectOptions(screen.getByLabelText("Состояние"), "written_off");
+    await userEvent.selectOptions(screen.getByLabelText("Место хранения"), "l2");
+    await waitFor(() => {
+      const last = requestParams(fetchMock, "/api/v1/inventory/instances").at(-1);
+      expect(last?.get("item_id")).toBe("i-jumar");
+      expect(last?.get("state")).toBe("written_off");
+      expect(last?.get("storage_location_id")).toBe("l2");
+    });
+  });
+
+  it("filters storage locations without a second request and keeps an archived node's place", async () => {
+    const fetchMock = stubApi(["admin"], inventoryApi());
+    await renderAt("/inventory?tab=locations");
+
+    await screen.findByRole("list", { name: "Места хранения" });
+    await userEvent.selectOptions(screen.getByLabelText("Статус"), "archived");
+    const tree = screen.getByRole("list", { name: "Места хранения" });
+    expect(within(tree).getByText("Полка Б")).toBeInTheDocument();
+    expect(within(tree).getByText("Входит в: Склад клуба")).toBeInTheDocument();
+    expect(within(tree).getByText("Старый подвал")).toBeInTheDocument();
+    expect(within(tree).queryByText("Стеллаж А")).not.toBeInTheDocument();
+    const statuses = requestParams(fetchMock, "/api/v1/inventory/storage-locations").map((params) =>
+      params.get("status"),
+    );
+    expect(statuses).toEqual(["all"]);
+  });
+
+  it("formats quantities with Russian digit grouping", async () => {
+    stubApi(
+      ["admin"],
+      inventoryApi((path) =>
+        path === "/api/v1/inventory/stock"
+          ? { body: page([{ item_id: "i-rope", storage_location_id: "l1", quantity: 1234567 }]) }
+          : undefined,
+      ),
+    );
+    await renderAt("/inventory?tab=stock");
+
+    const list = await screen.findByRole("list", { name: "Остатки" });
+    expect(within(list).getByText(GROUPED_1234567)).toBeInTheDocument();
+  });
+
+  it("«← Склад» on an item returns to the tab it was opened from", async () => {
+    stubApi(
+      ["admin"],
+      inventoryApi((path) => {
+        if (path === "/api/v1/inventory/stock") {
+          return { body: page([{ item_id: "i-rope", storage_location_id: "l1", quantity: 3 }]) };
+        }
+        if (path === "/api/v1/inventory/items/i-rope") return { body: ROPE };
+        if (path === "/api/v1/inventory/items/i-rope/stock") return { body: page([]) };
+        if (path === "/api/v1/inventory/items/i-rope/movements") return { body: page([]) };
+        return undefined;
+      }),
+    );
+    await renderAt("/inventory?tab=stock");
+
+    const list = await screen.findByRole("list", { name: "Остатки" });
+    await userEvent.click(within(list).getByRole("link", { name: "Верёвка 10 мм" }));
+    await screen.findByRole("heading", { level: 1, name: "Верёвка 10 мм" });
+    const back = screen.getAllByRole("link", { name: "Склад" }).find((link) => !link.closest("nav"));
+    expect(back).toHaveAttribute("href", "/inventory?tab=stock");
+
+    await userEvent.click(back as HTMLElement);
+    expect(await screen.findByRole("tab", { name: "Остатки", selected: true })).toBeInTheDocument();
+  });
+
+  it("an item opened directly returns to «Номенклатура»", async () => {
+    stubApi(
+      ["admin"],
+      inventoryApi((path) => {
+        if (path === "/api/v1/inventory/items/i-rope") return { body: ROPE };
+        if (path === "/api/v1/inventory/items/i-rope/stock") return { body: page([]) };
+        if (path === "/api/v1/inventory/items/i-rope/movements") return { body: page([]) };
+        return undefined;
+      }),
+    );
+    await renderAt("/inventory/items/i-rope");
+
+    await screen.findByRole("heading", { level: 1, name: "Верёвка 10 мм" });
+    const back = screen.getAllByRole("link", { name: "Склад" }).find((link) => !link.closest("nav"));
+    expect(back).toHaveAttribute("href", "/inventory");
+  });
+
+  it("a missing item shows «не найдено» without a retry", async () => {
+    stubApi(
+      ["admin"],
+      inventoryApi((path) =>
+        path === "/api/v1/inventory/items/i-gone"
+          ? { status: 404, body: { error: { code: "not_found", message: "Inventory item not found" } } }
+          : undefined,
+      ),
+    );
+    await renderAt("/inventory/items/i-gone");
+
+    expect(await screen.findByText("Запись не найдена.", {}, RETRIED)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Повторить" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["/inventory/items/not-a-uuid", "/api/v1/inventory/items/not-a-uuid", "item_id"],
+    ["/inventory/instances/not-a-uuid", "/api/v1/inventory/instances/not-a-uuid", "instance_id"],
+  ])("an invalid id in %s (422) is shown as «не найдено»", async (route, apiPath, field) => {
+    const invalid = {
+      status: 422,
+      body: {
+        error: {
+          code: "validation_error",
+          message: "Request validation failed",
+          details: { fields: [{ field, code: "uuid_parsing", message: "Input should be a valid UUID" }] },
+        },
+      },
+    };
+    stubApi(["admin"], inventoryApi((path) => (path.startsWith(apiPath) ? invalid : undefined)));
+    await renderAt(route);
+
+    expect(await screen.findByText("Запись не найдена.", {}, RETRIED)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Повторить" })).not.toBeInTheDocument();
+  });
+
+  it("a stock error on the item page is shown with a retry, the rest of the page stays", async () => {
+    stubApi(
+      ["admin"],
+      inventoryApi((path) => {
+        if (path === "/api/v1/inventory/items/i-rope") return { body: ROPE };
+        if (path === "/api/v1/inventory/items/i-rope/stock") {
+          return { status: 500, body: { error: { code: "internal_error", message: "Сбой" } } };
+        }
+        if (path === "/api/v1/inventory/items/i-rope/movements") return { body: page([]) };
+        return undefined;
+      }),
+    );
+    await renderAt("/inventory/items/i-rope");
+
+    expect(await screen.findByText("Не удалось загрузить остатки", {}, RETRIED)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Повторить" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Верёвка 10 мм" })).toBeInTheDocument();
+    expect(screen.getByText("Движений пока нет")).toBeInTheDocument();
+  });
+
+  it("loads every page of an item's stock instead of cutting it off", async () => {
+    const fetchMock = stubApi(
+      ["admin"],
+      inventoryApi((path, search) => {
+        if (path === "/api/v1/inventory/items/i-rope") return { body: ROPE };
+        if (path === "/api/v1/inventory/items/i-rope/movements") return { body: page([]) };
+        if (path === "/api/v1/inventory/items/i-rope/stock") {
+          const pageNumber = Number(search.get("page"));
+          const row =
+            pageNumber === 1
+              ? { item_id: "i-rope", storage_location_id: "l1", quantity: 40 }
+              : { item_id: "i-rope", storage_location_id: "l2", quantity: 7 };
+          return { body: page([row], pageNumber, 2) };
+        }
+        return undefined;
+      }),
+    );
+    await renderAt("/inventory/items/i-rope");
+
+    const stock = await screen.findByRole("list", { name: "Остатки по местам хранения" });
+    expect(within(stock).getByText("40 м")).toBeInTheDocument();
+    expect(within(stock).getByText("7 м")).toBeInTheDocument();
+    expect(
+      requestParams(fetchMock, "/api/v1/inventory/items/i-rope/stock").map((params) => params.get("page")),
+    ).toEqual(["1", "2"]);
   });
 });

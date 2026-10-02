@@ -20,6 +20,7 @@ export type NavigationIconId =
   | "nav.events"
   | "nav.achievements"
   | "nav.reports"
+  | "nav.inventory"
   | "nav.settings";
 
 export type ActionIconId =
@@ -87,6 +88,8 @@ export const ICON_SOURCES: Record<IconId, (size: IconSize) => string> = {
   "nav.events": navPath("events"),
   "nav.achievements": navPath("achievements"),
   "nav.reports": navPath("reports"),
+  // «Склад» (Issue #230): packages/navigation/tourcrm-nav-inventory-v1.
+  "nav.inventory": navPath("inventory"),
   "nav.settings": navPath("settings"),
 
   "action.add": actionPath("add"),
@@ -124,10 +127,19 @@ export const ICON_SOURCES: Record<IconId, (size: IconSize) => string> = {
 };
 
 /** Approved illustration families integrated so far: Empty states
- * (`empty-groups`, `empty-people`, `no-results`) and System (`error`,
- * `403`, `404`). Onboarding illustrations are not wired into any
- * reference screen yet and are left for a later feature slice. */
-export type IllustrationId = "empty-groups" | "empty-people" | "no-results" | "error" | "403" | "404";
+ * (`empty-groups`, `empty-people`, `empty-inventory`, `no-results`) and
+ * System (`error`, `403`, `404`). `empty-inventory` comes from
+ * packages/illustrations/tourcrm-empty-inventory-production.zip.
+ * Onboarding illustrations are not wired into any reference screen yet
+ * and are left for a later feature slice. */
+export type IllustrationId =
+  | "empty-groups"
+  | "empty-people"
+  | "empty-inventory"
+  | "no-results"
+  | "error"
+  | "403"
+  | "404";
 export type IllustrationSize = 32 | 64 | 128 | 256;
 
 export function illustrationPath(id: IllustrationId, size: IllustrationSize): string {

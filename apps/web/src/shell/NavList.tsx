@@ -9,7 +9,7 @@ export type NavListProps = {
   onNavigate?: () => void;
 };
 
-/** The single source of the seven-item navigation markup, shared by the
+/** The single source of the navigation markup, shared by the
  * desktop/tablet Sidebar and the mobile navigation drawer (spec §6:
  * "avoid duplicated shell logic between pages"). `NavLink` sets
  * `aria-current="page"` on the active entry automatically.

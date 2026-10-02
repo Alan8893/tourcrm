@@ -9,7 +9,7 @@ function labelsFor(...roleCodes: string[]) {
 }
 
 describe("visibleNavigationItems (TH-0120 role-aware navigation, UNION)", () => {
-  it("keeps the canonical seven-item catalog unchanged", () => {
+  it("keeps the canonical eight-item catalog unchanged («Склад» between Отчёты and Настройки)", () => {
     expect(NAVIGATION_ITEMS.map((item) => item.label)).toEqual([
       "Главная",
       "Люди",
@@ -17,11 +17,16 @@ describe("visibleNavigationItems (TH-0120 role-aware navigation, UNION)", () => 
       "События",
       "Достижения",
       "Отчёты",
+      "Склад",
       "Настройки",
     ]);
+    expect(NAVIGATION_ITEMS.find((item) => item.id === "inventory")).toMatchObject({
+      path: "/inventory",
+      icon: "nav.inventory",
+    });
   });
 
-  it("Administrator sees all seven sections", () => {
+  it("Administrator sees all eight sections", () => {
     expect(labelsFor("admin")).toEqual([
       "Главная",
       "Люди",
@@ -29,6 +34,7 @@ describe("visibleNavigationItems (TH-0120 role-aware navigation, UNION)", () => 
       "События",
       "Достижения",
       "Отчёты",
+      "Склад",
       "Настройки",
     ]);
   });
@@ -101,6 +107,15 @@ describe("isNavigationItemVisible (Issue #212)", () => {
     expect(isNavigationItemVisible(roles("guardian"), "reports")).toBe(false);
     expect(isNavigationItemVisible(roles("instructor", "member", "guardian"), "reports")).toBe(false);
     expect(isNavigationItemVisible(roles("guardian", "admin"), "reports")).toBe(true);
+  });
+
+  it("Склад is visible only when an Administrator assignment is present", () => {
+    expect(isNavigationItemVisible(roles("admin"), "inventory")).toBe(true);
+    expect(isNavigationItemVisible(roles("instructor"), "inventory")).toBe(false);
+    expect(isNavigationItemVisible(roles("member"), "inventory")).toBe(false);
+    expect(isNavigationItemVisible(roles("guardian"), "inventory")).toBe(false);
+    expect(isNavigationItemVisible(roles("instructor", "member", "guardian"), "inventory")).toBe(false);
+    expect(isNavigationItemVisible(roles("guardian", "admin"), "inventory")).toBe(true);
   });
 
   it("Achievements is visible for every canonical role", () => {

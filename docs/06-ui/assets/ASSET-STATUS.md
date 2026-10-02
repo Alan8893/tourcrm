@@ -51,21 +51,25 @@ This is the single source of truth for the brand mark. No SVG, ZIP archive or ge
 |---|---|---|
 | Brand | **Master uploaded** | `packages/brand/logo.png` |
 | Navigation | **CLOSED / APPROVED** | `packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` |
+| Navigation — Inventory | **APPROVED** (Issue #230) | `packages/navigation/tourcrm-nav-inventory-v1/` |
 | Actions | **CLOSED / APPROVED** | `packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` |
 | Status | **CLOSED / APPROVED** | `packages/status/TourCRM_Assets_Status_P0_FINAL.zip` |
 | Domain | **CLOSED / APPROVED** | `packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` |
 | Achievements P0 | **CLOSED / APPROVED** | `packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` |
 | Achievements P1 | **CLOSED / APPROVED** | `packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` |
 | Illustrations — Empty States | **CLOSED / APPROVED** | `packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` |
+| Illustrations — Empty Inventory | **APPROVED** (Issue #230) | `packages/illustrations/tourcrm-empty-inventory-production.zip` |
 | Illustrations — System | **CLOSED / APPROVED** | `packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip` |
 | Illustrations — Onboarding | **CLOSED / APPROVED** | `packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip` |
 | Decorative | **DEFERRED / P2** | — |
 
 ## Approved Navigation — CLOSED
 
-Seven fixed navigation icons:
+Eight fixed navigation icons:
 
-`Home`, `People`, `Groups`, `Events`, `Achievements`, `Reports`, `Settings`.
+`Home`, `People`, `Groups`, `Events`, `Achievements`, `Reports`, `Inventory`, `Settings`.
+
+`Inventory` («Склад», Issue #230, `docs/04-ux/information-architecture.md` §3.1) is delivered as a separate approved package: `packages/navigation/tourcrm-nav-inventory-v1/`.
 
 Stable IDs:
 
@@ -76,10 +80,11 @@ icon.navigation.groups
 icon.navigation.events
 icon.navigation.achievements
 icon.navigation.reports
+icon.navigation.inventory
 icon.navigation.settings
 ```
 
-Production output: 7 × 6 = **42 WebP assets**.
+Production output: 8 × 6 = **48 WebP assets** (42 in `TourCRM_Visual_Assets_v1.0_FINAL.zip` + 6 in `tourcrm-nav-inventory-v1/`).
 
 `Settings` is the approved compass + wrench artwork. The visual design is closed and must not be reopened as a generic settings/gear icon.
 
@@ -146,8 +151,10 @@ The three current P0 illustration blocks are fully agreed and closed for this as
 ### Empty states
 
 ```text
-empty-groups empty-people empty-events empty-achievements empty-search no-results
+empty-groups empty-people empty-events empty-achievements empty-search no-results empty-inventory
 ```
+
+`empty-inventory` (Issue #230) is delivered as a separate approved package: `packages/illustrations/tourcrm-empty-inventory-production.zip` (32/64/128/256 px WebP).
 
 `empty-search` and `no-results` are distinct semantic states and must not collapse into a generic error illustration.
 

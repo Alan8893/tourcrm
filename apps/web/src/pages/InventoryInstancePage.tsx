@@ -6,7 +6,8 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Loading } from "../components/ui/Loading";
 import { PageHeader } from "../components/ui/PageHeader";
 import { StatusBadge } from "../components/ui/StatusBadge";
-import { instanceStateIcon, instanceStateLabel, locationPath } from "../domain/inventoryFormat";
+import { locationPath } from "../domain/inventoryFormat";
+import { instanceStateIcon, instanceStateLabel } from "../domain/statusMapping";
 import { unitName, useInventoryLookups } from "../hooks/useInventoryLookups";
 import { InventoryQueryError, MetaList, MovementList } from "./InventoryShared";
 import styles from "./Inventory.module.css";
@@ -39,6 +40,7 @@ export function InventoryInstancePage() {
         <InventoryQueryError
           error={failure}
           title="Не удалось загрузить экземпляр"
+          pathParam="instance_id"
           onRetry={() => {
             void instanceQuery.refetch();
             refetch();
@@ -83,7 +85,7 @@ export function InventoryInstancePage() {
           />
         ) : null}
         {movementsQuery.isSuccess && movementsQuery.data.length === 0 ? (
-          <EmptyState illustration="empty-groups" title="Движений пока нет" />
+          <EmptyState illustration="empty-inventory" title="Движений пока нет" />
         ) : null}
         {movementsQuery.isSuccess && movementsQuery.data.length > 0 ? (
           <MovementList movements={movementsQuery.data} lookups={lookups} unit={unitName(item, lookups)} />

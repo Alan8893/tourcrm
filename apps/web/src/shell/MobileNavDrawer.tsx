@@ -12,11 +12,11 @@ export type MobileNavDrawerProps = {
   onClose: () => void;
 };
 
-/** The mobile "menu/navigation control" from spec §3: all seven
+/** The mobile "menu/navigation control" from spec §3: all approved
  * navigation items, always present and reachable, in a full-height
  * drawer rather than a partial bottom-nav subset (spec allows bottom
  * navigation only "when it improves access" — it is not mandatory, and a
- * bottom bar can only fit a handful of the seven approved items without
+ * bottom bar can only fit a handful of the approved items without
  * either dropping some or introducing a second, different navigation
  * list to maintain). */
 export function MobileNavDrawer({ open, onClose }: MobileNavDrawerProps) {

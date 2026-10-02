@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { useLocation, useParams } from "react-router-dom";
 
 import {
   useInventoryItem,
@@ -19,28 +19,32 @@ import {
   INSTANCE_STATE_OPTIONS,
   accountingModeLabel,
   formatCostMinor,
+  formatQuantity,
+  inventoryTabHref,
+  isInventoryTab,
   locationPath,
-  recordStatusIcon,
-  recordStatusLabel,
 } from "../domain/inventoryFormat";
+import { recordStatusIcon, recordStatusLabel } from "../domain/statusMapping";
 import { unitName, useInventoryLookups, type InventoryLookups } from "../hooks/useInventoryLookups";
 import { InstanceList, InventoryQueryError, MetaList, MovementList } from "./InventoryShared";
 import styles from "./Inventory.module.css";
-
-const BACK = { to: "/inventory", label: "Склад" };
 
 /** One inventory item: its card, then — by accounting mode — its stock
  * by location and movement history (quantity) or its instances
  * (instance; each instance has its own history page). */
 export function InventoryItemPage() {
   const { itemId } = useParams<{ itemId: string }>();
+  // «← Склад» returns to the /inventory tab the item was opened from
+  // (router state set by that tab's links); otherwise to «Номенклатура».
+  const fromTab = (useLocation().state as { inventoryTab?: unknown } | null)?.inventoryTab;
+  const back = { to: inventoryTabHref(isInventoryTab(fromTab) ? fromTab : "items"), label: "Склад" };
   const itemQuery = useInventoryItem(itemId);
   const { lookups, isLoading, error, refetch } = useInventoryLookups();
 
   if (itemQuery.isLoading || isLoading) {
     return (
       <div>
-        <PageHeader title="Позиция склада" back={BACK} />
+        <PageHeader title="Позиция склада" back={back} />
         <Loading label="Загружаем позицию…" />
       </div>
     );
@@ -49,10 +53,11 @@ export function InventoryItemPage() {
   if (failure) {
     return (
       <div>
-        <PageHeader title="Позиция склада" back={BACK} />
+        <PageHeader title="Позиция склада" back={back} />
         <InventoryQueryError
           error={failure}
           title="Не удалось загрузить позицию"
+          pathParam="item_id"
           onRetry={() => {
             void itemQuery.refetch();
             refetch();
@@ -68,7 +73,7 @@ export function InventoryItemPage() {
     <div>
       <PageHeader
         title={item.name}
-        back={BACK}
+        back={back}
         titleExtra={
           <StatusBadge status={recordStatusIcon(item.status)} label={recordStatusLabel(item.status)} />
         }
@@ -114,19 +119,19 @@ function ItemStockSection({ item, lookups }: SectionProps) {
           onRetry={() => void query.refetch()}
         />
       ) : null}
-      {query.isSuccess && query.data.items.length === 0 ? (
-        <EmptyState illustration="empty-groups" title="Остатка нет" description="Позиции нет ни в одном месте хранения." />
+      {query.isSuccess && query.data.length === 0 ? (
+        <EmptyState illustration="empty-inventory" title="Остатка нет" description="Позиции нет ни в одном месте хранения." />
       ) : null}
-      {query.isSuccess && query.data.items.length > 0 ? (
+      {query.isSuccess && query.data.length > 0 ? (
         <ul className={styles.list} aria-label="Остатки по местам хранения">
-          {query.data.items.map((row) => (
+          {query.data.map((row) => (
             <li key={row.storage_location_id}>
               <Card>
                 <div className={styles.rowHeader}>
                   <span className={styles.rowTitle}>
                     {locationPath(row.storage_location_id, lookups.locations)}
                   </span>
-                  <span className={styles.quantity}>{`${row.quantity} ${unit}`.trim()}</span>
+                  <span className={styles.quantity}>{formatQuantity(row.quantity, unit)}</span>
                 </div>
               </Card>
             </li>
@@ -155,7 +160,7 @@ function ItemMovementsSection({ item, lookups }: SectionProps) {
         />
       ) : null}
       {query.isSuccess && query.data.items.length === 0 ? (
-        <EmptyState illustration="empty-groups" title="Движений пока нет" />
+        <EmptyState illustration="empty-inventory" title="Движений пока нет" />
       ) : null}
       {query.isSuccess && query.data.items.length > 0 ? (
         <>

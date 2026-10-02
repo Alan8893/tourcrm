@@ -1,20 +1,14 @@
 /**
  * Presentation of Inventory («Склад») values — Russian labels from the
- * canonical domain (docs/04-domain/inventory.md §5, §7, §13) and the
- * semantic mapping of states onto the closed Status icon catalog
- * (docs/06-ui/assets/ASSET-STATUS.md; see also statusMapping.ts).
- * Formatting only: no inventory rule is re-implemented here.
+ * canonical domain (docs/04-domain/inventory.md §5, §7, §13). The status
+ * icon mapping of inventory records and instance states lives with the
+ * other domain mappings in statusMapping.ts. Formatting only: no
+ * inventory rule is re-implemented here.
  */
 
-import type { StatusIconId } from "../assets/icons";
 import type { FilterOption } from "../components/ui/FilterSelect";
-import type {
-  AccountingMode,
-  InstanceState,
-  InventoryRecordStatus,
-  InventoryStorageLocation,
-  MovementType,
-} from "../api/inventory";
+import type { AccountingMode, InventoryStorageLocation, MovementType } from "../api/inventory";
+import { instanceStateLabel } from "./statusMapping";
 
 export function accountingModeLabel(mode: AccountingMode): string {
   switch (mode) {
@@ -22,50 +16,6 @@ export function accountingModeLabel(mode: AccountingMode): string {
       return "Количественный учёт";
     case "instance":
       return "Поэкземплярный учёт";
-  }
-}
-
-export function recordStatusIcon(status: InventoryRecordStatus): StatusIconId {
-  switch (status) {
-    case "active":
-      return "status.ongoing";
-    case "archived":
-      return "status.archived";
-  }
-}
-
-export function recordStatusLabel(status: InventoryRecordStatus): string {
-  switch (status) {
-    case "active":
-      return "Активна";
-    case "archived":
-      return "В архиве";
-  }
-}
-
-export function instanceStateIcon(state: InstanceState): StatusIconId {
-  switch (state) {
-    case "available":
-      return "status.success";
-    case "issued":
-      return "status.ongoing";
-    case "in_repair":
-      return "status.warning";
-    case "written_off":
-      return "status.ended";
-  }
-}
-
-export function instanceStateLabel(state: InstanceState): string {
-  switch (state) {
-    case "available":
-      return "В наличии";
-    case "issued":
-      return "Выдан";
-    case "in_repair":
-      return "В ремонте";
-    case "written_off":
-      return "Списан";
   }
 }
 
@@ -103,6 +53,13 @@ export function movementTypeLabel(type: MovementType): string {
 }
 
 const RUB = new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB" });
+const QUANTITY = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
+
+/** Whole units with Russian digit grouping: «1 234 567 м». */
+export function formatQuantity(quantity: number, unit = ""): string {
+  const amount = QUANTITY.format(quantity);
+  return unit ? `${amount} ${unit}` : amount;
+}
 
 /** Whole kopecks (RUB, §12) → «1 234,50 ₽»; `null` → «не указана». */
 export function formatCostMinor(minor: number | null): string {
@@ -160,4 +117,17 @@ export function buildLocationTree(locations: readonly InventoryStorageLocation[]
   };
   sort(roots);
   return roots;
+}
+
+/** Tabs of the /inventory page; the active one lives in `?tab=`
+ * («Номенклатура» is the default and carries no parameter). */
+export const INVENTORY_TABS = ["items", "locations", "stock", "instances"] as const;
+export type InventoryTab = (typeof INVENTORY_TABS)[number];
+
+export function isInventoryTab(value: unknown): value is InventoryTab {
+  return typeof value === "string" && (INVENTORY_TABS as readonly string[]).includes(value);
+}
+
+export function inventoryTabHref(tab: InventoryTab): string {
+  return tab === "items" ? "/inventory" : `/inventory?tab=${tab}`;
 }

@@ -27,7 +27,7 @@ function byId<T extends { id: string }>(records: readonly T[] | undefined): Map<
 export function useInventoryLookups() {
   const categories = useInventoryCategories();
   const units = useInventoryUnits();
-  const locations = useInventoryStorageLocations("all");
+  const locations = useInventoryStorageLocations();
   const items = useAllInventoryItems();
   const queries = [categories, units, locations, items];
 

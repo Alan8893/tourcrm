@@ -89,8 +89,8 @@ export function App() {
               </Route>
               <Route path="news/:newsId" element={<NewsDetailPage />} />
               {/* Issue #230: «Склад» is Administrator-only (docs/04-domain/
-                  inventory.md §3; UX guard, backend authoritative). */}
-              <Route element={<AdministratorGuard />}>
+                  inventory.md §3–4; UX guard, backend authoritative). */}
+              <Route element={<SectionGuard section="inventory" />}>
                 <Route path="inventory" element={<InventoryPage />} />
                 <Route path="inventory/items/:itemId" element={<InventoryItemPage />} />
                 <Route path="inventory/instances/:instanceId" element={<InventoryInstancePage />} />

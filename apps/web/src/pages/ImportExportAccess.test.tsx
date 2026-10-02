@@ -62,7 +62,7 @@ afterEach(() => {
 });
 
 describe("Import / Export — Administrator visibility", () => {
-  it("keeps the seven-item global navigation — no Import/Export item", async () => {
+  it("keeps the canonical global navigation — no Import/Export item", async () => {
     await renderAppAt("/people", ["admin"]);
 
     const nav = await screen.findByRole("navigation", { name: "Основная навигация" });
@@ -73,6 +73,7 @@ describe("Import / Export — Administrator visibility", () => {
       "События",
       "Достижения",
       "Отчёты",
+      "Склад",
       "Настройки",
     ]);
     expect(within(nav).queryByText(/Импорт|Экспорт/)).not.toBeInTheDocument();
