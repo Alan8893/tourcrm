@@ -30,6 +30,9 @@ ALLOWED = [
     ("available", "write_off", "written_off"),
     ("in_repair", "write_off", "written_off"),
     ("written_off", "writeoff_reversal", "available"),
+    # Slice 4 (Issue #236, §14): available -> issued -> available.
+    ("available", "issue", "issued"),
+    ("issued", "return", "available"),
 ]
 
 
@@ -58,12 +61,16 @@ def test_every_other_transition_is_rejected(state: str, movement: str) -> None:
         next_instance_state(state, movement)
 
 
-def test_issued_is_not_reachable_or_leavable_in_slice_2() -> None:
+def test_issued_is_reached_only_by_issue_and_left_only_by_return() -> None:
+    """Slice 4: an issued instance can be neither transferred, repaired nor
+    written off directly; a lost instance is returned first."""
     for movement in INSTANCE_TRANSITIONS:
+        if movement == "return":
+            continue
         with pytest.raises(InvalidInstanceTransitionError):
             next_instance_state("issued", movement)
-    targets = {target for _, target in INSTANCE_TRANSITIONS.values()}
-    assert "issued" not in targets
+    reaching = {m for m, (_, target) in INSTANCE_TRANSITIONS.items() if target == "issued"}
+    assert reaching == {"issue"}
 
 
 @pytest.mark.parametrize(

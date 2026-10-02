@@ -46,13 +46,23 @@ Canonical source: docs/04-domain/inventory.md.
   `inventory_item_stocks`, changed only by app.inventory.quantities in the
   same transaction as the movement that causes the change; the journal
   stays the historical source of truth.
+- Slice 4 (issue / return, inventory.md §14): `inventory_issues` is the
+  issue document (recipient, optional Event, planned return date, comment,
+  `issued` | `cancelled`); `inventory_issue_lines` holds one line per item
+  of an issue (UNIQUE). Lines are never deleted. What a line issued and
+  got back is not stored on it: every `issue`/`return` movement references
+  its line through `issue_line_id` (required for those types, CHECK), and
+  the outstanding quantity / instances are derived from the journal. The
+  composite FK `(issue_line_id, item_id)` ties a movement to a line of the
+  same item. The write-off half of a lost instance also references the
+  line; no other movement type does.
 
 Plain FK columns, no ORM `relationship()` objects — the same shape as
 app.db.news/app.db.groups.
 """
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Optional
 
 import sqlalchemy as sa
@@ -65,11 +75,17 @@ from app.inventory.vocabulary import (
     CANONICAL_ACCOUNTING_MODES,
     CANONICAL_INSTANCE_STATES,
     CANONICAL_INVENTORY_STATUSES,
+    CANONICAL_ISSUE_STATUSES,
     CANONICAL_MOVEMENT_TYPES,
+    CANONICAL_RECIPIENT_TYPES,
     INSTANCE_ONLY_MOVEMENT_TYPES,
     INSTANCE_STATES_IN_STORAGE,
+    ISSUE_LINE_MOVEMENT_TYPES,
     MOVEMENT_RECEIPT,
     MOVEMENT_WRITE_OFF,
+    RECIPIENT_GROUP,
+    RECIPIENT_INSTRUCTOR,
+    RECIPIENT_MEMBER,
 )
 
 
@@ -83,6 +99,9 @@ _MOVEMENT_TYPE_VALUES = _values(CANONICAL_MOVEMENT_TYPES)
 _INSTANCE_STATE_VALUES = _values(CANONICAL_INSTANCE_STATES)
 _IN_STORAGE_STATE_VALUES = _values(INSTANCE_STATES_IN_STORAGE)
 _INSTANCE_ONLY_MOVEMENT_VALUES = _values(INSTANCE_ONLY_MOVEMENT_TYPES)
+_ISSUE_STATUS_VALUES = _values(CANONICAL_ISSUE_STATUSES)
+_RECIPIENT_TYPE_VALUES = _values(CANONICAL_RECIPIENT_TYPES)
+_ISSUE_LINE_MOVEMENT_VALUES = _values(ISSUE_LINE_MOVEMENT_TYPES)
 
 NAME_MAX_LENGTH = 255
 UNIT_NAME_MAX_LENGTH = 64
@@ -418,6 +437,9 @@ class InventoryMovement(Base):
         sa.ForeignKey("inventory_movements.id", ondelete="RESTRICT"),
         nullable=True,
     )
+    # Slice 4: the issue line an `issue`/`return` (or a lost instance's
+    # `write_off`) belongs to; FK together with `item_id` (see table args).
+    issue_line_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_by: Mapped[uuid.UUID] = _user_fk(nullable=False)
     created_at: Mapped[datetime] = _created_at()
 
@@ -447,11 +469,24 @@ class InventoryMovement(Base):
             "quantity IS NULL OR quantity > 0",
             name="ck_inventory_movements_quantity_positive",
         ),
+        sa.CheckConstraint(
+            f"(movement_type IN ({_ISSUE_LINE_MOVEMENT_VALUES}) AND issue_line_id IS NOT NULL)"
+            f" OR (movement_type NOT IN ({_ISSUE_LINE_MOVEMENT_VALUES})"
+            f" AND (issue_line_id IS NULL OR movement_type = '{MOVEMENT_WRITE_OFF}'))",
+            name="ck_inventory_movements_issue_line_reference",
+        ),
         sa.UniqueConstraint(
             "reverses_movement_id", name="uq_inventory_movements_reverses_movement_id"
         ),
+        sa.ForeignKeyConstraint(
+            ["issue_line_id", "item_id"],
+            ["inventory_issue_lines.id", "inventory_issue_lines.item_id"],
+            name="fk_inventory_movements_issue_line_id_item_id",
+            ondelete="RESTRICT",
+        ),
         sa.Index("ix_inventory_movements_item_id_created_at", "item_id", "created_at"),
         sa.Index("ix_inventory_movements_instance_id_created_at", "instance_id", "created_at"),
+        sa.Index("ix_inventory_movements_issue_line_id", "issue_line_id"),
     )
 
 
@@ -481,6 +516,118 @@ class InventoryItemStock(Base):
         ),
         sa.Index("ix_inventory_item_stocks_storage_location_id", "storage_location_id"),
     )
+
+
+ISSUE_RECIPIENT_TYPE_MAX_LENGTH = 16
+
+
+class InventoryIssue(Base):
+    """Issue document (inventory.md §14, Slice 4): the handover of property
+    to one recipient — a Member (Person), an Instructor (User) or a Group.
+    Issued on creation; `cancelled` is terminal. Exactly the recipient
+    column of `recipient_type` is set (CHECK)."""
+
+    __tablename__ = "inventory_issues"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    club_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("clubs.id", ondelete="RESTRICT"), nullable=False
+    )
+    recipient_type: Mapped[str] = mapped_column(
+        sa.String(ISSUE_RECIPIENT_TYPE_MAX_LENGTH), nullable=False
+    )
+    recipient_person_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("persons.id", ondelete="RESTRICT"), nullable=True
+    )
+    recipient_user_id: Mapped[Optional[uuid.UUID]] = _user_fk(nullable=True)
+    recipient_group_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("groups.id", ondelete="RESTRICT"), nullable=True
+    )
+    event_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("events.id", ondelete="RESTRICT"), nullable=True
+    )
+    # Informational only: no overdue status, no automatic action.
+    planned_return_date: Mapped[Optional[date]] = mapped_column(sa.Date, nullable=True)
+    comment: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
+    status: Mapped[str] = mapped_column(sa.String(16), nullable=False)
+    cancelled_at: Mapped[Optional[datetime]] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    cancelled_by: Mapped[Optional[uuid.UUID]] = _user_fk(nullable=True)
+    created_by: Mapped[uuid.UUID] = _user_fk(nullable=False)
+    updated_by: Mapped[Optional[uuid.UUID]] = _user_fk(nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+    __table_args__ = (
+        sa.CheckConstraint(
+            f"status IN ({_ISSUE_STATUS_VALUES})", name="ck_inventory_issues_status_valid"
+        ),
+        sa.CheckConstraint(
+            "(status = 'cancelled') = (cancelled_at IS NOT NULL)"
+            " AND (status = 'cancelled') = (cancelled_by IS NOT NULL)",
+            name="ck_inventory_issues_cancellation_matches_status",
+        ),
+        sa.CheckConstraint(
+            f"recipient_type IN ({_RECIPIENT_TYPE_VALUES})",
+            name="ck_inventory_issues_recipient_type_valid",
+        ),
+        sa.CheckConstraint(
+            f"(recipient_type = '{RECIPIENT_MEMBER}') = (recipient_person_id IS NOT NULL)"
+            f" AND (recipient_type = '{RECIPIENT_INSTRUCTOR}') = (recipient_user_id IS NOT NULL)"
+            f" AND (recipient_type = '{RECIPIENT_GROUP}') = (recipient_group_id IS NOT NULL)",
+            name="ck_inventory_issues_recipient_matches_type",
+        ),
+        sa.Index("ix_inventory_issues_club_id_status", "club_id", "status"),
+        sa.Index("ix_inventory_issues_recipient_person_id", "recipient_person_id"),
+        sa.Index("ix_inventory_issues_recipient_user_id", "recipient_user_id"),
+        sa.Index("ix_inventory_issues_recipient_group_id", "recipient_group_id"),
+        sa.Index("ix_inventory_issues_event_id", "event_id"),
+    )
+
+
+class InventoryIssueLine(Base):
+    """One item of an issue (inventory.md §14): one line per item (UNIQUE).
+    A quantity line's issued/returned quantities and an instance line's
+    instances are derived from the movements referencing it. Lines are
+    never deleted — a fully returned line stays as history."""
+
+    __tablename__ = "inventory_issue_lines"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    issue_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("inventory_issues.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("inventory_items.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_by: Mapped[uuid.UUID] = _user_fk(nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "issue_id", "item_id", name="uq_inventory_issue_lines_issue_id_item_id"
+        ),
+        # Target of the movements' composite FK (issue_line_id, item_id).
+        sa.UniqueConstraint("id", "item_id", name="uq_inventory_issue_lines_id_item_id"),
+        sa.Index("ix_inventory_issue_lines_item_id", "item_id"),
+    )
+
+
+class InventoryIssueLineImmutableError(Exception):
+    """An issue line was about to be changed or deleted."""
+
+    def __init__(self, line_id: uuid.UUID) -> None:
+        super().__init__(f"Inventory issue line {line_id} is immutable and is never deleted")
+        self.line_id = line_id
+
+
+@event.listens_for(InventoryIssueLine, "before_update")
+@event.listens_for(InventoryIssueLine, "before_delete")
+def _refuse_issue_line_mutation(_mapper: Any, _connection: Any, target: InventoryIssueLine) -> None:
+    raise InventoryIssueLineImmutableError(target.id)
 
 
 class InventoryMovementImmutableError(Exception):
@@ -535,5 +682,9 @@ __all__ = [
     "InventoryItemStock",
     "InventoryMovement",
     "InventoryMovementImmutableError",
+    "ISSUE_RECIPIENT_TYPE_MAX_LENGTH",
+    "InventoryIssue",
+    "InventoryIssueLine",
+    "InventoryIssueLineImmutableError",
     "InventoryReversalTargetError",
 ]

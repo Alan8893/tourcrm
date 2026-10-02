@@ -8,6 +8,7 @@ from app.api.v1.groups import router as groups_router
 from app.api.v1.guardian_relationships import router as guardian_relationships_router
 from app.api.v1.inventory import router as inventory_router
 from app.api.v1.inventory_instances import router as inventory_instances_router
+from app.api.v1.inventory_issues import router as inventory_issues_router
 from app.api.v1.inventory_quantities import router as inventory_quantities_router
 from app.api.v1.me import router as me_router
 from app.api.v1.membership_exports import router as membership_exports_router
@@ -44,4 +45,5 @@ router.include_router(news_router)
 router.include_router(inventory_router)
 router.include_router(inventory_instances_router)
 router.include_router(inventory_quantities_router)
+router.include_router(inventory_issues_router)
 router.include_router(users_router)

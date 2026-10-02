@@ -214,7 +214,19 @@ _INVENTORY_QUANTITY_PATHS = {
     "/api/v1/inventory/items/{item_id}/write-offs/{movement_id}/reverse",
 }
 # Inventory Slice 3 (Issue #230): quantity stock and movements — no
-# adjustment, issue/return or stocktake endpoint yet.
+# adjustment or stocktake endpoint yet.
+
+_INVENTORY_ISSUE_PATHS = {
+    "/api/v1/inventory/issues",
+    "/api/v1/inventory/issues/{issue_id}",
+    "/api/v1/inventory/issues/{issue_id}/lines",
+    "/api/v1/inventory/issues/{issue_id}/returns",
+    "/api/v1/inventory/issues/{issue_id}/cancel",
+    "/api/v1/inventory/issues/{issue_id}/lost",
+    "/api/v1/inventory/issues/{issue_id}/movements",
+}
+# Inventory Slice 4 (Issue #236): issue / return — no DELETE of an issue
+# or a line.
 
 _GUARDIAN_RELATIONSHIP_PATHS = {
     "/api/v1/persons/{person_id}/guardian-relationships",
@@ -306,6 +318,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _INVENTORY_PATHS
         | _INVENTORY_INSTANCE_PATHS
         | _INVENTORY_QUANTITY_PATHS
+        | _INVENTORY_ISSUE_PATHS
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()

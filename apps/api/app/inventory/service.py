@@ -52,6 +52,7 @@ from app.inventory.lifecycle import (
     ensure_accounting_mode_change_allowed,
     ensure_editable,
     ensure_item_has_no_active_instances,
+    ensure_item_has_no_outstanding_issues,
     ensure_item_has_no_stock,
     ensure_location_archivable,
     ensure_location_has_no_instances,
@@ -68,6 +69,8 @@ from app.inventory.vocabulary import (
     ARCHIVED,
     INSTANCE_STATES_IN_STORAGE,
     INSTANCE_WRITTEN_OFF,
+    MOVEMENT_ISSUE,
+    MOVEMENT_RETURN,
 )
 
 # Key of the transaction-scoped PostgreSQL advisory lock serializing
@@ -564,12 +567,30 @@ def update_item(
     return item
 
 
+def _has_outstanding_issues(session: Session, item_id: uuid.UUID) -> bool:
+    """§17 п.4 (Slice 4): more of the quantity item was issued than
+    returned. An `issued` instance is already refused by the instance rule
+    below (any instance not `written_off`)."""
+    signed = sa.case(
+        (InventoryMovement.movement_type == MOVEMENT_ISSUE, InventoryMovement.quantity),
+        else_=-InventoryMovement.quantity,
+    )
+    issued_quantity = session.execute(
+        sa.select(sa.func.coalesce(sa.func.sum(signed), 0)).where(
+            InventoryMovement.item_id == item_id,
+            InventoryMovement.instance_id.is_(None),
+            InventoryMovement.movement_type.in_((MOVEMENT_ISSUE, MOVEMENT_RETURN)),
+        )
+    ).scalar_one()
+    return bool(issued_quantity > 0)
+
+
 def archive_item(session: Session, *, item: InventoryItem, updated_by: uuid.UUID) -> InventoryItem:
-    """inventory.md §17 п.4 forbids archiving with non-zero stock, instances
-    not in `written_off` or unfinished issues. Instances (Slice 2) and stock
-    (Slice 3) are checked here; issues add their precondition with Slice 4.
-    Every receipt/transfer holds a share lock on the item row and the router
-    holds this item's row lock, so neither can slip in during the check."""
+    """inventory.md §17 п.4 forbids archiving with property still issued,
+    instances not in `written_off` or non-zero stock. Every receipt,
+    transfer, write-off, issue and return holds a share lock on the item
+    row and the router holds this item's row lock, so none of them can slip
+    in during the check."""
     ensure_editable(item.status, kind=KIND_ITEM)
     has_active_instances = session.execute(
         sa.select(
@@ -580,6 +601,9 @@ def archive_item(session: Session, *, item: InventoryItem, updated_by: uuid.UUID
         )
     ).scalar_one()
     ensure_item_has_no_active_instances(has_active_instances=has_active_instances)
+    ensure_item_has_no_outstanding_issues(
+        has_outstanding_issues=_has_outstanding_issues(session, item.id)
+    )
     total_stock = session.execute(
         sa.select(sa.func.coalesce(sa.func.sum(InventoryItemStock.quantity), 0)).where(
             InventoryItemStock.item_id == item.id

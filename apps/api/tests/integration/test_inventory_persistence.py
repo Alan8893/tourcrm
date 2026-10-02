@@ -12,6 +12,8 @@ from sqlalchemy.exc import IntegrityError
 from app.db.identity import Club, Person, User
 from app.db.inventory import (
     InventoryCategory,
+    InventoryIssue,
+    InventoryIssueLine,
     InventoryItem,
     InventoryMovement,
     InventoryMovementImmutableError,
@@ -168,10 +170,30 @@ def test_movement_types_are_the_canonical_set(owner) -> None:
     club_id, user_id = owner
     with session_scope() as session:
         item = _item(session, club_id, user_id)
+        # Slice 4: `issue`/`return` belong to an issue line.
+        recipient = Person(last_name="Получатель", first_name="Тест")
+        session.add(recipient)
+        session.flush()
+        issue = InventoryIssue(
+            club_id=club_id,
+            recipient_type="member",
+            recipient_person_id=recipient.id,
+            status="issued",
+            created_by=user_id,
+        )
+        session.add(issue)
+        session.flush()
+        line = InventoryIssueLine(issue_id=issue.id, item_id=item.id, created_by=user_id)
+        session.add(line)
+        session.flush()
         for movement_type in ("receipt", "transfer", "issue", "return", "write_off", "adjustment"):
             session.add(
                 InventoryMovement(
-                    quantity=1, item_id=item.id, movement_type=movement_type, created_by=user_id
+                    quantity=1,
+                    item_id=item.id,
+                    movement_type=movement_type,
+                    created_by=user_id,
+                    issue_line_id=line.id if movement_type in ("issue", "return") else None,
                 )
             )
         session.flush()
