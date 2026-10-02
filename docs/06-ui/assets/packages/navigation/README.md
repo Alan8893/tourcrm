@@ -6,7 +6,7 @@ The TourCRM Navigation visual system is fully agreed and must be treated as **cl
 
 ### Approved navigation
 
-The fixed navigation set contains exactly 7 items:
+The v1.0 package below contains these 7 items; the eighth, «Склад», is the separate `tourcrm-nav-inventory-v1/` package (see «Inventory» below):
 
 1. Home
 2. People
@@ -17,6 +17,10 @@ The fixed navigation set contains exactly 7 items:
 7. Settings
 
 The approved custom artwork is the visual source of truth. The `Home` artwork is the approved reference for the TourCRM custom icon language. `Settings` uses the approved compass + wrench artwork.
+
+### Inventory («Склад»)
+
+The «Склад» item (Issue #230; `docs/04-ux/information-architecture.md` §3.1) uses the separately approved package `tourcrm-nav-inventory-v1/` (`nav-inventory-{16,20,24,32,48,64}.webp`, stable ID `icon.navigation.inventory`). It does not change the seven v1.0 artworks.
 
 ### Production package
 

@@ -14,6 +14,14 @@ Catalog: `empty-groups`, `empty-people`, `empty-events`, `empty-achievements`, `
 
 These are semantic empty-state illustrations. `empty-search` and `no-results` remain distinct and must not be collapsed into a generic error illustration.
 
+### Empty inventory
+
+```text
+docs/06-ui/assets/packages/illustrations/tourcrm-empty-inventory-production.zip
+```
+
+Catalog: `empty-inventory` (Issue #230) — 32/64/128/256 px WebP + a preview PNG.
+
 ## System states
 
 ```text

@@ -13,6 +13,7 @@ const NAVIGATION_LABELS = [
   "События",
   "Достижения",
   "Отчёты",
+  "Склад",
   "Настройки",
 ];
 
@@ -141,7 +142,7 @@ describe("AppShell authentication boundary (TH-0089 / UI-FOUNDATION-SPEC §3.1)"
 });
 
 describe("AppShell navigation and mobile drawer (TH-0089 regression)", () => {
-  it("keeps exactly the seven approved navigation items in order", async () => {
+  it("keeps exactly the eight approved navigation items in order", async () => {
     stubFetch([{ match: "/auth/me", response: meResponse() }]);
     renderShell("/");
 
@@ -151,7 +152,7 @@ describe("AppShell navigation and mobile drawer (TH-0089 regression)", () => {
     );
   });
 
-  it("opens the drawer from the menu control, shows the brand and all seven items, and closes via the close control", async () => {
+  it("opens the drawer from the menu control, shows the brand and all eight items, and closes via the close control", async () => {
     stubFetch([{ match: "/auth/me", response: meResponse() }]);
     renderShell("/");
     const user = userEvent.setup();

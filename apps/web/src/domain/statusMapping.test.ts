@@ -6,6 +6,10 @@ import {
   documentTypeLabel,
   eventStatusIcon,
   groupStatusIcon,
+  instanceStateIcon,
+  instanceStateLabel,
+  recordStatusIcon,
+  recordStatusLabel,
 } from "./statusMapping";
 
 describe("statusMapping", () => {
@@ -41,5 +45,24 @@ describe("statusMapping", () => {
     expect(documentRequirementResultLabel("valid")).toBe("Действителен");
     expect(documentRequirementResultLabel("missing")).toBe("Отсутствует");
     expect(documentRequirementResultLabel("expired")).toBe("Истёк");
+  });
+
+  it("maps inventory record status onto the approved catalog", () => {
+    expect(recordStatusIcon("active")).toBe("status.ongoing");
+    expect(recordStatusIcon("archived")).toBe("status.archived");
+    expect(recordStatusLabel("active")).toBe("Активна");
+    expect(recordStatusLabel("archived")).toBe("В архиве");
+  });
+
+  it("maps inventory instance states by meaning, never a write-off to the error icon", () => {
+    expect(instanceStateIcon("available")).toBe("status.success");
+    expect(instanceStateIcon("issued")).toBe("status.ongoing");
+    expect(instanceStateIcon("in_repair")).toBe("status.warning");
+    expect(instanceStateIcon("written_off")).toBe("status.ended");
+    expect(instanceStateIcon("written_off")).not.toBe("status.error");
+    expect(instanceStateLabel("available")).toBe("В наличии");
+    expect(instanceStateLabel("issued")).toBe("Выдан");
+    expect(instanceStateLabel("in_repair")).toBe("В ремонте");
+    expect(instanceStateLabel("written_off")).toBe("Списан");
   });
 });

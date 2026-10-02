@@ -12,6 +12,7 @@
  */
 
 import type { StatusIconId } from "../assets/icons";
+import type { InstanceState, InventoryRecordStatus } from "../api/inventory";
 
 export type GroupStatus = "active" | "archived";
 
@@ -323,5 +324,52 @@ export function documentRequirementResultLabel(result: DocumentRequirementResult
       return "Истёк";
     case "missing":
       return "Отсутствует";
+  }
+}
+
+/** Inventory («Склад», Issue #230) record lifecycle — items, categories,
+ * units and storage locations (docs/04-domain/inventory.md §17). */
+export function recordStatusIcon(status: InventoryRecordStatus): StatusIconId {
+  switch (status) {
+    case "active":
+      return "status.ongoing";
+    case "archived":
+      return "status.archived";
+  }
+}
+
+export function recordStatusLabel(status: InventoryRecordStatus): string {
+  switch (status) {
+    case "active":
+      return "Активна";
+    case "archived":
+      return "В архиве";
+  }
+}
+
+/** Inventory instance state (docs/04-domain/inventory.md §7, Q5). */
+export function instanceStateIcon(state: InstanceState): StatusIconId {
+  switch (state) {
+    case "available":
+      return "status.success";
+    case "issued":
+      return "status.ongoing";
+    case "in_repair":
+      return "status.warning";
+    case "written_off":
+      return "status.ended";
+  }
+}
+
+export function instanceStateLabel(state: InstanceState): string {
+  switch (state) {
+    case "available":
+      return "В наличии";
+    case "issued":
+      return "Выдан";
+    case "in_repair":
+      return "В ремонте";
+    case "written_off":
+      return "Списан";
   }
 }

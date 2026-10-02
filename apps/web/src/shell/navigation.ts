@@ -9,6 +9,7 @@ export type NavigationItemId =
   | "events"
   | "achievements"
   | "reports"
+  | "inventory"
   | "settings";
 
 export type NavigationItem = {
@@ -19,11 +20,13 @@ export type NavigationItem = {
 };
 
 /**
- * The approved Navigation Architecture (CLOSED — docs/06-ui/assets/
- * packages/navigation/README.md, ASSET-STATUS.md): exactly these seven
- * items, in this order, with this wording. Do not add, remove, reorder
- * or rename entries here without an explicit Product Owner decision that
- * reopens Navigation Architecture v1.0.
+ * The approved Navigation Architecture v1.0 (docs/04-ux/
+ * information-architecture.md §3.1; «Склад» added by PO decision
+ * 2026-09-30, Issue #230, docs/04-domain/inventory.md §4): exactly these
+ * eight items, in this order, with this wording, each with its approved
+ * navigation icon (docs/06-ui/assets/ASSET-STATUS.md). Do not add,
+ * remove, reorder or rename entries here without an explicit Product
+ * Owner decision.
  */
 export const NAVIGATION_ITEMS: readonly NavigationItem[] = [
   { id: "home", label: "Главная", path: "/", icon: "nav.home" },
@@ -37,6 +40,7 @@ export const NAVIGATION_ITEMS: readonly NavigationItem[] = [
     icon: "nav.achievements",
   },
   { id: "reports", label: "Отчёты", path: "/reports", icon: "nav.reports" },
+  { id: "inventory", label: "Склад", path: "/inventory", icon: "nav.inventory" },
   { id: "settings", label: "Настройки", path: "/settings", icon: "nav.settings" },
 ] as const;
 
@@ -48,7 +52,7 @@ export const NAVIGATION_ITEMS: readonly NavigationItem[] = [
  * route, whether or not its navigation item is shown.
  */
 export const NAVIGATION_VISIBILITY: Readonly<Record<PersonRoleCode, readonly NavigationItemId[]>> = {
-  admin: ["home", "people", "groups", "events", "achievements", "reports", "settings"],
+  admin: ["home", "people", "groups", "events", "achievements", "reports", "inventory", "settings"],
   instructor: ["home", "people", "groups", "events", "achievements", "settings"],
   member: ["home", "groups", "events", "achievements", "settings"],
   guardian: ["home", "events", "achievements", "settings"],

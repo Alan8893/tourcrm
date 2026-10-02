@@ -33,12 +33,14 @@ The visual language should feel welcoming, warm and approachable. Cute/lightly p
 |---|---|---|---|---|
 | Brand | Official logo master (1) | **Master uploaded** | `docs/06-ui/assets/packages/brand/logo.png` | `assets/ui/brand/` |
 | Navigation | NAV-001…NAV-007 (7) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip` | `assets/ui/icons/navigation/` |
+| Navigation — Inventory | `icon.navigation.inventory` (1) | **APPROVED** | `docs/06-ui/assets/packages/navigation/tourcrm-nav-inventory-v1/` | `assets/ui/icons/navigation/inventory/` |
 | Actions | ACT-001…ACT-017 (17) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip` | `assets/ui/icons/actions/` |
 | Status | STA-001…STA-009 (9) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0_FINAL.zip` | `assets/ui/icons/status/` |
 | Domain | DOM-001…DOM-022 (22) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip` | `assets/ui/icons/domain/` |
 | Achievements P0 | rarity + state (8) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip` | `assets/ui/achievements/` |
 | Achievements P1 | artwork (10) | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip` | `assets/ui/achievements/` |
 | Illustrations — Empty | 6 | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip` | `assets/ui/illustrations/` |
+| Illustrations — Empty Inventory | `empty-inventory` (1) | **APPROVED** | `docs/06-ui/assets/packages/illustrations/tourcrm-empty-inventory-production.zip` | `assets/ui/illustrations/` |
 | Illustrations — System | 5 | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip` | `assets/ui/illustrations/` |
 | Illustrations — Onboarding | 4 | **CLOSED / APPROVED** | `docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip` | `assets/ui/illustrations/` |
 | Decorative | DEC-001…DEC-009 (9) | **DEFERRED / P2** | `docs/06-ui/assets/packages/decorative/` | `assets/ui/decorative/` |
@@ -85,6 +87,8 @@ assets/ui/icons/navigation/achievements/
 assets/ui/icons/navigation/reports/
 assets/ui/icons/navigation/settings/
 ```
+
+«Склад» (Issue #230) uses the separately approved `icon.navigation.inventory` package `docs/06-ui/assets/packages/navigation/tourcrm-nav-inventory-v1/` (`nav-inventory-{16,20,24,32,48,64}.webp`), integrated as `assets/ui/icons/navigation/inventory/`.
 
 `Settings` is the approved compass + wrench artwork. The superseded `TourCRM_Assets_Navigation_P0.zip` must not be used.
 
@@ -153,6 +157,8 @@ docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyState
 ```
 
 `empty-groups`, `empty-people`, `empty-events`, `empty-achievements`, `empty-search`, `no-results`.
+
+`empty-inventory` (Issue #230): `docs/06-ui/assets/packages/illustrations/tourcrm-empty-inventory-production.zip` (32/64/128/256 px WebP + preview).
 
 These states are deliberately allowed to be friendly/cute. `empty-search` and `no-results` are distinct semantic states and must not collapse into a generic error illustration.
 

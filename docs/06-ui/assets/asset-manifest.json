@@ -27,11 +27,13 @@
   },
   "packages": [
     {"category":"navigation","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/navigation/TourCRM_Visual_Assets_v1.0_FINAL.zip","integrationPath":"assets/ui/icons/navigation/","assetCount":42,"catalogCount":7},
+    {"category":"navigation-inventory","status":"approved-production","changeControl":"closed","archiveDirectory":"docs/06-ui/assets/packages/navigation/tourcrm-nav-inventory-v1/","integrationPath":"assets/ui/icons/navigation/inventory/","assetCount":6,"catalogCount":1},
     {"category":"actions","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/actions/TourCRM_Assets_Actions_P0_FINAL.zip","integrationPath":"assets/ui/icons/actions/","assetCount":102,"catalogCount":17},
     {"category":"status","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/status/TourCRM_Assets_Status_P0_FINAL.zip","integrationPath":"assets/ui/icons/status/","assetCount":54,"catalogCount":9},
     {"category":"achievements-p0","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P0_FINAL.zip","integrationPath":"assets/ui/achievements/","assetCount":48,"catalogCount":8},
     {"category":"achievements-p1","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/achievements/TourCRM_Assets_Achievements_P1_FINAL.zip","integrationPath":"assets/ui/achievements/","assetCount":60,"catalogCount":10},
     {"category":"illustrations-empty-states","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_EmptyStates_P0_FINAL.zip","integrationPath":"assets/ui/illustrations/","assetCount":24,"catalogCount":6},
+    {"category":"illustrations-empty-inventory","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/illustrations/tourcrm-empty-inventory-production.zip","integrationPath":"assets/ui/illustrations/","assetCount":4,"catalogCount":1},
     {"category":"illustrations-system","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_System_P0_FINAL.zip","integrationPath":"assets/ui/illustrations/","assetCount":20,"catalogCount":5},
     {"category":"illustrations-onboarding","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/illustrations/TourCRM_Assets_Illustrations_Onboarding_P0_FINAL.zip","integrationPath":"assets/ui/illustrations/","assetCount":16,"catalogCount":4},
     {"category":"domain","status":"approved-production","changeControl":"closed","archive":"docs/06-ui/assets/packages/domain/TourCRM_Assets_Domain_P2_FINAL.zip","integrationPath":"assets/ui/icons/domain/","assetCount":49,"catalogCount":22},
@@ -46,6 +48,7 @@
     {"id":"icon.navigation.events","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/events/","sizes":[16,20,24,32,48,64]},
     {"id":"icon.navigation.achievements","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/achievements/","sizes":[16,20,24,32,48,64]},
     {"id":"icon.navigation.reports","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/reports/","sizes":[16,20,24,32,48,64]},
+    {"id":"icon.navigation.inventory","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/inventory/","sizes":[16,20,24,32,48,64]},
     {"id":"icon.navigation.settings","category":"navigation","status":"approved-production","format":"webp","path":"assets/ui/icons/navigation/settings/","sizes":[16,20,24,32,48,64]},
     {"id":"icon.action.add","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/add/","sizes":[16,20,24,32,48,64]},
     {"id":"icon.action.edit","category":"actions","status":"approved-production","format":"webp","path":"assets/ui/icons/actions/edit/","sizes":[16,20,24,32,48,64]},
@@ -82,7 +85,7 @@
     {"id":"icon.domain.trip","category":"domain","status":"approved-production","format":"webp","path":"assets/ui/icons/domain/DOM-021_trip_","sizes":[16,20,24,32,48,64]}
   ],
   "illustrationCatalog": {
-    "emptyStates": ["empty-groups","empty-people","empty-events","empty-achievements","empty-search","no-results"],
+    "emptyStates": ["empty-groups","empty-people","empty-events","empty-achievements","empty-search","no-results","empty-inventory"],
     "system": ["success","error","404","403","maintenance"],
     "onboarding": ["welcome","first-group","first-event","first-achievement"]
   },
