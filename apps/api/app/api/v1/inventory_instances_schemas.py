@@ -106,5 +106,8 @@ class InventoryMovementOut(BaseModel):
     unit_cost_minor: Optional[int]
     comment: Optional[str]
     reverses_movement_id: Optional[UUID]
+    # Slice 4: the issue line of an `issue`/`return` (and of a lost
+    # instance's `write_off`); `null` otherwise.
+    issue_line_id: Optional[UUID]
     created_by: UUID
     created_at: datetime

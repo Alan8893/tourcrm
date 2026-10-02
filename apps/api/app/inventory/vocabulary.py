@@ -65,6 +65,29 @@ CANONICAL_INSTANCE_STATES: frozenset[str] = frozenset(
 # location; in every other state it has none.
 INSTANCE_STATES_IN_STORAGE: frozenset[str] = frozenset({INSTANCE_AVAILABLE, INSTANCE_IN_REPAIR})
 
+# inventory.md §14 (Slice 4): the issue document. An issue is `issued` from
+# its creation (no confirmation step) until it is `cancelled`; "fully
+# returned" is derived from the journal, not a status.
+ISSUE_ISSUED = "issued"
+ISSUE_CANCELLED = "cancelled"
+
+CANONICAL_ISSUE_STATUSES: frozenset[str] = frozenset({ISSUE_ISSUED, ISSUE_CANCELLED})
+
+# inventory.md §14: recipient types. Member -> Person, Instructor -> User,
+# Group -> Group.
+RECIPIENT_MEMBER = "member"
+RECIPIENT_INSTRUCTOR = "instructor"
+RECIPIENT_GROUP = "group"
+
+CANONICAL_RECIPIENT_TYPES: frozenset[str] = frozenset(
+    {RECIPIENT_MEMBER, RECIPIENT_INSTRUCTOR, RECIPIENT_GROUP}
+)
+
+# Movements that belong to an issue line (inventory.md §14): `issue` and
+# `return` always do; a `write_off` does only when it is the write-off half
+# of a lost instance.
+ISSUE_LINE_MOVEMENT_TYPES: frozenset[str] = frozenset({MOVEMENT_ISSUE, MOVEMENT_RETURN})
+
 # inventory.md §9 п.2 (PO decision G11): seeded by migration, immutable.
 SYSTEM_UNIT_NAMES: tuple[str, ...] = ("шт", "м", "комплект", "пара")
 
@@ -92,5 +115,13 @@ __all__ = [
     "CANONICAL_INSTANCE_STATES",
     "INSTANCE_STATES_IN_STORAGE",
     "CANONICAL_MOVEMENT_TYPES",
+    "ISSUE_ISSUED",
+    "ISSUE_CANCELLED",
+    "CANONICAL_ISSUE_STATUSES",
+    "RECIPIENT_MEMBER",
+    "RECIPIENT_INSTRUCTOR",
+    "RECIPIENT_GROUP",
+    "CANONICAL_RECIPIENT_TYPES",
+    "ISSUE_LINE_MOVEMENT_TYPES",
     "SYSTEM_UNIT_NAMES",
 ]

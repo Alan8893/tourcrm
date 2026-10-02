@@ -6,17 +6,25 @@ already have a movement? is the referenced record archived?) are resolved
 by app.inventory.service and passed in.
 """
 
+import uuid
+from collections.abc import Iterable
+
 from app.inventory.vocabulary import (
     ACCOUNTING_MODE_INSTANCE,
     ACCOUNTING_MODE_QUANTITY,
     ACTIVE,
     ARCHIVED,
     CANONICAL_ACCOUNTING_MODES,
+    CANONICAL_RECIPIENT_TYPES,
     INSTANCE_AVAILABLE,
     INSTANCE_IN_REPAIR,
+    INSTANCE_ISSUED,
     INSTANCE_WRITTEN_OFF,
+    ISSUE_CANCELLED,
+    MOVEMENT_ISSUE,
     MOVEMENT_REPAIR_END,
     MOVEMENT_REPAIR_START,
+    MOVEMENT_RETURN,
     MOVEMENT_TRANSFER,
     MOVEMENT_WRITE_OFF,
     MOVEMENT_WRITEOFF_REVERSAL,
@@ -184,9 +192,80 @@ class ReversalLocationNotAllowedError(InventoryDomainError):
         super().__init__("The original storage location is active; the instance returns there")
 
 
+class ItemHasOutstandingIssuesError(InventoryDomainError):
+    """§17 п.4: an item with property still issued cannot be archived."""
+
+    def __init__(self) -> None:
+        super().__init__("Item has property that is still issued")
+
+
+class IssueCancelledError(InventoryDomainError):
+    """§14 (Slice 4): a cancelled issue is immutable."""
+
+    def __init__(self) -> None:
+        super().__init__("The issue is cancelled and cannot be changed")
+
+
+class IssueFullyReturnedError(InventoryDomainError):
+    """§14 (Slice 4): a fully returned issue is immutable and cannot be
+    cancelled."""
+
+    def __init__(self) -> None:
+        super().__init__("Everything on this issue has been returned; it cannot be changed")
+
+
+class ReturnExceedsOutstandingError(InventoryDomainError):
+    """§14: more cannot be returned than is still issued on the line."""
+
+    def __init__(self, outstanding: int, requested: int) -> None:
+        super().__init__(
+            f"Cannot return {requested}: only {outstanding} still issued on this line"
+        )
+        self.outstanding = outstanding
+        self.requested = requested
+
+
+class InstanceNotOutstandingError(InventoryDomainError):
+    """§14: only an instance still issued on this issue can be returned or
+    reported lost."""
+
+    def __init__(self, instance_id: uuid.UUID) -> None:
+        super().__init__(f"Instance {instance_id} is not issued on this issue")
+        self.instance_id = instance_id
+
+
+class IssueLineOutstandingError(InventoryDomainError):
+    """§14: a line can be removed from an issue only when nothing on it is
+    still issued."""
+
+    def __init__(self, outstanding: int) -> None:
+        super().__init__(f"The line still has {outstanding} issued; return it first")
+        self.outstanding = outstanding
+
+
+class IssueLineRemovedError(InventoryDomainError):
+    """§14: a removed line is history only — it cannot be removed again or
+    used by any further operation."""
+
+    def __init__(self) -> None:
+        super().__init__("The line has been removed from the issue")
+
+
+class InvalidRecipientError(InventoryDomainError):
+    """§14: the recipient is not a valid Member, Instructor or Group of the
+    Club."""
+
+    def __init__(self, recipient_type: str) -> None:
+        super().__init__(f"The {recipient_type} recipient is not valid for this Club")
+        self.recipient_type = recipient_type
+
+
 # §7.4: movement -> (states it may start from, resulting state or None when
 # the state is kept). `receipt` creates the instance and is not listed.
+# `issue`/`return` (Slice 4, §14): available -> issued -> available.
 INSTANCE_TRANSITIONS: dict[str, tuple[frozenset[str], str | None]] = {
+    MOVEMENT_ISSUE: (frozenset({INSTANCE_AVAILABLE}), INSTANCE_ISSUED),
+    MOVEMENT_RETURN: (frozenset({INSTANCE_ISSUED}), INSTANCE_AVAILABLE),
     MOVEMENT_TRANSFER: (frozenset({INSTANCE_AVAILABLE, INSTANCE_IN_REPAIR}), None),
     MOVEMENT_REPAIR_START: (frozenset({INSTANCE_AVAILABLE}), INSTANCE_IN_REPAIR),
     MOVEMENT_REPAIR_END: (frozenset({INSTANCE_IN_REPAIR}), INSTANCE_AVAILABLE),
@@ -224,6 +303,77 @@ def validate_quantity(value: int) -> int:
 def ensure_sufficient_stock(*, available: int, requested: int) -> None:
     if requested > available:
         raise InsufficientStockError(available, requested)
+
+
+def allocate_quantity(
+    stock: Iterable[tuple[uuid.UUID, int]], requested: int
+) -> list[tuple[uuid.UUID, int]]:
+    """§14 (Slice 4): spread `requested` over the item's stock, taking first
+    from the location with the most stock, ties broken by the smaller
+    location id. Returns `(location_id, quantity)` pairs in that order;
+    raises when the total stock is short. Deterministic for equal input."""
+    amount = validate_quantity(requested)
+    ordered = sorted(
+        ((location_id, quantity) for location_id, quantity in stock if quantity > 0),
+        key=lambda pair: (-pair[1], pair[0]),
+    )
+    total = sum(quantity for _, quantity in ordered)
+    ensure_sufficient_stock(available=total, requested=amount)
+    allocation: list[tuple[uuid.UUID, int]] = []
+    remaining = amount
+    for location_id, quantity in ordered:
+        if remaining == 0:
+            break
+        take = min(quantity, remaining)
+        allocation.append((location_id, take))
+        remaining -= take
+    return allocation
+
+
+def outstanding_quantity(*, issued: int, returned: int) -> int:
+    """§14: what is still issued on a quantity line."""
+    if issued < 0 or returned < 0 or returned > issued:
+        raise ValueError("returned quantity cannot exceed the issued quantity")
+    return issued - returned
+
+
+def ensure_returnable(*, outstanding: int, requested: int) -> None:
+    validate_quantity(requested)
+    if requested > outstanding:
+        raise ReturnExceedsOutstandingError(outstanding, requested)
+
+
+def ensure_issue_changeable(*, status: str, has_outstanding: bool) -> None:
+    """§14 (Slice 4): an issue can be edited, extended, returned against,
+    cancelled or reported lost only while it is not cancelled and still
+    holds issued property. Cancelled and fully returned issues are
+    immutable."""
+    if status == ISSUE_CANCELLED:
+        raise IssueCancelledError()
+    if not has_outstanding:
+        raise IssueFullyReturnedError()
+
+
+def ensure_line_removable(*, removed: bool, outstanding: int) -> None:
+    """§14: a line leaves the issue's working composition only once and only
+    when nothing on it is still issued."""
+    if removed:
+        raise IssueLineRemovedError()
+    if outstanding > 0:
+        raise IssueLineOutstandingError(outstanding)
+
+
+def validate_recipient_type(value: str) -> str:
+    if value not in CANONICAL_RECIPIENT_TYPES:
+        raise InvalidInventoryDataError(
+            f"recipient_type must be one of {sorted(CANONICAL_RECIPIENT_TYPES)}"
+        )
+    return value
+
+
+def ensure_item_has_no_outstanding_issues(*, has_outstanding_issues: bool) -> None:
+    if has_outstanding_issues:
+        raise ItemHasOutstandingIssuesError()
 
 
 def ensure_item_has_no_stock(*, total_stock: int) -> None:
@@ -366,6 +516,21 @@ __all__ = [
     "WriteOffAlreadyReversedError",
     "ReversalLocationRequiredError",
     "ReversalLocationNotAllowedError",
+    "ItemHasOutstandingIssuesError",
+    "IssueCancelledError",
+    "IssueFullyReturnedError",
+    "ReturnExceedsOutstandingError",
+    "InstanceNotOutstandingError",
+    "IssueLineOutstandingError",
+    "IssueLineRemovedError",
+    "InvalidRecipientError",
+    "allocate_quantity",
+    "outstanding_quantity",
+    "ensure_returnable",
+    "ensure_issue_changeable",
+    "ensure_line_removable",
+    "validate_recipient_type",
+    "ensure_item_has_no_outstanding_issues",
     "INSTANCE_TRANSITIONS",
     "next_instance_state",
     "ensure_instance_editable",

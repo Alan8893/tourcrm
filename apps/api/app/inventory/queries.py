@@ -14,6 +14,8 @@ from sqlalchemy.orm import Session
 from app.db.inventory import (
     InventoryCategory,
     InventoryInstance,
+    InventoryIssue,
+    InventoryIssueLine,
     InventoryItem,
     InventoryItemStock,
     InventoryMovement,
@@ -220,7 +222,103 @@ def list_item_movements(
     return list(rows), total
 
 
+def get_issue(
+    session: Session, *, issue_id: uuid.UUID, club_id: uuid.UUID
+) -> InventoryIssue | None:
+    return session.execute(
+        sa.select(InventoryIssue).where(
+            InventoryIssue.id == issue_id, InventoryIssue.club_id == club_id
+        )
+    ).scalar_one_or_none()
+
+
+def list_issues(
+    session: Session,
+    *,
+    club_id: uuid.UUID,
+    status: str | None,
+    recipient_type: str | None,
+    recipient_id: uuid.UUID | None,
+    event_id: uuid.UUID | None,
+    page: int,
+    page_size: int,
+) -> tuple[list[InventoryIssue], int]:
+    """Issue documents of the Club (Slice 4), newest first."""
+    conditions: list[sa.ColumnElement[bool]] = [InventoryIssue.club_id == club_id]
+    if status is not None:
+        conditions.append(InventoryIssue.status == status)
+    if recipient_type is not None:
+        conditions.append(InventoryIssue.recipient_type == recipient_type)
+    if recipient_id is not None:
+        conditions.append(
+            sa.or_(
+                InventoryIssue.recipient_person_id == recipient_id,
+                InventoryIssue.recipient_user_id == recipient_id,
+                InventoryIssue.recipient_group_id == recipient_id,
+            )
+        )
+    if event_id is not None:
+        conditions.append(InventoryIssue.event_id == event_id)
+    total = session.execute(
+        sa.select(sa.func.count()).select_from(InventoryIssue).where(*conditions)
+    ).scalar_one()
+    rows = (
+        session.execute(
+            sa.select(InventoryIssue)
+            .where(*conditions)
+            .order_by(InventoryIssue.created_at.desc(), InventoryIssue.id)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows), total
+
+
+def list_issue_lines(session: Session, *, issue_id: uuid.UUID) -> list[InventoryIssueLine]:
+    """Lines of one issue in the order they were added."""
+    return list(
+        session.execute(
+            sa.select(InventoryIssueLine)
+            .where(InventoryIssueLine.issue_id == issue_id)
+            .order_by(InventoryIssueLine.created_at, InventoryIssueLine.id)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def list_issue_movements(
+    session: Session, *, issue_id: uuid.UUID, page: int, page_size: int
+) -> tuple[list[InventoryMovement], int]:
+    """Chronological movements of one issue's lines: its issues, returns
+    and the write-offs of lost instances."""
+    condition = InventoryMovement.issue_line_id.in_(
+        sa.select(InventoryIssueLine.id).where(InventoryIssueLine.issue_id == issue_id)
+    )
+    total = session.execute(
+        sa.select(sa.func.count()).select_from(InventoryMovement).where(condition)
+    ).scalar_one()
+    rows = (
+        session.execute(
+            sa.select(InventoryMovement)
+            .where(condition)
+            .order_by(InventoryMovement.created_at, InventoryMovement.id)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows), total
+
+
 __all__ = [
+    "get_issue",
+    "list_issues",
+    "list_issue_lines",
+    "list_issue_movements",
     "list_stock",
     "list_item_movements",
     "get_record",

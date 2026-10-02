@@ -94,12 +94,13 @@ def _quantity_item(session: Session, *, club_id: uuid.UUID, item_id: uuid.UUID) 
     return item
 
 
-def _locked_stocks(
+def locked_stocks(
     session: Session, *, item_id: uuid.UUID, location_ids: Iterable[uuid.UUID], create: bool
 ) -> dict[uuid.UUID, InventoryItemStock]:
     """Row-lock the stock of `item_id` in each location, in location-id
-    order. With `create`, a missing row is inserted with quantity 0 first
-    (concurrent inserts of the same pair converge on one row)."""
+    order (shared with app.inventory.issues). With `create`, a missing row
+    is inserted with quantity 0 first (concurrent inserts of the same pair
+    converge on one row)."""
     ordered = sorted(set(location_ids), key=str)
     if create:
         for location_id in ordered:
@@ -171,7 +172,7 @@ def receive(
     note = normalize_optional_text(comment, max_length=TEXT_MAX_LENGTH, field="comment")
     item = _quantity_item(session, club_id=club_id, item_id=item_id)
     location = selectable_location(session, club_id=club_id, location_id=storage_location_id)
-    stock = _locked_stocks(session, item_id=item.id, location_ids=[location.id], create=True)
+    stock = locked_stocks(session, item_id=item.id, location_ids=[location.id], create=True)
     stock[location.id].quantity += amount
     return _finish(
         session,
@@ -210,7 +211,7 @@ def transfer(
     )
     for location_id in sorted({from_location_id, to_location_id}, key=str):
         _selectable(locations, location_id)
-    stock = _locked_stocks(
+    stock = locked_stocks(
         session, item_id=item.id, location_ids=[from_location_id, to_location_id], create=True
     )
     ensure_sufficient_stock(available=stock[from_location_id].quantity, requested=amount)
@@ -246,7 +247,7 @@ def write_off(
     reason = normalize_write_off_reason(comment, max_length=TEXT_MAX_LENGTH)
     item = _quantity_item(session, club_id=club_id, item_id=item_id)
     location = selectable_location(session, club_id=club_id, location_id=storage_location_id)
-    stock = _locked_stocks(session, item_id=item.id, location_ids=[location.id], create=False)
+    stock = locked_stocks(session, item_id=item.id, location_ids=[location.id], create=False)
     available = stock[location.id].quantity if location.id in stock else 0
     ensure_sufficient_stock(available=available, requested=amount)
     stock[location.id].quantity -= amount
@@ -309,7 +310,7 @@ def reverse_write_off(
             raise ReversalLocationRequiredError()
         target_id = _selectable(locations, storage_location_id).id
 
-    stock = _locked_stocks(session, item_id=item.id, location_ids=[target_id], create=True)
+    stock = locked_stocks(session, item_id=item.id, location_ids=[target_id], create=True)
     already_reversed = session.execute(
         sa.select(
             sa.exists().where(InventoryMovement.reverses_movement_id == original_write_off.id)
@@ -340,6 +341,7 @@ def reverse_write_off(
 
 __all__ = [
     "InventoryWriteOffNotFoundError",
+    "locked_stocks",
     "receive",
     "transfer",
     "write_off",

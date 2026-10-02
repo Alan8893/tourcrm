@@ -428,6 +428,22 @@ Slice 3 — quantity-остатки и движения (implemented):
 
 Операции возвращают созданное движение (`201`). Прямого изменения остатка (`PUT`/`PATCH`/`DELETE`) нет.
 
+Slice 4 — выдача и возврат (implemented, Issue #236; правила — `docs/04-domain/inventory.md` §14, §25):
+
+- `GET /inventory/issues` — документы выдачи, новые первыми; фильтры `status` (`issued` | `cancelled`), `recipient_type`, `recipient_id`, `event_id`, `page`/`page_size`; у каждого — производный признак `has_outstanding`
+- `POST /inventory/issues` — создание = выдача: `recipient_type` (`member` → Person id, `instructor` → User id, `group` → Group id), `recipient_id`, необязательные `event_id`, `planned_return_date`, `comment`, `lines[]` — `{item_id, quantity}` для quantity-номенклатуры (места распределяются автоматически) или `{item_id, instance_ids[]}` для instance-номенклатуры; одна номенклатура — одна строка
+- `GET /inventory/issues/{issue_id}` — документ с активными строками (`issued_quantity`, `returned_quantity`, `outstanding_quantity`, `outstanding_instance_ids`)
+- `PATCH /inventory/issues/{issue_id}` — `recipient_type` + `recipient_id` (вместе), `event_id`, `planned_return_date`, `comment` (`null` очищает); только пока документ не отменён и по нему что-то числится выданным
+- `POST /inventory/issues/{issue_id}/lines` — `lines[]` как при создании; номенклатура, уже присутствующая в документе, дополняется новым движением `issue` в существующую строку
+- `GET /inventory/issues/{issue_id}/lines` — строки документа; `status=active|removed|all` (по умолчанию `active`), `page`/`page_size`; у удалённой строки заполнены `removed_at`/`removed_by`
+- `DELETE /inventory/issues/{issue_id}/lines/{line_id}` — удаление строки из рабочего состава (`inventory.md` §14 п.16): только при `outstanding = 0` и редактируемом документе (у полностью возвращённого документа — `409 issue_fully_returned`); физического удаления нет — строка помечается `removed_at`/`removed_by`, её движения сохраняются; повторная выдача той же номенклатуры создаёт новую активную строку; возвращает документ (`200`)
+- `POST /inventory/issues/{issue_id}/returns` — `storage_location_id` (обязательно), `quantities[]` (`{line_id, quantity}`), `instance_ids[]`, необязательный `comment`; частичный и полный возврат
+- `POST /inventory/issues/{issue_id}/cancel` — `storage_location_id`; всё невозвращённое возвращается туда, статус `cancelled`; полностью возвращённую выдачу отменить нельзя
+- `POST /inventory/issues/{issue_id}/lost` — `instance_id`, `storage_location_id`, обязательный `reason`, необязательный `comment`; возврат + немедленное списание экземпляра одной транзакцией
+- `GET /inventory/issues/{issue_id}/movements` — хронологическая история документа (`issue`, `return`, списания утерянных экземпляров), `page`/`page_size`
+
+Создание и добавление строк возвращают документ (`201`), остальные операции — документ (`200`). `DELETE` документа нет; `DELETE` строки только помечает её удалённой (`404 not_found` — строки нет в этом документе, `409 issue_line_outstanding` — по строке что-то выдано, `409 issue_line_removed` — строка уже удалена; удалённая строка в `returns` — `409 issue_line_removed`); отменённый и полностью возвращённый документ неизменяемы (`409 issue_cancelled` / `409 issue_fully_returned`). Остальные коды ошибок: `409 insufficient_stock`, `409 invalid_state_transition`, `409 return_exceeds_outstanding`, `409 instance_not_issued`, `409 item_has_outstanding_issues` (архивирование номенклатуры), `422 invalid_recipient`, `422 invalid_reference`, `422 archived_reference`, `422 item_not_quantity_mode` / `item_not_instance_mode`, `422 invalid_inventory_data`. Движения во всех ответах содержат `issue_line_id`.
+
 ## 20. Finance
 
 - `GET /financial-accounts`
