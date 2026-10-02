@@ -373,3 +373,67 @@ describe("ImportPage — canonical workflow upload → preview → approve → a
     expect(screen.getByRole("button", { name: "Начать новый импорт" })).toBeInTheDocument();
   });
 });
+
+describe("ImportPage — downloadable import templates (Issue #228)", () => {
+  /** The file a download link points to, read from `public/` (served at
+   * the site root by Vite and in the production build). */
+  async function publicFile(link: HTMLElement): Promise<Buffer> {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    return readFileSync(join(process.cwd(), "public", link.getAttribute("href") ?? ""));
+  }
+
+  function templateLinks() {
+    return {
+      csv: screen.getByRole("link", { name: "Скачать пример CSV" }),
+      xlsx: screen.getByRole("link", { name: "Скачать пример XLSX" }),
+    };
+  }
+
+  /** The column names the page itself documents next to the downloads. */
+  function documentedColumns(): string[] {
+    const description = screen.getByText(/Обязательные колонки:/);
+    return Array.from(description.querySelectorAll("span")).map((span) => span.textContent ?? "");
+  }
+
+  it("offers both templates on the upload step, next to the column description, as static downloads", async () => {
+    const fetchMock = importBackend();
+    renderImport();
+    await screen.findByRole("heading", { name: "Выберите файл" });
+
+    const { csv, xlsx } = templateLinks();
+    expect(csv).toHaveAttribute("href", "/templates/participant-import-template.csv");
+    expect(xlsx).toHaveAttribute("href", "/templates/participant-import-template.xlsx");
+    expect(csv).toHaveAttribute("download");
+    expect(xlsx).toHaveAttribute("download");
+    // Same card as the accepted-format/column explanation.
+    const card = screen.getByRole("heading", { name: "Выберите файл" }).parentElement as HTMLElement;
+    expect(within(card).getByText(/Обязательные колонки:/)).toBeInTheDocument();
+    expect(within(card).getByRole("link", { name: "Скачать пример CSV" })).toBe(csv);
+    // A template is a static asset: no API request, no import job.
+    expect(requests(fetchMock)).toHaveLength(0);
+  });
+
+  it("the CSV template holds exactly the documented columns, in order, and no participant rows", async () => {
+    importBackend();
+    renderImport();
+    await screen.findByRole("heading", { name: "Выберите файл" });
+    const bytes = await publicFile(templateLinks().csv);
+    const text = new TextDecoder("utf-8", { ignoreBOM: false }).decode(bytes);
+    const lines = text.split(/\r?\n/).filter((line) => line !== "");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.split(",")).toEqual(documentedColumns());
+  });
+
+  it("the XLSX template is a real workbook file", async () => {
+    importBackend();
+    renderImport();
+    await screen.findByRole("heading", { name: "Выберите файл" });
+    const bytes = await publicFile(templateLinks().xlsx);
+    // XLSX is a ZIP container (local file header "PK\x03\x04") holding the
+    // workbook part; its header row is checked against the backend contract
+    // by apps/api tests/unit/test_import_templates.py.
+    expect(Array.from(bytes.subarray(0, 4))).toEqual([0x50, 0x4b, 0x03, 0x04]);
+    expect(bytes.includes(Buffer.from("xl/workbook.xml"))).toBe(true);
+  });
+});

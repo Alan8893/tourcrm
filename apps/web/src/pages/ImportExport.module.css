@@ -44,6 +44,17 @@
   gap: var(--space-3);
 }
 
+/* Template downloads (Issue #228), right under the column description. */
+.templateActions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.templateLink {
+  text-decoration: none;
+}
+
 .stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
