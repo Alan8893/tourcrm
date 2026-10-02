@@ -220,13 +220,14 @@ _INVENTORY_ISSUE_PATHS = {
     "/api/v1/inventory/issues",
     "/api/v1/inventory/issues/{issue_id}",
     "/api/v1/inventory/issues/{issue_id}/lines",
+    "/api/v1/inventory/issues/{issue_id}/lines/{line_id}",
     "/api/v1/inventory/issues/{issue_id}/returns",
     "/api/v1/inventory/issues/{issue_id}/cancel",
     "/api/v1/inventory/issues/{issue_id}/lost",
     "/api/v1/inventory/issues/{issue_id}/movements",
 }
-# Inventory Slice 4 (Issue #236): issue / return — no DELETE of an issue
-# or a line.
+# Inventory Slice 4 (Issue #236): issue / return — no DELETE of an issue;
+# DELETE of a line only removes it from the issue (the row stays).
 
 _GUARDIAN_RELATIONSHIP_PATHS = {
     "/api/v1/persons/{person_id}/guardian-relationships",

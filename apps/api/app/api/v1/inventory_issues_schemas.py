@@ -1,8 +1,9 @@
 """Request/response models for the Inventory issue endpoints (Slice 4,
 Issue #236; docs/04-domain/inventory.md §14).
 
-There is no request that deletes a line or lowers an issued quantity:
-less property with the recipient is always a return. Requests forbid
+There is no request that lowers an issued quantity: less property with the
+recipient is always a return. Removing a line (nothing outstanding on it)
+keeps the line as history with `removed_at`/`removed_by` set. Requests forbid
 unknown fields (422).
 """
 
@@ -17,6 +18,7 @@ from app.db.inventory import TEXT_MAX_LENGTH
 RecipientTypeLiteral = Literal["member", "instructor", "group"]
 IssueStatusLiteral = Literal["issued", "cancelled"]
 AccountingModeLiteral = Literal["quantity", "instance"]
+LineStatusLiteral = Literal["active", "removed", "all"]
 
 
 class _Request(BaseModel):
@@ -95,6 +97,10 @@ class InventoryIssueLineOut(BaseModel):
     outstanding_instance_ids: list[UUID]
     created_by: UUID
     created_at: datetime
+    # Set when the line was removed from the issue's working composition;
+    # a removed line is history only.
+    removed_at: Optional[datetime]
+    removed_by: Optional[UUID]
 
 
 class InventoryIssueOut(BaseModel):
@@ -116,4 +122,5 @@ class InventoryIssueOut(BaseModel):
 
 
 class InventoryIssueDetailOut(InventoryIssueOut):
+    # Active lines only; removed lines: GET .../lines?status=removed|all.
     lines: list[InventoryIssueLineOut]

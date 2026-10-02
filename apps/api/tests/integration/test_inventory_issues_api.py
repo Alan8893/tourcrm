@@ -274,6 +274,8 @@ def test_non_administrators_get_403_before_existence(client, world, who) -> None
     assert _patch(client, missing, {"comment": "x"}).status_code == 403
     for action, body in bodies.items():
         assert _post(client, f"{missing}/{action}", body).status_code == 403
+    delete = client.delete(f"{missing}/lines/{uuid.uuid4()}", headers=_csrf(client))
+    assert delete.status_code == 403
 
 
 def test_unknown_issue_is_404_for_the_administrator(client, world) -> None:
@@ -837,3 +839,204 @@ def test_list_newest_first_with_outstanding_flag(client, world, stock) -> None:
     ]
     assert _ok(client.get(_ISSUES, params={"status": "issued"}))["pagination"]["total"] == 2
     assert client.get(_ISSUES, params={"status": "returned"}).status_code == 422
+
+
+# --- removing a line -------------------------------------------------------------------
+
+
+def _delete_line(client, issue: dict, line_id: str):
+    return client.delete(f"{_ISSUES}/{issue['id']}/lines/{line_id}", headers=_csrf(client))
+
+
+def _lines_with(client, issue: dict, status: str) -> list[dict]:
+    return _ok(client.get(f"{_ISSUES}/{issue['id']}/lines", params={"status": status}))["items"]
+
+
+@dataclass
+class ThreeLines:
+    issue: dict
+    backpack: dict
+    carabiner: dict
+    rope: dict
+    location: dict
+
+
+@pytest.fixture
+def three_lines(client, world) -> ThreeLines:
+    """The review example: Рюкзак × 10 (4 outstanding), Карабин × 5 (fully
+    returned), Верёвка × 20 (20 outstanding)."""
+    _as(world.admin)
+    location = _location(client)
+    backpack, carabiner, rope = _item(client), _item(client), _item(client)
+    for item, quantity in ((backpack, 10), (carabiner, 5), (rope, 20)):
+        _receive(client, item, location, quantity)
+    issue = _issue(
+        client,
+        world,
+        [
+            {"item_id": backpack["id"], "quantity": 10},
+            {"item_id": carabiner["id"], "quantity": 5},
+            {"item_id": rope["id"], "quantity": 20},
+        ],
+    )
+    quantities = [
+        {"line_id": _line(issue, backpack)["id"], "quantity": 6},
+        {"line_id": _line(issue, carabiner)["id"], "quantity": 5},
+    ]
+    issue = _ok(_return(client, issue, location, quantities=quantities))
+    return ThreeLines(issue, backpack, carabiner, rope, location)
+
+
+def test_line_with_nothing_outstanding_is_removed(client, world, three_lines) -> None:
+    t = three_lines
+    carabiner_line = _line(t.issue, t.carabiner)
+    assert carabiner_line["outstanding_quantity"] == 0
+    updated = _ok(_delete_line(client, t.issue, carabiner_line["id"]))
+    # Out of the working composition; the rest is untouched.
+    assert {line["item_id"] for line in updated["lines"]} == {t.backpack["id"], t.rope["id"]}
+    assert _line(updated, t.backpack)["outstanding_quantity"] == 4
+    assert _line(updated, t.rope)["outstanding_quantity"] == 20
+    assert updated["status"] == "issued" and updated["has_outstanding"] is True
+    assert updated["updated_by"] == str(world.admin)
+    # The removed line is still visible, explicitly marked.
+    [removed] = _lines_with(client, t.issue, "removed")
+    assert removed["id"] == carabiner_line["id"]
+    assert removed["removed_by"] == str(world.admin) and removed["removed_at"]
+    assert (removed["issued_quantity"], removed["returned_quantity"]) == (5, 5)
+    assert {line["id"] for line in _lines_with(client, t.issue, "active")} == {
+        line["id"] for line in updated["lines"]
+    }
+    assert len(_lines_with(client, t.issue, "all")) == 3
+    assert _ok(client.get(f"{_ISSUES}/{t.issue['id']}"))["lines"] == updated["lines"]
+
+
+def test_removing_a_line_keeps_its_history(client, world, three_lines) -> None:
+    t = three_lines
+    line_id = _line(t.issue, t.carabiner)["id"]
+    before = _ok(client.get(f"{_ISSUES}/{t.issue['id']}/movements"))["items"]
+    _ok(_delete_line(client, t.issue, line_id))
+    after = _ok(client.get(f"{_ISSUES}/{t.issue['id']}/movements"))["items"]
+    assert after == before
+    carabiner_history = [m for m in after if m["issue_line_id"] == line_id]
+    assert [(m["movement_type"], m["quantity"]) for m in carabiner_history] == [
+        ("issue", 5),
+        ("return", 5),
+    ]
+    item_history = _ok(client.get(f"{_BASE}/items/{t.carabiner['id']}/movements"))["items"]
+    assert [m["movement_type"] for m in item_history] == ["receipt", "issue", "return"]
+    assert _stock(t.carabiner) == {t.location["id"]: 5}
+
+
+def test_line_with_outstanding_quantity_cannot_be_removed(client, world, three_lines) -> None:
+    t = three_lines
+    for item in (t.backpack, t.rope):
+        _error(_delete_line(client, t.issue, _line(t.issue, item)["id"]), 409,
+               "issue_line_outstanding")
+    assert len(_lines_with(client, t.issue, "active")) == 3
+
+
+def test_line_with_outstanding_instance_cannot_be_removed(client, world, stock) -> None:
+    first, second, _ = stock.stoves
+    issue = _issue(
+        client,
+        world,
+        [
+            {"item_id": stock.stove["id"], "instance_ids": [first["id"], second["id"]]},
+            {"item_id": stock.rope["id"], "quantity": 1},
+        ],
+    )
+    stove_line = _line(issue, stock.stove)["id"]
+    _ok(_return(client, issue, stock.a, instance_ids=[first["id"]]))
+    _error(_delete_line(client, issue, stove_line), 409, "issue_line_outstanding")
+    _ok(_return(client, issue, stock.a, instance_ids=[second["id"]]))
+    updated = _ok(_delete_line(client, issue, stove_line))
+    assert [line["item_id"] for line in updated["lines"]] == [stock.rope["id"]]
+    history = _ok(client.get(f"{_BASE}/instances/{second['id']}/movements"))
+    assert [m["movement_type"] for m in history] == ["receipt", "issue", "return"]
+    assert all(m["issue_line_id"] == stove_line for m in history[1:])
+
+
+def test_removed_line_cannot_be_removed_again(client, world, three_lines) -> None:
+    t = three_lines
+    line_id = _line(t.issue, t.carabiner)["id"]
+    _ok(_delete_line(client, t.issue, line_id))
+    _error(_delete_line(client, t.issue, line_id), 409, "issue_line_removed")
+
+
+def test_line_of_another_issue_or_unknown_is_404(client, world, three_lines, stock) -> None:
+    t = three_lines
+    other = _issue(client, world, [{"item_id": stock.rope["id"], "quantity": 1}])
+    _error(_delete_line(client, other, _line(t.issue, t.carabiner)["id"]), 404, "not_found")
+    _error(_delete_line(client, t.issue, str(uuid.uuid4())), 404, "not_found")
+    missing = {"id": str(uuid.uuid4())}
+    _error(_delete_line(client, missing, _line(t.issue, t.carabiner)["id"]), 404, "not_found")
+    assert len(_lines_with(client, t.issue, "active")) == 3
+
+
+def test_no_line_removal_on_a_cancelled_or_fully_returned_issue(client, world, stock) -> None:
+    def returned_issue() -> tuple[dict, str]:
+        issue = _issue(client, world, [{"item_id": stock.rope["id"], "quantity": 1},
+                                       {"item_id": stock.stove["id"],
+                                        "instance_ids": [stock.stoves[0]["id"]]}])
+        line_id = _line(issue, stock.rope)["id"]
+        _ok(_return(client, issue, stock.a, quantities=[{"line_id": line_id, "quantity": 1}]))
+        return issue, line_id
+
+    cancelled, line_id = returned_issue()
+    cancel = {"storage_location_id": stock.a["id"]}
+    _ok(_post(client, f"{_ISSUES}/{cancelled['id']}/cancel", cancel))
+    _error(_delete_line(client, cancelled, line_id), 409, "issue_cancelled")
+
+    fully_returned, line_id = returned_issue()
+    _ok(_return(client, fully_returned, stock.a, instance_ids=[stock.stoves[0]["id"]]))
+    _error(_delete_line(client, fully_returned, line_id), 409, "issue_fully_returned")
+
+
+def test_operations_after_a_line_removal(client, world, three_lines, stock) -> None:
+    """Regression: a removed line takes part in nothing; edit, return,
+    issuing (allocation and instances), lost and cancel keep working on the
+    active lines."""
+    t = three_lines
+    carabiner_line = _line(t.issue, t.carabiner)["id"]
+    _ok(_delete_line(client, t.issue, carabiner_line))
+    url = f"{_ISSUES}/{t.issue['id']}"
+
+    _error(_return(client, t.issue, t.location,
+                   quantities=[{"line_id": carabiner_line, "quantity": 1}]), 409,
+           "issue_line_removed")
+    assert _ok(_patch(client, url, {"comment": "после удаления"}))["comment"] == "после удаления"
+
+    # Issuing the same item again opens a new active line; the removed one
+    # stays history.
+    updated = _ok(
+        _post(
+            client,
+            f"{url}/lines",
+            {
+                "lines": [
+                    {"item_id": t.carabiner["id"], "quantity": 2},
+                    {"item_id": stock.stove["id"], "instance_ids": [stock.stoves[0]["id"]]},
+                ]
+            },
+        ),
+        201,
+    )
+    new_carabiner = _line(updated, t.carabiner)
+    assert new_carabiner["id"] != carabiner_line
+    assert (new_carabiner["issued_quantity"], new_carabiner["outstanding_quantity"]) == (2, 2)
+    assert len(_lines_with(client, t.issue, "removed")) == 1
+    assert _stock(t.carabiner) == {t.location["id"]: 3}
+
+    _ok(_post(client, f"{url}/lost", {"instance_id": stock.stoves[0]["id"],
+                                      "storage_location_id": stock.a["id"], "reason": "утерян"}))
+    _ok(_return(client, t.issue, t.location,
+                quantities=[{"line_id": _line(t.issue, t.backpack)["id"], "quantity": 1}]))
+
+    cancelled = _ok(_post(client, f"{url}/cancel", {"storage_location_id": t.location["id"]}))
+    assert cancelled["status"] == "cancelled" and cancelled["has_outstanding"] is False
+    assert _stock(t.backpack) == {t.location["id"]: 10}
+    assert _stock(t.carabiner) == {t.location["id"]: 5}
+    assert _stock(t.rope) == {t.location["id"]: 20}
+    removed = _lines_with(client, t.issue, "removed")
+    assert [line["id"] for line in removed] == [carabiner_line]
+    assert removed[0]["returned_quantity"] == 5

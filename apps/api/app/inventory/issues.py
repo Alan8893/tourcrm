@@ -6,12 +6,14 @@ Administrator (app.inventory.authorization).
 
 An issue is a document handing property to one recipient (Member ->
 Person, Instructor -> User, Group). It is issued on creation. Each item
-appears on one line; a quantity line is issued from the item's stock,
+appears on one active line; a quantity line is issued from the item's stock,
 spread automatically over the locations (most stock first, ties by the
 smaller location id — app.inventory.lifecycle.allocate_quantity); an
 instance line holds specific instances (`available -> issued`). What is
 still issued is derived from the `issue`/`return` movements referencing
-the lines — nothing on a line is ever overwritten or deleted.
+the lines — nothing on a line is ever overwritten or deleted. A line with
+nothing outstanding can be removed from the working composition
+(`remove_line`): the row stays, marked removed, with all its movements.
 
 Every operation is one transaction and takes its locks in one order:
 
@@ -67,9 +69,11 @@ from app.inventory.lifecycle import (
     InstanceNotOutstandingError,
     InvalidInventoryDataError,
     InvalidRecipientError,
+    IssueLineRemovedError,
     allocate_quantity,
     ensure_instance_mode,
     ensure_issue_changeable,
+    ensure_line_removable,
     ensure_quantity_mode,
     ensure_returnable,
     ensure_selectable,
@@ -105,6 +109,14 @@ class InventoryIssueNotFoundError(Exception):
     def __init__(self, issue_id: uuid.UUID) -> None:
         super().__init__(f"Inventory issue {issue_id} does not exist")
         self.issue_id = issue_id
+
+
+class InventoryIssueLineNotFoundError(Exception):
+    """No line with this id belongs to the issue."""
+
+    def __init__(self, line_id: uuid.UUID) -> None:
+        super().__init__(f"Inventory issue line {line_id} does not exist on this issue")
+        self.line_id = line_id
 
 
 # --- request shapes ------------------------------------------------------------------
@@ -161,6 +173,8 @@ class LineBalance:
     line_id: uuid.UUID
     item_id: uuid.UUID
     accounting_mode: str
+    # Removed from the issue's working composition (history only).
+    removed: bool = False
     issued: int = 0
     returned: int = 0
     outstanding_instance_ids: list[uuid.UUID] = field(default_factory=list)
@@ -205,7 +219,12 @@ def line_balances(session: Session, issue_ids: Sequence[uuid.UUID]) -> dict[uuid
     if not issue_ids:
         return {}
     lines = session.execute(
-        sa.select(InventoryIssueLine.id, InventoryIssueLine.item_id, InventoryItem.accounting_mode)
+        sa.select(
+            InventoryIssueLine.id,
+            InventoryIssueLine.item_id,
+            InventoryItem.accounting_mode,
+            InventoryIssueLine.removed_at,
+        )
         .join(InventoryItem, InventoryItem.id == InventoryIssueLine.item_id)
         .where(InventoryIssueLine.issue_id.in_(issue_ids))
     ).all()
@@ -228,10 +247,13 @@ def line_balances(session: Session, issue_ids: Sequence[uuid.UUID]) -> dict[uuid
             InventoryMovement.movement_type,
         )
     ).all()
-    return build_line_balances(
+    balances = build_line_balances(
         [(row[0], row[1], row[2]) for row in lines],
         [(row[0], row[1], row[2], row[3], row[4]) for row in movements],
     )
+    for row in lines:
+        balances[row[0]].removed = row[3] is not None
+    return balances
 
 
 def _issue_balances(session: Session, issue: InventoryIssue) -> dict[uuid.UUID, LineBalance]:
@@ -465,8 +487,9 @@ def _issue_lines(
     created_by: uuid.UUID,
 ) -> None:
     """Issues `requests` on `issue` (whose row the caller holds): an item
-    already on the issue gets more `issue` movements on its existing line,
-    any other item a new line."""
+    with an active line on the issue gets more `issue` movements on that
+    line, any other item — including one whose line was removed — a new
+    line."""
     items = _share_locked_items(session, club_id=club_id, item_ids=[r.item_id for r in requests])
     for request in requests:
         item = items[request.item_id]
@@ -501,7 +524,7 @@ def _issue_lines(
         row.item_id: row.id
         for row in session.execute(
             sa.select(InventoryIssueLine.item_id, InventoryIssueLine.id).where(
-                InventoryIssueLine.issue_id == issue.id
+                InventoryIssueLine.issue_id == issue.id, InventoryIssueLine.removed_at.is_(None)
             )
         )
     }
@@ -649,6 +672,39 @@ def update_issue(
     return _finish(session, issue)
 
 
+def remove_line(
+    session: Session,
+    *,
+    club_id: uuid.UUID,
+    issue_id: uuid.UUID,
+    line_id: uuid.UUID,
+    removed_by: uuid.UUID,
+) -> InventoryIssue:
+    """§14: removes a line with nothing outstanding from the issue's working
+    composition. The row stays (`removed_at`/`removed_by`), so its `issue` /
+    `return` movements keep referencing it; it takes part in no further
+    operation. Runs under the issue lock like every other operation on the
+    issue, so no concurrent issue or return can change the line between the
+    check and the removal."""
+    issue = _locked_issue(session, club_id=club_id, issue_id=issue_id)
+    balances = _issue_balances(session, issue)
+    balance = balances.get(line_id)
+    if balance is None:
+        raise InventoryIssueLineNotFoundError(line_id)
+    if balance.removed:
+        raise IssueLineRemovedError()
+    ensure_issue_changeable(
+        status=issue.status, has_outstanding=any(b.outstanding > 0 for b in balances.values())
+    )
+    ensure_line_removable(removed=balance.removed, outstanding=balance.outstanding)
+    line = session.get(InventoryIssueLine, line_id)
+    assert line is not None
+    line.removed_at = sa.func.clock_timestamp()
+    line.removed_by = removed_by
+    issue.updated_by = removed_by
+    return _finish(session, issue)
+
+
 # --- returning -----------------------------------------------------------------------
 
 
@@ -755,6 +811,8 @@ def return_items(
         balance = balances.get(entry.line_id)
         if balance is None:
             raise InventoryReferenceNotFoundError(KIND_ISSUE_LINE, entry.line_id)
+        if balance.removed:
+            raise IssueLineRemovedError()
         ensure_quantity_mode(balance.accounting_mode)
         ensure_returnable(outstanding=balance.outstanding, requested=entry.quantity)
         requested[entry.line_id] = entry.quantity
@@ -868,6 +926,7 @@ __all__ = [
     "KIND_ISSUE_LINE",
     "KIND_EVENT",
     "InventoryIssueNotFoundError",
+    "InventoryIssueLineNotFoundError",
     "IssueLineRequest",
     "QuantityReturnRequest",
     "LineBalance",
@@ -880,6 +939,7 @@ __all__ = [
     "recipient_id_of",
     "create_issue",
     "add_lines",
+    "remove_line",
     "update_issue",
     "return_items",
     "cancel_issue",

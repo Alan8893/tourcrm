@@ -48,8 +48,10 @@ Canonical source: docs/04-domain/inventory.md.
   stays the historical source of truth.
 - Slice 4 (issue / return, inventory.md §14): `inventory_issues` is the
   issue document (recipient, optional Event, planned return date, comment,
-  `issued` | `cancelled`); `inventory_issue_lines` holds one line per item
-  of an issue (UNIQUE). Lines are never deleted. What a line issued and
+  `issued` | `cancelled`); `inventory_issue_lines` holds one active line
+  per item of an issue (partial UNIQUE). A line with nothing outstanding
+  can be removed from the issue (`removed_at`/`removed_by`); the row is
+  never deleted, so its movements keep referencing it. What a line issued and
   got back is not stored on it: every `issue`/`return` movement references
   its line through `issue_line_id` (required for those types, CHECK), and
   the outstanding quantity / instances are derived from the journal. The
@@ -587,10 +589,15 @@ class InventoryIssue(Base):
 
 
 class InventoryIssueLine(Base):
-    """One item of an issue (inventory.md §14): one line per item (UNIQUE).
-    A quantity line's issued/returned quantities and an instance line's
-    instances are derived from the movements referencing it. Lines are
-    never deleted — a fully returned line stays as history."""
+    """One item of an issue (inventory.md §14): one *active* line per item
+    (partial UNIQUE). A quantity line's issued/returned quantities and an
+    instance line's instances are derived from the movements referencing it.
+
+    A line with nothing outstanding can be removed from the issue's working
+    composition: `removed_at`/`removed_by` are set once (both or neither,
+    CHECK) and the row stays, so the movements keep referencing it and the
+    history is intact. A removed line is never changed again and the row is
+    never deleted (`_guard_issue_line_mutation`)."""
 
     __tablename__ = "inventory_issue_lines"
 
@@ -605,11 +612,24 @@ class InventoryIssueLine(Base):
     )
     created_by: Mapped[uuid.UUID] = _user_fk(nullable=False)
     created_at: Mapped[datetime] = _created_at()
+    removed_at: Mapped[Optional[datetime]] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    removed_by: Mapped[Optional[uuid.UUID]] = _user_fk(nullable=True)
 
     __table_args__ = (
-        sa.UniqueConstraint(
-            "issue_id", "item_id", name="uq_inventory_issue_lines_issue_id_item_id"
+        sa.CheckConstraint(
+            "(removed_at IS NULL) = (removed_by IS NULL)",
+            name="ck_inventory_issue_lines_removed_by_matches_removed_at",
         ),
+        sa.Index(
+            "uq_inventory_issue_lines_active_issue_id_item_id",
+            "issue_id",
+            "item_id",
+            unique=True,
+            postgresql_where=sa.text("removed_at IS NULL"),
+        ),
+        sa.Index("ix_inventory_issue_lines_issue_id", "issue_id"),
         # Target of the movements' composite FK (issue_line_id, item_id).
         sa.UniqueConstraint("id", "item_id", name="uq_inventory_issue_lines_id_item_id"),
         sa.Index("ix_inventory_issue_lines_item_id", "item_id"),
@@ -617,16 +637,37 @@ class InventoryIssueLine(Base):
 
 
 class InventoryIssueLineImmutableError(Exception):
-    """An issue line was about to be changed or deleted."""
+    """An issue line was about to be changed (other than being removed once)
+    or deleted."""
 
     def __init__(self, line_id: uuid.UUID) -> None:
-        super().__init__(f"Inventory issue line {line_id} is immutable and is never deleted")
+        super().__init__(
+            f"Inventory issue line {line_id} is immutable except for its one-time removal"
+            " and is never deleted"
+        )
         self.line_id = line_id
 
 
+_ISSUE_LINE_REMOVAL_FIELDS = ("removed_at", "removed_by")
+
+
 @event.listens_for(InventoryIssueLine, "before_update")
+def _guard_issue_line_mutation(_mapper: Any, _connection: Any, target: InventoryIssueLine) -> None:
+    """The only allowed change is the one-time removal: `removed_at` and
+    `removed_by` going from unset to set. Anything else is refused."""
+    state = sa.inspect(target)
+    for attribute in state.mapper.column_attrs:
+        history = state.attrs[attribute.key].history
+        if not history.has_changes():
+            continue
+        if attribute.key not in _ISSUE_LINE_REMOVAL_FIELDS or any(
+            value is not None for value in history.deleted
+        ):
+            raise InventoryIssueLineImmutableError(target.id)
+
+
 @event.listens_for(InventoryIssueLine, "before_delete")
-def _refuse_issue_line_mutation(_mapper: Any, _connection: Any, target: InventoryIssueLine) -> None:
+def _refuse_issue_line_delete(_mapper: Any, _connection: Any, target: InventoryIssueLine) -> None:
     raise InventoryIssueLineImmutableError(target.id)
 
 

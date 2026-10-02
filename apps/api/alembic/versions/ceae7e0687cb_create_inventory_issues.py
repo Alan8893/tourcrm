@@ -12,8 +12,11 @@ docs/04-domain/inventory.md §14, §17):
   of `recipient_type` is set, CHECK), optional Event, informational
   planned return date, comment, `issued` | `cancelled` (cancellation
   columns set exactly when cancelled, CHECK).
-- `inventory_issue_lines`: one line per item of an issue (UNIQUE
-  `issue_id, item_id`); `(id, item_id)` is UNIQUE as the target of the
+- `inventory_issue_lines`: one active line per item of an issue (partial
+  UNIQUE `issue_id, item_id` WHERE `removed_at IS NULL`); a line with
+  nothing outstanding can be removed from the issue — `removed_at` /
+  `removed_by` (both or neither, CHECK) — and the row stays, so movements
+  keep referencing it; `(id, item_id)` is UNIQUE as the target of the
   movements' composite FK.
 - `inventory_movements.issue_line_id`: required on `issue`/`return`,
   allowed on `write_off` (the write-off half of a lost instance), absent on
@@ -78,14 +81,19 @@ def upgrade() -> None:
     sa.Column('item_id', sa.UUID(), nullable=False),
     sa.Column('created_by', sa.UUID(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('removed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('removed_by', sa.UUID(), nullable=True),
+    sa.CheckConstraint('(removed_at IS NULL) = (removed_by IS NULL)', name='ck_inventory_issue_lines_removed_by_matches_removed_at'),
     sa.ForeignKeyConstraint(['created_by'], ['users.id'], ondelete='RESTRICT'),
     sa.ForeignKeyConstraint(['issue_id'], ['inventory_issues.id'], ondelete='RESTRICT'),
     sa.ForeignKeyConstraint(['item_id'], ['inventory_items.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['removed_by'], ['users.id'], ondelete='RESTRICT'),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('id', 'item_id', name='uq_inventory_issue_lines_id_item_id'),
-    sa.UniqueConstraint('issue_id', 'item_id', name='uq_inventory_issue_lines_issue_id_item_id')
+    sa.UniqueConstraint('id', 'item_id', name='uq_inventory_issue_lines_id_item_id')
     )
+    op.create_index('ix_inventory_issue_lines_issue_id', 'inventory_issue_lines', ['issue_id'], unique=False)
     op.create_index('ix_inventory_issue_lines_item_id', 'inventory_issue_lines', ['item_id'], unique=False)
+    op.create_index('uq_inventory_issue_lines_active_issue_id_item_id', 'inventory_issue_lines', ['issue_id', 'item_id'], unique=True, postgresql_where=sa.text('removed_at IS NULL'))
     op.add_column('inventory_movements', sa.Column('issue_line_id', sa.UUID(), nullable=True))
     op.create_index('ix_inventory_movements_issue_line_id', 'inventory_movements', ['issue_line_id'], unique=False)
     op.create_foreign_key('fk_inventory_movements_issue_line_id_item_id', 'inventory_movements', 'inventory_issue_lines', ['issue_line_id', 'item_id'], ['id', 'item_id'], ondelete='RESTRICT')
@@ -107,7 +115,9 @@ def downgrade() -> None:
     op.drop_constraint('fk_inventory_movements_issue_line_id_item_id', 'inventory_movements', type_='foreignkey')
     op.drop_index('ix_inventory_movements_issue_line_id', table_name='inventory_movements')
     op.drop_column('inventory_movements', 'issue_line_id')
+    op.drop_index('uq_inventory_issue_lines_active_issue_id_item_id', table_name='inventory_issue_lines', postgresql_where=sa.text('removed_at IS NULL'))
     op.drop_index('ix_inventory_issue_lines_item_id', table_name='inventory_issue_lines')
+    op.drop_index('ix_inventory_issue_lines_issue_id', table_name='inventory_issue_lines')
     op.drop_table('inventory_issue_lines')
     op.drop_index('ix_inventory_issues_recipient_user_id', table_name='inventory_issues')
     op.drop_index('ix_inventory_issues_recipient_person_id', table_name='inventory_issues')

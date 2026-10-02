@@ -234,6 +234,23 @@ class InstanceNotOutstandingError(InventoryDomainError):
         self.instance_id = instance_id
 
 
+class IssueLineOutstandingError(InventoryDomainError):
+    """§14: a line can be removed from an issue only when nothing on it is
+    still issued."""
+
+    def __init__(self, outstanding: int) -> None:
+        super().__init__(f"The line still has {outstanding} issued; return it first")
+        self.outstanding = outstanding
+
+
+class IssueLineRemovedError(InventoryDomainError):
+    """§14: a removed line is history only — it cannot be removed again or
+    used by any further operation."""
+
+    def __init__(self) -> None:
+        super().__init__("The line has been removed from the issue")
+
+
 class InvalidRecipientError(InventoryDomainError):
     """§14: the recipient is not a valid Member, Instructor or Group of the
     Club."""
@@ -335,6 +352,15 @@ def ensure_issue_changeable(*, status: str, has_outstanding: bool) -> None:
         raise IssueCancelledError()
     if not has_outstanding:
         raise IssueFullyReturnedError()
+
+
+def ensure_line_removable(*, removed: bool, outstanding: int) -> None:
+    """§14: a line leaves the issue's working composition only once and only
+    when nothing on it is still issued."""
+    if removed:
+        raise IssueLineRemovedError()
+    if outstanding > 0:
+        raise IssueLineOutstandingError(outstanding)
 
 
 def validate_recipient_type(value: str) -> str:
@@ -495,11 +521,14 @@ __all__ = [
     "IssueFullyReturnedError",
     "ReturnExceedsOutstandingError",
     "InstanceNotOutstandingError",
+    "IssueLineOutstandingError",
+    "IssueLineRemovedError",
     "InvalidRecipientError",
     "allocate_quantity",
     "outstanding_quantity",
     "ensure_returnable",
     "ensure_issue_changeable",
+    "ensure_line_removable",
     "validate_recipient_type",
     "ensure_item_has_no_outstanding_issues",
     "INSTANCE_TRANSITIONS",

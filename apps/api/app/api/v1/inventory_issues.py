@@ -7,13 +7,17 @@ docs/04-domain/inventory.md §14, §17).
     PATCH /inventory/issues/{issue_id}         recipient / Event / planned date / comment
     POST  /inventory/issues/{issue_id}/lines   issue more items (same item -> same line)
     GET   /inventory/issues/{issue_id}/lines   lines with issued / returned / outstanding
+                                               (status=active|removed|all)
+    DELETE /inventory/issues/{issue_id}/lines/{line_id}
+                                               remove a line with nothing outstanding
     POST  /inventory/issues/{issue_id}/returns partial or full return into a location
     POST  /inventory/issues/{issue_id}/cancel  return everything outstanding, `cancelled`
     POST  /inventory/issues/{issue_id}/lost    lost instance: return + write-off
     GET   /inventory/issues/{issue_id}/movements chronological history of the issue
 
-No DELETE: issues and their lines are never removed; a cancelled or fully
-returned issue is immutable.
+Issues are never deleted, and neither are line rows: removing a line only
+takes it out of the issue's working composition (`removed_at`), its
+movements stay. A cancelled or fully returned issue is immutable.
 
 Authorization (inventory.md §3): every endpoint requires the Administrator
 (app.inventory.authorization), checked before the issue is loaded, so a
@@ -45,6 +49,7 @@ from app.api.v1.inventory_issues_schemas import (
     InventoryIssueReturnRequest,
     InventoryIssueUpdateRequest,
     IssueStatusLiteral,
+    LineStatusLiteral,
     RecipientTypeLiteral,
 )
 from app.db.inventory import InventoryIssue, InventoryIssueLine
@@ -113,9 +118,15 @@ def _issue_out(issue: InventoryIssue, *, has_outstanding: bool) -> InventoryIssu
     )
 
 
-def _lines_out(db: Session, issue: InventoryIssue) -> list[InventoryIssueLineOut]:
+def _lines_out(
+    db: Session, issue: InventoryIssue, *, line_status: str = "active"
+) -> list[InventoryIssueLineOut]:
     balances = issue_service.line_balances(db, [issue.id])
-    return [_line_out(line, balances[line.id]) for line in list_issue_lines(db, issue_id=issue.id)]
+    return [
+        _line_out(line, balances[line.id])
+        for line in list_issue_lines(db, issue_id=issue.id)
+        if line_status == "all" or (line.removed_at is not None) == (line_status == "removed")
+    ]
 
 
 def _line_out(
@@ -132,6 +143,8 @@ def _line_out(
         outstanding_instance_ids=balance.outstanding_instance_ids,
         created_by=line.created_by,
         created_at=line.created_at,
+        removed_at=line.removed_at,
+        removed_by=line.removed_by,
     )
 
 
@@ -276,6 +289,7 @@ def add_inventory_issue_lines(
 @router.get("/issues/{issue_id}/lines", response_model=CollectionResponse[InventoryIssueLineOut])
 def list_inventory_issue_lines(
     issue_id: uuid.UUID,
+    line_status: LineStatusLiteral = Query(default="active", alias="status"),
     page: int = _PAGE,
     page_size: int = _PAGE_SIZE,
     principal: CurrentPrincipal = Depends(require_authenticated_principal),
@@ -283,12 +297,39 @@ def list_inventory_issue_lines(
 ) -> CollectionResponse[InventoryIssueLineOut]:
     club_id = require_inventory_administrator(db, user_id=principal.user_id)
     issue = _issue_or_404(db, issue_id=issue_id, club_id=club_id)
-    lines = _lines_out(db, issue)
+    lines = _lines_out(db, issue, line_status=line_status)
     start = (page - 1) * page_size
     return CollectionResponse(
         items=lines[start : start + page_size],
         pagination=_pagination(page, page_size, len(lines)),
     )
+
+
+@router.delete("/issues/{issue_id}/lines/{line_id}", response_model=InventoryIssueDetailOut)
+def remove_inventory_issue_line(
+    issue_id: uuid.UUID,
+    line_id: uuid.UUID,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> InventoryIssueDetailOut:
+    """Removes a line with nothing outstanding from the issue's working
+    composition; the line and its movements stay as history. Returns the
+    issue."""
+    club_id = require_inventory_administrator(db, user_id=principal.user_id)
+    _issue_or_404(db, issue_id=issue_id, club_id=club_id)
+    try:
+        issue = issue_service.remove_line(
+            db, club_id=club_id, issue_id=issue_id, line_id=line_id, removed_by=principal.user_id
+        )
+    except issue_service.InventoryIssueLineNotFoundError as exc:
+        raise APIError(
+            status.HTTP_404_NOT_FOUND, "not_found", "Inventory issue line not found"
+        ) from exc
+    except INVENTORY_DOMAIN_ERRORS as exc:
+        raise_inventory_domain_error(exc)
+    logger.info("inventory.issue.line_remove.success issue_id=%s line_id=%s", issue.id, line_id)
+    return _detail_out(db, issue)
 
 
 @router.post("/issues/{issue_id}/returns", response_model=InventoryIssueDetailOut)

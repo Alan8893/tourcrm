@@ -11,9 +11,12 @@ from app.inventory.lifecycle import (
     InvalidInventoryDataError,
     IssueCancelledError,
     IssueFullyReturnedError,
+    IssueLineOutstandingError,
+    IssueLineRemovedError,
     ReturnExceedsOutstandingError,
     allocate_quantity,
     ensure_issue_changeable,
+    ensure_line_removable,
     ensure_returnable,
     outstanding_quantity,
     validate_recipient_type,
@@ -195,3 +198,18 @@ def test_instance_line_balance_tracks_each_instance() -> None:
 def test_line_without_movements_has_nothing_outstanding() -> None:
     line = uuid.uuid4()
     assert build_line_balances([(line, A, "quantity")], [])[line].outstanding == 0
+
+
+# --- line removal ----------------------------------------------------------------------
+
+
+def test_only_a_line_with_nothing_outstanding_is_removable() -> None:
+    ensure_line_removable(removed=False, outstanding=0)
+    with pytest.raises(IssueLineOutstandingError) as raised:
+        ensure_line_removable(removed=False, outstanding=4)
+    assert raised.value.outstanding == 4
+
+
+def test_a_removed_line_is_not_removable_again() -> None:
+    with pytest.raises(IssueLineRemovedError):
+        ensure_line_removable(removed=True, outstanding=0)

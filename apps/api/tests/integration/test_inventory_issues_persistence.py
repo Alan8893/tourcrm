@@ -45,6 +45,8 @@ from app.inventory.lifecycle import (
     InvalidRecipientError,
     IssueCancelledError,
     IssueFullyReturnedError,
+    IssueLineOutstandingError,
+    IssueLineRemovedError,
     ItemHasOutstandingIssuesError,
     ReturnExceedsOutstandingError,
 )
@@ -459,7 +461,7 @@ def test_one_line_per_item_and_issue(setup) -> None:
             )
         with pytest.raises(IntegrityError) as raised:
             session.flush()
-        assert "uq_inventory_issue_lines_issue_id_item_id" in str(raised.value)
+        assert "uq_inventory_issue_lines_active_issue_id_item_id" in str(raised.value)
 
 
 def _movement_on_line(setup: Setup, movement_type: str, *, line: bool, item_id=None):
@@ -1004,3 +1006,199 @@ def test_mixed_operations_do_not_deadlock(setup) -> None:
     )
     assert not [r for r in results if isinstance(r, (DBAPIError, Exception))], results
     assert _stock(setup) == _journal_stock(setup)
+
+
+# --- removing a line -------------------------------------------------------------------
+
+
+def _remove(setup: Setup, issue_id: uuid.UUID, line_id: uuid.UUID) -> str:
+    with session_scope() as session:
+        return issues.remove_line(
+            session,
+            club_id=setup.club_id,
+            issue_id=issue_id,
+            line_id=line_id,
+            removed_by=setup.user_id,
+        ).status
+
+
+def _line_row(line_id: uuid.UUID) -> InventoryIssueLine:
+    with session_scope() as session:
+        line = session.get(InventoryIssueLine, line_id)
+        assert line is not None
+        session.expunge(line)
+        return line
+
+
+def _two_line_issue(setup: Setup) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """An issue whose quantity line is fully returned and whose instance
+    line is still outstanding (so the issue itself stays editable)."""
+    location = _location_row(setup)
+    _receive(setup, location, 3)
+    instance_id = _instance(setup, location)
+    issue_id = _issue(setup, _quantity(setup, 3), _instances(setup, instance_id))
+    _return(setup, issue_id, location, 3)
+    return issue_id, _lines(issue_id)[setup.item_id].line_id, location
+
+
+@pytest.mark.parametrize("fields", [{"removed_at": _NOW}, {"removed_by": "user"}])
+def test_removed_at_and_removed_by_go_together(setup, fields) -> None:
+    with session_scope() as session:
+        issue = _issue_row(setup)
+        session.add(issue)
+        session.flush()
+        if fields.get("removed_by") == "user":
+            fields = {"removed_by": setup.user_id}
+        session.add(
+            InventoryIssueLine(
+                issue_id=issue.id, item_id=setup.item_id, created_by=setup.user_id, **fields
+            )
+        )
+        with pytest.raises(IntegrityError) as raised:
+            session.flush()
+        assert "ck_inventory_issue_lines_removed_by_matches_removed_at" in str(raised.value)
+
+
+def test_one_active_line_per_item_but_removed_lines_do_not_count(setup) -> None:
+    with session_scope() as session:
+        issue = _issue_row(setup)
+        session.add(issue)
+        session.flush()
+        for _ in range(2):
+            session.add(
+                InventoryIssueLine(
+                    issue_id=issue.id,
+                    item_id=setup.item_id,
+                    created_by=setup.user_id,
+                    removed_at=_NOW,
+                    removed_by=setup.user_id,
+                )
+            )
+        session.add(
+            InventoryIssueLine(issue_id=issue.id, item_id=setup.item_id, created_by=setup.user_id)
+        )
+        session.flush()
+
+
+def test_a_line_is_removed_once_and_otherwise_immutable(setup) -> None:
+    issue_id, line_id, _ = _two_line_issue(setup)
+    assert _remove(setup, issue_id, line_id) == "issued"
+    removed = _line_row(line_id)
+    assert removed.removed_at is not None and removed.removed_by == setup.user_id
+    with session_scope() as session:
+        line = session.get(InventoryIssueLine, line_id)
+        assert line is not None
+        line.removed_at = _NOW
+        with pytest.raises(InventoryIssueLineImmutableError):
+            session.flush()
+    with session_scope() as session:
+        line = session.get(InventoryIssueLine, line_id)
+        assert line is not None
+        line.item_id = setup.instance_item_id
+        with pytest.raises(InventoryIssueLineImmutableError):
+            session.flush()
+    with session_scope() as session:
+        session.delete(session.get(InventoryIssueLine, line_id))
+        with pytest.raises(InventoryIssueLineImmutableError):
+            session.flush()
+    assert _line_row(line_id).removed_at == removed.removed_at
+
+
+def test_removal_keeps_every_movement_of_the_line(setup) -> None:
+    issue_id, line_id, _ = _two_line_issue(setup)
+
+    def movements() -> list[tuple[str, int | None]]:
+        with session_scope() as session:
+            rows = session.execute(
+                sa.select(InventoryMovement)
+                .where(InventoryMovement.issue_line_id == line_id)
+                .order_by(InventoryMovement.created_at)
+            ).scalars()
+            return [(m.movement_type, m.quantity) for m in rows]
+
+    before = movements()
+    assert before == [("issue", 3), ("return", 3)]
+    _remove(setup, issue_id, line_id)
+    assert movements() == before
+    assert _stock(setup) == _journal_stock(setup)
+    balance = _lines(issue_id)[setup.item_id]
+    assert balance.removed and (balance.issued, balance.returned) == (3, 3)
+
+
+def test_removal_failures_change_nothing(setup) -> None:
+    location = _location_row(setup)
+    _receive(setup, location, 10)
+    issue_id = _issue(setup, _quantity(setup, 10))
+    _return(setup, issue_id, location, 6)
+    line_id = _lines(issue_id)[setup.item_id].line_id
+    with pytest.raises(IssueLineOutstandingError) as raised:
+        _remove(setup, issue_id, line_id)
+    assert raised.value.outstanding == 4
+    with pytest.raises(issues.InventoryIssueLineNotFoundError):
+        _remove(setup, issue_id, uuid.uuid4())
+    assert _line_row(line_id).removed_at is None
+
+
+def test_removal_waits_for_the_issue_lock_and_rereads(setup) -> None:
+    """Deterministic: an issue on the fully returned line is queued first
+    (it puts 2 back on the line); the removal queued behind it must see the
+    new outstanding quantity and be refused."""
+    issue_id, line_id, location = _two_line_issue(setup)
+    with session_scope() as blocker:
+        _lock_issue_row(blocker, issue_id)
+        added = Background(lambda: _add(setup, issue_id, _quantity(setup, 2)))
+        _wait_for_lock_waiters(1)
+        removed = Background(lambda: _remove(setup, issue_id, line_id))
+        _wait_for_lock_waiters(2)
+        blocker.rollback()
+    assert added.result() == "issued"
+    assert isinstance(removed.result(), IssueLineOutstandingError), removed.result()
+    line = _line_row(line_id)
+    assert line.removed_at is None
+    assert _lines(issue_id)[setup.item_id].outstanding == 2
+
+
+def test_removal_and_issue_race_never_leave_property_on_a_removed_line(setup) -> None:
+    issue_id, line_id, _ = _two_line_issue(setup)
+    results = _run_concurrently(
+        [
+            lambda: _remove(setup, issue_id, line_id),
+            lambda: _add(setup, issue_id, _quantity(setup, 2)),
+        ]
+    )
+    assert results[1] == "issued", results
+    with session_scope() as session:
+        balances = issues.line_balances(session, [issue_id])
+    assert not any(b.removed and b.outstanding for b in balances.values())
+    active = [b for b in balances.values() if b.item_id == setup.item_id and not b.removed]
+    assert len(active) == 1 and active[0].outstanding == 2
+    if results[0] == "issued":  # removed first: the issue opened a new line
+        assert active[0].line_id != line_id
+    else:
+        assert isinstance(results[0], IssueLineOutstandingError), results
+        assert active[0].line_id == line_id
+
+
+def test_return_and_removal_race(setup) -> None:
+    """Removal succeeds only if the full return committed before it."""
+    location = _location_row(setup)
+    _receive(setup, location, 2)
+    instance_id = _instance(setup, location)
+    issue_id = _issue(setup, _quantity(setup, 2), _instances(setup, instance_id))
+    line_id = _lines(issue_id)[setup.item_id].line_id
+    results = _run_concurrently(
+        [lambda: _return(setup, issue_id, location, 2), lambda: _remove(setup, issue_id, line_id)]
+    )
+    assert results[0] == "issued", results
+    removed = _line_row(line_id).removed_at is not None
+    assert removed == (results[1] == "issued"), results
+    if not removed:
+        assert isinstance(results[1], IssueLineOutstandingError), results
+    assert _stock(setup) == {location: 2}
+
+
+def test_double_removal(setup) -> None:
+    issue_id, line_id, _ = _two_line_issue(setup)
+    results = _run_concurrently([lambda: _remove(setup, issue_id, line_id) for _ in range(3)])
+    assert results.count("issued") == 1, results
+    assert sum(isinstance(r, IssueLineRemovedError) for r in results) == 2, results
