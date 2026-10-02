@@ -634,7 +634,7 @@ describe("Inventory operations — quantity (Slice 3)", () => {
     await renderAt("/inventory/items/i-rope");
 
     const history = await screen.findByRole("list", { name: "История движений" });
-    expect(within(history).getByText("Списание отменено")).toBeInTheDocument();
+    expect(await within(history).findByText("Списание отменено")).toBeInTheDocument();
     expect(within(history).getAllByRole("button", { name: "Отменить списание" })).toHaveLength(1);
     await userEvent.click(within(history).getByRole("button", { name: "Отменить списание" }));
     const dialog = await screen.findByRole("dialog", { name: "Отменить списание?" });
@@ -1258,5 +1258,142 @@ describe("Inventory operations — errors", () => {
     await renderAt("/inventory/issues/iss-404");
 
     expect(await screen.findByText("Запись не найдена.", {}, { timeout: 5000 })).toBeInTheDocument();
+  });
+});
+
+// --- review fixes (PR #239) ------------------------------------------------------
+
+function pageOf<T>(items: T[], pageNumber: number, pages: number, pageSize: number, total: number) {
+  return { items, pagination: { page: pageNumber, page_size: pageSize, total, pages } };
+}
+
+describe("Inventory operations — recipient pickers and reversal across pages", () => {
+  it("offers an active Group from the second page of /groups", async () => {
+    let body: Json | null = null;
+    const route = issueCreateRoute((created) => (body = created));
+    const groupCalls = stubApi((request) => {
+      if (request.method === "GET" && request.path === "/api/v1/groups") {
+        return request.search.get("page") === "2"
+          ? { body: pageOf([{ id: "g-next", name: "Отряд «Юг»", status: "active" }], 2, 2, 100, 101) }
+          : { body: pageOf([{ id: "g1", name: "Отряд «Север»", status: "active" }], 1, 2, 100, 101) };
+      }
+      return route(request);
+    });
+    await renderAt("/inventory?tab=issues");
+
+    const dialog = await openDialog("Выдать");
+    await userEvent.selectOptions(within(dialog).getByLabelText("Тип получателя"), "group");
+    const groupSelect = await within(dialog).findByLabelText("Группа");
+    await within(groupSelect).findByRole("option", { name: "Отряд «Юг»" });
+    expect(within(groupSelect).getByRole("option", { name: "Отряд «Север»" })).toBeInTheDocument();
+    await userEvent.selectOptions(groupSelect, "g-next");
+    const group = await chooseItem(dialog, 1, /Верёвка 10 мм/);
+    await userEvent.type(within(group).getByLabelText("Количество, м"), "1");
+    await submit(dialog, "Выдать");
+
+    await waitFor(() => expect(body).toMatchObject({ recipient_type: "group", recipient_id: "g-next" }));
+    const groupRequests = sent(groupCalls, "GET", "/api/v1/groups");
+    expect(groupRequests.map((call) => [call.search.get("status"), call.search.get("page")])).toEqual([
+      ["active", "1"],
+      ["active", "2"],
+    ]);
+  });
+
+  it("offers only eligible Members: the directory is always filtered by the club, a non-member is not selectable", async () => {
+    const member = { id: "p-member", first_name: "Пётр", last_name: "Сидоров", middle_name: null, role_codes: [] };
+    const outsider = { id: "p-guest", first_name: "Гость", last_name: "Посторонний", middle_name: null, role_codes: [] };
+    const route = issueCreateRoute(() => {});
+    const calls = stubApi((request) => {
+      if (request.method === "GET" && request.path === "/api/v1/persons") {
+        // The backend's eligibility filter: only Persons with an active
+        // ClubMembership in `club_id`; unfiltered, everyone.
+        return { body: page(request.search.get("club_id") === "club-1" ? [member] : [member, outsider]) };
+      }
+      return route(request);
+    });
+    await renderAt("/inventory?tab=issues");
+
+    const dialog = await openDialog("Выдать");
+    const memberSelect = await within(dialog).findByLabelText("Участник");
+    await within(memberSelect).findByRole("option", { name: "Сидоров Пётр" });
+    expect(within(memberSelect).queryByRole("option", { name: "Посторонний Гость" })).not.toBeInTheDocument();
+    const personRequests = sent(calls, "GET", "/api/v1/persons");
+    expect(personRequests.length).toBeGreaterThan(0);
+    expect(personRequests.every((call) => call.search.get("club_id") === "club-1")).toBe(true);
+  });
+
+  it("never queries the person directory unfiltered when the Administrator's club is unknown", async () => {
+    const calls = stubApi(issueCreateRoute(() => {}), {
+      ...ME,
+      role_assignments: [{ role_code: "admin", club_id: null, scope_type: "all" }],
+    });
+    await renderAt("/inventory?tab=issues");
+
+    const dialog = await openDialog("Выдать");
+    const memberSelect = await within(dialog).findByLabelText("Участник");
+    expect(memberSelect).toBeDisabled();
+    expect(within(memberSelect).getByRole("option", { name: "Недоступно без привязки к клубу" })).toBeInTheDocument();
+    expect(sent(calls, "GET", "/api/v1/persons")).toHaveLength(0);
+  });
+
+  it("knows a write-off is reversed when its reversal is on a later history page, and offers reversal on any page", async () => {
+    const old = movement({ id: "wo-old", movement_type: "write_off", quantity: 2, from_location_id: "l2", comment: "Брак" });
+    const filler = Array.from({ length: 19 }, (_, index) =>
+      movement({ id: `rc-${index}`, movement_type: "receipt", quantity: 1, to_location_id: "l2" }),
+    );
+    const reversal = movement({ id: "rv-old", movement_type: "writeoff_reversal", quantity: 2, reverses_movement_id: "wo-old" });
+    const fresh = movement({ id: "wo-new", movement_type: "write_off", quantity: 1, from_location_id: "l2", comment: "Порвана" });
+    const history = [old, ...filler, reversal, fresh];
+    const calls = stubApi(
+      baseRoute((request) => {
+        if (request.path === "/api/v1/inventory/items/i-rope") return { body: ROPE };
+        if (request.path === "/api/v1/inventory/items/i-rope/stock") return { body: page([]) };
+        if (request.method === "GET" && request.path === "/api/v1/inventory/items/i-rope/movements") {
+          const pageNumber = Number(request.search.get("page") ?? "1");
+          const pageSize = Number(request.search.get("page_size") ?? "50");
+          const start = (pageNumber - 1) * pageSize;
+          return {
+            body: pageOf(
+              history.slice(start, start + pageSize),
+              pageNumber,
+              Math.ceil(history.length / pageSize),
+              pageSize,
+              history.length,
+            ),
+          };
+        }
+        if (request.method === "POST" && request.path === "/api/v1/inventory/items/i-rope/write-offs/wo-new/reverse") {
+          return { status: 201, body: movement({ movement_type: "writeoff_reversal" }) };
+        }
+        return undefined;
+      }),
+    );
+    await renderAt("/inventory/items/i-rope");
+
+    // Page 1 holds the old write-off; its reversal is only on page 2.
+    const firstPage = await screen.findByRole("list", { name: "История движений" });
+    expect(await within(firstPage).findByText("Списание отменено")).toBeInTheDocument();
+    expect(within(firstPage).queryByRole("button", { name: "Отменить списание" })).not.toBeInTheDocument();
+
+    // Page 2: the still-effective write-off can be reversed.
+    await userEvent.click(screen.getByRole("button", { name: "Далее" }));
+    expect(await screen.findByText("Порвана")).toBeInTheDocument();
+    const secondPage = screen.getByRole("list", { name: "История движений" });
+    await userEvent.click(await within(secondPage).findByRole("button", { name: "Отменить списание" }));
+    const dialog = await screen.findByRole("dialog", { name: "Отменить списание?" });
+    await submit(dialog, "Отменить списание");
+    await waitFor(() =>
+      expect(sent(calls, "POST", "/api/v1/inventory/items/i-rope/write-offs/wo-new/reverse")).toHaveLength(1),
+    );
+
+    // The UI history stays paginated by 20; the reversal lookup reads the
+    // backend's maximum page size from the shown page onward only.
+    const reads = sent(calls, "GET", "/api/v1/inventory/items/i-rope/movements");
+    expect(reads.some((call) => call.search.get("page_size") === "20" && call.search.get("page") === "2")).toBe(true);
+    expect(
+      reads
+        .filter((call) => call.search.get("page_size") === "200")
+        .every((call) => call.search.get("page") === "1"),
+    ).toBe(true);
   });
 });

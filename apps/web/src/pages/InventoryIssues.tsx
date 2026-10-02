@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { currentClubId, useCurrentUser } from "../api/auth";
 import { useEvent, useEventSearch } from "../api/events";
-import { useGroup, useGroups } from "../api/groups";
+import { useAllGroups, useGroup } from "../api/groups";
 import {
   useCreateInventoryIssue,
   useInventoryIssues,
@@ -256,12 +256,29 @@ function SearchPicker({
   );
 }
 
+/** Members eligible as recipients: the backend's own `club_id`
+ * eligibility filter on `GET /persons` (an active ClubMembership in the
+ * Club — the Member recipient rule, inventory.md §25). Without a known
+ * Club the directory is never queried unfiltered. */
 function MemberPicker({ value, onChange }: { value: string; onChange: (id: string) => void }) {
   const [search, setSearch] = useState("");
   const debounced = useDebouncedValue(search, 300);
-  const clubId = currentClubId(useCurrentUser().data) ?? undefined;
-  const query = usePersons({ page: 1, search: debounced, clubId });
+  const me = useCurrentUser();
+  const clubId = currentClubId(me.data);
+  const query = usePersons({ page: 1, search: debounced, clubId: clubId ?? undefined, enabled: Boolean(clubId) });
   const current = usePerson(value || undefined);
+  if (me.isSuccess && !clubId) {
+    return (
+      <SelectField
+        label="Участник"
+        value=""
+        options={[]}
+        onChange={onChange}
+        placeholder="Недоступно без привязки к клубу"
+        disabled
+      />
+    );
+  }
   return (
     <SearchPicker
       label="Участник"
@@ -298,14 +315,17 @@ function InstructorPicker({ value, onChange }: { value: string; onChange: (id: s
   );
 }
 
+/** Every active Group (all pages), not only the first page. */
 function GroupPicker({ value, onChange }: { value: string; onChange: (id: string) => void }) {
-  const query = useGroups({ status: "active" });
+  const query = useAllGroups("active");
   return (
     <SelectField
       label="Группа"
       value={value}
       placeholder={query.isLoading ? "Загружаем…" : "Выберите группу"}
-      options={(query.data?.items ?? []).map((group) => ({ value: group.id, label: group.name }))}
+      options={(query.data ?? [])
+        .map((group) => ({ value: group.id, label: group.name }))
+        .sort((a, b) => a.label.localeCompare(b.label, "ru"))}
       onChange={onChange}
     />
   );

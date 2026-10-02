@@ -4,6 +4,7 @@ import { useLocation, useParams } from "react-router-dom";
 import {
   useInventoryItem,
   useInventoryItemMovements,
+  useInventoryItemReversedWriteOffs,
   useInventoryItemStock,
   type InstanceState,
   type InventoryItem,
@@ -280,28 +281,38 @@ function StockRowActions({
   );
 }
 
-/** «Отменить списание» on a write-off of the shown history, unless a
- * reversal of it is already in that history; the backend decides. */
+/** «Отменить списание» on a write-off of the shown page unless the
+ * backend history already holds its reversal — looked up beyond the
+ * shown page, since the reversal may be on a later one. The backend
+ * still decides the reversal itself. */
 function writeOffReversalAction(
-  movements: readonly InventoryMovement[],
+  reversed: ReadonlySet<string> | undefined,
   onReverse: (movement: InventoryMovement) => void,
 ) {
-  const reversed = new Set(movements.map((movement) => movement.reverses_movement_id).filter(Boolean));
-  return (movement: InventoryMovement) =>
-    movement.movement_type === "write_off" ? (
-      reversed.has(movement.id) ? (
-        <span className={styles.muted}>Списание отменено</span>
-      ) : (
-        <Button variant="secondary" onClick={() => onReverse(movement)}>
-          Отменить списание
-        </Button>
-      )
-    ) : null;
+  return (movement: InventoryMovement) => {
+    if (movement.movement_type !== "write_off" || !reversed) return null;
+    return reversed.has(movement.id) ? (
+      <span className={styles.muted}>Списание отменено</span>
+    ) : (
+      <Button variant="secondary" onClick={() => onReverse(movement)}>
+        Отменить списание
+      </Button>
+    );
+  };
 }
+
+const NOTHING_REVERSED: ReadonlySet<string> = new Set();
 
 function ItemMovementsSection({ item, lookups, onOperation }: SectionProps) {
   const [page, setPage] = useState(1);
   const query = useInventoryItemMovements(item.id, page);
+  const pageSize = query.data?.pagination.page_size ?? 0;
+  const hasWriteOff = Boolean(query.data?.items.some((movement) => movement.movement_type === "write_off"));
+  const reversed = useInventoryItemReversedWriteOffs(
+    item.id,
+    (page - 1) * pageSize,
+    Boolean(onOperation) && hasWriteOff && pageSize > 0,
+  );
 
   return (
     <section className={styles.section} aria-labelledby="inventory-item-movements">
@@ -327,7 +338,12 @@ function ItemMovementsSection({ item, lookups, onOperation }: SectionProps) {
             unit={unitName(item, lookups)}
             actions={
               onOperation
-                ? writeOffReversalAction(query.data.items, (movement) => onOperation({ kind: "reverse", movement }))
+                ? writeOffReversalAction(
+                    // If the lookup fails, offer the action; the backend
+                    // rejects an already reversed write-off (409).
+                    reversed.isError ? NOTHING_REVERSED : reversed.data,
+                    (movement) => onOperation({ kind: "reverse", movement }),
+                  )
                 : undefined
             }
           />

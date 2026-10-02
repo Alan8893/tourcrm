@@ -209,6 +209,37 @@ export function useInventoryItemMovements(itemId: string | undefined, page: numb
   });
 }
 
+/** Ids of the item's write-offs that already have a `writeoff_reversal`,
+ * for the history page that starts at row `fromIndex` (0-based). The
+ * history is chronological and a reversal is always journalled after its
+ * write-off, so only the movements from that row onward are read (pages
+ * of the backend's maximum size) — not the whole history. */
+export function useInventoryItemReversedWriteOffs(itemId: string | undefined, fromIndex: number, enabled: boolean) {
+  const firstPage = Math.floor(fromIndex / MAX_PAGE_SIZE) + 1;
+  return useQuery<Set<string>, ApiError>({
+    queryKey: ["inventory", "items", "reversed-write-offs", itemId, firstPage],
+    queryFn: async () => {
+      const reversed = new Set<string>();
+      let page = firstPage;
+      let pages = firstPage;
+      do {
+        const response = await apiFetch<CollectionResponse<InventoryMovement>>(
+          `/inventory/items/${itemId}/movements?${queryString({ page, page_size: MAX_PAGE_SIZE })}`,
+        );
+        for (const movement of response.items) {
+          if (movement.movement_type === "writeoff_reversal" && movement.reverses_movement_id) {
+            reversed.add(movement.reverses_movement_id);
+          }
+        }
+        pages = response.pagination.pages;
+        page += 1;
+      } while (page <= pages);
+      return reversed;
+    },
+    enabled: Boolean(itemId) && enabled,
+  });
+}
+
 export function useInventoryInstances(params: {
   itemId: string;
   state: InstanceState | "";

@@ -113,7 +113,7 @@ const PERSON_SUBLIST_PAGE_SIZE = 50;
 /** `GET /api/v1/persons?page&page_size&search` (people-api.md §4,
  * app/api/v1/persons.py). `search` matches first/last name server-side
  * (app/people/queries.py) — never a client-side filter over one page. */
-export function usePersons(params: { page: number; search: string; clubId?: string }) {
+export function usePersons(params: { page: number; search: string; clubId?: string; enabled?: boolean }) {
   const query = new URLSearchParams({
     page: String(params.page),
     page_size: String(PEOPLE_LIST_PAGE_SIZE),
@@ -130,6 +130,7 @@ export function usePersons(params: { page: number; search: string; clubId?: stri
     queryKey: ["persons", "list", params.page, trimmedSearch, params.clubId],
     queryFn: () => apiFetch<CollectionResponse<Person>>(`/persons?${query.toString()}`),
     placeholderData: keepPreviousData,
+    enabled: params.enabled ?? true,
   });
 }
 
