@@ -1202,3 +1202,17 @@ def test_double_removal(setup) -> None:
     results = _run_concurrently([lambda: _remove(setup, issue_id, line_id) for _ in range(3)])
     assert results.count("issued") == 1, results
     assert sum(isinstance(r, IssueLineRemovedError) for r in results) == 2, results
+
+
+def test_line_rows_cannot_be_physically_deleted(setup) -> None:
+    """PO rule 2: neither the ORM nor a raw SQL DELETE removes a line row —
+    its movements reference it (FK RESTRICT) — removed or not."""
+    issue_id, line_id, _ = _two_line_issue(setup)
+    _remove(setup, issue_id, line_id)
+    for target in (line_id, _lines(issue_id)[setup.instance_item_id].line_id):
+        with session_scope() as session:
+            with pytest.raises(IntegrityError):
+                session.execute(
+                    sa.delete(InventoryIssueLine).where(InventoryIssueLine.id == target)
+                )
+    assert _line_row(line_id).removed_at is not None

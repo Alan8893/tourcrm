@@ -25,7 +25,7 @@ from app.db.authorization import Role, UserRoleAssignment
 from app.db.events import Event
 from app.db.groups import Group
 from app.db.identity import Club, ClubMembership, Person, User
-from app.db.inventory import InventoryItemStock
+from app.db.inventory import InventoryIssueLine, InventoryItemStock
 from app.db.session import session_scope
 from app.main import app
 
@@ -1040,3 +1040,55 @@ def test_operations_after_a_line_removal(client, world, three_lines, stock) -> N
     removed = _lines_with(client, t.issue, "removed")
     assert [line["id"] for line in removed] == [carabiner_line]
     assert removed[0]["returned_quantity"] == 5
+
+
+def test_last_line_of_a_fully_returned_issue_cannot_be_removed(client, world, stock) -> None:
+    """PO rule 8: a fully returned issue is immutable, so its last remaining
+    line cannot be removed even though nothing is outstanding on it."""
+    issue = _issue(client, world, [{"item_id": stock.rope["id"], "quantity": 2}])
+    line_id = _line(issue, stock.rope)["id"]
+    _ok(_return(client, issue, stock.a, quantities=[{"line_id": line_id, "quantity": 2}]))
+    url = f"{_ISSUES}/{issue['id']}"
+    _error(_delete_line(client, issue, line_id), 409, "issue_fully_returned")
+    _error(_patch(client, url, {"comment": "x"}), 409, "issue_fully_returned")
+    more = {"lines": [{"item_id": stock.rope["id"], "quantity": 1}]}
+    _error(_post(client, f"{url}/lines", more), 409, "issue_fully_returned")
+    [line] = _lines_with(client, issue, "active")
+    assert line["id"] == line_id and line["removed_at"] is None and line["removed_by"] is None
+
+
+def test_removal_keeps_the_row_with_removed_at_and_removed_by(client, world, three_lines) -> None:
+    """PO rules 2–3: no physical delete — the row stays, both removal
+    fields are set together."""
+    t = three_lines
+    line_id = _line(t.issue, t.carabiner)["id"]
+    _ok(_delete_line(client, t.issue, line_id))
+    with session_scope() as session:
+        row = session.get(InventoryIssueLine, uuid.UUID(line_id))
+        assert row is not None
+        assert row.removed_at is not None and row.removed_by == world.admin
+
+
+def test_same_item_after_removal_gets_a_new_active_line(client, world, three_lines) -> None:
+    """PO rule 7: re-issuing the item of a removed line opens a new active
+    line; the removed line keeps its own history untouched."""
+    t = three_lines
+    old_line = _line(t.issue, t.carabiner)["id"]
+    _ok(_delete_line(client, t.issue, old_line))
+    updated = _ok(
+        _post(client, f"{_ISSUES}/{t.issue['id']}/lines",
+              {"lines": [{"item_id": t.carabiner["id"], "quantity": 1}]}),
+        201,
+    )
+    new_line = _line(updated, t.carabiner)
+    assert new_line["id"] != old_line and new_line["removed_at"] is None
+    assert (new_line["issued_quantity"], new_line["outstanding_quantity"]) == (1, 1)
+    [removed] = _lines_with(client, t.issue, "removed")
+    assert removed["id"] == old_line
+    assert (removed["issued_quantity"], removed["returned_quantity"]) == (5, 5)
+    movements = _ok(client.get(f"{_ISSUES}/{t.issue['id']}/movements"))["items"]
+    assert [m["quantity"] for m in movements if m["issue_line_id"] == new_line["id"]] == [1]
+    # The removed line is never reused: removing it again is refused, and
+    # the new line is now the one that holds outstanding property.
+    _error(_delete_line(client, t.issue, old_line), 409, "issue_line_removed")
+    _error(_delete_line(client, t.issue, new_line["id"]), 409, "issue_line_outstanding")
