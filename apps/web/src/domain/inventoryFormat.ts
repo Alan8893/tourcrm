@@ -7,7 +7,13 @@
  */
 
 import type { FilterOption } from "../components/ui/FilterSelect";
-import type { AccountingMode, InventoryStorageLocation, MovementType } from "../api/inventory";
+import type {
+  AccountingMode,
+  InventoryStorageLocation,
+  IssueStatus,
+  MovementType,
+  RecipientType,
+} from "../api/inventory";
 import { instanceStateLabel } from "./statusMapping";
 
 export function accountingModeLabel(mode: AccountingMode): string {
@@ -119,9 +125,73 @@ export function buildLocationTree(locations: readonly InventoryStorageLocation[]
   return roots;
 }
 
+/** Rubles typed by the Administrator («1 234,50», «1234.5») → whole
+ * kopecks; an empty value is `null` (the cost is optional, §11), an
+ * unreadable one `NaN`. Input parsing only — the backend validates. */
+export function parseRublesToMinor(value: string): number | null {
+  const normalized = value.replace(/[\s\u00a0\u202f₽]/g, "").replace(",", ".");
+  if (normalized === "") return null;
+  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) return Number.NaN;
+  const [rubles, kopecks = ""] = normalized.split(".");
+  return Number(rubles) * 100 + Number(kopecks.padEnd(2, "0"));
+}
+
+/** Whole kopecks → the editable rubles text («1234,50»). */
+export function minorToRublesInput(minor: number | null): string {
+  if (minor === null) return "";
+  const rubles = Math.floor(minor / 100);
+  const kopecks = minor % 100;
+  return kopecks === 0 ? String(rubles) : `${rubles},${String(kopecks).padStart(2, "0")}`;
+}
+
+/** A positive whole number typed into a quantity field, or `null`. */
+export function parseQuantity(value: string): number | null {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const quantity = Number(trimmed);
+  return quantity > 0 && Number.isSafeInteger(quantity) ? quantity : null;
+}
+
+export function recipientTypeLabel(type: RecipientType): string {
+  switch (type) {
+    case "member":
+      return "Участник";
+    case "instructor":
+      return "Инструктор";
+    case "group":
+      return "Группа";
+  }
+}
+
+export const RECIPIENT_TYPES: readonly RecipientType[] = ["member", "instructor", "group"];
+
+export function issueStatusLabel(status: IssueStatus): string {
+  switch (status) {
+    case "issued":
+      return "Выдано";
+    case "cancelled":
+      return "Отменена";
+  }
+}
+
+/** «Числится выданным» / «Всё возвращено» — the backend's derived
+ * `has_outstanding`, never recomputed here. */
+export function outstandingLabel(hasOutstanding: boolean): string {
+  return hasOutstanding ? "Есть невозвращённое" : "Всё возвращено";
+}
+
+export function formatCalendarDate(isoDate: string): string {
+  const [year, month, day] = isoDate.split("-").map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString("ru-RU", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+}
+
 /** Tabs of the /inventory page; the active one lives in `?tab=`
  * («Номенклатура» is the default and carries no parameter). */
-export const INVENTORY_TABS = ["items", "locations", "stock", "instances"] as const;
+export const INVENTORY_TABS = ["items", "locations", "stock", "instances", "issues", "references"] as const;
 export type InventoryTab = (typeof INVENTORY_TABS)[number];
 
 export function isInventoryTab(value: unknown): value is InventoryTab {

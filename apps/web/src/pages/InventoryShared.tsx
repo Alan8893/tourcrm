@@ -1,9 +1,14 @@
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
 import type { ApiError } from "../api/client";
-import { useInventoryInstances, type InstanceState, type InventoryMovement } from "../api/inventory";
+import {
+  useInventoryInstance,
+  useInventoryInstances,
+  type InstanceState,
+  type InventoryMovement,
+} from "../api/inventory";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -19,7 +24,7 @@ import {
   movementTypeLabel,
 } from "../domain/inventoryFormat";
 import { instanceStateIcon, instanceStateLabel } from "../domain/statusMapping";
-import type { InventoryLookups } from "../hooks/useInventoryLookups";
+import { unitName, type InventoryLookups } from "../hooks/useInventoryLookups";
 import styles from "./Inventory.module.css";
 
 export type InventoryQueryErrorProps = {
@@ -98,15 +103,26 @@ export function MetaList({ entries }: { entries: MetaEntry[] }) {
 export type MovementListProps = {
   movements: readonly InventoryMovement[];
   lookups: InventoryLookups;
-  unit: string;
+  /** The unit of a single-item history; omitted when `showItem` (each
+   * movement then uses its own item's unit). */
+  unit?: string;
+  /** A multi-item history (an issue): name the item of each movement. */
+  showItem?: boolean;
+  /** Contextual operations of one movement (e.g. «Отменить списание»). */
+  actions?: (movement: InventoryMovement) => ReactNode;
 };
 
 /** The immutable movement journal, oldest first as the API returns it. */
-export function MovementList({ movements, lookups, unit }: MovementListProps) {
+export function MovementList({ movements, lookups, unit, showItem = false, actions }: MovementListProps) {
   return (
     <ol className={styles.list} aria-label="История движений">
       {movements.map((movement) => {
         const entries: MetaEntry[] = [];
+        const item = lookups.items.get(movement.item_id);
+        const movementUnit = unit ?? unitName(item, lookups);
+        if (showItem) {
+          entries.push({ label: "Номенклатура", value: item?.name ?? "—" });
+        }
         if (movement.from_location_id) {
           entries.push({ label: "Откуда", value: locationPath(movement.from_location_id, lookups.locations) });
         }
@@ -114,14 +130,18 @@ export function MovementList({ movements, lookups, unit }: MovementListProps) {
           entries.push({ label: "Куда", value: locationPath(movement.to_location_id, lookups.locations) });
         }
         if (movement.quantity !== null) {
-          entries.push({ label: "Количество", value: formatQuantity(movement.quantity, unit) });
+          entries.push({ label: "Количество", value: formatQuantity(movement.quantity, movementUnit) });
         }
         if (movement.movement_type === "receipt" && movement.unit_cost_minor !== null) {
           entries.push({ label: "Стоимость за единицу", value: formatCostMinor(movement.unit_cost_minor) });
         }
         if (movement.comment) {
-          entries.push({ label: "Комментарий", value: movement.comment });
+          entries.push({
+            label: movement.movement_type === "write_off" ? "Причина" : "Комментарий",
+            value: movement.comment,
+          });
         }
+        const movementActions = actions?.(movement);
         return (
           <li key={movement.id}>
             <Card>
@@ -132,6 +152,12 @@ export function MovementList({ movements, lookups, unit }: MovementListProps) {
                 </time>
               </div>
               {entries.length > 0 ? <MetaList entries={entries} /> : null}
+              {showItem && movement.instance_id ? (
+                <p className={styles.muted}>
+                  Экземпляр: <InstanceLink instanceId={movement.instance_id} />
+                </p>
+              ) : null}
+              {movementActions ? <div className={styles.cardActions}>{movementActions}</div> : null}
             </Card>
           </li>
         );
@@ -217,5 +243,15 @@ export function InstanceList({ lookups, filters, filtered, showItem, onPageChang
         onPageChange={onPageChange}
       />
     </>
+  );
+}
+
+/** An instance by its Inventory ID, linking to its page. */
+export function InstanceLink({ instanceId }: { instanceId: string }) {
+  const query = useInventoryInstance(instanceId);
+  return (
+    <Link to={`/inventory/instances/${instanceId}`} className={styles.rowTitleLink}>
+      {query.data?.inventory_number ?? "Экземпляр"}
+    </Link>
   );
 }

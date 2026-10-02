@@ -64,3 +64,32 @@ export function useUsers(params: {
     enabled: params.enabled ?? true,
   });
 }
+
+const USER_DIRECTORY_MAX_PAGE_SIZE = 100;
+
+/** Every directory entry holding `role` — e.g. all instructors, so an
+ * Instructor recipient (a User id) can be shown by name. The directory
+ * has no by-id endpoint; this reads the same `GET /api/v1/users`. */
+export function useAllUsersWithRole(role: string, enabled = true) {
+  return useQuery<UserDirectoryEntry[], ApiError>({
+    queryKey: ["users", "all-with-role", role],
+    queryFn: async () => {
+      const entries: UserDirectoryEntry[] = [];
+      let page = 1;
+      let pages = 1;
+      do {
+        const query = new URLSearchParams({
+          role,
+          page: String(page),
+          page_size: String(USER_DIRECTORY_MAX_PAGE_SIZE),
+        });
+        const response = await apiFetch<CollectionResponse<UserDirectoryEntry>>(`/users?${query.toString()}`);
+        entries.push(...response.items);
+        pages = response.pagination.pages;
+        page += 1;
+      } while (page <= pages);
+      return entries;
+    },
+    enabled,
+  });
+}

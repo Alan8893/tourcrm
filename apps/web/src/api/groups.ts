@@ -38,6 +38,30 @@ export function useGroups(params: { status?: GroupStatus } = {}) {
   });
 }
 
+const GROUP_MAX_PAGE_SIZE = 100;
+
+/** Every group with `status`, across all pages of `GET /api/v1/groups`
+ * (max `page_size` 100) — for a picker that must offer every group, not
+ * only the first page. */
+export function useAllGroups(status: GroupStatus) {
+  return useQuery<Group[], ApiError>({
+    queryKey: ["groups", "all-pages", status],
+    queryFn: async () => {
+      const groups: Group[] = [];
+      let page = 1;
+      let pages = 1;
+      do {
+        const query = new URLSearchParams({ status, page: String(page), page_size: String(GROUP_MAX_PAGE_SIZE) });
+        const response = await apiFetch<CollectionResponse<Group>>(`/groups?${query.toString()}`);
+        groups.push(...response.items);
+        pages = response.pagination.pages;
+        page += 1;
+      } while (page <= pages);
+      return groups;
+    },
+  });
+}
+
 export function useGroup(groupId: string | undefined) {
   return useQuery<Group, ApiError>({
     queryKey: ["groups", "detail", groupId],

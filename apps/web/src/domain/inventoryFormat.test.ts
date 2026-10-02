@@ -10,7 +10,10 @@ import {
   inventoryTabHref,
   isInventoryTab,
   locationPath,
+  minorToRublesInput,
   movementTypeLabel,
+  parseQuantity,
+  parseRublesToMinor,
 } from "./inventoryFormat";
 
 /** Intl's ru-RU output separates groups and the currency sign with a
@@ -104,8 +107,8 @@ describe("buildLocationTree", () => {
 });
 
 describe("inventory tabs", () => {
-  it("recognises only the four /inventory tabs", () => {
-    for (const tab of ["items", "locations", "stock", "instances"]) {
+  it("recognises only the /inventory tabs", () => {
+    for (const tab of ["items", "locations", "stock", "instances", "issues", "references"]) {
       expect(isInventoryTab(tab)).toBe(true);
     }
     expect(isInventoryTab("movements")).toBe(false);
@@ -141,5 +144,34 @@ describe("labels", () => {
       "in_repair",
       "written_off",
     ]);
+  });
+});
+
+describe("input parsing", () => {
+  it("parses rubles into whole kopecks", () => {
+    expect(parseRublesToMinor("")).toBeNull();
+    expect(parseRublesToMinor("1 234,50")).toBe(123450);
+    expect(parseRublesToMinor("1234.5")).toBe(123450);
+    expect(parseRublesToMinor("0")).toBe(0);
+    expect(parseRublesToMinor("12 ₽")).toBe(1200);
+    expect(parseRublesToMinor("abc")).toBeNaN();
+    expect(parseRublesToMinor("1,234")).toBeNaN();
+    expect(parseRublesToMinor("-5")).toBeNaN();
+  });
+
+  it("formats kopecks back into the editable rubles text", () => {
+    expect(minorToRublesInput(null)).toBe("");
+    expect(minorToRublesInput(123450)).toBe("1234,50");
+    expect(minorToRublesInput(1205)).toBe("12,05");
+    expect(minorToRublesInput(500)).toBe("5");
+  });
+
+  it("accepts only a positive whole quantity", () => {
+    expect(parseQuantity("6")).toBe(6);
+    expect(parseQuantity(" 10 ")).toBe(10);
+    expect(parseQuantity("0")).toBeNull();
+    expect(parseQuantity("1.5")).toBeNull();
+    expect(parseQuantity("-1")).toBeNull();
+    expect(parseQuantity("")).toBeNull();
   });
 });
