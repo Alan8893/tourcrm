@@ -347,7 +347,7 @@ describe("Inventory — overview", () => {
     expect(within(list).getByText("Левый")).toBeInTheDocument();
   });
 
-  it("renders lists as cards, not wide tables (mobile-safe layout)", async () => {
+  it("renders lists as list markup, without a <table> element", async () => {
     stubApi(["admin"], inventoryApi());
     await renderAt("/inventory");
 

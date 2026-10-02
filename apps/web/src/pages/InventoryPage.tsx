@@ -58,7 +58,7 @@ export function InventoryPage() {
   }
 
   return (
-    <div>
+    <div className={styles.page}>
       <PageHeader title="Склад" description="Номенклатура, места хранения, остатки и экземпляры клуба." />
       {isLoading ? <Loading label="Загружаем склад…" /> : null}
       {error ? (

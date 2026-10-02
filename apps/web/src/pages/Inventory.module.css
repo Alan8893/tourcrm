@@ -1,3 +1,12 @@
+/* The /inventory page root. Size containment on the inline axis keeps
+   long content (location paths in filter selects, the tab strip) from
+   widening the shell's main column: the page always takes the column's
+   width, and the tab strip scrolls inside its own tablist. */
+.page {
+  contain: inline-size;
+  min-width: 0;
+}
+
 .toolbar {
   display: flex;
   gap: var(--space-4);
@@ -9,6 +18,15 @@
 .toolbar > * {
   flex: 1 1 200px;
   min-width: 0;
+}
+
+/* A native select sizes to its longest option (full location paths);
+   keep it within its filter field. */
+.toolbar select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  text-overflow: ellipsis;
 }
 
 .list {
