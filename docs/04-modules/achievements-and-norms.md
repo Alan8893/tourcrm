@@ -298,3 +298,218 @@ This document establishes the architecture and business rules so that implementa
 - No automatic application of achievements to non-participant roles.
 
 The existing backend `Club` entity remains a technical implementation artifact because removing it would currently require a large refactor. It must not be interpreted as a product decision to support multiple clubs.
+
+## 16. Achievement Definition lifecycle
+
+Achievement Definition has a two-state lifecycle:
+
+- `active`;
+- `inactive`.
+
+Canonical rules:
+
+- Administrator may activate and deactivate an Achievement Definition;
+- `active` means the Definition may participate in creation of new Awards according to its `award_method`;
+- `inactive` means no new Awards are created from that Definition;
+- deactivation does not revoke, modify or delete already issued Awards;
+- an inactive Definition may be activated again;
+- physical deletion of an Achievement Definition is not part of the current Achievement Domain.
+
+Definition lifecycle is independent from the lifecycle/versioning of normative requirement sets and from the historical state of individual Awards.
+
+## 17. Achievement Award lifecycle and correction
+
+An Achievement Award is a historical record of the fact that a participant received an achievement. After issuance, an Award is not edited through an ordinary update operation.
+
+An Award has two states:
+
+- `active`;
+- `revoked`.
+
+Canonical correction rules:
+
+- only an Administrator may revoke an Award;
+- revocation requires an explicit reason;
+- revocation preserves the original Award record and its provenance;
+- the original Award cannot be physically deleted or rewritten as part of revocation;
+- revocation does not modify or delete the canonical facts from which the Award was created;
+- when a correction requires a new valid achievement, a new Award is created as a separate historical record with its own provenance;
+- the Achievement Engine does not automatically revoke an already issued Award solely because source facts later change, a normative version changes, or the Achievement Definition is deactivated;
+- automatic re-certification or automatic retrospective review of Awards is not part of the current decision and requires a separate business decision.
+
+The Award lifecycle is independent from the lifecycle of its Achievement Definition and from normative requirement-set version lifecycle.
+
+
+## 18. Achievement Award repeatability
+
+Achievement Definition explicitly declares its repeatability semantics:
+
+- `non_repeatable`;
+- `repeatable`.
+
+Canonical rules:
+
+- for a `non_repeatable` Achievement Definition, a Participant may have at most one Award for that Definition across the Award history;
+- for a `repeatable` Achievement Definition, a Participant may have multiple Awards for the same Definition;
+- repeatability is a property of the Achievement Definition and is independent from the Definition lifecycle (`active`/`inactive`) and the Award lifecycle (`active`/`revoked`);
+- repeatability does not by itself define what constitutes a new qualifying occurrence for a subsequent Award;
+- the semantics of qualifying conditions, identification of a new qualifying occurrence, and deterministic prevention of issuing multiple Awards for the same qualifying basis are deferred to the Requirement / Rule semantics and Achievement Engine decisions;
+- no implementation may infer repeatability from the name, source, award method, or normative requirement values of an Achievement Definition.
+
+The repeatability decision does not authorize retrospective re-evaluation or automatic re-awarding of historical Awards.
+
+
+## 19. Achievement Requirement / Rule versioning
+
+Achievement Requirement / Rule has its own immutable versioning independent from the lifecycle of the Achievement Definition.
+
+Canonical rules:
+
+- an Achievement Definition remains the stable identity of an achievement;
+- each change to the executable Requirement / Rule creates a new immutable Rule Version rather than mutating the previously used version;
+- a Rule Version belongs to exactly one Achievement Definition;
+- multiple Rule Versions may exist for the same Achievement Definition;
+- only the applicable current Rule Version participates in creation of new Awards;
+- a Rule Version that has already been used to calculate or verify an Award is immutable;
+- changing a Rule does not require creating a new Achievement Definition when the achievement identity remains the same;
+- Rule Version is independent from Definition lifecycle (`active`/`inactive`) and Award lifecycle (`active`/`revoked`);
+- Award provenance records the exact Rule Version used for that Award.
+
+For achievements with `source = fstr`:
+
+- the Rule Version additionally references the specific Normative Requirement Set Version on which the rule is based;
+- a new normative requirement-set version results in new Rule Version(s) for the affected Achievement Definitions;
+- the old Rule Version remains immutable and continues to identify the historical basis of Awards created from it.
+
+For achievements with `source = club`:
+
+- Rule Version may exist without any Normative Requirement Set reference;
+- changes to a club achievement's conditions create a new Rule Version while preserving the same Achievement Definition identity.
+
+The versioning model does not authorize retrospective re-evaluation or automatic re-awarding of historical Awards. Determination of which Rule Version is applicable to a given qualification event and how qualifying conditions produce a new Award remain part of the subsequent Requirement / Rule semantics and Achievement Engine decisions.
+
+
+## 20. Requirement / Rule condition semantics
+
+A Requirement / Rule may contain nested condition groups using the boolean operators:
+
+- `AND` — every child condition/group must be satisfied;
+- `OR` — at least one child condition/group must be satisfied.
+
+Condition groups may be nested to express alternative or combined qualification paths. The logical structure is part of the Rule Version and must not be hidden in application code.
+
+The basic case remains an `AND` group containing individual metric conditions. For example, a rule may require all of the following simultaneously:
+
+- `one_day_hikes >= 2`;
+- `tourism_types >= 1`;
+- `tourism_regions >= 1`.
+
+A more complex rule may express alternatives, for example:
+
+```text
+OR
+├── AND
+│   ├── degree_hikes[3] >= 1
+│   └── tourism_regions >= 1
+└── AND
+    ├── category_hikes[1] >= 2
+    └── tourism_types >= 2
+```
+
+Canonical data semantics:
+
+- a condition may be evaluated only against canonical TourCRM facts and supported metrics;
+- absence of a required canonical fact does not by itself satisfy the condition;
+- the Rule must not invent or infer unsupported facts merely to make a condition evaluable;
+- the same logical semantics apply to club and normative/FSTR rules;
+- exact metric names, operators, value types and evaluation rules remain subject to the canonical metric catalog and Achievement Engine decisions.
+
+The condition model does not by itself define when a Rule is evaluated, which Rule Version is applicable to a qualification event, or what constitutes a new qualifying occurrence. Those decisions remain separate Achievement Engine decisions.
+
+
+## 21. Canonical metric sources
+
+Achievement Engine does not maintain an independent history of participant tourism activity and does not become a second source of truth for tourism facts.
+
+The canonical flow is:
+
+```text
+Event / Trip
+    ↓
+EventParticipation / TripParticipant
+    ↓
+Canonical Tourism Facts
+    ↓
+Metric Evaluation
+    ↓
+Achievement Engine
+    ↓
+Achievement Award
+```
+
+Canonical rules:
+
+- Achievement Engine evaluates Requirement / Rule conditions using canonical TourCRM facts and metrics;
+- the source of tourism history remains the canonical Tourism / Trip domain;
+- counts of qualifying trips are derived from canonical Trip/Event facts and participation;
+- one-day / multi-day classification is taken from the approved canonical hike classification;
+- degree and category values may be used only when the corresponding canonical facts exist in the domain;
+- tourism type metrics use the internal TourCRM TourismType reference catalog;
+- tourism region metrics use the canonical Geography / tourism-region model;
+- Achievement Engine must not introduce parallel catalogs or achievement-specific copies of these facts;
+- derived metrics may be calculated during Rule evaluation, but their inputs must remain canonical domain facts;
+- if a required metric cannot be grounded in an existing canonical domain fact, this is a domain GAP and must not be solved by inventing an alternative fact in Achievement Engine.
+
+The exact metric catalog and the precise source entity/field for every metric remain subject to the Achievement metric-catalog decision and implementation reconciliation with the current canonical domain model.
+
+This boundary prevents Achievement Engine from duplicating tourism-domain business logic or maintaining a second independent source of truth.
+
+
+## 22. Achievement Engine triggering and reconciliation
+
+Achievement Engine uses a combined event-driven and reconciliation model.
+
+### Event-driven evaluation
+
+When a canonical tourism fact that may affect achievements changes, the Achievement Engine may be triggered to evaluate the affected Achievement Definitions and applicable Rule Versions.
+
+Conceptually:
+
+```text
+Canonical tourism fact changed
+        ↓
+Achievement Engine trigger
+        ↓
+Identify affected Achievement Definitions
+        ↓
+Evaluate applicable Rule Versions
+        ↓
+Create Award when qualification is satisfied
+```
+
+The exact event list and dispatch mechanism are implementation concerns and must not introduce new business facts outside the canonical domain.
+
+### Periodic reconciliation
+
+A periodic reconciliation process is also required as a safety mechanism for missed events, processing failures or other operational inconsistencies.
+
+Reconciliation may re-evaluate canonical facts to identify Awards that should exist but were not created by the event-driven path.
+
+Reconciliation must not mean rewriting or silently recalculating historical Awards. Its purpose is to identify and create valid missing Awards according to the applicable current Rule Version and the repeatability semantics of the Achievement Definition.
+
+### Idempotency and historical safety
+
+The Achievement Engine must be idempotent:
+
+- processing the same canonical change more than once must not create duplicate Awards for the same qualifying basis;
+- for a `non_repeatable` Achievement Definition, repeated evaluation must not create more than one Award across the Award history;
+- an already issued Award is not deleted, rewritten or automatically revoked by Engine evaluation;
+- changes to source facts do not automatically revoke an existing Award;
+- changes to normative versions or Definition lifecycle do not automatically revoke an existing Award;
+- automatic retrospective re-certification is not part of this model.
+
+For `repeatable` Achievement Definitions, the Engine must distinguish a new qualifying occurrence from repeated processing of the same occurrence. The exact semantics for identifying a qualifying occurrence are deferred to the Requirement / Rule semantics and Engine implementation decisions.
+
+The Engine evaluates only active Achievement Definitions and applicable Rule Versions for new automatic Awards. A Definition being inactive does not alter historical Awards.
+
+This triggering/reconciliation model does not define the exact event schema, scheduling mechanism, locking strategy, or persistence constraints. Those are implementation details to be resolved without changing the canonical business semantics.
