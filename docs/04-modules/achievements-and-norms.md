@@ -513,3 +513,102 @@ For `repeatable` Achievement Definitions, the Engine must distinguish a new qual
 The Engine evaluates only active Achievement Definitions and applicable Rule Versions for new automatic Awards. A Definition being inactive does not alter historical Awards.
 
 This triggering/reconciliation model does not define the exact event schema, scheduling mechanism, locking strategy, or persistence constraints. Those are implementation details to be resolved without changing the canonical business semantics.
+
+
+## 23. Achievement metric catalog and canonical sources — A8
+
+The Achievement Engine uses an explicit metric catalog. A metric may be used by a Requirement / Rule only when its canonical source and semantics have been approved.
+
+### Approved metric
+
+The first approved metric is:
+
+- `completed_trips` — number of Trips that are completed and in which the Member has `TripParticipant.actual_participation = true`.
+
+For the current MVP, `completed_trips` is the only approved executable tourism metric for Achievement evaluation.
+
+This decision explicitly authorizes the Achievement Engine to use the existing Trip/Event completion and actual-participation facts for this metric.
+
+### Unsupported metrics
+
+The following metrics are not executable until their canonical sources and semantics are separately approved:
+
+- overnight count;
+- one-day hike count;
+- multi-day hike count;
+- degree-hike count by degree;
+- category-hike count by category;
+- distinct tourism types;
+- distinct tourism regions;
+- any other metric not present in the approved metric catalog.
+
+The reference FSTR table in §8 remains source/reference material and does not make these metrics executable.
+
+A Requirement / Rule referencing an unsupported metric must not be accepted as an executable rule. The Achievement Engine must not invent or infer a replacement source.
+
+This allows the Achievement Domain implementation to proceed with a data-driven metric registry while keeping unsupported tourism facts outside the Achievement Engine.
+
+## 24. Repeatable automatic Awards — A9
+
+For the current Achievement Engine implementation:
+
+- automatic Award creation is supported for `non_repeatable` Achievement Definitions;
+- `repeatable` Achievement Definitions are supported for manual awarding only;
+- the automatic Engine must not create Awards for a `repeatable` Definition until qualifying-occurrence semantics are approved by a separate decision.
+
+This is a temporary implementation boundary, not a change to the meaning of the `repeatable` property.
+
+The future qualifying-occurrence model must define how a new qualifying occurrence is distinguished from repeated processing of the same canonical facts. No implementation may invent fact-consumption or trigger-fact semantics without a separate canonical decision.
+
+## 25. Achievement authorization — A10
+
+Achievement authorization is Administrator-only for management and Award operations.
+
+The canonical permission model is:
+
+- `achievement.manage` — Administrator only; manages Achievement Definitions, Requirement / Rule Versions and Normative Requirement Sets, including activation/deactivation and version management;
+- `achievement.award` — Administrator only; permits manual Award issuance and Award revocation according to the canonical Award lifecycle.
+
+Instructor does not receive manual Achievement Award authority.
+
+The backend remains authoritative for these checks. Frontend visibility must not be treated as an authorization boundary.
+
+No additional achievement permission is introduced beyond `achievement.manage` and `achievement.award` without a separate PO decision.
+
+## 26. Applicable Rule Version — A11
+
+For creation of a new automatic Award, exactly one current active Rule Version is applicable for an active Achievement Definition.
+
+The applicable Rule Version is selected from the Rule Versions active at the time of evaluation. The Engine does not retrospectively switch an Award to a newer Rule Version after issuance.
+
+For `source = fstr`, the Rule Version must reference the corresponding Normative Requirement Set Version, and that normative version must be active/applicable at the time the Rule is evaluated.
+
+Historical Awards retain the exact Rule Version and normative version recorded in their provenance.
+
+If no applicable active Rule Version exists, no automatic Award is created.
+
+## 27. Achievement recipient — A12
+
+The recipient of an Achievement Award is a Member represented by the existing canonical membership/role model.
+
+For Achievement Domain purposes:
+
+- Administrator, Instructor and Guardian are not Achievement recipients;
+- participation in an Event alone does not redefine a user as a Member;
+- the Engine must use the existing canonical Member/membership assignment rather than introduce an achievement-specific recipient classification;
+- Guardian access to a child's achievements remains read/access behavior and does not make Guardian the Award recipient.
+
+The implementation must reconcile the exact existing membership/role entity and field used for this check before writing the recipient authorization path. If the existing canonical membership model cannot provide this fact, implementation must stop and report a GAP rather than invent a new source.
+
+## 28. Current Achievement implementation boundary after A8–A12
+
+The Achievement Engine may now be implemented using:
+
+- approved metric: `completed_trips`;
+- `non_repeatable` automatic Awards;
+- manual Awards for Definitions whose `award_method` permits manual issuance;
+- Administrator-only achievement management and Award operations;
+- one applicable active Rule Version per Definition at evaluation time;
+- Member recipients from the existing canonical membership/role model.
+
+All other tourism metrics and automatic repeatable-occurrence semantics remain explicitly outside the current implementation boundary.
