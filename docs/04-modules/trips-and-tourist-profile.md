@@ -413,6 +413,8 @@ BR-TRIP-006: Удаление завершённого похода по умо�
 
 BR-TRIP-007: Исправление исторических туристских фактов должно быть аудируемым.
 
+Для реализованного на текущем этапе Trip audit-контракт включает создание Trip (`trip.created`), первичную фиксацию `TripParticipant.actual_participation` (`trip_participant.actual_participation_recorded`) и изменение уже записанного значения (`trip_participant.actual_participation_changed`). Повторная запись того же значения является идемпотентной и не создаёт новый audit record. Изменения `EventParticipation.registration_status` остаются в существующем `event_participation.status_changed` и не дублируются Trip-аудитом. Будущий correction workflow для исторических туристских фактов определяется отдельным решением.
+
 BR-TRIP-008: Агрегированный туристский профиль не является ручным источником истины.
 
 BR-TRIP-009: Нормативный расчёт квалификационного опыта должен иметь версию правила.
