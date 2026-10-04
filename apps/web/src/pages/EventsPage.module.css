@@ -463,6 +463,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: var(--space-3);
   margin-bottom: var(--space-3);
 }
@@ -495,4 +496,46 @@
   align-items: center;
   gap: var(--space-3);
   flex-wrap: wrap;
+}
+
+/* Participant readiness matrix (events-api.md §31.4): one card per
+   participant, requirement cells wrap — readable at 360px without a
+   horizontal scroll, using the same border/radius tokens as .documentRow. */
+.readinessRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  min-width: 0;
+}
+
+.readinessName {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.readinessCells {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-2) var(--space-4);
+}
+
+.readinessCell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.readinessType {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .readinessCells {
+    grid-template-columns: 1fr;
+  }
 }

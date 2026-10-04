@@ -282,19 +282,9 @@ export type EventDocumentRequirementCheckList = {
 };
 
 /** `GET /api/v1/events/{event_id}/document-requirements/{person_id}`
- * (events-api.md §31.3) — `event.read` + `document.read`. Every value in
- * `requirements[].result` is derived server-side; this hook never
- * computes `valid`/`missing`/`expired` itself.
- *
- * KNOWN CONTRACT GAP (Issue #175): there is no implemented endpoint that
- * lists an Event's participants (`GET /events/{event_id}/participants`
- * is documented at events-api.md §18/endpoint-inventory.md §8 but has no
- * route in `app/api/v1/events.py` — confirmed against the actual
- * router). The competition-package endpoint resolves the participant set
- * itself, server-side, from `EventParticipation`; nothing exposes that
- * same set for read/display. This check therefore cannot be
- * auto-enumerated into a roster — callers look up one already-identified
- * Person's readiness at a time (see EventDocumentPackageDialog). */
+ * (events-api.md §31.3) — `event.read` + `document.read`. The canonical
+ * single-participant contract; the Event UI itself uses the readiness
+ * matrix below, which shares the same backend evaluator. */
 export function useEventDocumentRequirementCheck(
   eventId: string | undefined,
   personId: string | undefined,
@@ -306,6 +296,35 @@ export function useEventDocumentRequirementCheck(
         `/events/${eventId}/document-requirements/${personId}`,
       ),
     enabled: Boolean(eventId) && Boolean(personId),
+  });
+}
+
+export type EventDocumentReadinessParticipant = {
+  person_id: string;
+  first_name: string;
+  last_name: string;
+  middle_name: string | null;
+  requirements: EventDocumentRequirementCheck[];
+};
+
+export type EventDocumentReadinessMatrix = {
+  event_id: string;
+  participants: EventDocumentReadinessParticipant[];
+};
+
+/** `GET /api/v1/events/{event_id}/document-requirements/matrix`
+ * (events-api.md §31.4) — `event.read` + `document.read`. One request for
+ * every registered participant visible to the requester x every
+ * requirement; the participant set, ordering and every
+ * `valid`/`missing`/`expired` result are backend-derived and rendered
+ * as-is. Unpaginated by contract. Keyed under the requirement-list key so
+ * creating/updating/deleting a requirement also refetches the matrix. */
+export function useEventDocumentReadinessMatrix(eventId: string | undefined) {
+  return useQuery<EventDocumentReadinessMatrix, ApiError>({
+    queryKey: ["events", "document-requirements", eventId, "matrix"],
+    queryFn: () =>
+      apiFetch<EventDocumentReadinessMatrix>(`/events/${eventId}/document-requirements/matrix`),
+    enabled: Boolean(eventId),
   });
 }
 

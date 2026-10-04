@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { PageHeader } from "../components/ui/PageHeader";
@@ -17,11 +17,10 @@ import { useCurrentUser, currentClubId, displayName } from "../api/auth";
 import { saveBlob } from "../api/client";
 import { useGroups } from "../api/groups";
 import { useUsers, userFullName } from "../api/users";
-import { personFullName, usePersons } from "../api/people";
 import {
   useCreateEventDocumentRequirement,
   useDeleteEventDocumentRequirement,
-  useEventDocumentRequirementCheck,
+  useEventDocumentReadinessMatrix,
   useEventDocumentRequirements,
   useExportEventDocumentPackage,
   useUpdateEventDocumentRequirement,
@@ -872,10 +871,11 @@ function EventDetailDialog({
   const query = item.kind === "event" ? eventQuery : occurrenceQuery;
   const cancelled = item.status === "cancelled";
   const [documentsOpen, setDocumentsOpen] = useState(false);
-  // Participant Export is canonically Administrator-only
-  // (participant-export-api.md §1-§2, import-export-ui.md §8), unlike the
-  // `document.*` workflow below — so here a role check is the documented
-  // visibility rule. Backend authorization stays authoritative.
+  // Participant Export (participant-export-api.md §1-§2, import-export-ui.md
+  // §8) and the competition-documents workflow (Issue #175: documents are
+  // maintained by the Administrator) are Administrator-only — a role check
+  // is the documented visibility rule. Backend authorization stays
+  // authoritative.
   const meQuery = useCurrentUser();
   const isAdmin = hasAdministratorRole(meQuery.data?.role_assignments ?? []);
 
@@ -921,7 +921,11 @@ function EventDetailDialog({
         <Button variant="primary" icon="action.edit" onClick={onEdit}>
           Редактировать
         </Button>
-        {item.kind === "event" ? (
+        {/* Issue #175: documents are maintained by the Administrator only
+            (document.read/manage/export are granted to `admin` alone);
+            same visibility convention as «Экспорт участников» below.
+            The backend stays the authorization boundary. */}
+        {item.kind === "event" && isAdmin ? (
           <Button variant="secondary" onClick={() => setDocumentsOpen(true)}>
             Документы для соревнования
           </Button>
@@ -953,29 +957,14 @@ function EventDetailDialog({
 
 // --- Competition document package workflow (TH-0117 / Issue #175) ---------
 //
-// «Документы для соревнования» — the explicit Event-scoped workflow for
-// managing EventDocumentRequirement rows, checking one participant's
-// document readiness, and exporting the protected competition document
-// package. Every control here is always rendered for any signed-in
-// viewer — this file never guesses who holds `event.manage`/
-// `document.manage`/`document.export` from `role_assignments`; nothing
-// in roles-and-permissions.md or ADR-0040 documents `document.*` as
-// admin-only, so an `isAdmin` role check would assert an authorization
-// rule this frontend has no basis for. The backend remains the sole
-// enforcement point: a read (list requirements, check a participant)
-// without the right permission surfaces its own 403 via the existing
-// `ApiError` → `ErrorState`/toast handling below, and a mutation without
-// it is rejected the same way, exactly like every other action in this
-// app.
-//
-// KNOWN CONTRACT GAP: there is no implemented endpoint that lists an
-// Event's participants (see api/documents.ts's `useEventDocument
-// RequirementCheck` module comment) — the "participant requirement
-// results" view here is therefore a deliberate, on-demand per-participant
-// lookup (search a Person, then check their readiness for this Event),
-// not an auto-loaded roster. The competition package export itself does
-// not depend on this: it resolves the participant set entirely
-// server-side.
+// «Документы для соревнования» — the Event-scoped workflow: managing
+// EventDocumentRequirement rows, the participant x requirement readiness
+// matrix (one `GET .../document-requirements/matrix` request,
+// events-api.md §31.4) and the competition package export. Every
+// readiness value, the participant set and the package contents are
+// backend-derived; nothing here computes validity, readiness or
+// duplicates. Documents themselves are corrected only in the existing
+// Person → Документы tab, reached from a participant row.
 
 function EventDocumentPackageDialog({
   open,
@@ -1002,7 +991,7 @@ function EventDocumentPackageDialog({
     >
       <div className={styles.documentPackageBody}>
         <EventDocumentRequirementsSection eventId={eventId} />
-        <ParticipantDocumentCheckSection eventId={eventId} />
+        <ParticipantReadinessSection eventId={eventId} />
         <DocumentPackageExportSection eventId={eventId} eventTitle={eventTitle} />
       </div>
     </Dialog>
@@ -1049,12 +1038,7 @@ function EventDocumentRequirementsSection({ eventId }: { eventId: string }) {
         </ul>
       ) : null}
 
-      <AddRequirementDialog
-        open={addOpen}
-        eventId={eventId}
-        existingTypes={requirementsQuery.data?.items.map((r) => r.document_type) ?? []}
-        onClose={() => setAddOpen(false)}
-      />
+      <AddRequirementDialog open={addOpen} eventId={eventId} onClose={() => setAddOpen(false)} />
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         title="Удалить требование?"
@@ -1128,12 +1112,10 @@ function RequirementRow({
 function AddRequirementDialog({
   open,
   eventId,
-  existingTypes,
   onClose,
 }: {
   open: boolean;
   eventId: string;
-  existingTypes: string[];
   onClose: () => void;
 }) {
   const [documentType, setDocumentType] = useState("");
@@ -1151,10 +1133,8 @@ function AddRequirementDialog({
     onClose();
   }
 
-  const isDuplicate = existingTypes.includes(documentType.trim());
-
   function handleSubmit() {
-    if (!documentType.trim() || isDuplicate) return;
+    if (!documentType.trim()) return;
     createRequirement.mutate(
       { eventId, document_type: documentType.trim(), required },
       {
@@ -1162,7 +1142,16 @@ function AddRequirementDialog({
           notify("success", "Требование добавлено");
           handleClose();
         },
-        onError: (error) => notify("error", error.message),
+        // The backend is the only duplicate check (409
+        // `duplicate_document_requirement`, events-api.md §31.1); the
+        // dialog stays open so the type can be corrected.
+        onError: (error) =>
+          notify(
+            "error",
+            error.status === 409 && error.code === "duplicate_document_requirement"
+              ? "Требование для этого типа документа уже существует"
+              : error.message,
+          ),
       },
     );
   }
@@ -1180,7 +1169,7 @@ function AddRequirementDialog({
           <Button
             variant="primary"
             onClick={handleSubmit}
-            disabled={!documentType.trim() || isDuplicate || createRequirement.isPending}
+            disabled={!documentType.trim() || createRequirement.isPending}
           >
             Добавить
           </Button>
@@ -1193,11 +1182,7 @@ function AddRequirementDialog({
           value={documentType}
           onChange={(e) => setDocumentType(e.target.value)}
           placeholder="medical_certificate"
-          hint={
-            isDuplicate
-              ? "Требование для этого типа документа уже существует"
-              : `«medical_certificate» отображается как «${documentTypeLabel("medical_certificate")}»`
-          }
+          hint={`«medical_certificate» отображается как «${documentTypeLabel("medical_certificate")}»`}
           required
         />
         <label className={styles.mineToggle}>
@@ -1209,77 +1194,97 @@ function AddRequirementDialog({
   );
 }
 
-function ParticipantDocumentCheckSection({ eventId }: { eventId: string }) {
-  const [search, setSearch] = useState("");
-  const debouncedSearch = useDebouncedValue(search, 300);
-  const [selected, setSelected] = useState<{ id: string; name: string } | null>(null);
-  const searchQuery = usePersons({ page: 1, search: debouncedSearch });
-  const checkQuery = useEventDocumentRequirementCheck(eventId, selected?.id);
+function ParticipantReadinessSection({ eventId }: { eventId: string }) {
+  const matrixQuery = useEventDocumentReadinessMatrix(eventId);
+  const [, setSearchParams] = useSearchParams();
+  const headingId = useId();
+
+  // Before leaving for Person → Документы, record this Event in the
+  // calendar's existing `?event=` deep link (replace, not push) so the
+  // browser Back button reopens the Event; the matrix refetches on return.
+  function rememberEvent() {
+    setSearchParams(
+      (params) => {
+        const next = new URLSearchParams(params);
+        next.set("event", eventId);
+        return next;
+      },
+      { replace: true },
+    );
+  }
+
+  const participants = matrixQuery.data?.participants ?? [];
+  const requirementCount = participants[0]?.requirements.length ?? 0;
 
   return (
-    <section>
-      <h3>Проверка документов участника</h3>
-      {selected ? (
-        <div className={styles.selectedInstructor}>
-          <span>{selected.name}</span>
-          <Button variant="secondary" onClick={() => setSelected(null)}>
-            Изменить выбор
-          </Button>
-        </div>
-      ) : (
-        <>
-          <SearchInput
-            label="Поиск участника"
-            value={search}
-            onChange={setSearch}
-            placeholder="Например, «Иванова»"
-          />
-          {searchQuery.isSuccess && debouncedSearch ? (
-            <ul className={styles.pickerList}>
-              {searchQuery.data.items.map((candidate) => (
-                <li key={candidate.id}>
-                  <button
-                    type="button"
-                    className={styles.pickerItem}
-                    onClick={() => setSelected({ id: candidate.id, name: personFullName(candidate) })}
-                  >
-                    {personFullName(candidate)}
-                  </button>
-                </li>
-              ))}
-              {searchQuery.data.items.length === 0 ? (
-                <li className={styles.pickerEmpty}>Ничего не найдено</li>
-              ) : null}
-            </ul>
-          ) : null}
-        </>
-      )}
+    <section aria-labelledby={headingId}>
+      <div className={styles.documentSectionHeader}>
+        <h3 id={headingId}>Готовность участников</h3>
+      </div>
 
-      {selected && checkQuery.isLoading ? <Loading label="Проверяем документы…" /> : null}
-      {selected && checkQuery.isError ? (
+      {matrixQuery.isLoading ? <Loading label="Загружаем готовность участников…" /> : null}
+      {matrixQuery.isError ? (
         <ErrorState
-          illustration={checkQuery.error.status === 403 ? "403" : checkQuery.error.status === 404 ? "404" : "error"}
-          title="Не удалось проверить документы"
-          description={checkQuery.error.message}
+          illustration={
+            matrixQuery.error.status === 403 ? "403" : matrixQuery.error.status === 404 ? "404" : "error"
+          }
+          title={
+            matrixQuery.error.status === 403
+              ? "Нет доступа к документам участников"
+              : matrixQuery.error.status === 404
+                ? "Мероприятие не найдено"
+                : "Не удалось загрузить готовность участников"
+          }
+          description={matrixQuery.error.message}
+          action={
+            matrixQuery.error.status !== 403 && matrixQuery.error.status !== 404 ? (
+              <Button variant="secondary" onClick={() => void matrixQuery.refetch()}>
+                Повторить
+              </Button>
+            ) : undefined
+          }
         />
       ) : null}
-      {selected && checkQuery.isSuccess && checkQuery.data.requirements.length === 0 ? (
+      {matrixQuery.isSuccess && participants.length === 0 ? (
+        <EmptyState illustration="no-results" title="Нет зарегистрированных участников" />
+      ) : null}
+      {matrixQuery.isSuccess && participants.length > 0 && requirementCount === 0 ? (
         <EmptyState illustration="no-results" title="Требования к документам не заданы" />
       ) : null}
-      {selected && checkQuery.isSuccess && checkQuery.data.requirements.length > 0 ? (
+      {matrixQuery.isSuccess && participants.length > 0 && requirementCount > 0 ? (
         <ul className={styles.documentList}>
-          {checkQuery.data.requirements.map((check) => (
-            <li key={check.document_type} className={styles.documentRow}>
-              <div className={styles.documentRowMain}>
-                <span>{documentTypeLabel(check.document_type)}</span>
-                <span className={styles.rowSecondary}>{check.required ? "Обязательно" : "Опционально"}</span>
-              </div>
-              <StatusBadge
-                status={documentRequirementResultIcon(check.result)}
-                label={documentRequirementResultLabel(check.result)}
-              />
-            </li>
-          ))}
+          {participants.map((participant) => {
+            const name = [participant.last_name, participant.first_name, participant.middle_name]
+              .filter(Boolean)
+              .join(" ");
+            return (
+              <li key={participant.person_id} className={styles.readinessRow}>
+                <Link
+                  to={`/people/${participant.person_id}?tab=documents`}
+                  className={styles.readinessName}
+                  onClick={rememberEvent}
+                >
+                  {name}
+                </Link>
+                <ul className={styles.readinessCells} aria-label={`Документы: ${name}`}>
+                  {participant.requirements.map((check) => (
+                    <li key={check.document_type} className={styles.readinessCell}>
+                      <span className={styles.readinessType}>
+                        {documentTypeLabel(check.document_type)}
+                        {check.required ? null : (
+                          <span className={styles.rowSecondary}> · Опционально</span>
+                        )}
+                      </span>
+                      <StatusBadge
+                        status={documentRequirementResultIcon(check.result)}
+                        label={documentRequirementResultLabel(check.result)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            );
+          })}
         </ul>
       ) : null}
     </section>
@@ -1314,7 +1319,7 @@ function DocumentPackageExportSection({ eventId, eventTitle }: { eventId: string
 
   return (
     <section>
-      <h3>Экспорт пакета документов</h3>
+      <h3>Пакет документов</h3>
       <div className={styles.tabActions}>
         <Button
           variant="primary"
@@ -1322,14 +1327,18 @@ function DocumentPackageExportSection({ eventId, eventTitle }: { eventId: string
           disabled={exportPackage.isPending}
           onClick={() => runExport(false)}
         >
-          {exportPackage.isPending ? "Формирование…" : "Экспортировать пакет документов"}
+          {exportPackage.isPending ? "Формирование…" : "Сформировать пакет документов"}
         </Button>
       </div>
 
       <Dialog
         open={incomplete !== null}
-        title="Пакет документов неполный"
-        description="У части участников отсутствует или истёк обязательный документ."
+        title="Не все документы готовы"
+        description={
+          incomplete && incomplete.length > 0
+            ? `Требуют внимания: ${incomplete.length}. Отсутствующие и истёкшие документы не попадут в пакет.`
+            : "Отсутствующие и истёкшие документы не попадут в пакет."
+        }
         onClose={() => setIncomplete(null)}
         actions={
           <>
