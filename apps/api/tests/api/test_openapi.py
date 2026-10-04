@@ -1,7 +1,6 @@
 """OpenAPI foundation: reflects the real app, no fictitious domain endpoints."""
 
 _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
-    "trip",
     "route",
     "achievement",
     "equipment",
@@ -34,7 +33,9 @@ _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
 # forbidden either: TH-0117.3 / Issue #160 adds the real participant
 # Document API foundation (see _DOCUMENT_PATHS below) — create/list/
 # detail/download only; replace/revoke/EventDocumentRequirement remain
-# unimplemented (people-api.md §32).
+# unimplemented (people-api.md §32). "trip" is no longer forbidden either:
+# Issue #245 adds the Trip / TripParticipant tourism-fact foundation (see
+# _TRIP_PATHS below) — no route/GPX/tourist-profile endpoints.
 
 
 def test_openapi_schema_is_served(real_client) -> None:
@@ -275,6 +276,17 @@ _ROLE_ASSIGNMENT_PATHS = {
 # deliberately out of Issue #74's scope (endpoint-inventory.md §24,
 # ADR-0026's explicit non-goals).
 
+# Issue #245: Trip / TripParticipant tourism-fact foundation. No Trip
+# status/complete/archive endpoints (a Trip has no lifecycle of its own —
+# the Event's lifecycle endpoints apply), no participant add/remove (the
+# registration source stays EventParticipation), no correction endpoint.
+_TRIP_PATHS = {
+    "/api/v1/trips",
+    "/api/v1/trips/{event_id}",
+    "/api/v1/trips/{event_id}/participants",
+    "/api/v1/trips/{event_id}/participants/{person_id}",
+}
+
 _EVENT_RECURRENCE_PATHS = {
     "/api/v1/events/series",
     "/api/v1/events/series/{series_id}",
@@ -303,7 +315,9 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
     # (Issue #74), the Event recurrence API (Issue #79), the read-only
     # User directory (TH-0107), and the participant Document API
     # foundation (TH-0117.3 / Issue #160) are the only domain endpoints so
-    # far — no Trip/etc. CRUD endpoints have been added under /api/v1.
+    # far — plus the later slices listed with their path sets above (the
+    # Trip foundation of Issue #245 among them); no route/achievement/etc.
+    # endpoints have been added under /api/v1.
     assert (
         set(schema["paths"].keys())
         == {"/health/live", "/health/ready"}
@@ -326,6 +340,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _INVENTORY_INSTANCE_PATHS
         | _INVENTORY_QUANTITY_PATHS
         | _INVENTORY_ISSUE_PATHS
+        | _TRIP_PATHS
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()
@@ -348,6 +363,39 @@ def test_event_participants_endpoint_is_read_only(real_client) -> None:
         "first_name",
         "last_name",
         "middle_name",
+    }
+
+
+def test_trip_endpoints_expose_only_their_canonical_methods_and_fields(real_client) -> None:
+    """Issue #245: only the canonical Trip / TripParticipant operations and
+    fields — no tourism attribute (all deferred), no Trip lifecycle field,
+    no registration/participation status on TripParticipant."""
+    schema = real_client.get("/openapi.json").json()
+    paths = schema["paths"]
+    components = schema["components"]["schemas"]
+
+    assert set(paths["/api/v1/trips"]) == {"get", "post"}
+    assert set(paths["/api/v1/trips/{event_id}"]) == {"get"}
+    assert set(paths["/api/v1/trips/{event_id}/participants"]) == {"get"}
+    assert set(paths["/api/v1/trips/{event_id}/participants/{person_id}"]) == {"put"}
+
+    list_params = {
+        p["name"] for p in paths["/api/v1/trips"]["get"]["parameters"] if p["in"] != "cookie"
+    }
+    assert list_params == {"page", "page_size", "status"}
+
+    assert set(components["TripCreateRequest"]["properties"]) == {"event_id"}
+    assert set(components["TripOut"]["properties"]) == {"event_id", "created_at", "updated_at"}
+    assert set(components["TripParticipantRecordRequest"]["properties"]) == {
+        "actual_participation"
+    }
+    assert set(components["TripParticipantOut"]["properties"]) == {
+        "event_participation_id",
+        "event_id",
+        "person_id",
+        "actual_participation",
+        "created_at",
+        "updated_at",
     }
 
 

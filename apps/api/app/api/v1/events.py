@@ -585,6 +585,9 @@ def update_event(
         )
     except EventDomainError as exc:
         _raise_for_domain_error(exc)
+    except events_crud.EventTypeLockedByTripError as exc:
+        # Issue #245 / BR-TRIP-001: an Event with a Trip stays `trip`.
+        raise APIError(status.HTTP_409_CONFLICT, "event_type_locked_by_trip", str(exc)) from exc
     except EventGroupTargetError as exc:
         _raise_for_group_target_error(exc)
     except EventStaffAssignmentError as exc:
