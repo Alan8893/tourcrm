@@ -148,6 +148,20 @@ class EventParticipationOut(BaseModel):
     updated_at: datetime
 
 
+class EventParticipantOut(BaseModel):
+    """One item of `GET /api/v1/events/{event_id}/participants`
+    (events-api.md §18): a currently `registered` participant of the
+    Event. The same minimal Person projection as `AttendancePersonOut`
+    (no phone/email/address/photo/document data); `person_id` is the
+    stable Person identity used by Person Detail and by
+    `GET .../document-requirements/{person_id}`."""
+
+    person_id: UUID
+    first_name: str
+    last_name: str
+    middle_name: Optional[str]
+
+
 class ConflictObjectRefOut(BaseModel):
     """One side of a derived conflict (events-api.md §28): the concrete
     Event/EventOccurrence object, identified by its own stable opaque

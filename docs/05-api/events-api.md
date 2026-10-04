@@ -271,6 +271,37 @@ Feed token должен быть отдельным секретом и не д�
 
 Возвращает список participants с pagination после проверки `event.read` и применимого scope/object policy.
 
+**Реализовано (read-only list; backend gap для Issue #175 «Документы для соревнования»).**
+
+Состав: Persons, у которых `EventParticipation` для этого Event имеет `registration_status = registered` (ADR-0037). `cancelled` и любые другие значения (`invited`/`waitlisted`/`declined`/`removed`, ADR-0020 §4) не возвращаются; фильтрация выполняется в SQL. Это тот же набор участников, который использует competition document package (§31.5). Только обычный `Event`: id recurring occurrence не является `event_id` и даёт `404`.
+
+Авторизация:
+
+- object-level: `event.read` с применимым scope (ADR-0020 §2-§3); недоступный или несуществующий Event → одинаковый `404 Event not found` (existence hiding, как у остальных single-Event endpoints);
+- видимость строк участников — то же per-scope правило, что у attendance roster (ADR-0032): `all`/`own_events`/`own_groups` — полный список; `self` — только собственная строка requester; `children` — только строки его детей по active GuardianRelationship; применяется в SQL до count/pagination.
+
+Query: `page` (≥1, default 1), `page_size` (1-100, default 50).
+
+Сортировка: `last_name`, `first_name`, Person id — тот же детерминированный порядок, что у attendance roster и document package.
+
+Response — стандартная коллекция:
+
+```json
+{
+  "items": [
+    {
+      "person_id": "uuid",
+      "first_name": "Иван",
+      "last_name": "Алексеев",
+      "middle_name": null
+    }
+  ],
+  "pagination": { "page": 1, "page_size": 50, "total": 1, "pages": 1 }
+}
+```
+
+Минимальная Person-проекция (как `AttendancePersonOut`): без контактов, фото, document status/readiness. Статус документов участника запрашивается отдельно через `GET /api/v1/events/{event_id}/document-requirements/{person_id}` (§31.3).
+
 ### POST `/api/v1/events/{event_id}/participants`
 
 Записывает человека на мероприятие уполномоченным пользователем с `event.manage` и применимым scope/object policy.

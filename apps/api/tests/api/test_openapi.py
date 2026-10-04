@@ -74,6 +74,9 @@ _EVENT_PATHS = {
     "/api/v1/events/{event_id}/attendance/{person_id}/corrections",
     # TH-0108.2 / ADR-0037: participant self-registration/withdrawal.
     "/api/v1/events/{event_id}/participation",
+    # events-api.md §18 / Issue #175 backend gap: read-only list of the
+    # Event's registered participants.
+    "/api/v1/events/{event_id}/participants",
     # TH-0117.4 / Issue #162, ADR-0040 §5: read-only participant Document
     # requirement check (valid/missing/expired) for one Event/Person pair.
     "/api/v1/events/{event_id}/document-requirements/{person_id}",
@@ -323,6 +326,26 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()
+
+
+def test_event_participants_endpoint_is_read_only(real_client) -> None:
+    """events-api.md §18: only the read-only GET list is implemented —
+    no participant-management POST (not part of this slice)."""
+    schema = real_client.get("/openapi.json").json()
+    operations = schema["paths"]["/api/v1/events/{event_id}/participants"]
+    assert set(operations) == {"get"}
+    params = {p["name"] for p in operations["get"]["parameters"] if p["in"] != "cookie"}
+    assert params == {"event_id", "page", "page_size"}
+    response_schema = operations["get"]["responses"]["200"]["content"]["application/json"]
+    item_ref = response_schema["schema"]["$ref"]
+    collection = schema["components"]["schemas"][item_ref.rsplit("/", 1)[-1]]
+    item_schema_name = collection["properties"]["items"]["items"]["$ref"].rsplit("/", 1)[-1]
+    assert set(schema["components"]["schemas"][item_schema_name]["properties"]) == {
+        "person_id",
+        "first_name",
+        "last_name",
+        "middle_name",
+    }
 
 
 def test_news_endpoints_expose_only_their_canonical_methods(real_client) -> None:

@@ -167,7 +167,7 @@ Invitation secrets are never returned after creation.
 - `POST /events/{id}/cancel`
 - `POST /events/{id}/restore` where business rules allow
 - `POST /events/{id}/archive`
-- `GET /events/{id}/participants`
+- `GET /events/{id}/participants` — implemented (read-only, registered participants; `events-api.md` §18)
 - `POST /events/{id}/participants`
 - `POST /events/{id}/participants/bulk`
 - `PATCH /event-participations/{id}`
