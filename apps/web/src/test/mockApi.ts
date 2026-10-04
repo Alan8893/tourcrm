@@ -9,6 +9,9 @@ export type MockApiHandler = {
   headers?: Record<string, string>;
   /** Static JSON body, or a function computing it per request. */
   body?: unknown | ((init: RequestInit | undefined) => unknown);
+  /** Holds the response until the returned promise settles — lets a test
+   * observe the in-flight (loading / disabled) state of a request. */
+  gate?: () => Promise<void>;
 };
 
 /** Like `stubFetch`, but method-aware and with per-request bodies — for
@@ -25,6 +28,7 @@ export function mockApi(handlers: MockApiHandler[]) {
       if (!handler) {
         throw new Error(`No mock registered for ${method} ${url}`);
       }
+      if (handler.gate) await handler.gate();
       const body = typeof handler.body === "function" ? handler.body(init) : handler.body;
       return new Response(JSON.stringify(body ?? {}), {
         status: handler.status ?? 200,

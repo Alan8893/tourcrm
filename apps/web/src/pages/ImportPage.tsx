@@ -97,6 +97,7 @@ function stepIndex(job: ImportJob | undefined, confirming: boolean): number {
     case "preview_ready":
       return confirming ? 3 : 2;
     case "approved":
+    case "applying":
       return 3;
     default:
       return 4;
@@ -155,6 +156,8 @@ export function ImportPage() {
       {job ? (
         <ImportJobView
           job={job}
+          refreshing={jobQuery.isFetching}
+          onRefresh={() => void jobQuery.refetch()}
           confirming={confirming}
           onConfirming={setConfirming}
           onStartOver={startOver}
@@ -166,11 +169,15 @@ export function ImportPage() {
 
 function ImportJobView({
   job,
+  refreshing,
+  onRefresh,
   confirming,
   onConfirming,
   onStartOver,
 }: {
   job: ImportJob;
+  refreshing: boolean;
+  onRefresh: () => void;
   confirming: boolean;
   onConfirming: (value: boolean) => void;
   onStartOver: () => void;
@@ -180,7 +187,8 @@ function ImportJobView({
       return <CheckStep job={job} onStartOver={onStartOver} />;
     case "parsing":
     case "validating":
-      return <Loading label="Проверяем файл…" />;
+    case "applying":
+      return <ProcessingStep job={job} refreshing={refreshing} onRefresh={onRefresh} />;
     case "preview_ready":
       return confirming ? (
         <ApproveStep job={job} onBack={() => onConfirming(false)} />
@@ -189,8 +197,6 @@ function ImportJobView({
       );
     case "approved":
       return <ApplyStep job={job} />;
-    case "applying":
-      return <Loading label="Применяем импорт…" />;
     default:
       return TERMINAL_STATUSES.has(job.status) ? (
         <ResultStep job={job} onStartOver={onStartOver} />
@@ -198,6 +204,28 @@ function ImportJobView({
         <p className={styles.muted}>Неизвестный статус импорта: {job.status}</p>
       );
   }
+}
+
+/** Inline, persistent text for a failed preview/approve/apply request. The
+ * backend error is never hidden: a status change by another request (409)
+ * is explained, and the job itself is re-read by the mutation hook so the
+ * page always shows the backend's current lifecycle state. */
+function importActionErrorMessage(error: ApiError): string {
+  if (error.status === 403) return "У вас нет прав на импорт участников.";
+  if (error.status === 404) return "Импорт не найден или недоступен.";
+  if (error.code === "invalid_import_job_status_transition") {
+    return "Статус импорта уже изменился. Показано актуальное состояние импорта.";
+  }
+  return error.message;
+}
+
+function ActionError({ prefix, error }: { prefix: string; error: ApiError | null }) {
+  if (!error) return null;
+  return (
+    <p className={`${styles.notice} ${styles.noticeError}`} role="alert">
+      {prefix}: {importActionErrorMessage(error)}
+    </p>
+  );
 }
 
 // --- Step 1: file -----------------------------------------------------------
@@ -276,6 +304,7 @@ function UploadStep({ onUploaded }: { onUploaded: (importId: string) => void }) 
           className={styles.fileInput}
           type="file"
           accept=".csv,.xlsx"
+          disabled={upload.isPending}
           onChange={(event) => {
             upload.reset();
             setFile(event.target.files?.[0] ?? null);
@@ -305,7 +334,6 @@ function UploadStep({ onUploaded }: { onUploaded: (importId: string) => void }) 
 
 function CheckStep({ job, onStartOver }: { job: ImportJob; onStartOver: () => void }) {
   const preview = usePreviewImport();
-  const notify = useNotify();
 
   if (preview.isPending) {
     return <Loading label="Проверяем файл…" />;
@@ -318,23 +346,56 @@ function CheckStep({ job, onStartOver }: { job: ImportJob; onStartOver: () => vo
         Файл ({job.format.toUpperCase()}) сохранён, но ещё не проверен. Проверка разберёт файл,
         найдёт ошибки и возможные дубликаты. Данные клуба при проверке не изменяются.
       </p>
+      {/* 422 `import_validation_failed` is not shown here: the job is now
+          `failed` and its file-level errors are shown on the result step. */}
+      <ActionError
+        prefix="Не удалось проверить файл"
+        error={preview.error?.code === "import_validation_failed" ? null : preview.error}
+      />
       <div className={styles.actions}>
         <Button variant="secondary" onClick={onStartOver}>
           Загрузить другой файл
         </Button>
-        <Button
-          variant="primary"
-          onClick={() =>
-            preview.mutate(job.import_id, {
-              onError: (error) => {
-                // 422 `import_validation_failed`: the job is now `failed`
-                // and its file-level errors are shown on the result step.
-                if (error.code !== "import_validation_failed") notify("error", error.message);
-              },
-            })
-          }
-        >
+        <Button variant="primary" onClick={() => preview.mutate(job.import_id)}>
           Проверить файл
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
+// --- Server-side processing ------------------------------------------------
+
+const PROCESSING_STAGE_LABELS: Partial<Record<ImportJobStatus, string>> = {
+  parsing: "Разбор файла",
+  validating: "Проверка строк",
+  applying: "Применение импорта",
+};
+
+/** A job seen in `parsing`/`validating`/`applying` — only when the page is
+ * (re)opened while another request is still running it (preview and apply
+ * are synchronous). Not an endless spinner: the stage is named, the status
+ * is re-read automatically (useImportJob) and on demand, and no action is
+ * offered until the backend reports the next state. */
+function ProcessingStep({
+  job,
+  refreshing,
+  onRefresh,
+}: {
+  job: ImportJob;
+  refreshing: boolean;
+  onRefresh: () => void;
+}) {
+  return (
+    <Card className={styles.panel}>
+      <h2 className={styles.sectionTitle}>Импорт обрабатывается</h2>
+      <p className={styles.notice} role="status">
+        Этап: {PROCESSING_STAGE_LABELS[job.status] ?? job.status}. Сервер ещё выполняет этот шаг —
+        статус обновляется автоматически.
+      </p>
+      <div className={styles.actions}>
+        <Button variant="secondary" onClick={onRefresh} disabled={refreshing}>
+          {refreshing ? "Обновляем…" : "Обновить статус"}
         </Button>
       </div>
     </Card>
@@ -438,7 +499,6 @@ function ApplyConsequences() {
 function ApproveStep({ job, onBack }: { job: ImportJob; onBack: () => void }) {
   const [acknowledged, setAcknowledged] = useState(false);
   const approve = useApproveImport();
-  const notify = useNotify();
 
   return (
     <Card className={styles.panel}>
@@ -460,6 +520,7 @@ function ApproveStep({ job, onBack }: { job: ImportJob; onBack: () => void }) {
         />
         <span>Я проверил(а) предпросмотр и понимаю, какие записи будут созданы.</span>
       </label>
+      <ActionError prefix="Не удалось одобрить импорт" error={approve.error} />
       <div className={styles.actions}>
         <Button variant="secondary" icon="action.back" onClick={onBack} disabled={approve.isPending}>
           К предпросмотру
@@ -468,11 +529,7 @@ function ApproveStep({ job, onBack }: { job: ImportJob; onBack: () => void }) {
           variant="primary"
           icon="action.confirm"
           disabled={!acknowledged || approve.isPending}
-          onClick={() =>
-            approve.mutate(job.import_id, {
-              onError: (error) => notify("error", error.message),
-            })
-          }
+          onClick={() => approve.mutate(job.import_id)}
         >
           {approve.isPending ? "Одобряем…" : "Одобрить импорт"}
         </Button>
@@ -503,6 +560,7 @@ function ApplyStep({ job }: { job: ImportJob }) {
         <dt>Без ошибок</dt>
         <dd>{formatCount(job.statistics.valid_records)}</dd>
       </dl>
+      <ActionError prefix="Не удалось применить импорт" error={apply.error} />
       <div className={styles.actions}>
         <Button variant="primary" icon="action.confirm" onClick={() => setConfirmOpen(true)}>
           Применить импорт
@@ -521,7 +579,6 @@ function ApplyStep({ job }: { job: ImportJob }) {
             onSuccess: (result) => {
               if (result.status === "completed") notify("success", "Импорт завершён");
             },
-            onError: (error) => notify("error", error.message),
           });
         }}
       />
