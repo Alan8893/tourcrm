@@ -44,6 +44,8 @@ def test_documented_permission_codes_have_no_invented_entries() -> None:
     # app.db.authorization.DOCUMENTED_PERMISSION_CODES's own comment.
     # `membership.import` was added by TH-0118.1 (people-api.md §22,
     # roles-and-permissions.md §4 PO decision) — see the same comment.
+    # `achievement.manage` was added by Issue #220 (achievements-and-
+    # norms.md §25, PO decision A10) — see the same comment.
     assert set(DOCUMENTED_PERMISSION_CODES) == {
         "user.directory.read",
         "account.manage",
@@ -69,6 +71,7 @@ def test_documented_permission_codes_have_no_invented_entries() -> None:
         "trip.manage",
         "achievement.read",
         "achievement.award",
+        "achievement.manage",
         "knowledge.read",
         "knowledge.manage",
         "document.read",

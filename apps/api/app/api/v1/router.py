@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.api.v1.achievements import router as achievements_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.events import router as events_router
 from app.api.v1.events_series import occurrences_router as event_occurrences_router
@@ -49,3 +50,4 @@ router.include_router(inventory_quantities_router)
 router.include_router(inventory_issues_router)
 router.include_router(users_router)
 router.include_router(trips_router)
+router.include_router(achievements_router)

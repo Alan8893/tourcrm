@@ -91,6 +91,10 @@ DOCUMENTED_PERMISSION_CODES = (
     "trip.manage",
     "achievement.read",
     "achievement.award",
+    # Issue #220, achievements-and-norms.md §25 (A10): Administrator-only
+    # management of Achievement Definitions, Rule Versions and Normative
+    # Requirement Sets (seeded by migration b7e3d1a9c5f2).
+    "achievement.manage",
     "knowledge.read",
     "knowledge.manage",
     "document.read",
