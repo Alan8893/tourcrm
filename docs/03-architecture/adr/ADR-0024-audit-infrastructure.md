@@ -14,6 +14,8 @@ Accepted. Closes ODR-015. Closes the audit-record-shape portion of ODR-013; **re
 
 **Amended by TH-0118.3:** adds `membership.import.applied` for the audited execution of a participant import batch. The corresponding audit vocabulary migration is required before the apply slice is implemented.
 
+**Amended by #247 (Trip Audit Trail):** adds `trip.created`, `trip_participant.actual_participation_recorded`, and `trip_participant.actual_participation_changed` for the tourism facts introduced by #245.
+
 ## Context
 
 The system requires significant business mutations to be auditable, but a canonical persistence contract, write boundary and failure mode had not previously been defined. Existing unimplemented `AuditLog` sketches using `target_type`/`target_id`, `ip_address`, `user_agent` and a bare `status` are superseded by this ADR.
@@ -115,6 +117,10 @@ document.replaced
 document.revoked
 document.downloaded
 document.exported
+
+trip.created
+trip_participant.actual_participation_recorded
+trip_participant.actual_participation_changed
 ```
 
 `membership.import.applied` records execution of an approved participant-import batch as a single batch-level business action. It is emitted by the import apply workflow with the import job as the audit resource. This action does not replace the domain-level audit records required for individual `person.*`, `user.*`, `membership.*` or other mutations performed by the import.
@@ -124,6 +130,10 @@ document.exported
 For recurrence, `event_series.version_created` records creation of a successor Series version; `event_series.updated` is reserved for mutations that do not create a successor version. `event_occurrence.series_rebound` records an already-materialized occurrence being rebound at an accepted Series version boundary. Exception creation/change and occurrence lifecycle transitions use their dedicated codes.
 
 `document.created`/`document.updated`/`document.replaced`/`document.revoked`/`document.downloaded`/`document.exported` are the participant-document vocabulary defined by ADR-0040 §7 (TH-0117.0). `document.replaced` is distinct from `document.updated`: replacing a document's underlying file creates a new version (ADR-0040 §4) and is `document.replaced`; correcting non-file metadata on the current version in place is `document.updated`. `document.downloaded` and `document.exported` cover reading/exporting document content (including a sensitive medical certificate) and are audit-required even when the surrounding operation also touches non-sensitive documents.
+
+`trip.created` records creation of the canonical Trip extension of an Event; its resource is the Trip identified by `event_id`.
+
+`trip_participant.actual_participation_recorded` records the first creation of a TripParticipant tourism fact for `actual_participation`. `trip_participant.actual_participation_changed` records a change of the stored `actual_participation` value and carries explicit safe before/after values in `details.changes.actual_participation`. Repeated writes of the already stored value are idempotent no-ops and do not create duplicate audit records. EventParticipation registration lifecycle remains covered by `event_participation.status_changed` and is not duplicated by Trip audit.
 
 `action` values are stable business codes, never HTTP methods, URL paths or arbitrary UI text.
 
