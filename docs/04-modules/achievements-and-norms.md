@@ -425,3 +425,41 @@ Canonical data semantics:
 - exact metric names, operators, value types and evaluation rules remain subject to the canonical metric catalog and Achievement Engine decisions.
 
 The condition model does not by itself define when a Rule is evaluated, which Rule Version is applicable to a qualification event, or what constitutes a new qualifying occurrence. Those decisions remain separate Achievement Engine decisions.
+
+
+## 21. Canonical metric sources
+
+Achievement Engine does not maintain an independent history of participant tourism activity and does not become a second source of truth for tourism facts.
+
+The canonical flow is:
+
+```text
+Event / Trip
+    ↓
+EventParticipation / TripParticipant
+    ↓
+Canonical Tourism Facts
+    ↓
+Metric Evaluation
+    ↓
+Achievement Engine
+    ↓
+Achievement Award
+```
+
+Canonical rules:
+
+- Achievement Engine evaluates Requirement / Rule conditions using canonical TourCRM facts and metrics;
+- the source of tourism history remains the canonical Tourism / Trip domain;
+- counts of qualifying trips are derived from canonical Trip/Event facts and participation;
+- one-day / multi-day classification is taken from the approved canonical hike classification;
+- degree and category values may be used only when the corresponding canonical facts exist in the domain;
+- tourism type metrics use the internal TourCRM TourismType reference catalog;
+- tourism region metrics use the canonical Geography / tourism-region model;
+- Achievement Engine must not introduce parallel catalogs or achievement-specific copies of these facts;
+- derived metrics may be calculated during Rule evaluation, but their inputs must remain canonical domain facts;
+- if a required metric cannot be grounded in an existing canonical domain fact, this is a domain GAP and must not be solved by inventing an alternative fact in Achievement Engine.
+
+The exact metric catalog and the precise source entity/field for every metric remain subject to the Achievement metric-catalog decision and implementation reconciliation with the current canonical domain model.
+
+This boundary prevents Achievement Engine from duplicating tourism-domain business logic or maintaining a second independent source of truth.
