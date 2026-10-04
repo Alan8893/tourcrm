@@ -316,3 +316,25 @@ Canonical rules:
 - physical deletion of an Achievement Definition is not part of the current Achievement Domain.
 
 Definition lifecycle is independent from the lifecycle/versioning of normative requirement sets and from the historical state of individual Awards.
+
+## 17. Achievement Award lifecycle and correction
+
+An Achievement Award is a historical record of the fact that a participant received an achievement. After issuance, an Award is not edited through an ordinary update operation.
+
+An Award has two states:
+
+- `active`;
+- `revoked`.
+
+Canonical correction rules:
+
+- only an Administrator may revoke an Award;
+- revocation requires an explicit reason;
+- revocation preserves the original Award record and its provenance;
+- the original Award cannot be physically deleted or rewritten as part of revocation;
+- revocation does not modify or delete the canonical facts from which the Award was created;
+- when a correction requires a new valid achievement, a new Award is created as a separate historical record with its own provenance;
+- the Achievement Engine does not automatically revoke an already issued Award solely because source facts later change, a normative version changes, or the Achievement Definition is deactivated;
+- automatic re-certification or automatic retrospective review of Awards is not part of the current decision and requires a separate business decision.
+
+The Award lifecycle is independent from the lifecycle of its Achievement Definition and from normative requirement-set version lifecycle.
