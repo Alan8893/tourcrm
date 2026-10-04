@@ -463,3 +463,53 @@ Canonical rules:
 The exact metric catalog and the precise source entity/field for every metric remain subject to the Achievement metric-catalog decision and implementation reconciliation with the current canonical domain model.
 
 This boundary prevents Achievement Engine from duplicating tourism-domain business logic or maintaining a second independent source of truth.
+
+
+## 22. Achievement Engine triggering and reconciliation
+
+Achievement Engine uses a combined event-driven and reconciliation model.
+
+### Event-driven evaluation
+
+When a canonical tourism fact that may affect achievements changes, the Achievement Engine may be triggered to evaluate the affected Achievement Definitions and applicable Rule Versions.
+
+Conceptually:
+
+```text
+Canonical tourism fact changed
+        ↓
+Achievement Engine trigger
+        ↓
+Identify affected Achievement Definitions
+        ↓
+Evaluate applicable Rule Versions
+        ↓
+Create Award when qualification is satisfied
+```
+
+The exact event list and dispatch mechanism are implementation concerns and must not introduce new business facts outside the canonical domain.
+
+### Periodic reconciliation
+
+A periodic reconciliation process is also required as a safety mechanism for missed events, processing failures or other operational inconsistencies.
+
+Reconciliation may re-evaluate canonical facts to identify Awards that should exist but were not created by the event-driven path.
+
+Reconciliation must not mean rewriting or silently recalculating historical Awards. Its purpose is to identify and create valid missing Awards according to the applicable current Rule Version and the repeatability semantics of the Achievement Definition.
+
+### Idempotency and historical safety
+
+The Achievement Engine must be idempotent:
+
+- processing the same canonical change more than once must not create duplicate Awards for the same qualifying basis;
+- for a `non_repeatable` Achievement Definition, repeated evaluation must not create more than one Award across the Award history;
+- an already issued Award is not deleted, rewritten or automatically revoked by Engine evaluation;
+- changes to source facts do not automatically revoke an existing Award;
+- changes to normative versions or Definition lifecycle do not automatically revoke an existing Award;
+- automatic retrospective re-certification is not part of this model.
+
+For `repeatable` Achievement Definitions, the Engine must distinguish a new qualifying occurrence from repeated processing of the same occurrence. The exact semantics for identifying a qualifying occurrence are deferred to the Requirement / Rule semantics and Engine implementation decisions.
+
+The Engine evaluates only active Achievement Definitions and applicable Rule Versions for new automatic Awards. A Definition being inactive does not alter historical Awards.
+
+This triggering/reconciliation model does not define the exact event schema, scheduling mechanism, locking strategy, or persistence constraints. Those are implementation details to be resolved without changing the canonical business semantics.
