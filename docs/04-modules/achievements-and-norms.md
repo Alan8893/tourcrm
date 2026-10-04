@@ -338,3 +338,22 @@ Canonical correction rules:
 - automatic re-certification or automatic retrospective review of Awards is not part of the current decision and requires a separate business decision.
 
 The Award lifecycle is independent from the lifecycle of its Achievement Definition and from normative requirement-set version lifecycle.
+
+
+## 18. Achievement Award repeatability
+
+Achievement Definition explicitly declares its repeatability semantics:
+
+- `non_repeatable`;
+- `repeatable`.
+
+Canonical rules:
+
+- for a `non_repeatable` Achievement Definition, a Participant may have at most one Award for that Definition across the Award history;
+- for a `repeatable` Achievement Definition, a Participant may have multiple Awards for the same Definition;
+- repeatability is a property of the Achievement Definition and is independent from the Definition lifecycle (`active`/`inactive`) and the Award lifecycle (`active`/`revoked`);
+- repeatability does not by itself define what constitutes a new qualifying occurrence for a subsequent Award;
+- the semantics of qualifying conditions, identification of a new qualifying occurrence, and deterministic prevention of issuing multiple Awards for the same qualifying basis are deferred to the Requirement / Rule semantics and Achievement Engine decisions;
+- no implementation may infer repeatability from the name, source, award method, or normative requirement values of an Achievement Definition.
+
+The repeatability decision does not authorize retrospective re-evaluation or automatic re-awarding of historical Awards.
