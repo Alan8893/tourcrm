@@ -56,10 +56,12 @@ from datetime import timezone as dt_timezone
 from typing import Optional, Sequence
 
 import sqlalchemy as sa
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.event_recurrence import EventOccurrence
 from app.db.events import Event, EventGroupTarget, EventStaffAssignment
+from app.db.trips import TRIP_EVENT_FK
 from app.events.lifecycle import (
     validate_coordinates,
     validate_event_type,
@@ -130,6 +132,14 @@ _EVENT_TO_OCCURRENCE_FIELD = {
 class EventTransitionNotAllowedError(Exception):
     """Raised when a caller attempts to reach `archived` through
     transition_event_status() instead of the dedicated archive_event().
+    """
+
+
+class EventTypeLockedByTripError(Exception):
+    """Issue #245 / BR-TRIP-001: the Event has a Trip, so its
+    `event_type` cannot leave `trip` — enforced by the database
+    (`fk_trips_event_id_event_type`, ON UPDATE RESTRICT) and translated
+    here into a typed error. Persists nothing.
     """
 
 
@@ -467,6 +477,19 @@ def _apply_event_field_updates(
         setattr(event, field_name, value)
     event.updated_by = updated_by
 
+    if "event_type" in fields:
+        event_id = event.id
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            session.rollback()
+            constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+            if constraint_name == TRIP_EVENT_FK:
+                raise EventTypeLockedByTripError(
+                    f"Event {event_id} has a Trip; its event_type cannot change"
+                ) from exc
+            raise
+
     occurrence = _get_linked_occurrence(session, event_id=event.id)
     for field_name, value in fields.items():
         occurrence_field = _EVENT_TO_OCCURRENCE_FIELD.get(field_name)
@@ -604,6 +627,7 @@ __all__ = [
     "UPDATABLE_EVENT_FIELDS",
     "DEFAULT_STAFF_ROLE_IN_EVENT",
     "EventTransitionNotAllowedError",
+    "EventTypeLockedByTripError",
     "create_event",
     "create_event_with_targeting",
     "update_event",

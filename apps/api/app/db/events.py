@@ -159,6 +159,12 @@ class Event(Base):
         # database-schema.md §23: "events by (club_id, start_at)" is a
         # required index category.
         sa.Index("ix_events_club_id_start_at", "club_id", "start_at"),
+        # Issue #245: target of the composite FK `trips(event_id,
+        # event_type)` (app.db.trips) — the database itself keeps a Trip
+        # attached only to an Event whose `event_type` is `trip`
+        # (BR-TRIP-001). `id` alone is already unique; this adds no new
+        # rule for Events without a Trip.
+        sa.UniqueConstraint("id", "event_type", name="uq_events_id_event_type"),
     )
 
     @validates("timezone")
@@ -425,6 +431,11 @@ class EventParticipation(Base):
         # column) — a canonical access pattern per ADR-0023 §4's `self`
         # scope resolution (the requester's own participations).
         sa.Index("ix_event_participations_person_id", "person_id"),
+        # Issue #245: target of the composite FK `trip_participants
+        # (event_id, event_participation_id)` (app.db.trips), so a
+        # TripParticipant can only extend a participation of its own
+        # Trip's Event. `id` alone is already unique.
+        sa.UniqueConstraint("event_id", "id", name="uq_event_participations_event_id_id"),
     )
 
 

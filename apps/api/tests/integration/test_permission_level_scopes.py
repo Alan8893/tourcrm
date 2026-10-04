@@ -281,6 +281,12 @@ def test_canonical_grants_carry_exactly_the_decided_scopes() -> None:
     expected[("instructor", "user.directory.read")] = {"all"}
     # TH-0172 / ADR-0043, migration 127da2741f20.
     expected[("guardian", "event.read")] = {"children"}
+    # Issue #245, migration 3c1e9a7d5b20 (admin's trip grants are covered
+    # by the `all` set above).
+    expected[("instructor", "trip.read")] = {"own_groups", "own_events"}
+    expected[("instructor", "trip.manage")] = {"own_groups", "own_events"}
+    expected[("member", "trip.read")] = {"self"}
+    expected[("guardian", "trip.read")] = {"children"}
     assert by_grant == expected
 
 
