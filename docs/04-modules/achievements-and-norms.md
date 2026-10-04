@@ -357,3 +357,33 @@ Canonical rules:
 - no implementation may infer repeatability from the name, source, award method, or normative requirement values of an Achievement Definition.
 
 The repeatability decision does not authorize retrospective re-evaluation or automatic re-awarding of historical Awards.
+
+
+## 19. Achievement Requirement / Rule versioning
+
+Achievement Requirement / Rule has its own immutable versioning independent from the lifecycle of the Achievement Definition.
+
+Canonical rules:
+
+- an Achievement Definition remains the stable identity of an achievement;
+- each change to the executable Requirement / Rule creates a new immutable Rule Version rather than mutating the previously used version;
+- a Rule Version belongs to exactly one Achievement Definition;
+- multiple Rule Versions may exist for the same Achievement Definition;
+- only the applicable current Rule Version participates in creation of new Awards;
+- a Rule Version that has already been used to calculate or verify an Award is immutable;
+- changing a Rule does not require creating a new Achievement Definition when the achievement identity remains the same;
+- Rule Version is independent from Definition lifecycle (`active`/`inactive`) and Award lifecycle (`active`/`revoked`);
+- Award provenance records the exact Rule Version used for that Award.
+
+For achievements with `source = fstr`:
+
+- the Rule Version additionally references the specific Normative Requirement Set Version on which the rule is based;
+- a new normative requirement-set version results in new Rule Version(s) for the affected Achievement Definitions;
+- the old Rule Version remains immutable and continues to identify the historical basis of Awards created from it.
+
+For achievements with `source = club`:
+
+- Rule Version may exist without any Normative Requirement Set reference;
+- changes to a club achievement's conditions create a new Rule Version while preserving the same Achievement Definition identity.
+
+The versioning model does not authorize retrospective re-evaluation or automatic re-awarding of historical Awards. Determination of which Rule Version is applicable to a given qualification event and how qualifying conditions produce a new Award remain part of the subsequent Requirement / Rule semantics and Achievement Engine decisions.
