@@ -387,3 +387,41 @@ For achievements with `source = club`:
 - changes to a club achievement's conditions create a new Rule Version while preserving the same Achievement Definition identity.
 
 The versioning model does not authorize retrospective re-evaluation or automatic re-awarding of historical Awards. Determination of which Rule Version is applicable to a given qualification event and how qualifying conditions produce a new Award remain part of the subsequent Requirement / Rule semantics and Achievement Engine decisions.
+
+
+## 20. Requirement / Rule condition semantics
+
+A Requirement / Rule may contain nested condition groups using the boolean operators:
+
+- `AND` — every child condition/group must be satisfied;
+- `OR` — at least one child condition/group must be satisfied.
+
+Condition groups may be nested to express alternative or combined qualification paths. The logical structure is part of the Rule Version and must not be hidden in application code.
+
+The basic case remains an `AND` group containing individual metric conditions. For example, a rule may require all of the following simultaneously:
+
+- `one_day_hikes >= 2`;
+- `tourism_types >= 1`;
+- `tourism_regions >= 1`.
+
+A more complex rule may express alternatives, for example:
+
+```text
+OR
+├── AND
+│   ├── degree_hikes[3] >= 1
+│   └── tourism_regions >= 1
+└── AND
+    ├── category_hikes[1] >= 2
+    └── tourism_types >= 2
+```
+
+Canonical data semantics:
+
+- a condition may be evaluated only against canonical TourCRM facts and supported metrics;
+- absence of a required canonical fact does not by itself satisfy the condition;
+- the Rule must not invent or infer unsupported facts merely to make a condition evaluable;
+- the same logical semantics apply to club and normative/FSTR rules;
+- exact metric names, operators, value types and evaluation rules remain subject to the canonical metric catalog and Achievement Engine decisions.
+
+The condition model does not by itself define when a Rule is evaluated, which Rule Version is applicable to a qualification event, or what constitutes a new qualifying occurrence. Those decisions remain separate Achievement Engine decisions.
