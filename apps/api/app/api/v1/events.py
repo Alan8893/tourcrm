@@ -84,6 +84,7 @@ from app.api.v1.events_schemas import (
     ConflictOut,
     EventCreateRequest,
     EventOut,
+    EventParticipantOut,
     EventParticipationOut,
     EventStatusTransitionRequest,
     EventUpdateRequest,
@@ -125,6 +126,7 @@ from app.events.lifecycle import (
     validate_event_type,
     validate_time_range,
 )
+from app.events.participants import list_event_participants
 from app.events.queries import (
     DEFAULT_SORT,
     InvalidSortError,
@@ -205,6 +207,20 @@ def _get_authorized_event_or_404(
     permission_code: str,
     lock: bool = False,
 ) -> Event:
+    event, _context = _get_authorized_event_with_context_or_404(
+        db, event_id=event_id, user_id=user_id, permission_code=permission_code, lock=lock
+    )
+    return event
+
+
+def _get_authorized_event_with_context_or_404(
+    db: Session,
+    *,
+    event_id: uuid.UUID,
+    user_id: uuid.UUID,
+    permission_code: str,
+    lock: bool = False,
+) -> tuple[Event, ResourceContext]:
     stmt = select(Event).where(Event.id == event_id)
     if lock:
         stmt = stmt.with_for_update()
@@ -218,7 +234,7 @@ def _get_authorized_event_or_404(
         # Deliberately the same detail/status as "does not exist" above —
         # see module docstring.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
-    return event
+    return event, context
 
 
 def _raise_for_domain_error(exc: EventDomainError) -> NoReturn:
@@ -714,6 +730,50 @@ def withdraw_from_event(
         "events.participation.cancelled event_id=%s user_id=%s",
         event_id,
         principal.user_id,
+    )
+
+
+# --- Event participants (events-api.md §18) --------------------------------
+#
+# Read-only list of the Event's currently `registered` participants — the
+# same set the competition document package uses. `event.read` object
+# authorization (existence-hiding 404, as every single-Event endpoint) plus
+# the per-scope participant-row visibility documented in
+# app.events.participants. Ordinary Events only: a recurring occurrence id
+# is not an Event id and resolves to 404 here.
+
+
+@router.get("/{event_id}/participants", response_model=CollectionResponse[EventParticipantOut])
+def list_event_participants_endpoint(
+    event_id: uuid.UUID,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+) -> CollectionResponse[EventParticipantOut]:
+    event, context = _get_authorized_event_with_context_or_404(
+        db, event_id=event_id, user_id=principal.user_id, permission_code="event.read"
+    )
+    participants, total = list_event_participants(
+        db,
+        event=event,
+        resource_context=context,
+        user_id=principal.user_id,
+        page=page,
+        page_size=page_size,
+    )
+    pages = (total + page_size - 1) // page_size if total else 0
+    return CollectionResponse(
+        items=[
+            EventParticipantOut(
+                person_id=p.person_id,
+                first_name=p.first_name,
+                last_name=p.last_name,
+                middle_name=p.middle_name,
+            )
+            for p in participants
+        ],
+        pagination=Pagination(page=page, page_size=page_size, total=total, pages=pages),
     )
 
 
