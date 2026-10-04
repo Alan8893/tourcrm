@@ -298,3 +298,21 @@ This document establishes the architecture and business rules so that implementa
 - No automatic application of achievements to non-participant roles.
 
 The existing backend `Club` entity remains a technical implementation artifact because removing it would currently require a large refactor. It must not be interpreted as a product decision to support multiple clubs.
+
+## 16. Achievement Definition lifecycle
+
+Achievement Definition has a two-state lifecycle:
+
+- `active`;
+- `inactive`.
+
+Canonical rules:
+
+- Administrator may activate and deactivate an Achievement Definition;
+- `active` means the Definition may participate in creation of new Awards according to its `award_method`;
+- `inactive` means no new Awards are created from that Definition;
+- deactivation does not revoke, modify or delete already issued Awards;
+- an inactive Definition may be activated again;
+- physical deletion of an Achievement Definition is not part of the current Achievement Domain.
+
+Definition lifecycle is independent from the lifecycle/versioning of normative requirement sets and from the historical state of individual Awards.
