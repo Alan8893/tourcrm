@@ -26,12 +26,13 @@ import logging
 import uuid
 from typing import NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentPrincipal, require_authenticated_principal, require_csrf_token
 from app.api.errors import APIError
+from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.trips_schemas import (
     TripCreateRequest,
@@ -153,6 +154,7 @@ def list_trips(
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=TripOut)
 def create_trip(
     payload: TripCreateRequest,
+    request: Request,
     principal: CurrentPrincipal = Depends(require_authenticated_principal),
     db: Session = Depends(get_db),
     _csrf: None = Depends(require_csrf_token),
@@ -165,7 +167,12 @@ def create_trip(
         lock=True,
     )
     try:
-        trip = trips_service.create_trip(db, event=event)
+        trip = trips_service.create_trip(
+            db,
+            event=event,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
+        )
     except trips_service.TripError as exc:
         _raise_for_trip_error(exc)
     logger.info("trips.create.success event_id=%s user_id=%s", event.id, principal.user_id)
@@ -215,6 +222,7 @@ def record_trip_participant(
     event_id: uuid.UUID,
     person_id: uuid.UUID,
     payload: TripParticipantRecordRequest,
+    request: Request,
     principal: CurrentPrincipal = Depends(require_authenticated_principal),
     db: Session = Depends(get_db),
     _csrf: None = Depends(require_csrf_token),
@@ -232,6 +240,8 @@ def record_trip_participant(
             event=event,
             person_id=person_id,
             actual_participation=payload.actual_participation,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
         )
     except trips_service.TripError as exc:
         _raise_for_trip_error(exc)

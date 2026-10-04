@@ -24,6 +24,10 @@ transition a participant's self-registration/withdrawal produces
 registered) — one action code with `details={"from": ..., "to": ...}`,
 mirroring `membership.status_changed`'s identical shape for a
 multi-transition lifecycle column, rather than one action per direction.
+
+#247 (Trip Audit Trail) is a further amendment: `trip.created`,
+`trip_participant.actual_participation_recorded` and
+`trip_participant.actual_participation_changed`.
 """
 
 CANONICAL_ACTOR_TYPES: frozenset[str] = frozenset({"user", "system"})
@@ -140,5 +144,17 @@ CANONICAL_AUDIT_ACTIONS: frozenset[str] = frozenset(
         "document.revoked",
         "document.downloaded",
         "document.exported",
+        # Trip Audit Trail (#247 amendment to ADR-0024 §4): the tourism
+        # facts introduced by #245. `trip.created` — the Trip extension
+        # of an Event was created; `trip_participant.actual_participation_
+        # recorded` — the first TripParticipant fact for an
+        # EventParticipation; `trip_participant.actual_participation_
+        # changed` — the stored value changed (before/after in
+        # `details.changes.actual_participation`). Idempotent same-value
+        # writes record nothing; registration changes stay
+        # `event_participation.status_changed`.
+        "trip.created",
+        "trip_participant.actual_participation_recorded",
+        "trip_participant.actual_participation_changed",
     }
 )
