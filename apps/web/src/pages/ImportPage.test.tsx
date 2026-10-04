@@ -85,9 +85,15 @@ const ROW_WARNINGS: ImportJobIssue[] = [
 
 /** A stateful fake of the six import endpoints: every transition only
  * happens when its own POST arrives. */
+type BackendError = { status: number; code: string; message: string };
+
 function importBackend(
   options: {
     previewFails?: boolean;
+    approveFails?: BackendError;
+    applyFails?: BackendError;
+    /** Hold a request in flight until the returned promise settles. */
+    gates?: { upload?: () => Promise<void>; preview?: () => Promise<void>; apply?: () => Promise<void> };
   } = {},
 ) {
   let current: ImportJob | null = null;
@@ -106,6 +112,7 @@ function importBackend(
       method: "POST",
       match: "/memberships/imports/imp-1/preview",
       status: options.previewFails ? 422 : 200,
+      gate: options.gates?.preview,
       body: () => {
         if (options.previewFails) {
           current = job("failed", { error_count: 1 });
@@ -123,7 +130,11 @@ function importBackend(
     {
       method: "POST",
       match: "/memberships/imports/imp-1/approve",
+      status: options.approveFails?.status ?? 200,
       body: () => {
+        if (options.approveFails) {
+          return { error: { code: options.approveFails.code, message: options.approveFails.message } };
+        }
         current = job("approved", PREVIEW_STATS);
         return current;
       },
@@ -131,7 +142,12 @@ function importBackend(
     {
       method: "POST",
       match: "/memberships/imports/imp-1/apply",
+      status: options.applyFails?.status ?? 200,
+      gate: options.gates?.apply,
       body: () => {
+        if (options.applyFails) {
+          return { error: { code: options.applyFails.code, message: options.applyFails.message } };
+        }
         current = job("completed", {
           ...PREVIEW_STATS,
           created_records: 2,
@@ -162,6 +178,7 @@ function importBackend(
       method: "POST",
       match: "/memberships/imports",
       status: 201,
+      gate: options.gates?.upload,
       body: () => {
         current = job("uploaded");
         return {
@@ -194,6 +211,31 @@ async function uploadFile(user: ReturnType<typeof userEvent.setup>, name = "peop
   const file = new File(["first_name,last_name\nАнна,Иванова\n"], name, { type: "text/csv" });
   await user.upload(await screen.findByLabelText("Файл для импорта"), file);
   await user.click(screen.getByRole("button", { name: "Загрузить файл" }));
+}
+
+/** A request gate a test opens explicitly. */
+function deferred() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { wait: () => promise, release };
+}
+
+/** upload → preview → explicit approval, ending on «Импорт одобрен». */
+async function reachApproved(user: ReturnType<typeof userEvent.setup>) {
+  await uploadFile(user);
+  await user.click(await screen.findByRole("button", { name: "Проверить файл" }));
+  await user.click(await screen.findByRole("button", { name: "Перейти к подтверждению" }));
+  await user.click(screen.getByRole("checkbox", { name: /Я проверил\(а\) предпросмотр/ }));
+  await user.click(screen.getByRole("button", { name: "Одобрить импорт" }));
+  expect(await screen.findByRole("heading", { name: "Импорт одобрен" })).toBeInTheDocument();
+}
+
+async function confirmApply(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Применить импорт" }));
+  const dialog = await screen.findByRole("dialog", { name: "Применить импорт?" });
+  await user.click(within(dialog).getByRole("button", { name: "Применить" }));
 }
 
 afterEach(() => {
@@ -435,5 +477,137 @@ describe("ImportPage — downloadable import templates (Issue #228)", () => {
     // by apps/api tests/unit/test_import_templates.py.
     expect(Array.from(bytes.subarray(0, 4))).toEqual([0x50, 0x4b, 0x03, 0x04]);
     expect(bytes.includes(Buffer.from("xl/workbook.xml"))).toBe(true);
+  });
+});
+
+describe("ImportPage — in-flight, processing and failure states", () => {
+  it("locks the upload controls while the file is being uploaded", async () => {
+    const gate = deferred();
+    importBackend({ gates: { upload: gate.wait } });
+    renderImport();
+    const user = userEvent.setup();
+
+    await uploadFile(user);
+
+    expect(await screen.findByRole("button", { name: "Загружаем…" })).toBeDisabled();
+    expect(screen.getByLabelText("Файл для импорта")).toBeDisabled();
+
+    gate.release();
+    expect(await screen.findByRole("heading", { name: "Файл загружен" })).toBeInTheDocument();
+  });
+
+  it("shows the parsing/validation state while the backend checks the file and offers no approval meanwhile", async () => {
+    const gate = deferred();
+    importBackend({ gates: { preview: gate.wait } });
+    renderImport();
+    const user = userEvent.setup();
+
+    await uploadFile(user);
+    await user.click(await screen.findByRole("button", { name: "Проверить файл" }));
+
+    expect(await screen.findByText("Проверяем файл…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Перейти к подтверждению" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Одобрить импорт" })).not.toBeInTheDocument();
+
+    gate.release();
+    expect(await screen.findByRole("heading", { name: "Предпросмотр" })).toBeInTheDocument();
+  });
+
+  it("keeps the job on the approval step and shows the backend error when approval fails", async () => {
+    const fetchMock = importBackend({
+      approveFails: {
+        status: 409,
+        code: "invalid_import_job_status_transition",
+        message: "Invalid import job status transition",
+      },
+    });
+    renderImport();
+    const user = userEvent.setup();
+
+    await uploadFile(user);
+    await user.click(await screen.findByRole("button", { name: "Проверить файл" }));
+    await user.click(await screen.findByRole("button", { name: "Перейти к подтверждению" }));
+    await user.click(screen.getByRole("checkbox", { name: /Я проверил\(а\) предпросмотр/ }));
+    await user.click(screen.getByRole("button", { name: "Одобрить импорт" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Не удалось одобрить импорт: Статус импорта уже изменился.",
+    );
+    expect(screen.queryByRole("heading", { name: "Импорт одобрен" })).not.toBeInTheDocument();
+    expect(postsTo(fetchMock, "/apply")).toHaveLength(0);
+  });
+
+  it("shows the applying state while apply runs and then the report", async () => {
+    const gate = deferred();
+    importBackend({ gates: { apply: gate.wait } });
+    renderImport();
+    const user = userEvent.setup();
+
+    await reachApproved(user);
+    await confirmApply(user);
+
+    expect(await screen.findByText("Применяем импорт…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Применить импорт" })).not.toBeInTheDocument();
+
+    gate.release();
+    expect(await screen.findByRole("heading", { name: "Результат" })).toBeInTheDocument();
+  });
+
+  it("shows an apply failure inline, reports no success and keeps the approved job", async () => {
+    const fetchMock = importBackend({
+      applyFails: { status: 500, code: "internal_error", message: "Сервер недоступен" },
+    });
+    renderImport();
+    const user = userEvent.setup();
+
+    await reachApproved(user);
+    await confirmApply(user);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Не удалось применить импорт: Сервер недоступен",
+    );
+    expect(screen.getByRole("heading", { name: "Импорт одобрен" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Результат" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Импорт завершён")).not.toBeInTheDocument();
+    // The job is re-read so the page shows the backend's own state.
+    await waitFor(() =>
+      expect(
+        requests(fetchMock).filter(
+          ([method, url]) => method === "GET" && url.endsWith("/memberships/imports/imp-1"),
+        ).length,
+      ).toBeGreaterThan(1),
+    );
+  });
+
+  it("names the server-side stage of a job still being processed, refreshes it on demand and moves on", async () => {
+    let status: ImportJobStatus = "applying";
+    mockApi([
+      { method: "GET", match: "severity=error", body: collection([]) },
+      { method: "GET", match: "severity=warning", body: collection([]) },
+      {
+        method: "GET",
+        match: "/memberships/imports/imp-1",
+        body: () =>
+          job(
+            status,
+            status === "completed"
+              ? { ...PREVIEW_STATS, created_records: 3, updated_records: 0, skipped_records: 2 }
+              : PREVIEW_STATS,
+          ),
+      },
+    ]);
+    renderImport("/people/import?job=imp-1");
+    const user = userEvent.setup();
+
+    expect(await screen.findByRole("heading", { name: "Импорт обрабатывается" })).toBeInTheDocument();
+    expect(screen.getByText(/Этап: Применение импорта/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Применить импорт" })).not.toBeInTheDocument();
+
+    status = "completed";
+    await user.click(screen.getByRole("button", { name: "Обновить статус" }));
+
+    expect(await screen.findByRole("heading", { name: "Результат" })).toBeInTheDocument();
+    const report = screen.getByLabelText("Итоги импорта");
+    expect(within(report).getByText("Создано").nextSibling).toHaveTextContent("3");
   });
 });

@@ -553,3 +553,46 @@ describe("ExportPage — participation status metadata (backend-authoritative)",
     expect(exportPageSource).not.toMatch(/["'`](registered|cancelled)["'`]/);
   });
 });
+
+describe("ExportPage — in-flight and forbidden export states", () => {
+  it("locks the wizard while the backend builds the export and reports success afterwards", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    exportBackend([], { gate: () => gate });
+    renderExport();
+    const user = userEvent.setup();
+
+    await configureClubExport(user, "XLSX");
+    await user.click(screen.getByRole("button", { name: "Экспортировать" }));
+
+    expect(await screen.findByRole("button", { name: "Формируем…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Назад" })).toBeDisabled();
+    expect(screen.getByText("Формируем выгрузку…")).toBeInTheDocument();
+    expect(saveBlob).not.toHaveBeenCalled();
+
+    release();
+    expect(await screen.findByText("Файл сформирован и сохранён.")).toBeInTheDocument();
+    expect(saveBlob).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Экспортировать" })).toBeEnabled();
+  });
+
+  it("shows the backend 403 on the export request without saving or printing anything", async () => {
+    exportBackend([], {
+      status: 403,
+      body: { error: { code: "forbidden", message: "Forbidden" } },
+    });
+    renderExport();
+    const user = userEvent.setup();
+
+    await configureClubExport(user, "Печать");
+    await user.click(screen.getByRole("button", { name: "Открыть печать" }));
+
+    expect(await screen.findByText(/Не удалось сформировать экспорт/)).toHaveTextContent(
+      "У вас нет прав на этот экспорт.",
+    );
+    expect(saveBlob).not.toHaveBeenCalled();
+    expect(printHtmlBlob).not.toHaveBeenCalled();
+  });
+});
