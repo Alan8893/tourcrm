@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from "react";
-import { useLocation, useParams } from "react-router-dom";
+import { useLocation, useParams, useSearchParams } from "react-router-dom";
 
 import { PageHeader } from "../components/ui/PageHeader";
 import { Card } from "../components/ui/Card";
@@ -63,6 +63,8 @@ import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import inputStyles from "../components/ui/Input.module.css";
 import styles from "./PersonDetailPage.module.css";
 
+const PERSON_TAB_IDS = ["overview", "groups", "guardians", "roles", "documents", "account"];
+
 export function PersonDetailPage() {
   const { personId } = useParams<{ personId: string }>();
   const location = useLocation();
@@ -72,7 +74,14 @@ export function PersonDetailPage() {
   const wizardIssuedCredential =
     (location.state as { issuedCredential?: string } | null)?.issuedCredential ?? null;
   const personQuery = usePerson(personId);
-  const [activeTab, setActiveTab] = useState("overview");
+  // `?tab=<id>` selects the initially open tab (e.g. Event → «Документы
+  // для соревнования» links to `?tab=documents`); a missing or unknown
+  // value keeps the default «Обзор».
+  const [searchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState(() => {
+    const requested = searchParams.get("tab");
+    return requested && PERSON_TAB_IDS.includes(requested) ? requested : "overview";
+  });
   const [editOpen, setEditOpen] = useState(false);
   const meQuery = useCurrentUser();
   // Person create/update, ClubMembership lifecycle and GuardianRelationship

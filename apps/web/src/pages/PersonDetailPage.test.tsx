@@ -1624,3 +1624,38 @@ describe("PersonDetailPage — documents tab (Issue #175)", () => {
     anchorClick.mockRestore();
   });
 });
+
+describe("PersonDetailPage — initial tab from the URL (Issue #175)", () => {
+  function renderAt(route: string) {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
+      { match: "/persons/p1/documents", response: documentsCollection([documentFixture()]) },
+      { match: "/persons/p1", response: PERSON },
+    ]);
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:personId" element={<PersonDetailPage />} />
+      </Routes>,
+      { route },
+    );
+  }
+
+  it("opens the existing «Документы» tab for ?tab=documents", async () => {
+    renderAt("/people/p1?tab=documents");
+
+    expect(await screen.findByRole("tab", { name: "Документы" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByText("Медицинская справка")).toBeInTheDocument();
+  });
+
+  it("keeps «Обзор» when there is no tab parameter", async () => {
+    renderAt("/people/p1");
+
+    expect(await screen.findByRole("tab", { name: "Обзор" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("keeps «Обзор» for an unknown tab value", async () => {
+    renderAt("/people/p1?tab=nonsense");
+
+    expect(await screen.findByRole("tab", { name: "Обзор" })).toHaveAttribute("aria-selected", "true");
+  });
+});

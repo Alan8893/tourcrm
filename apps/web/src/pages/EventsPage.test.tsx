@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Route, Routes } from "react-router-dom";
 
 import { EventsPage } from "./EventsPage";
 import styles from "./EventsPage.module.css";
@@ -1688,25 +1689,96 @@ async function openDocumentPackageDialog(
   return screen.findByRole("dialog", { name: "Документы для соревнования" });
 }
 
-describe("EventsPage — «Документы для соревнования» (Issue #175)", () => {
-  it("offers the workflow to any signed-in viewer regardless of role — the backend, not a role check, is the authorization boundary", async () => {
-    const range = fixedRange();
-    stubFetch([
-      { match: "/auth/me", response: meResponse({ roleCode: "member" }) },
-      { match: "/groups?status=active", response: groupsResponse() },
-      {
-        match: encodeURIComponent(range.from),
-        response: calendarResponse([calendarItem({ id: "ev-1", title: "Ориентирование", start_at: "2026-03-15T17:00:00+03:00", end_at: "2026-03-15T19:00:00+03:00" })]),
-      },
-      { match: "/events/ev-1/document-requirements", response: requirementsCollection([]) },
-      { match: "/events/ev-1", response: eventDetailResponse() },
-    ]);
+type DocRoute = (url: string, method: string, init?: RequestInit) => Response | undefined;
 
+function matrixParticipant(overrides: Record<string, unknown> = {}) {
+  return {
+    person_id: "p-1",
+    first_name: "Иван",
+    last_name: "Алексеев",
+    middle_name: null,
+    requirements: [{ document_type: "medical_certificate", required: true, result: "valid" }],
+    ...overrides,
+  };
+}
+
+function matrixResponse(participants: Array<Record<string, unknown>>) {
+  return { event_id: "ev-1", participants };
+}
+
+/** One Event on FIXED_DATE plus the «Документы для соревнования»
+ * endpoints. `route` may answer any request first (method-aware); the
+ * defaults below cover the rest. Matrix before the requirement list:
+ * both URLs share the `/document-requirements` prefix. */
+function stubDocumentsWorkflow({
+  role = "admin",
+  matrix = matrixResponse([matrixParticipant()]),
+  requirements = [requirementFixture()],
+  route,
+}: {
+  role?: string;
+  matrix?: unknown;
+  requirements?: Array<Record<string, unknown>>;
+  route?: DocRoute;
+} = {}) {
+  const range = fixedRange();
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const method = init?.method ?? "GET";
+    const custom = route?.(url, method, init);
+    if (custom) return custom;
+    if (url.includes("/auth/me")) return jsonResponse(meResponse({ roleCode: role }));
+    if (url.includes("/groups?status=active")) return jsonResponse(groupsResponse());
+    if (url.includes(encodeURIComponent(range.from))) {
+      return jsonResponse(
+        calendarResponse([
+          calendarItem({ id: "ev-1", title: "Ориентирование", start_at: "2026-03-15T17:00:00+03:00", end_at: "2026-03-15T19:00:00+03:00" }),
+        ]),
+      );
+    }
+    if (url.includes("/events/ev-1/document-requirements/matrix") && method === "GET") return jsonResponse(matrix);
+    if (url.includes("/events/ev-1/document-requirements") && method === "GET") {
+      return jsonResponse(requirementsCollection(requirements));
+    }
+    if (url.endsWith("/events/ev-1")) return jsonResponse(eventDetailResponse());
+    throw new Error(`Unexpected fetch: ${url} ${method}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+function callsTo(fetchMock: ReturnType<typeof vi.fn>, fragment: string, method = "GET") {
+  return fetchMock.mock.calls.filter(
+    ([input, init]) => String(input).includes(fragment) && ((init as RequestInit | undefined)?.method ?? "GET") === method,
+  );
+}
+
+function readinessSection() {
+  return screen.findByRole("region", { name: "Готовность участников" });
+}
+
+function errorResponse(status: number, code: string, message: string, details: unknown = {}) {
+  return jsonResponse({ error: { code, message, details, request_id: "r1" } }, status);
+}
+
+describe("EventsPage — «Документы для соревнования»: access (Issue #175)", () => {
+  it("offers the workflow to Administrator", async () => {
+    stubDocumentsWorkflow();
     renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
     const user = userEvent.setup();
-    const dialog = await openDocumentPackageDialog(user);
 
-    expect(dialog).toBeInTheDocument();
+    expect(await openDocumentPackageDialog(user)).toBeInTheDocument();
+  });
+
+  it.each([["instructor"], ["member"], ["guardian"]])("does not offer the workflow to %s", async (role) => {
+    stubDocumentsWorkflow({ role });
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByText("Ориентирование"));
+
+    expect(await screen.findByRole("dialog", { name: "Ориентирование" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Документы для соревнования" })).not.toBeInTheDocument();
   });
 
   it("does not offer the workflow for a single recurring occurrence (EventDocumentRequirement is Event-scoped, not per-occurrence)", async () => {
@@ -1751,173 +1823,383 @@ describe("EventsPage — «Документы для соревнования» 
 
     expect(screen.queryByRole("button", { name: "Документы для соревнования" })).not.toBeInTheDocument();
   });
+});
 
-  it("lists existing document requirements and lets an admin add one", async () => {
-    const range = fixedRange();
-    let requirements = [requirementFixture()];
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      const method = init?.method ?? "GET";
-      if (url.includes("/auth/me")) return jsonResponse(meResponse());
-      if (url.includes("/groups?status=active")) return jsonResponse(groupsResponse());
-      if (url.includes(encodeURIComponent(range.from))) {
-        return jsonResponse(
-          calendarResponse([
-            calendarItem({ id: "ev-1", title: "Ориентирование", start_at: "2026-03-15T17:00:00+03:00", end_at: "2026-03-15T19:00:00+03:00" }),
-          ]),
-        );
-      }
-      if (url.endsWith("/events/ev-1")) return jsonResponse(eventDetailResponse());
-      if (url.includes("/events/ev-1/document-requirements") && method === "POST") {
-        const body = JSON.parse(String(init!.body));
-        const created = requirementFixture({ id: "req2", document_type: body.document_type, required: body.required });
-        requirements = [...requirements, created];
-        return jsonResponse(created, 201);
-      }
-      if (url.includes("/events/ev-1/document-requirements") && method === "GET") {
-        return jsonResponse(requirementsCollection(requirements));
-      }
-      throw new Error(`Unexpected fetch: ${url} ${method}`);
+describe("EventsPage — «Документы для соревнования»: readiness matrix (events-api.md §31.4)", () => {
+  it("renders every participant x requirement result exactly as the backend returns it, from one matrix request", async () => {
+    const fetchMock = stubDocumentsWorkflow({
+      matrix: matrixResponse([
+        matrixParticipant({
+          person_id: "p-1",
+          last_name: "Алексеев",
+          first_name: "Иван",
+          requirements: [
+            { document_type: "insurance", required: false, result: "missing" },
+            { document_type: "medical_certificate", required: true, result: "valid" },
+          ],
+        }),
+        matrixParticipant({
+          person_id: "p-2",
+          last_name: "Борисова",
+          first_name: "Анна",
+          middle_name: "Петровна",
+          requirements: [
+            { document_type: "insurance", required: false, result: "valid" },
+            { document_type: "medical_certificate", required: true, result: "expired" },
+          ],
+        }),
+      ]),
     });
-    vi.stubGlobal("fetch", fetchMock);
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await openDocumentPackageDialog(user);
+    const section = await readinessSection();
 
+    const first = await within(section).findByRole("list", { name: "Документы: Алексеев Иван" });
+    const firstCells = within(first).getAllByRole("listitem");
+    expect(firstCells[0]).toHaveTextContent("insurance");
+    expect(firstCells[0]).toHaveTextContent("Опционально");
+    expect(firstCells[0]).toHaveTextContent("Отсутствует");
+    expect(firstCells[1]).toHaveTextContent("Медицинская справка");
+    expect(firstCells[1]).toHaveTextContent("Действителен");
+
+    const second = within(section).getByRole("list", { name: "Документы: Борисова Анна Петровна" });
+    const secondCells = within(second).getAllByRole("listitem");
+    expect(secondCells[0]).toHaveTextContent("Действителен");
+    expect(secondCells[1]).toHaveTextContent("Медицинская справка");
+    expect(secondCells[1]).toHaveTextContent("Истёк");
+
+    // Backend order is kept: Алексеев before Борисова.
+    const links = within(section).getAllByRole("link");
+    expect(links.map((link) => link.textContent)).toEqual(["Алексеев Иван", "Борисова Анна Петровна"]);
+
+    // One readiness source: no per-participant check, no Person/Document lookups.
+    expect(callsTo(fetchMock, "/events/ev-1/document-requirements/matrix")).toHaveLength(1);
+    expect(callsTo(fetchMock, "/document-requirements/p-")).toHaveLength(0);
+    expect(callsTo(fetchMock, "/persons")).toHaveLength(0);
+  });
+
+  it("shows a calm empty state when the Event has no registered participants", async () => {
+    stubDocumentsWorkflow({ matrix: matrixResponse([]) });
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await openDocumentPackageDialog(user);
+    const section = await readinessSection();
+
+    expect(await within(section).findByText("Нет зарегистрированных участников")).toBeInTheDocument();
+    expect(within(section).queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("shows «Требования к документам не заданы» instead of an empty matrix when the Event has no requirements", async () => {
+    stubDocumentsWorkflow({
+      requirements: [],
+      matrix: matrixResponse([matrixParticipant({ requirements: [] })]),
+    });
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await openDocumentPackageDialog(user);
+    const section = await readinessSection();
+
+    expect(await within(section).findByText("Требования к документам не заданы")).toBeInTheDocument();
+    expect(within(section).queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("shows the forbidden state for 403 without a retry", async () => {
+    stubDocumentsWorkflow({
+      route: (url) =>
+        url.includes("/document-requirements/matrix") ? errorResponse(403, "forbidden", "Нет прав") : undefined,
+    });
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await openDocumentPackageDialog(user);
+    const section = await readinessSection();
+
+    expect(await within(section).findByText("Нет доступа к документам участников")).toBeInTheDocument();
+    expect(within(section).queryByRole("button", { name: "Повторить" })).not.toBeInTheDocument();
+  });
+
+  it("shows the existence-hiding not-found state for 404", async () => {
+    stubDocumentsWorkflow({
+      route: (url) =>
+        url.includes("/document-requirements/matrix") ? errorResponse(404, "not_found", "Event not found") : undefined,
+    });
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await openDocumentPackageDialog(user);
+    const section = await readinessSection();
+
+    expect(await within(section).findByText("Мероприятие не найдено")).toBeInTheDocument();
+  });
+
+  it("offers a retry after an API failure and renders the matrix once it succeeds", async () => {
+    let attempts = 0;
+    stubDocumentsWorkflow({
+      route: (url) => {
+        if (!url.includes("/document-requirements/matrix")) return undefined;
+        attempts += 1;
+        return attempts === 1
+          ? errorResponse(500, "internal_error", "Server error")
+          : jsonResponse(matrixResponse([matrixParticipant()]));
+      },
+    });
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    await openDocumentPackageDialog(user);
+    const section = await readinessSection();
+
+    expect(await within(section).findByText("Не удалось загрузить готовность участников")).toBeInTheDocument();
+    await user.click(within(section).getByRole("button", { name: "Повторить" }));
+
+    expect(await within(section).findByRole("link", { name: "Алексеев Иван" })).toBeInTheDocument();
+    expect(attempts).toBe(2);
+  });
+});
+
+describe("EventsPage — «Документы для соревнования»: participant → Person → Документы", () => {
+  it("links a participant to the existing Person Documents tab and Back returns to the Event", async () => {
+    stubDocumentsWorkflow();
+    const { router } = renderWithHistory(
+      <Routes>
+        <Route path="/events" element={<EventsPage />} />
+        <Route path="/people/:personId" element={<p>Карточка человека</p>} />
+      </Routes>,
+      { initialEntries: [`/events?date=${FIXED_DATE}`] },
+    );
+    const user = userEvent.setup();
+    await openDocumentPackageDialog(user);
+    const section = await readinessSection();
+
+    const link = await within(section).findByRole("link", { name: "Алексеев Иван" });
+    expect(link).toHaveAttribute("href", "/people/p-1?tab=documents");
+
+    await user.click(link);
+
+    expect(await screen.findByText("Карточка человека")).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/people/p-1");
+    expect(router.state.location.search).toBe("?tab=documents");
+
+    await act(async () => {
+      await router.navigate(-1);
+    });
+
+    expect(router.state.location.search).toContain("event=ev-1");
+    expect(await screen.findByRole("dialog", { name: "Ориентирование" })).toBeInTheDocument();
+  });
+});
+
+describe("EventsPage — «Документы для соревнования»: requirements", () => {
+  it("lists existing requirements, creates one and refreshes the matrix", async () => {
+    let requirements = [requirementFixture()];
+    const fetchMock = stubDocumentsWorkflow({
+      route: (url, method, init) => {
+        if (url.includes("/events/ev-1/document-requirements") && method === "POST") {
+          const body = JSON.parse(String(init!.body));
+          const created = requirementFixture({ id: "req2", document_type: body.document_type, required: body.required });
+          requirements = [...requirements, created];
+          return jsonResponse(created, 201);
+        }
+        if (url.includes("/events/ev-1/document-requirements") && !url.includes("matrix") && method === "GET") {
+          return jsonResponse(requirementsCollection(requirements));
+        }
+        return undefined;
+      },
+    });
     renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
     const user = userEvent.setup();
     const dialog = await openDocumentPackageDialog(user);
+    await readinessSection();
 
-    expect(await within(dialog).findByText("Медицинская справка")).toBeInTheDocument();
+    expect(await within(dialog).findByRole("checkbox", { name: "Обязательно" })).toBeChecked();
+    const matrixCallsBefore = callsTo(fetchMock, "/document-requirements/matrix").length;
 
     await user.click(within(dialog).getByRole("button", { name: "Добавить требование" }));
     const addDialog = await screen.findByRole("dialog", { name: "Добавить требование" });
     await user.type(within(addDialog).getByLabelText("Тип документа"), "insurance_waiver");
+    await user.click(within(addDialog).getByRole("checkbox", { name: "Обязательно для допуска" }));
     await user.click(within(addDialog).getByRole("button", { name: "Добавить" }));
 
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: "Добавить требование" })).not.toBeInTheDocument();
     });
     expect(await within(dialog).findByText("insurance_waiver")).toBeInTheDocument();
+    const [, postInit] = callsTo(fetchMock, "/events/ev-1/document-requirements", "POST")[0];
+    expect(JSON.parse(String((postInit as RequestInit).body))).toEqual({
+      document_type: "insurance_waiver",
+      required: false,
+    });
+    await waitFor(() => {
+      expect(callsTo(fetchMock, "/document-requirements/matrix").length).toBeGreaterThan(matrixCallsBefore);
+    });
   });
 
-  it("deletes a requirement through the confirm dialog", async () => {
-    const range = fixedRange();
-    const fetchMock = stubFetch([
-      { match: "/auth/me", response: meResponse() },
-      { match: "/groups?status=active", response: groupsResponse() },
-      { match: encodeURIComponent(range.from), response: calendarResponse([calendarItem({ id: "ev-1", title: "Ориентирование", start_at: "2026-03-15T17:00:00+03:00", end_at: "2026-03-15T19:00:00+03:00" })]) },
-      { match: "/events/ev-1/document-requirements", response: requirementsCollection([requirementFixture()]) },
-      { match: "/events/ev-1", response: eventDetailResponse() },
-    ]);
-
+  it("does not block a duplicate type itself and shows the backend 409 duplicate_document_requirement", async () => {
+    const fetchMock = stubDocumentsWorkflow({
+      route: (url, method) =>
+        url.includes("/events/ev-1/document-requirements") && method === "POST"
+          ? errorResponse(409, "duplicate_document_requirement", "Requirement already exists")
+          : undefined,
+    });
     renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
     const user = userEvent.setup();
     const dialog = await openDocumentPackageDialog(user);
-    await within(dialog).findByText("Медицинская справка");
+    await readinessSection();
 
-    await user.click(within(dialog).getByRole("button", { name: "Удалить" }));
+    await user.click(within(dialog).getByRole("button", { name: "Добавить требование" }));
+    const addDialog = await screen.findByRole("dialog", { name: "Добавить требование" });
+    await user.type(within(addDialog).getByLabelText("Тип документа"), "medical_certificate");
+    const submit = within(addDialog).getByRole("button", { name: "Добавить" });
+    expect(submit).toBeEnabled();
+    await user.click(submit);
+
+    expect(await screen.findByText("Требование для этого типа документа уже существует")).toBeInTheDocument();
+    expect(callsTo(fetchMock, "/events/ev-1/document-requirements", "POST")).toHaveLength(1);
+    expect(screen.getByRole("dialog", { name: "Добавить требование" })).toBeInTheDocument();
+  });
+
+  it("toggles required through PATCH", async () => {
+    const fetchMock = stubDocumentsWorkflow({
+      route: (url, method, init) =>
+        url.includes("/events/ev-1/document-requirements/req1") && method === "PATCH"
+          ? jsonResponse(requirementFixture({ required: JSON.parse(String(init!.body)).required }))
+          : undefined,
+    });
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    const dialog = await openDocumentPackageDialog(user);
+    await readinessSection();
+
+    await user.click(await within(dialog).findByRole("checkbox", { name: "Обязательно" }));
+
+    await waitFor(() => {
+      expect(callsTo(fetchMock, "/events/ev-1/document-requirements/req1", "PATCH")).toHaveLength(1);
+    });
+    const [, patchInit] = callsTo(fetchMock, "/events/ev-1/document-requirements/req1", "PATCH")[0];
+    expect(JSON.parse(String((patchInit as RequestInit).body))).toEqual({ required: false });
+  });
+
+  it("deletes a requirement through the confirm dialog", async () => {
+    const fetchMock = stubDocumentsWorkflow({
+      route: (url, method) =>
+        url.includes("/events/ev-1/document-requirements/req1") && method === "DELETE"
+          ? new Response(null, { status: 204 })
+          : undefined,
+    });
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    const dialog = await openDocumentPackageDialog(user);
+    await readinessSection();
+
+    await user.click(await within(dialog).findByRole("button", { name: "Удалить" }));
     const confirmDialog = screen.getByRole("dialog", { name: "Удалить требование?" });
     await user.click(within(confirmDialog).getByRole("button", { name: "Удалить" }));
 
     await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(
-          ([input, init]) =>
-            String(input).includes("/events/ev-1/document-requirements/req1") &&
-            (init as RequestInit)?.method === "DELETE",
-        ),
-      ).toBe(true);
+      expect(callsTo(fetchMock, "/events/ev-1/document-requirements/req1", "DELETE")).toHaveLength(1);
     });
   });
+});
 
-  it("checks one participant's document readiness with backend-derived results only", async () => {
-    const range = fixedRange();
-    stubFetch([
-      { match: "/auth/me", response: meResponse() },
-      { match: "/groups?status=active", response: groupsResponse() },
-      { match: encodeURIComponent(range.from), response: calendarResponse([calendarItem({ id: "ev-1", title: "Ориентирование", start_at: "2026-03-15T17:00:00+03:00", end_at: "2026-03-15T19:00:00+03:00" })]) },
-      { match: "/events/ev-1/document-requirements/person-1", response: { event_id: "ev-1", person_id: "person-1", requirements: [{ document_type: "medical_certificate", required: true, result: "missing" }] } },
-      { match: "/events/ev-1/document-requirements", response: requirementsCollection([requirementFixture()]) },
-      { match: "/events/ev-1", response: eventDetailResponse() },
-      { match: "/persons?", response: { items: [{ id: "person-1", first_name: "Иван", last_name: "Петров", middle_name: null, birth_date: null, phone: null, email: null, address: null, photo_file_id: null, created_at: "2020-01-01T00:00:00Z", updated_at: "2020-01-01T00:00:00Z", role_codes: [] }], pagination: { page: 1, page_size: 20, total: 1, pages: 1 } } },
-    ]);
-
-    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
-    const user = userEvent.setup();
-    const dialog = await openDocumentPackageDialog(user);
-
-    await user.type(within(dialog).getByLabelText("Поиск участника"), "Петров");
-    await user.click(await within(dialog).findByRole("button", { name: "Петров Иван" }));
-
-    expect(await within(dialog).findByText("Отсутствует")).toBeInTheDocument();
-  });
-
-  it("handles the 409 incomplete-package response and requires explicit confirmation before retrying", async () => {
-    const range = fixedRange();
-    let confirmedIncomplete = false;
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      const method = init?.method ?? "GET";
-      if (url.includes("/auth/me")) return jsonResponse(meResponse());
-      if (url.includes("/groups?status=active")) return jsonResponse(groupsResponse());
-      if (url.includes(encodeURIComponent(range.from))) {
-        return jsonResponse(
-          calendarResponse([
-            calendarItem({ id: "ev-1", title: "Ориентирование", start_at: "2026-03-15T17:00:00+03:00", end_at: "2026-03-15T19:00:00+03:00" }),
-          ]),
-        );
-      }
-      if (url.endsWith("/events/ev-1")) return jsonResponse(eventDetailResponse());
-      if (url.includes("/events/ev-1/document-requirements")) return jsonResponse(requirementsCollection([requirementFixture()]));
-      if (url.endsWith("/events/ev-1/document-package") && method === "POST") {
-        const body = JSON.parse(String(init!.body));
-        if (!body.confirm_incomplete) {
-          return jsonResponse(
-            {
-              error: {
-                code: "document_package_incomplete",
-                message: "The document package is incomplete",
-                details: {
-                  incomplete: [
-                    { participant_display_name: "Петров Иван", document_type: "medical_certificate", result: "missing", required: true },
-                  ],
-                },
-                request_id: "r1",
-              },
-            },
-            409,
-          );
-        }
-        confirmedIncomplete = true;
-        return new Response(new Blob(["zip content"]), {
-          status: 200,
-          headers: {
-            "Content-Type": "application/zip",
-            "Content-Disposition": 'attachment; filename="competition-documents-event.zip"',
-          },
-        });
-      }
-      throw new Error(`Unexpected fetch: ${url} ${method}`);
+describe("EventsPage — «Документы для соревнования»: package", () => {
+  function zipResponse() {
+    return new Response(new Blob(["zip content"]), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/zip",
+        "Content-Disposition": 'attachment; filename="competition-documents-event.zip"',
+      },
     });
-    vi.stubGlobal("fetch", fetchMock);
+  }
+
+  function incompleteResponse() {
+    return errorResponse(409, "document_package_incomplete", "The document package is incomplete", {
+      incomplete: [
+        { participant_display_name: "Петров Иван", document_type: "medical_certificate", result: "missing", required: true },
+        { participant_display_name: "Сидорова Мария", document_type: "insurance", result: "expired", required: false },
+      ],
+    });
+  }
+
+  function packageBodies(fetchMock: ReturnType<typeof vi.fn>) {
+    return callsTo(fetchMock, "/events/ev-1/document-package", "POST").map(([, init]) =>
+      JSON.parse(String((init as RequestInit).body)),
+    );
+  }
+
+  function mockDownload() {
     const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
     (URL as unknown as { createObjectURL: () => string }).createObjectURL = vi.fn(() => "blob:mock-url");
     (URL as unknown as { revokeObjectURL: () => void }).revokeObjectURL = vi.fn();
+    return anchorClick;
+  }
 
+  it("forms a complete package and downloads the backend ZIP", async () => {
+    const fetchMock = stubDocumentsWorkflow({
+      route: (url, method) => (url.endsWith("/events/ev-1/document-package") && method === "POST" ? zipResponse() : undefined),
+    });
+    const anchorClick = mockDownload();
     renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
     const user = userEvent.setup();
     const dialog = await openDocumentPackageDialog(user);
 
-    await user.click(within(dialog).getByRole("button", { name: "Экспортировать пакет документов" }));
+    await user.click(within(dialog).getByRole("button", { name: "Сформировать пакет документов" }));
 
-    const warningDialog = await screen.findByRole("dialog", { name: "Пакет документов неполный" });
-    expect(within(warningDialog).getByText("Петров Иван")).toBeInTheDocument();
-    expect(within(warningDialog).getByText("Отсутствует")).toBeInTheDocument();
+    expect(await screen.findByText("Пакет документов сформирован")).toBeInTheDocument();
+    expect(packageBodies(fetchMock)).toEqual([{ confirm_incomplete: false }]);
+    expect(anchorClick).toHaveBeenCalledTimes(1);
+    anchorClick.mockRestore();
+  });
 
-    await user.click(within(warningDialog).getByRole("button", { name: "Всё равно сформировать пакет" }));
+  it("shows the incomplete-package warning with backend details; cancel sends nothing more", async () => {
+    const fetchMock = stubDocumentsWorkflow({
+      route: (url, method) =>
+        url.endsWith("/events/ev-1/document-package") && method === "POST" ? incompleteResponse() : undefined,
+    });
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    const dialog = await openDocumentPackageDialog(user);
+
+    await user.click(within(dialog).getByRole("button", { name: "Сформировать пакет документов" }));
+
+    const warning = await screen.findByRole("dialog", { name: "Не все документы готовы" });
+    expect(within(warning).getByText(/Требуют внимания: 2/)).toBeInTheDocument();
+    expect(within(warning).getByText("Петров Иван")).toBeInTheDocument();
+    expect(within(warning).getByText("Медицинская справка · Обязательно")).toBeInTheDocument();
+    expect(within(warning).getByText("Отсутствует")).toBeInTheDocument();
+    expect(within(warning).getByText("Сидорова Мария")).toBeInTheDocument();
+    expect(within(warning).getByText("insurance · Опционально")).toBeInTheDocument();
+    expect(within(warning).getByText("Истёк")).toBeInTheDocument();
+
+    await user.click(within(warning).getByRole("button", { name: "Отмена" }));
 
     await waitFor(() => {
-      expect(screen.queryByRole("dialog", { name: "Пакет документов неполный" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog", { name: "Не все документы готовы" })).not.toBeInTheDocument();
     });
-    expect(confirmedIncomplete).toBe(true);
+    expect(packageBodies(fetchMock)).toEqual([{ confirm_incomplete: false }]);
+  });
+
+  it("re-sends with confirm_incomplete=true only after explicit confirmation", async () => {
+    const fetchMock = stubDocumentsWorkflow({
+      route: (url, method, init) => {
+        if (!(url.endsWith("/events/ev-1/document-package") && method === "POST")) return undefined;
+        return JSON.parse(String(init!.body)).confirm_incomplete ? zipResponse() : incompleteResponse();
+      },
+    });
+    const anchorClick = mockDownload();
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const user = userEvent.setup();
+    const dialog = await openDocumentPackageDialog(user);
+
+    await user.click(within(dialog).getByRole("button", { name: "Сформировать пакет документов" }));
+    const warning = await screen.findByRole("dialog", { name: "Не все документы готовы" });
+    expect(packageBodies(fetchMock)).toEqual([{ confirm_incomplete: false }]);
+
+    await user.click(within(warning).getByRole("button", { name: "Всё равно сформировать пакет" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Не все документы готовы" })).not.toBeInTheDocument();
+    });
+    expect(packageBodies(fetchMock)).toEqual([{ confirm_incomplete: false }, { confirm_incomplete: true }]);
+    expect(anchorClick).toHaveBeenCalledTimes(1);
     anchorClick.mockRestore();
   });
 });
