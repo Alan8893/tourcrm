@@ -44,6 +44,23 @@ class EventParticipant:
     middle_name: Optional[str]
 
 
+def participant_row_visibility(
+    session: Session, *, event: Event, resource_context: ResourceContext, user_id: uuid.UUID
+) -> sa.ColumnElement[bool]:
+    """Which registered-participant rows of `event` the requester may see
+    under `event.read` (see module docstring) — a predicate over
+    `EventParticipation.person_id`, shared by every participant-roster
+    query so they can never disagree."""
+    return _participant_row_visibility(
+        session,
+        club_id=event.club_id,
+        resource_context=resource_context,
+        user_id=user_id,
+        permission_code=_READ_PERMISSION,
+        participant_person_id_column=EventParticipation.person_id,
+    )
+
+
 def list_event_participants(
     session: Session,
     *,
@@ -53,13 +70,8 @@ def list_event_participants(
     page: int,
     page_size: int,
 ) -> tuple[list[EventParticipant], int]:
-    visibility = _participant_row_visibility(
-        session,
-        club_id=event.club_id,
-        resource_context=resource_context,
-        user_id=user_id,
-        permission_code=_READ_PERMISSION,
-        participant_person_id_column=EventParticipation.person_id,
+    visibility = participant_row_visibility(
+        session, event=event, resource_context=resource_context, user_id=user_id
     )
     base_query = (
         sa.select(

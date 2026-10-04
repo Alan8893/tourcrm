@@ -12,6 +12,7 @@ row for that Person is visible; no further per-row filtering applies.
 """
 
 import uuid
+from typing import Sequence
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
@@ -100,6 +101,46 @@ def list_current_documents_for_person_by_type(
     return list(session.execute(stmt).scalars().all())
 
 
+def list_current_documents_for_persons_by_types(
+    session: Session, *, person_ids: Sequence[uuid.UUID], document_types: Sequence[str]
+) -> list[Document]:
+    """Batch form of `list_current_documents_for_person_by_type`: every
+    current version (ADR-0040 §4: `MAX(version_number)` per
+    `document_group_id`) of any of `document_types` belonging to any of
+    `person_ids`, in ONE query — used by app.documents.event_requirements
+    to evaluate a whole participant x requirement set without a query per
+    pair. Historical versions are never returned. Same current-version
+    selection as the single-Person form (a group's `document_type` never
+    changes across versions, so filtering by type before `MAX` is exact).
+    Ordered by `person_id`, `document_type`, `document_group_id` so callers
+    get a deterministic result.
+    """
+    if not person_ids or not document_types:
+        return []
+    current_versions = (
+        sa.select(
+            Document.document_group_id,
+            sa.func.max(Document.version_number).label("max_version"),
+        )
+        .where(Document.person_id.in_(person_ids), Document.document_type.in_(document_types))
+        .group_by(Document.document_group_id)
+        .subquery()
+    )
+    stmt = (
+        sa.select(Document)
+        .join(
+            current_versions,
+            sa.and_(
+                Document.document_group_id == current_versions.c.document_group_id,
+                Document.version_number == current_versions.c.max_version,
+            ),
+        )
+        .where(Document.person_id.in_(person_ids), Document.document_type.in_(document_types))
+        .order_by(Document.person_id, Document.document_type, Document.document_group_id)
+    )
+    return list(session.execute(stmt).scalars().all())
+
+
 def get_current_document_version(session: Session, *, document_group_id: uuid.UUID) -> Document:
     """The row with `MAX(version_number)` for `document_group_id`
     (ADR-0040 §4) — used by `app.documents.service.replace_document` to
@@ -132,6 +173,7 @@ def get_document_for_person(
 __all__ = [
     "list_current_documents_for_person",
     "list_current_documents_for_person_by_type",
+    "list_current_documents_for_persons_by_types",
     "get_current_document_version",
     "get_document_for_person",
 ]
