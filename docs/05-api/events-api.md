@@ -580,9 +580,9 @@ Object-level policy is mandatory. A role name alone does not grant unrestricted 
 - `children` — data for Persons linked through active GuardianRelationship and otherwise eligible under object policy;
 - `none` — no access.
 
-## 31. Event document requirements — PLANNED (TH-0117.5 / ADR-0040)
+## 31. Event document requirements — TH-0117 / ADR-0040
 
-**PLANNED — implementation is tracked by TH-0117.5 / Issue #164.** The persistence and read-only requirement-check foundation already exists; this section fixes the management API contract before implementation.
+**Implemented backend contract.** This section defines the canonical Event document-requirements management, readiness-check, readiness-matrix and competition-package APIs.
 
 `Document` is deliberately **not** coupled directly to `Event`. `EventDocumentRequirement` remains the separate concept with exactly these persisted fields:
 
@@ -652,11 +652,88 @@ It requires `event.read` + `document.read` and returns only the derived values `
 
 The evaluator continues to evaluate every persisted requirement row. The meaning of `required=false` for competition-package inclusion/blocking is deferred to the package/export slice; this management task does not alter the evaluator.
 
-### 31.4 Audit
+### 31.4 Event document readiness matrix
+
+The Event-level readiness matrix returns the derived document readiness for every registered participant visible to the requester and every persisted requirement of the Event.
+
+#### Endpoint
+
+`GET /api/v1/events/{event_id}/document-requirements/matrix`
+
+Authorization requires both:
+- `event.read` with the normal Event object/scope authorization;
+- `document.read` using the same Event-level document permission gate as the requirement list endpoint.
+
+The endpoint is fail-closed and uses the existing Event existence-hiding convention: an inaccessible or nonexistent Event returns `404 Event not found`.
+
+Participant rows are the intersection of the existing Event participant visibility and Person document visibility rules. Only participants that:
+- have `EventParticipation.registration_status = registered`;
+- are visible under the requester's applicable `event.read` scope/object policy;
+- are visible under the applicable `document.read` Person visibility policy
+are returned.
+
+The matrix never accepts arbitrary `person_id` values from the client.
+
+#### Response
+
+The endpoint returns one computed resource without a collection envelope:
+
+```json
+{
+  "event_id": "uuid",
+  "participants": [
+    {
+      "person_id": "uuid",
+      "first_name": "Иван",
+      "last_name": "Алексеев",
+      "middle_name": null,
+      "requirements": [
+        {
+          "document_type": "medical_certificate",
+          "required": true,
+          "result": "valid"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Participant projection is the same minimal Person projection as `GET /api/v1/events/{event_id}/participants`: `person_id`, `first_name`, `last_name`, `middle_name`. Contacts, photos, Document/File identifiers and document contents are never returned.
+
+Each requirement result uses the same derived values as §31.3:
+- `valid`;
+- `missing`;
+- `expired`.
+
+A current persisted `revoked` Document maps to `expired`; `revoked` is never exposed as a separate result.
+
+Requirements are returned for every persisted EventDocumentRequirement, including `required=false`. The matrix does not infer or recalculate readiness on the client.
+
+Participants are ordered deterministically by `last_name`, `first_name`, Person id. Requirements are ordered by `document_type`.
+
+The response is unpaginated: it contains the complete registered roster visible to the requester. No canonical roster-size limit is defined by the current API contract; therefore this endpoint does not introduce an additional limit or pagination model.
+
+#### Readiness semantics and consistency
+
+Readiness is calculated by the same batch evaluator used by the single-participant check (§31.3) and competition document package (§31.6). All participant × requirement cells are evaluated against one evaluation timestamp.
+
+Only current Document versions are considered. A historical version cannot compensate for an invalid current version of the same `document_group_id`. If multiple independent current document groups exist for one Person and `document_type`, any valid current document makes the result `valid`; otherwise documents present but none valid result in `expired`; no current documents result in `missing`.
+
+The matrix is a read-only derived projection. It does not expose which concrete Document or File satisfied a requirement.
+
+#### Performance contract
+
+The implementation must evaluate the matrix using batch database access whose query count does not grow with the number of participants or requirements. The API must not be implemented as one readiness request per participant or one Document query per participant/requirement pair.
+
+`GET /api/v1/events/{event_id}/document-requirements/{person_id}` remains the canonical single-participant contract; the two endpoints share the same readiness evaluator and semantics.
+
+### 31.5 Audit
+
 
 EventDocumentRequirement management must use the existing canonical audit infrastructure and **must not invent or repurpose a Document/File audit action**. A dedicated audit vocabulary for this concept is not currently defined by ADR-0040; therefore TH-0117.5 must not silently add one. If implementation discovers an existing canonical requirement that mandates a dedicated action, Claude Code must stop and report the contradiction rather than modifying the vocabulary or canonical documentation.
 
-### 31.5 Competition document package export — TH-0117.9
+### 31.6 Competition document package export — TH-0117.9
 
 The competition document package is an explicit operational export of current participant documents required/optionally associated with an Event.
 
