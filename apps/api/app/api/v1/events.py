@@ -49,7 +49,7 @@ from typing import NoReturn
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
@@ -62,6 +62,8 @@ from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.documents_schemas import (
     DocumentPackageRequest,
+    EventDocumentMatrixOut,
+    EventDocumentMatrixParticipantOut,
     EventDocumentRequirementCheckListOut,
     EventDocumentRequirementCheckOut,
     EventDocumentRequirementCreateRequest,
@@ -98,7 +100,10 @@ from app.db.event_recurrence import EventOccurrence
 from app.db.events import Event, EventParticipation
 from app.db.identity import Club, Person
 from app.db.session import get_db
-from app.documents.event_requirements import check_person_document_requirements
+from app.documents.event_requirements import (
+    check_person_document_requirements,
+    evaluate_event_document_matrix,
+)
 from app.documents.package import DocumentPackageIncompleteError, generate_event_document_package
 from app.documents.requirement_management import (
     DuplicateEventDocumentRequirementError,
@@ -126,7 +131,7 @@ from app.events.lifecycle import (
     validate_event_type,
     validate_time_range,
 )
-from app.events.participants import list_event_participants
+from app.events.participants import list_event_participants, participant_row_visibility
 from app.events.queries import (
     DEFAULT_SORT,
     InvalidSortError,
@@ -141,7 +146,7 @@ from app.events.service import (
     EventStaffAssignmentPrimaryConflictError,
     EventStaffUserNotFoundError,
 )
-from app.people.authorization import is_person_visible
+from app.people.authorization import is_person_visible, person_visibility_filter
 from app.storage.file_storage import FileStorage
 from app.storage.local import get_file_storage
 
@@ -1059,6 +1064,68 @@ def _get_authorized_person_for_document_check_or_404(
         # Deliberately the same detail/status as "does not exist" above.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_PERSON_NOT_FOUND_DETAIL)
     return person
+
+
+# --- Event document readiness matrix (Issue #175 backend foundation) ------
+#
+# Every registered participant x every requirement in one response, built
+# by the shared batch evaluator (app.documents.event_requirements) in a
+# fixed number of queries. Authorization is the intersection of the
+# existing rules, never wider than any of them:
+# - `event.read` on the Event (existence-hiding 404, as above);
+# - `document.read` for the Event's Club (the same flat gate the
+#   requirement-list endpoint below uses, 404 on denial);
+# - participant rows: those `GET .../participants` shows the requester
+#   (`event.read` row visibility) AND whose document-derived data the
+#   single-participant check above would show (`person_visibility_filter`
+#   under `document.read`, the SQL form of `is_person_visible`).
+# Registered before `/{person_id}` so the literal segment is matched first.
+
+
+@router.get(
+    "/{event_id}/document-requirements/matrix",
+    response_model=EventDocumentMatrixOut,
+)
+def get_event_document_matrix(
+    event_id: uuid.UUID,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+) -> EventDocumentMatrixOut:
+    event, context = _get_authorized_event_with_context_or_404(
+        db, event_id=event_id, user_id=principal.user_id, permission_code="event.read"
+    )
+    _require_document_permission_for_event_or_404(
+        db, event=event, user_id=principal.user_id, permission_code="document.read"
+    )
+    participant_filter = and_(
+        participant_row_visibility(
+            db, event=event, resource_context=context, user_id=principal.user_id
+        ),
+        person_visibility_filter(db, user_id=principal.user_id, permission_code="document.read"),
+    )
+    rows = evaluate_event_document_matrix(
+        db, event_id=event.id, participant_filter=participant_filter
+    )
+    return EventDocumentMatrixOut(
+        event_id=event.id,
+        participants=[
+            EventDocumentMatrixParticipantOut(
+                person_id=row.person_id,
+                first_name=row.first_name,
+                last_name=row.last_name,
+                middle_name=row.middle_name,
+                requirements=[
+                    EventDocumentRequirementCheckOut(
+                        document_type=check.document_type,
+                        required=check.required,
+                        result=check.result,
+                    )
+                    for check in row.requirements
+                ],
+            )
+            for row in rows
+        ],
+    )
 
 
 @router.get(

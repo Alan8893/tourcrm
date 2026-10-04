@@ -76,6 +76,28 @@ class EventDocumentRequirementCheckListOut(BaseModel):
     requirements: list[EventDocumentRequirementCheckOut]
 
 
+class EventDocumentMatrixParticipantOut(BaseModel):
+    """One registered participant's row of the Event document matrix: the
+    same minimal Person projection as `GET .../participants`, plus the
+    same per-requirement result shape as the single-participant check."""
+
+    person_id: UUID
+    first_name: str
+    last_name: str
+    middle_name: Optional[str]
+    requirements: list[EventDocumentRequirementCheckOut]
+
+
+class EventDocumentMatrixOut(BaseModel):
+    """A single computed resource (ADR-0014: no collection wrapper), like
+    `EventDocumentRequirementCheckListOut` — the whole registered roster
+    the requester may see, unpaginated (the same roster package export
+    evaluates in one request)."""
+
+    event_id: UUID
+    participants: list[EventDocumentMatrixParticipantOut]
+
+
 class EventDocumentRequirementOut(BaseModel):
     id: UUID
     event_id: UUID

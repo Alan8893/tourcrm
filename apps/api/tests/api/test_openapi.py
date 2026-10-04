@@ -80,6 +80,9 @@ _EVENT_PATHS = {
     # TH-0117.4 / Issue #162, ADR-0040 §5: read-only participant Document
     # requirement check (valid/missing/expired) for one Event/Person pair.
     "/api/v1/events/{event_id}/document-requirements/{person_id}",
+    # Issue #175 backend foundation: every registered participant x every
+    # requirement in one response (shared batch readiness evaluator).
+    "/api/v1/events/{event_id}/document-requirements/matrix",
     # TH-0117.5 / Issue #164, ADR-0040 §5, events-api.md §31.1: manage the
     # EventDocumentRequirement records themselves (list/create/update/delete).
     "/api/v1/events/{event_id}/document-requirements",
@@ -346,6 +349,29 @@ def test_event_participants_endpoint_is_read_only(real_client) -> None:
         "last_name",
         "middle_name",
     }
+
+
+def test_event_document_matrix_endpoint_shape(real_client) -> None:
+    schema = real_client.get("/openapi.json").json()
+    operations = schema["paths"]["/api/v1/events/{event_id}/document-requirements/matrix"]
+    assert set(operations) == {"get"}
+    params = {p["name"] for p in operations["get"]["parameters"] if p["in"] != "cookie"}
+    assert params == {"event_id"}
+    components = schema["components"]["schemas"]
+    response_schema = operations["get"]["responses"]["200"]["content"]["application/json"]
+    matrix = components[response_schema["schema"]["$ref"].rsplit("/", 1)[-1]]
+    assert set(matrix["properties"]) == {"event_id", "participants"}
+    row = components[matrix["properties"]["participants"]["items"]["$ref"].rsplit("/", 1)[-1]]
+    assert set(row["properties"]) == {
+        "person_id",
+        "first_name",
+        "last_name",
+        "middle_name",
+        "requirements",
+    }
+    cell = components[row["properties"]["requirements"]["items"]["$ref"].rsplit("/", 1)[-1]]
+    assert set(cell["properties"]) == {"document_type", "required", "result"}
+    assert cell["properties"]["result"]["enum"] == ["valid", "missing", "expired"]
 
 
 def test_news_endpoints_expose_only_their_canonical_methods(real_client) -> None:

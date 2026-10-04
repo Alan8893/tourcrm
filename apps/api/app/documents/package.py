@@ -8,13 +8,10 @@ Combines pieces that already exist and are explicitly not modified here:
   treats as "actively participating" — ADR-0037);
 - the persisted `EventDocumentRequirement` rows for the Event
   (`app.db.documents.EventDocumentRequirement`, unchanged);
-- the exact same current-version candidate query and pure validity
-  evaluator `app.documents.event_requirements`/`app.documents.validity`
-  already use (`list_current_documents_for_person_by_type`,
-  `document_check_result`) — this module does not reimplement or fork
-  that logic, and does not import/modify `app.documents.event_requirements`
-  itself (whose one-Person-at-a-time shape this module's batch,
-  single-`now` evaluation does not need);
+- the shared batch readiness evaluator
+  (`app.documents.event_requirements.evaluate_document_requirements`,
+  built on the pure `app.documents.validity.document_check_result`) —
+  this module does not reimplement or fork that logic;
 - `FileStorage` (binary reads only — never a direct filesystem access);
 - the canonical audit boundary (`app.audit.service.record_audit_event`),
   audited as `document.exported` (ADR-0040 §7), in the same transaction
@@ -60,8 +57,10 @@ from app.audit.service import record_audit_event
 from app.db.documents import Document, EventDocumentRequirement, File
 from app.db.events import Event, EventParticipation
 from app.db.identity import Person
-from app.documents.queries import list_current_documents_for_person_by_type
-from app.documents.validity import document_check_result
+from app.documents.event_requirements import (
+    evaluate_document_requirements,
+    list_event_requirements,
+)
 from app.events.participation import REGISTERED_STATUS
 from app.storage.file_storage import FileStorage
 
@@ -144,59 +143,7 @@ def _list_registered_participants(session: Session, *, event_id: uuid.UUID) -> l
 def _list_requirements(
     session: Session, *, event_id: uuid.UUID
 ) -> list[EventDocumentRequirement]:
-    return list(
-        session.execute(
-            sa.select(EventDocumentRequirement)
-            .where(EventDocumentRequirement.event_id == event_id)
-            .order_by(EventDocumentRequirement.document_type)
-        )
-        .scalars()
-        .all()
-    )
-
-
-def _resolve_requirement(
-    session: Session, *, person_id: uuid.UUID, document_type: str, now: datetime
-) -> tuple[RequirementResult, Optional[Document]]:
-    """`valid`/`missing`/`expired` for one participant/document_type
-    pair, reusing exactly the two primitives
-    `app.documents.event_requirements._evaluate_document_type` itself
-    reuses (never reimplemented here): `list_current_documents_for_
-    person_by_type` for the candidate current versions, and the pure
-    `document_check_result` evaluator for each one's `valid`/`expired`
-    verdict (which already maps a current `revoked` status to
-    `expired` — ADR-0040 §5's amendment — without this module knowing
-    or caring about that mapping itself).
-
-    A Person is not prevented from having more than one independent
-    current-version Document of the same `document_type` (ADR-0040 §5;
-    same caveat `list_current_documents_for_person_by_type` documents on
-    itself). Unlike the plain check (which only needs to know whether
-    *any* of them is valid), package export must pick one concrete
-    Document to read a binary from when the result is `valid` — done
-    here deterministically by `document_group_id`, the stable identifier
-    ADR-0040 §4 defines, so the same input state always yields the same
-    choice.
-    """
-    documents = list_current_documents_for_person_by_type(
-        session, person_id=person_id, document_type=document_type
-    )
-    if not documents:
-        return "missing", None
-    valid_candidates = sorted(
-        (
-            document
-            for document in documents
-            if document_check_result(
-                status=document.status, expires_at=document.expires_at, now=now
-            )
-            == "valid"
-        ),
-        key=lambda document: document.document_group_id,
-    )
-    if valid_candidates:
-        return "valid", valid_candidates[0]
-    return "expired", None
+    return list_event_requirements(session, event_id=event_id)
 
 
 def _evaluate_entries(
@@ -206,24 +153,30 @@ def _evaluate_entries(
     requirements: list[EventDocumentRequirement],
     now: datetime,
 ) -> list[PackageEntry]:
+    """Every participant/requirement pair through the shared batch
+    evaluator (`app.documents.event_requirements.evaluate_document_
+    requirements`) — one Document query for the whole package, and the
+    same `valid`/`missing`/`expired` rule and deterministic valid-document
+    choice (lowest `document_group_id`) as every other readiness caller.
+    """
+    evaluations = evaluate_document_requirements(
+        session,
+        requirements=requirements,
+        person_ids=[person.id for person in participants],
+        now=now,
+    )
     entries: list[PackageEntry] = []
     for ordinal, person in enumerate(participants, start=1):
         display_name = _display_name(person)
-        for requirement in requirements:
-            result, document = _resolve_requirement(
-                session,
-                person_id=person.id,
-                document_type=requirement.document_type,
-                now=now,
-            )
+        for evaluation in evaluations[person.id]:
             entries.append(
                 PackageEntry(
                     ordinal=ordinal,
                     display_name=display_name,
-                    document_type=requirement.document_type,
-                    required=requirement.required,
-                    result=result,
-                    document=document,
+                    document_type=evaluation.document_type,
+                    required=evaluation.required,
+                    result=evaluation.result,
+                    document=evaluation.document,
                 )
             )
     return entries
