@@ -25,25 +25,52 @@ keyed on the Event's status:
   is historically closed — repeating its current value is an idempotent
   no-op, any change is rejected (the correction workflow is a future
   task, G9);
+- in every open status, repeating the stored value writes nothing;
 - `draft`/`published`/`cancelled`/`archived`: closed.
+
+## Audit (ADR-0024 §4, amended by #247)
+
+Each successful mutation records exactly one AuditLog row through
+`app.audit.service.record_audit_event`, in the same transaction as the
+mutation (fail-closed: an audit failure rolls the mutation back):
+
+- Trip created -> `trip.created` (resource `trip` / `Trip.event_id`);
+- first TripParticipant for an EventParticipation ->
+  `trip_participant.actual_participation_recorded`;
+- stored `actual_participation` changed ->
+  `trip_participant.actual_participation_changed` with
+  `details.changes.actual_participation.{from,to}`;
+
+both TripParticipant actions use resource `trip_participant` /
+`event_participation_id`. Writing the already stored value is a no-op
+without an audit record, in every open Event status. Registration
+changes stay `event_participation.status_changed`
+(app.events.participation) and are never duplicated here.
 
 Callers must already have loaded (and locked) the Event and verified
 authorization; this module never performs authorization itself.
 """
 
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.audit.service import record_audit_event
 from app.db.events import Event, EventParticipation
 from app.db.trips import TRIP_EVENT_TYPE, TRIP_PRIMARY_KEY, Trip, TripParticipant
 
 TRIP_CREATION_CLOSED_EVENT_STATUSES: tuple[str, ...] = ("cancelled", "archived")
 ACTUAL_PARTICIPATION_OPEN_EVENT_STATUSES: tuple[str, ...] = ("in_progress", "completed")
 _COMPLETED_STATUS = "completed"
+
+# ADR-0024 §2 resource identity: a Trip is identified by its Event's id
+# (`trips.event_id`), a TripParticipant by its EventParticipation's id
+# (`trip_participants.event_participation_id`).
+TRIP_AUDIT_RESOURCE_TYPE = "trip"
+TRIP_PARTICIPANT_AUDIT_RESOURCE_TYPE = "trip_participant"
 
 
 class TripError(Exception):
@@ -117,8 +144,16 @@ def get_trip(session: Session, event_id: uuid.UUID) -> Optional[Trip]:
     return session.get(Trip, event_id)
 
 
-def create_trip(session: Session, *, event: Event) -> Trip:
-    """Attach a Trip to `event` (already loaded and locked by the caller)."""
+def create_trip(
+    session: Session,
+    *,
+    event: Event,
+    actor_user_id: uuid.UUID,
+    request_id: Optional[str] = None,
+) -> Trip:
+    """Attach a Trip to `event` (already loaded and locked by the caller)
+    and record `trip.created` in the same transaction (see module
+    docstring "Audit")."""
     if event.event_type != TRIP_EVENT_TYPE:
         raise EventNotTripError(event_id=event.id, event_type=event.event_type)
     if event.status in TRIP_CREATION_CLOSED_EVENT_STATUSES:
@@ -126,14 +161,30 @@ def create_trip(session: Session, *, event: Event) -> Trip:
     if get_trip(session, event.id) is not None:
         raise TripAlreadyExistsError(event_id=event.id)
 
-    trip = Trip(event_id=event.id, event_type=event.event_type)
-    session.add(trip)
+    event_id = event.id
     try:
+        trip = Trip(event_id=event_id, event_type=event.event_type)
+        session.add(trip)
+        session.flush()
+        record_audit_event(
+            session,
+            action="trip.created",
+            actor_type="user",
+            actor_user_id=actor_user_id,
+            club_id=event.club_id,
+            resource_type=TRIP_AUDIT_RESOURCE_TYPE,
+            resource_id=event_id,
+            outcome="success",
+            request_id=request_id,
+        )
         session.commit()
     except IntegrityError as exc:
         session.rollback()
         if _constraint_name(exc) == TRIP_PRIMARY_KEY:
-            raise TripAlreadyExistsError(event_id=event.id) from exc
+            raise TripAlreadyExistsError(event_id=event_id) from exc
+        raise
+    except Exception:
+        session.rollback()
         raise
     return trip
 
@@ -144,11 +195,16 @@ def record_actual_participation(
     event: Event,
     person_id: uuid.UUID,
     actual_participation: bool,
+    actor_user_id: uuid.UUID,
+    request_id: Optional[str] = None,
 ) -> TripParticipant:
     """Create or change the TripParticipant of `person_id`'s
     EventParticipation for `event` (which must already have a Trip; the
-    caller loaded and locked the Event). See module docstring for the
-    lifecycle rules. Never touches the EventParticipation itself."""
+    caller loaded and locked the Event), recording the matching audit
+    action in the same transaction. Writing the already stored value is
+    an idempotent no-op: nothing is written and no audit record is
+    created. See module docstring for the lifecycle and audit rules.
+    Never touches the EventParticipation itself."""
     if event.status not in ACTUAL_PARTICIPATION_OPEN_EVENT_STATUSES:
         raise ActualParticipationLifecycleClosedError(event_id=event.id, status=event.status)
 
@@ -167,9 +223,9 @@ def record_actual_participation(
         .with_for_update()
     ).scalar_one_or_none()
 
+    if existing is not None and existing.actual_participation == actual_participation:
+        return existing
     if existing is not None and event.status == _COMPLETED_STATUS:
-        if existing.actual_participation == actual_participation:
-            return existing
         raise TripParticipantHistoricallyClosedError(event_id=event.id, person_id=person_id)
 
     try:
@@ -180,9 +236,37 @@ def record_actual_participation(
                 actual_participation=actual_participation,
             )
             session.add(row)
+            action = "trip_participant.actual_participation_recorded"
+            details: dict[str, Any] = {
+                "event_id": str(event.id),
+                "event_participation_id": str(participation_id),
+                "person_id": str(person_id),
+                "actual_participation": actual_participation,
+            }
         else:
             row = existing
+            previous = row.actual_participation
             row.actual_participation = actual_participation
+            action = "trip_participant.actual_participation_changed"
+            details = {
+                "event_id": str(event.id),
+                "event_participation_id": str(participation_id),
+                "person_id": str(person_id),
+                "changes": {"actual_participation": {"from": previous, "to": actual_participation}},
+            }
+        session.flush()
+        record_audit_event(
+            session,
+            action=action,
+            actor_type="user",
+            actor_user_id=actor_user_id,
+            club_id=event.club_id,
+            resource_type=TRIP_PARTICIPANT_AUDIT_RESOURCE_TYPE,
+            resource_id=participation_id,
+            outcome="success",
+            request_id=request_id,
+            details=details,
+        )
         session.commit()
     except Exception:
         session.rollback()
