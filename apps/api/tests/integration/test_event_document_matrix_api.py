@@ -34,9 +34,11 @@ from app.db.authorization import (
 )
 from app.db.documents import Document, EventDocumentRequirement, File
 from app.db.events import Event, EventParticipation, EventStaffAssignment
-from app.db.identity import Club, ClubMembership, Person, User
+from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
+from app.db.identity import Club, ClubMembership, GuardianRelationship, Person, User
 from app.db.session import get_engine, session_scope
 from app.main import app
+from app.people.authorization import is_person_visible
 
 from .conftest import requires_postgres
 
@@ -694,3 +696,140 @@ def test_single_participant_check_statement_count_is_independent_of_requirements
         counts.append(_statement_count(client, event_id, str(person_id)))
 
     assert counts[0] == counts[1]
+
+
+# --- authorization parity with is_person_visible / the single-participant check -
+#
+# For every canonical `document.read` scope (ADR-0013 / the DB CHECK on
+# `role_permission_scopes.scope_type`: all, own_groups, own_events, self,
+# children, none — plus `all` on a global, club_id-less assignment), with
+# `event.read: all` held constant so only `document.read` varies:
+#
+# - `is_person_visible(..., "document.read")` and
+#   `GET .../document-requirements/{person_id}` agree for every registered
+#   participant (the single-participant endpoint IS that check);
+# - the matrix never lists a participant that check would hide;
+# - where the matrix's club-level `document.read` gate (the requirement
+#   list's own gate, events-api.md §31.2) passes — `all` only — the matrix
+#   lists exactly the participants that check shows; for every other scope
+#   the gate fails closed with the same existence-hiding 404 as the
+#   requirement list.
+
+
+_PARITY_CASES = {
+    # scope label: (scope_type, club-scoped?, expected single-visible labels, matrix status)
+    "all-club": ("all", True, {"self", "child", "grouped", "member"}, 200),
+    "all-global": ("all", False, {"self", "child", "grouped", "member", "nonmember"}, 200),
+    "own_groups": ("own_groups", True, {"grouped"}, 404),
+    "own_events": ("own_events", True, set(), 404),
+    "self": ("self", True, {"self"}, 404),
+    "children": ("children", True, {"child"}, 404),
+    "none": ("none", True, set(), 404),
+}
+
+
+def _parity_world() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, dict[str, uuid.UUID]]:
+    """Returns (club_id, event_id, actor_user_id, {label: person_id}).
+
+    The actor is: a registered participant themself ("self"), the active
+    guardian of "child" and of "cancelled_child", and the active instructor
+    of a Group containing "grouped". "member" is an unrelated club member,
+    "nonmember" a registered participant with no ClubMembership.
+    "cancelled_child" is never a matrix participant (not `registered`)."""
+    with session_scope() as session:
+        world = _World(session)
+        world.requirement()
+        actor_person = world.person("Актор", "А", user=True)
+        people = {
+            "self": actor_person,
+            "child": world.person("Ребёнок", "Б"),
+            "cancelled_child": world.person("Ребёнок", "В", status="cancelled"),
+            "grouped": world.person("Группа", "Г"),
+            "member": world.person("Член", "Д"),
+            "nonmember": world.person("Внешний", "Е", member=False),
+        }
+        actor = session.execute(select(User).where(User.person_id == actor_person.id)).scalar_one()
+        for label in ("child", "cancelled_child"):
+            session.add(
+                GuardianRelationship(
+                    guardian_person_id=actor_person.id,
+                    child_person_id=people[label].id,
+                    relationship_type="parent",
+                    status="active",
+                    valid_from=_PAST,
+                )
+            )
+        group = Group(club_id=world.club.id, name="Группа", status="active", valid_from=_PAST)
+        session.add(group)
+        session.flush()
+        grouped_membership = session.execute(
+            select(ClubMembership).where(ClubMembership.person_id == people["grouped"].id)
+        ).scalar_one()
+        session.add_all(
+            [
+                GroupMembership(
+                    group_id=group.id,
+                    club_membership_id=grouped_membership.id,
+                    membership_status="active",
+                    valid_from=_PAST,
+                ),
+                GroupInstructorAssignment(
+                    group_id=group.id,
+                    user_id=actor.id,
+                    role_in_group="instructor",
+                    valid_from=_PAST,
+                ),
+            ]
+        )
+        session.commit()
+        return (
+            world.club.id,
+            world.event.id,
+            actor.id,
+            {label: person.id for label, person in people.items()},
+        )
+
+
+@pytest.mark.parametrize("case", list(_PARITY_CASES), ids=list(_PARITY_CASES))
+@requires_postgres
+def test_matrix_participant_visibility_parity_with_single_check(
+    client: TestClient, case: str
+) -> None:
+    scope_type, club_scoped, expected_single, expected_matrix_status = _PARITY_CASES[case]
+    club_id, event_id, actor_id, people = _parity_world()
+    _grant(actor_id, "event.read", "all", club_id)
+    _grant(actor_id, "document.read", scope_type, club_id if club_scoped else None)
+    _authenticate_as(actor_id)
+    registered = {label: pid for label, pid in people.items() if label != "cancelled_child"}
+
+    # 1. is_person_visible and the single-participant endpoint agree.
+    single_visible: set[str] = set()
+    with session_scope() as session:
+        for label, person_id in people.items():
+            function_visible = is_person_visible(
+                session, person_id=person_id, user_id=actor_id, permission_code="document.read"
+            )
+            response = client.get(f"/api/v1/events/{event_id}/document-requirements/{person_id}")
+            assert response.status_code == (200 if function_visible else 404), label
+            if function_visible and label in registered:
+                single_visible.add(label)
+    assert single_visible == expected_single
+
+    # 2. The matrix never shows more than that check, and exactly as much
+    #    wherever its club-level gate admits the requester.
+    response = _matrix(client, event_id)
+    assert response.status_code == expected_matrix_status
+    labels_by_id = {str(pid): label for label, pid in people.items()}
+    matrix_visible = (
+        {labels_by_id[p["person_id"]] for p in response.json()["participants"]}
+        if response.status_code == 200
+        else set()
+    )
+    assert "cancelled_child" not in matrix_visible
+    assert matrix_visible <= single_visible
+    if expected_matrix_status == 200:
+        assert matrix_visible == single_visible
+    else:
+        # Same fail-closed gate as the requirement list endpoint.
+        requirement_list = client.get(f"/api/v1/events/{event_id}/document-requirements")
+        assert requirement_list.status_code == 404
