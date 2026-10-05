@@ -413,15 +413,48 @@ Constraints (implemented):
 - composite FK `(event_id, event_type) -> events(id, event_type)` ON UPDATE/DELETE RESTRICT — a Trip exists only for an Event of type `trip`, and such an Event cannot change its type;
 - no Trip-specific status column: the lifecycle is the Event's.
 
-Tourism facts (not yet implemented; semantics in the module document §3–§12):
+Tourism facts (semantics in the module document §3–§12):
 
-- TourismType — nullable reference to the TourismType catalog, never free text;
-- Official Difficulty — at most one classification per Trip (one mode `NONE`/`DEGREE`/`CATEGORY`/`WEEKEND`, a value only for `DEGREE`/`CATEGORY`, and its source); never two independent degree/category columns;
-- Geography — nullable reference to Country and nullable reference to Region, never free text;
+- TourismType — nullable reference to the TourismType catalog, never free text. Implemented (Issue #264): `tourism_type_id` FK -> `tourism_types` ON UPDATE/DELETE RESTRICT;
+- Official Difficulty — at most one classification per Trip (one mode `NONE`/`DEGREE`/`CATEGORY`/`WEEKEND`, a value only for `DEGREE`/`CATEGORY`, and its source); never two independent degree/category columns. Implemented (Issue #268): `official_difficulty_mode`/`_value`/`_source` with CHECK `ck_trips_official_difficulty_combination`;
+- Geography — nullable reference to Country and nullable reference to Region, never free text. Implemented (Issue #271): `country_id` FK -> `countries` and `region_id` with the composite FK `(region_id, country_id) -> regions(id, country_id)`, both ON UPDATE/DELETE RESTRICT, and CHECK `ck_trips_region_requires_country` (`region_id IS NULL OR country_id IS NOT NULL`) — a Trip's Region always belongs to the Trip's Country, and a Region a Trip references cannot be moved to another Country;
+
+Not yet implemented:
+
 - Duration Classification — `ONE_DAY`/`MULTI_DAY`/`UNCLASSIFIED`;
 - Result — `COMPLETED`/`PARTIALLY_COMPLETED`/`NOT_COMPLETED`; not a lifecycle status.
 
 Not canonical (legacy draft columns, not to be implemented): `tourism_type` as a string, `difficulty_category`, `region` as a string, `route_id` as a classifier field, `planned_distance_km`/`actual_distance_km` on Trip (distance belongs to the Route's Planned/Actual representation), `planned_duration_minutes`/`actual_duration_minutes`, `leader_person_id`, `result_status`, `notes`.
+
+### `countries`
+
+Country reference catalog (Issue #271; semantics — module document §9). Implemented:
+
+- `id` PK
+- `code` — ISO 3166-1 alpha-2 (`uq_countries_code`, CHECK `^[A-Z]{2}$`)
+- `name` — canonical Russian display name (not blank)
+- `active` — lifecycle (default `true`); no physical deletion
+- `source_type`, `source_reference` — nullable provenance of the entry (not blank when set)
+- `first_used_at` — nullable; set when a Trip first references the entry; from then on `code`/`name` are immutable by ordinary editing
+- timestamps
+
+Seeded by the creating migration with the standard ISO 3166-1 set (249 alpha-2 codes; Russian names from Unicode CLDR 48.2.0, locale `ru`, pinned as literal rows).
+
+### `regions`
+
+Region reference catalog (Issue #271; semantics — module document §9). Implemented. Seeded by the creating migration with exactly the 89 subjects of the Russian Federation (Constitution of the Russian Federation, Article 65, Part 1; Country `RU`, `semantic_type = administrative_subject`, `source_type = CONSTITUTION_RF_ARTICLE_65`; seed snapshot SHA-256 `07be4af5094d98aed298e08cf769cb5144bf33fe4bf3b1d6b723658228240e03`). Their `code` values are internal TourCRM codes (ASCII slugs of the canonical names), not OKATO/OKTMO/ISO 3166-2 codes:
+
+- `id` PK
+- `country_id` FK -> `countries` ON UPDATE/DELETE RESTRICT (exactly one Country)
+- `code` — unique within its Country (`uq_regions_country_id_code`), not blank
+- `name` — not blank
+- `semantic_type` — CHECK `IN ('administrative_subject')`; set at creation
+- `active` — lifecycle (default `true`); no physical deletion
+- `source_type`, `source_reference` — nullable provenance of the entry (not blank when set)
+- `first_used_at` — nullable; set when a Trip first references the entry; from then on `code`/`name`/`country_id` are immutable by ordinary editing
+- timestamps
+
+`uq_regions_id_country_id` (`id`, `country_id`) is the target of the Trip's composite Region FK.
 
 ### `trip_participants`
 

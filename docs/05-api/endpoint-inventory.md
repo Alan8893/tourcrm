@@ -262,7 +262,7 @@ respect audit policy (ADR-0024/ADR-0032 §11).
 - `GET /trips/{id}/results`
 - `POST /trips/{id}/results`
 
-Implemented Trip endpoints and their exact contract (incl. `PATCH /trips/{event_id}` for ordinary editing, Issue #264, and the structured `official_difficulty` on Trip create/read/update, Issue #268 — no separate Difficulty endpoint): `docs/05-api/trips-and-tourist-profile-api.md` §3–§4.
+Implemented Trip endpoints and their exact contract (incl. `PATCH /trips/{event_id}` for ordinary editing, Issue #264, the structured `official_difficulty` on Trip create/read/update, Issue #268 — no separate Difficulty endpoint, and `country_id`/`region_id` on Trip create/read/update, Issue #271): `docs/05-api/trips-and-tourist-profile-api.md` §3–§4.
 
 ### 11.1 TourismType catalog — IMPLEMENTED (Issue #264)
 
@@ -274,6 +274,23 @@ Implemented Trip endpoints and their exact contract (incl. `PATCH /trips/{event_
 - `POST /tourism-types/{id}/deactivate`
 
 No DELETE. Reads require `trip.read`; mutations require `trip.manage` with `all` scope (Administrator). No TourismType-specific permission.
+
+### 11.2 Country / Region catalogs — IMPLEMENTED (Issue #271)
+
+- `GET /countries`
+- `POST /countries`
+- `GET /countries/{id}`
+- `PATCH /countries/{id}`
+- `POST /countries/{id}/activate`
+- `POST /countries/{id}/deactivate`
+- `GET /regions`
+- `POST /regions`
+- `GET /regions/{id}`
+- `PATCH /regions/{id}`
+- `POST /regions/{id}/activate`
+- `POST /regions/{id}/deactivate`
+
+No DELETE. Reads require `trip.read`; mutations require `trip.manage` with `all` scope (Administrator). No Geography-specific permission. Contract: `docs/05-api/trips-and-tourist-profile-api.md` §3.8.
 
 ## 12. Routes and GPX
 

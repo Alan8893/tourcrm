@@ -297,6 +297,19 @@ _TOURISM_TYPE_PATHS = {
     "/api/v1/tourism-types/{tourism_type_id}/deactivate",
 }
 
+# Issue #271: the Country and Region catalogs. No DELETE (deactivate/
+# reactivate lifecycle only).
+_GEOGRAPHY_PATHS = {
+    "/api/v1/countries",
+    "/api/v1/countries/{country_id}",
+    "/api/v1/countries/{country_id}/activate",
+    "/api/v1/countries/{country_id}/deactivate",
+    "/api/v1/regions",
+    "/api/v1/regions/{region_id}",
+    "/api/v1/regions/{region_id}/activate",
+    "/api/v1/regions/{region_id}/deactivate",
+}
+
 # Issue #220: Achievement Definitions / Rule Versions / Normative Sets /
 # Awards / reconciliation. No DELETE anywhere (A1/A2/A4).
 _ACHIEVEMENT_PATHS = {
@@ -377,6 +390,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _TRIP_PATHS
         | _ACHIEVEMENT_PATHS
         | _TOURISM_TYPE_PATHS
+        | _GEOGRAPHY_PATHS
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()
@@ -426,11 +440,15 @@ def test_trip_endpoints_expose_only_their_canonical_methods_and_fields(real_clie
         "event_id",
         "tourism_type_id",
         "official_difficulty",
+        "country_id",
+        "region_id",
     }
     assert set(components["TripCreateRequest"]["required"]) == {"event_id"}
     assert set(components["TripUpdateRequest"]["properties"]) == {
         "tourism_type_id",
         "official_difficulty",
+        "country_id",
+        "region_id",
     }
     # Issue #268: one structured Official Difficulty — mode, value, source.
     assert set(components["OfficialDifficultyIn"]["properties"]) == {"mode", "value", "source"}
@@ -440,12 +458,12 @@ def test_trip_endpoints_expose_only_their_canonical_methods_and_fields(real_clie
         "event_id",
         "tourism_type_id",
         "official_difficulty",
+        "country_id",
+        "region_id",
         "created_at",
         "updated_at",
     }
-    assert set(components["TripParticipantRecordRequest"]["properties"]) == {
-        "actual_participation"
-    }
+    assert set(components["TripParticipantRecordRequest"]["properties"]) == {"actual_participation"}
     assert set(components["TripParticipantOut"]["properties"]) == {
         "event_participation_id",
         "event_id",
@@ -466,15 +484,19 @@ def test_achievement_endpoints_never_expose_delete(real_client) -> None:
     assert set(paths["/api/v1/achievements/awards/{award_id}/revoke"]) == {"post"}
     # A13: a Rule Version is immutable from creation — read only, no PATCH.
     assert set(paths["/api/v1/achievements/rule-versions/{rule_version_id}"]) == {"get"}
-    assert "RuleVersionUpdateRequest" not in real_client.get("/openapi.json").json()[
-        "components"
-    ]["schemas"]
+    assert (
+        "RuleVersionUpdateRequest"
+        not in real_client.get("/openapi.json").json()["components"]["schemas"]
+    )
     # A15: the manual Award names its Rule Version explicitly (optional).
     manual = real_client.get("/openapi.json").json()["components"]["schemas"][
         "ManualAwardCreateRequest"
     ]
     assert set(manual["properties"]) == {
-        "definition_id", "person_id", "rule_version_id", "verification_note"
+        "definition_id",
+        "person_id",
+        "rule_version_id",
+        "verification_note",
     }
     assert set(manual["required"]) == {"definition_id", "person_id"}
 
@@ -664,9 +686,10 @@ def test_membership_import_endpoints_expose_only_their_canonical_methods(real_cl
     assert set(paths["/api/v1/memberships/imports/{import_id}/approve"]) == {"post"}
     assert set(paths["/api/v1/memberships/imports/{import_id}/apply"]) == {"post"}
     for action in ("approve", "apply"):
-        assert "requestBody" not in paths[f"/api/v1/memberships/imports/{{import_id}}/{action}"][
-            "post"
-        ]
+        assert (
+            "requestBody"
+            not in paths[f"/api/v1/memberships/imports/{{import_id}}/{action}"]["post"]
+        )
     severity = next(
         parameter
         for parameter in paths["/api/v1/memberships/imports/{import_id}/errors"]["get"][
@@ -756,3 +779,38 @@ def test_swagger_ui_is_served(real_client) -> None:
     response = real_client.get("/docs")
 
     assert response.status_code == 200
+
+
+def test_geography_endpoints_expose_only_their_canonical_methods(real_client) -> None:
+    """Issue #271: Country/Region catalog CRUD without DELETE plus the two
+    lifecycle actions; provenance (`source_type`/`source_reference`) on
+    both, Region bound to one Country."""
+    schema = real_client.get("/openapi.json").json()
+    paths = schema["paths"]
+    components = schema["components"]["schemas"]
+    for collection, item in (("countries", "country_id"), ("regions", "region_id")):
+        assert set(paths[f"/api/v1/{collection}"]) == {"get", "post"}
+        assert set(paths[f"/api/v1/{collection}/{{{item}}}"]) == {"get", "patch"}
+        assert set(paths[f"/api/v1/{collection}/{{{item}}}/activate"]) == {"post"}
+        assert set(paths[f"/api/v1/{collection}/{{{item}}}/deactivate"]) == {"post"}
+    common = {
+        "id",
+        "code",
+        "name",
+        "active",
+        "source_type",
+        "source_reference",
+        "created_at",
+        "updated_at",
+    }
+    assert set(components["CountryOut"]["properties"]) == common
+    assert set(components["RegionOut"]["properties"]) == common | {"country_id", "semantic_type"}
+    assert set(components["CountryCreateRequest"]["required"]) == {"code", "name"}
+    assert set(components["RegionCreateRequest"]["required"]) == {
+        "country_id",
+        "code",
+        "name",
+        "semantic_type",
+    }
+    # §9: semantic type is fixed at creation — not part of ordinary editing.
+    assert "semantic_type" not in components["RegionUpdateRequest"]["properties"]

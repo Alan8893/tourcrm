@@ -5,6 +5,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.events import router as events_router
 from app.api.v1.events_series import occurrences_router as event_occurrences_router
 from app.api.v1.events_series import series_router as event_series_router
+from app.api.v1.geography import countries_router, regions_router
 from app.api.v1.groups import router as groups_router
 from app.api.v1.guardian_relationships import router as guardian_relationships_router
 from app.api.v1.inventory import router as inventory_router
@@ -52,4 +53,6 @@ router.include_router(inventory_issues_router)
 router.include_router(users_router)
 router.include_router(trips_router)
 router.include_router(tourism_types_router)
+router.include_router(countries_router)
+router.include_router(regions_router)
 router.include_router(achievements_router)

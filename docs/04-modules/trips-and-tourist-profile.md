@@ -30,7 +30,7 @@
 
 Event хранит общие свойства мероприятия: название, время, место, статус, организаторов и участников.
 
-Trip хранит туристскую специфику. Семантика туристских фактов Trip (Tourism Facts v2: TourismType, Official Difficulty, Geography, Duration Classification, Result, Route/GPX) определяется этим документом (§3–§12). На текущем этапе реализованы Trip Foundation (контур Trip→Event и туристский факт участия), TourismType Foundation и Official Difficulty Foundation (§20); остальные туристские факты (Geography, Duration Classification, Result, Route/GPX) ещё не реализованы и реализуются отдельными задачами строго по семантике этого документа.
+Trip хранит туристскую специфику. Семантика туристских фактов Trip (Tourism Facts v2: TourismType, Official Difficulty, Geography, Duration Classification, Result, Route/GPX) определяется этим документом (§3–§12). На текущем этапе реализованы Trip Foundation (контур Trip→Event и туристский факт участия), TourismType Foundation, Official Difficulty Foundation и Geography Foundation (§20); остальные туристские факты (Duration Classification, Result, Route/GPX) ещё не реализованы и реализуются отдельными задачами строго по семантике этого документа.
 
 Этот документ — единственный источник бизнес-семантики туристских фактов Trip. `docs/03-architecture/data-model.md`, `docs/02-requirements/roles-and-permissions.md` и `docs/05-api/endpoint-inventory.md` ссылаются на него и не определяют эту семантику самостоятельно.
 
@@ -504,9 +504,16 @@ BR-TRIP-010: Импортированные данные должны сохра
 - матрицы применимости TourismType × Difficulty, автоматической классификации, Club Assessment, общей модели Provenance и Historical Correction Workflow нет;
 - Official Difficulty пока не используется как metric в Achievement Engine (§15).
 
+Реализовано в Geography Foundation (семантика — §9):
+
+- справочники Country и Region; Country загружен стандартным набором ISO 3166-1 alpha-2 с русскими названиями Unicode CLDR (`ru`); Region имеет семантический тип (`administrative_subject`); загружен начальный российский набор — 89 субъектов РФ (Конституция РФ, ст. 65, ч. 1), Country = `RU`, `administrative_subject`; других Region не загружается;
+- необязательные ссылки Trip на Country и Region; Region Trip принадлежит Country Trip;
+- lifecycle справочников — деактивация и повторная активация без физического удаления; неактивную запись нельзя назначить новому или обычно редактируемому Trip; Trip, Event которого завершён, отменён или архивирован, закрыт для обычного изменения Geography;
+- после первого использования в Trip семантические поля записи неизменяемы обычным редактированием (Country — `code`, `name`; Region — `code`, `name`, `country_id`); `active` и provenance изменяемы; модель коррекции/версионирования справочников не реализована;
+- автоматического определения Geography нет; Geography пока не используется как metric в Achievement Engine (§15).
+
 Семантика утверждена этим документом, но **ещё не реализована**:
 
-- Geography (§9) — справочники Country/Region; Country seed и российский набор административных субъектов РФ утверждены, остальные Region значения не утверждены;
 - Duration Classification (§10);
 - Result (§8);
 - Route, Planned/Actual представления и Planned/Actual GPX (§11).

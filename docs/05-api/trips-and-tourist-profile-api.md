@@ -54,7 +54,7 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 
 ### 2.4 Статус разделов
 
-- §3–§4 — **реализованный** API Trip Foundation (Issue #245), TourismType (Issue #264, §3.5–§3.6) и Official Difficulty (Issue #268, §3.7).
+- §3–§4 — **реализованный** API Trip Foundation (Issue #245), TourismType (Issue #264, §3.5–§3.6), Official Difficulty (Issue #268, §3.7) и Geography (Issue #271, §3.8).
 - §5–§7 — Route/GPX: перечень endpoints из `docs/05-api/endpoint-inventory.md` §12 с канонической семантикой; **не реализовано**, полный контракт определяется перед реализацией.
 - §8–§10, §12 — **не реализовано**; черновые описания, требующие отдельных решений.
 - §11 — Achievements: контракт определён в другом месте.
@@ -91,7 +91,7 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 
 `GET /trips/{event_id}`
 
-`trip.read` + scope. Возвращает `event_id`, `tourism_type_id` (nullable), `official_difficulty` (nullable, §3.7), `created_at`, `updated_at`. Остальные туристские факты Trip пока не реализованы и в ответе отсутствуют.
+`trip.read` + scope. Возвращает `event_id`, `tourism_type_id` (nullable), `official_difficulty` (nullable, §3.7), `country_id` и `region_id` (nullable, §3.8), `created_at`, `updated_at`. Остальные туристские факты Trip пока не реализованы и в ответе отсутствуют.
 
 ## 3.3 Create trip
 
@@ -105,7 +105,8 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 
 - `event_id` — существующий Event;
 - `tourism_type_id` — необязательная ссылка на активную запись справочника TourismType (§3.6);
-- `official_difficulty` — необязательная Official Difficulty (§3.7).
+- `official_difficulty` — необязательная Official Difficulty (§3.7);
+- `country_id`, `region_id` — необязательные ссылки на активные записи справочников Country/Region (§3.8).
 
 ### Rules
 
@@ -115,9 +116,10 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 - не более одного Trip на Event, иначе `409 trip_already_exists`;
 - `tourism_type_id` несуществующей записи — `422 tourism_type_not_found`, неактивной — `422 tourism_type_inactive`;
 - `official_difficulty` — только Administrator (§3.7), иначе `403 forbidden`; недопустимая комбинация — `422`;
+- Geography проверяется по §3.8 (`422 country_not_found`/`country_inactive`/`region_not_found`/`region_inactive`/`region_country_mismatch`);
 - создание фиксируется в audit (`trip.created`) в той же транзакции.
 
-TourismType, Difficulty, Geography, Result и Route не обязательны для создания Trip; из них в текущем контракте передаются только `tourism_type_id` и `official_difficulty`.
+TourismType, Difficulty, Geography, Result и Route не обязательны для создания Trip; из них в текущем контракте передаются только `tourism_type_id`, `official_difficulty`, `country_id` и `region_id`.
 
 ## 3.4 Lifecycle
 
@@ -125,13 +127,13 @@ TourismType, Difficulty, Geography, Result и Route не обязательны 
 
 Завершение Event не требует наличия Route, Actual GPX, Result, дистанции или других туристских фактов.
 
-Изменение TourismType и Official Difficulty — §3.5. Изменение остальных туристских фактов Trip (Geography, Duration Classification, Result) через API пока не реализовано; при реализации действуют правила авторизации и исторической фиксации из `trips-and-tourist-profile.md` §3–§12.
+Изменение TourismType, Official Difficulty и Geography — §3.5. Изменение остальных туристских фактов Trip (Duration Classification, Result) через API пока не реализовано; при реализации действуют правила авторизации и исторической фиксации из `trips-and-tourist-profile.md` §3–§12.
 
 ## 3.5 Update trip
 
 `PATCH /trips/{event_id}`
 
-Обычное редактирование Trip (Issues #264, #268). Изменяются только поля, присутствующие в запросе.
+Обычное редактирование Trip (Issues #264, #268, #271). Изменяются только поля, присутствующие в запросе.
 
 ### Permissions
 
@@ -140,15 +142,16 @@ TourismType, Difficulty, Geography, Result и Route не обязательны 
 ### Request
 
 - `tourism_type_id` — ссылка на активную запись TourismType или `null` (снять);
-- `official_difficulty` — Official Difficulty (§3.7) или `null` (снять); только Administrator, иначе `403 forbidden`.
+- `official_difficulty` — Official Difficulty (§3.7) или `null` (снять); только Administrator, иначе `403 forbidden`;
+- `country_id`, `region_id` — ссылки на Country/Region (§3.8) или `null` (снять). Проверяется итоговая пара: поле, отсутствующее в запросе, сохраняет текущее значение.
 
 ### Rules
 
-- запрос, отклонённый из-за `official_difficulty` (`403`/`422`), не изменяет и `tourism_type_id`;
+- запрос, отклонённый из-за `official_difficulty` (`403`/`422`) или Geography (`422`), не изменяет и `tourism_type_id`;
 - редактирование открыто при `Event.status` `draft`/`published`/`in_progress`; при `completed` (исторический факт) и `cancelled`/`archived` — `409 trip_editing_closed`;
 - назначаемая запись должна существовать (`422 tourism_type_not_found`) и быть активной (`422 tourism_type_inactive`);
 - повтор уже сохранённого значения — no-op;
-- TourismType и Official Difficulty не выводятся автоматически ни из каких данных.
+- TourismType, Official Difficulty и Geography не выводятся автоматически ни из каких данных.
 
 ## 3.6 TourismType catalog
 
@@ -186,6 +189,51 @@ Authorization (отдельного permission нет): чтение — люб�
 - применимость к TourismType не проверяется (матрица TourismType × Difficulty не утверждена); Difficulty не выводится автоматически;
 - lifecycle — как у обычного редактирования Trip (§3.5): при `completed`/`cancelled`/`archived` — `409 trip_editing_closed`; Historical Correction Workflow не реализован;
 - Authorization (отдельного permission нет): чтение — вместе с Trip (`trip.read`); установка, изменение и снятие — `trip.manage` с scope `all` (Administrator). Instructor, управляющий Trip в своём scope, может создавать и редактировать Trip без Difficulty, но запрос с `official_difficulty` получает `403 forbidden`.
+
+## 3.8 Geography
+
+Реализовано (Issue #271; семантика — `trips-and-tourist-profile.md` §9).
+
+### Trip Geography
+
+Trip хранит `country_id` (0..1) и `region_id` (0..1) — ссылки на записи справочников, а не свободный текст; передаются в `POST /trips` и `PATCH /trips/{event_id}` и возвращаются в Trip.
+
+- запись, которая назначается Trip заново, должна существовать (`422 country_not_found`/`region_not_found`) и быть активной (`422 country_inactive`/`region_inactive`); запись, уже сохранённая в Trip, остаётся и после деактивации;
+- Region требует Country Trip и должен ей принадлежать, иначе `422 region_country_mismatch` (в том числе Region без Country, смена Country без смены Region и снятие Country при сохранённом Region); база данных повторяет это ограничение;
+- lifecycle и authorization — как у обычного редактирования Trip (§3.5): `trip.manage` + scope на Event (Instructor — в своём scope); при `completed`/`cancelled`/`archived` — `409 trip_editing_closed`; Historical Correction Workflow не реализован;
+- повтор сохранённой пары — no-op; Geography не выводится из маршрута, координат, GPX, названий мест или других данных.
+
+### Country catalog
+
+Стандартный набор ISO 3166-1 (249 кодов alpha-2) с русскими названиями загружается миграцией; источник названий — Unicode CLDR 48.2.0, локаль `ru` (`cldr-json`, тег `48.2.0`, `cldr-localenames-full/main/ru/territories.json`, основное — не `-alt` — название территории); `source_type = ISO_3166_1`. Названия зафиксированы в миграции: новые версии CLDR не меняют существующие записи.
+
+- `GET /countries` — `page`, `page_size` (1–100), `active`; сортировка по `name`, `id`;
+- `POST /countries` — `code` (ISO 3166-1 alpha-2, приводится к верхнему регистру, уникальный), `name` (русское каноническое название), `source_type`, `source_reference` (необязательные); создаётся активной;
+- `GET /countries/{country_id}`;
+- `PATCH /countries/{country_id}` — `code`, `name`, `source_type`, `source_reference` (`null` снимает provenance). После первого использования Country в Trip `code` и `name` не изменяются обычным редактированием: `409 country_in_use`;
+- `POST /countries/{country_id}/activate`;
+- `POST /countries/{country_id}/deactivate`.
+
+Ответ: `id`, `code`, `name`, `active`, `source_type`, `source_reference`, `created_at`, `updated_at`.
+
+### Region catalog
+
+Каждый Region имеет `semantic_type`; утверждённое значение — `administrative_subject`. Миграцией загружены ровно 89 субъектов Российской Федерации (Конституция РФ, ст. 65, ч. 1; канонический набор TourCRM, зафиксированный PO 2026-10-05): Country = `RU`, `semantic_type = administrative_subject`, `active = true`, `source_type = CONSTITUTION_RF_ARTICLE_65`; SHA-256 снимка набора в репозитории — `07be4af5094d98aed298e08cf769cb5144bf33fe4bf3b1d6b723658228240e03` (это хэш снимка TourCRM, а не загруженного документа Минюста). `code` этих записей — **внутренние коды TourCRM** (ASCII-транслитерация канонических названий, например `ADYGEA`, `MOSCOW`, `MOSCOW_OBLAST`), уникальные в пределах RU; они не являются кодами ОКАТО, ОКТМО, ISO 3166-2 или иными государственными кодами. Другие Region (Байконур, туристские/ФСТР-районы, другие страны) не загружаются.
+
+- `GET /regions` — `page`, `page_size` (1–100), `country_id`, `active`; сортировка по `name`, `id`;
+- `POST /regions` — `country_id` (существующая Country, иначе `422 country_not_found`), `code` (уникален в пределах Country), `name`, `semantic_type` (обязателен; только `administrative_subject`, задаётся при создании и не редактируется), `source_type`, `source_reference`; создаётся активной;
+- `GET /regions/{region_id}`;
+- `PATCH /regions/{region_id}` — `country_id`, `code`, `name`, `source_type`, `source_reference`. После первого использования Region в Trip `code`, `name` и `country_id` не изменяются обычным редактированием: `409 region_in_use`;
+- `POST /regions/{region_id}/activate`;
+- `POST /regions/{region_id}/deactivate`.
+
+Ответ: `id`, `country_id`, `code`, `name`, `semantic_type`, `active`, `source_type`, `source_reference`, `created_at`, `updated_at`.
+
+### Общее для справочников
+
+DELETE отсутствует: записи не удаляются физически; на записи, использованные Trip или Region, действует FK RESTRICT. Деактивация идемпотентна и не изменяет Trip, уже ссылающиеся на запись. Первое назначение записи Trip фиксирует её использование (это сохраняется и после снятия ссылки): с этого момента семантические поля неизменяемы обычным редактированием, а `active` и provenance остаются изменяемыми; до первого использования Administrator может менять семантические поля. Изменение семантики использованной записи — будущий correction/versioning workflow. `source_type`/`source_reference` — provenance записи справочника, а не подсистема Provenance/доказательств.
+
+Authorization (отдельного permission нет): чтение — любой grant `trip.read`; создание/изменение/активация/деактивация — `trip.manage` с scope `all` (Administrator); Instructor, Member и Guardian — `403 forbidden`. Ошибки: `404 not_found`, `409 country_code_conflict`, `409 region_code_conflict`, `409 country_in_use`, `409 region_in_use`, `422 country_not_found`, `422 invalid_geography`.
 
 ---
 
@@ -454,6 +502,9 @@ Endpoints:
 - `tourism_type_inactive` (422);
 - `tourism_type_code_conflict` (409, каталог);
 - `invalid_official_difficulty` (422);
+- `country_not_found`, `country_inactive`, `region_not_found`, `region_inactive`, `region_country_mismatch` (422, Trip Geography);
+- `country_code_conflict`, `region_code_conflict`, `country_in_use`, `region_in_use` (409, справочники Geography);
+- `invalid_geography` (422, справочники Geography);
 - `participation_missing` (422);
 - `actual_participation_lifecycle_closed` (409);
 - `trip_participant_historically_closed` (409).
