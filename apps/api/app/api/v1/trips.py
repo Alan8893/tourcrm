@@ -4,13 +4,14 @@ Canonical sources: docs/05-api/trips-and-tourist-profile-api.md §3/§4,
 docs/05-api/endpoint-inventory.md §11, docs/04-modules/trips-and-
 tourist-profile.md, and the Issue #245 PO/CTO decisions. Only the
 operations defined so far: attach a Trip to an existing Event (optionally
-with a TourismType and an Official Difficulty), read Trips, edit the
-Trip's TourismType (Issue #264) and Official Difficulty (Issue #268),
-read recorded TripParticipants, and record the confirmed
-`actual_participation` fact for an existing EventParticipation. No Trip
-status endpoint (a Trip has no lifecycle of its own — use the Event
-lifecycle endpoints), no participant add/remove (registration stays
-EventParticipation's, ADR-0037), no correction endpoint.
+with a TourismType, an Official Difficulty and Geography), read Trips,
+edit the Trip's TourismType (Issue #264), Official Difficulty (Issue
+#268) and Geography (Issue #271), read recorded TripParticipants, and
+record the confirmed `actual_participation` fact for an existing
+EventParticipation. No Trip status endpoint (a Trip has no lifecycle of
+its own — use the Event lifecycle endpoints), no participant add/remove
+(registration stays EventParticipation's, ADR-0037), no correction
+endpoint.
 
 A Trip is identified by its Event's id (`trips.event_id`).
 
@@ -55,6 +56,7 @@ from app.db.events import Event
 from app.db.session import get_db
 from app.db.trips import Trip, TripParticipant
 from app.events.authorization import build_event_resource_context
+from app.trips import geography as geography_service
 from app.trips import official_difficulty as official_difficulty_service
 from app.trips import service as trips_service
 from app.trips import tourism_types as tourism_type_service
@@ -119,6 +121,8 @@ def _trip_out(trip: Trip) -> TripOut:
             if difficulty is not None
             else None
         ),
+        country_id=trip.country_id,
+        region_id=trip.region_id,
         created_at=trip.created_at,
         updated_at=trip.updated_at,
     )
@@ -147,6 +151,19 @@ def _build_official_difficulty(
         raise APIError(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_official_difficulty", str(exc)
         ) from exc
+
+
+def _raise_for_geography_error(exc: geography_service.GeographyError) -> NoReturn:
+    codes: dict[type[geography_service.GeographyError], str] = {
+        geography_service.CountryNotFoundError: "country_not_found",
+        geography_service.CountryInactiveError: "country_inactive",
+        geography_service.RegionNotFoundError: "region_not_found",
+        geography_service.RegionInactiveError: "region_inactive",
+        geography_service.RegionCountryMismatchError: "region_country_mismatch",
+    }
+    raise APIError(
+        status.HTTP_422_UNPROCESSABLE_ENTITY, codes.get(type(exc), "invalid_geography"), str(exc)
+    ) from exc
 
 
 def _trip_participant_out(row: TripParticipant, person_id: uuid.UUID) -> TripParticipantOut:
@@ -226,12 +243,16 @@ def create_trip(
             actor_user_id=principal.user_id,
             tourism_type_id=payload.tourism_type_id,
             official_difficulty=official_difficulty,
+            country_id=payload.country_id,
+            region_id=payload.region_id,
             request_id=get_request_id(request),
         )
     except trips_service.TripError as exc:
         _raise_for_trip_error(exc)
     except tourism_type_service.TourismTypeError as exc:
         _raise_for_tourism_type_error(exc)
+    except geography_service.GeographyError as exc:
+        _raise_for_geography_error(exc)
     logger.info("trips.create.success event_id=%s user_id=%s", event.id, principal.user_id)
     return _trip_out(trip)
 
@@ -269,6 +290,23 @@ def update_trip(
     if difficulty_requested:
         require_official_difficulty_manager(db, user_id=principal.user_id, club_id=event.club_id)
     official_difficulty = _build_official_difficulty(payload.official_difficulty)
+    geography_requested = bool({"country_id", "region_id"} & payload.model_fields_set)
+    country_id = payload.country_id if "country_id" in payload.model_fields_set else trip.country_id
+    region_id = payload.region_id if "region_id" in payload.model_fields_set else trip.region_id
+    # Geography is checked up front as well (the setter re-checks under its
+    # own locks) so a rejected pair never lets an earlier field commit; a
+    # closed Trip is left to the setters' 409.
+    if geography_requested and event.status in trips_service.TRIP_EDITING_OPEN_EVENT_STATUSES:
+        try:
+            geography_service.resolve_trip_geography(
+                db,
+                country_id=country_id,
+                region_id=region_id,
+                current_country_id=trip.country_id,
+                current_region_id=trip.region_id,
+            )
+        except geography_service.GeographyError as exc:
+            _raise_for_geography_error(exc)
     if "tourism_type_id" in payload.model_fields_set:
         try:
             trip = trips_service.set_trip_tourism_type(
@@ -285,6 +323,15 @@ def update_trip(
             )
         except trips_service.TripError as exc:
             _raise_for_trip_error(exc)
+    if geography_requested:
+        try:
+            trip = trips_service.set_trip_geography(
+                db, event=event, trip=trip, country_id=country_id, region_id=region_id
+            )
+        except trips_service.TripError as exc:
+            _raise_for_trip_error(exc)
+        except geography_service.GeographyError as exc:
+            _raise_for_geography_error(exc)
     logger.info("trips.update.success event_id=%s user_id=%s", event_id, principal.user_id)
     return _trip_out(trip)
 

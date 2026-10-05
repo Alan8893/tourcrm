@@ -10,9 +10,10 @@ Issue #245 PO/CTO decisions (G1-G9, GAP-A/GAP-B).
 Trip is a 1:0..1 extension of an ordinary `Event`; it has no lifecycle
 of its own (its lifecycle is the Event's, ADR-0018). Its tourism
 attributes so far are the optional TourismType catalog reference (Issue
-#264, trips-and-tourist-profile.md §3) and the optional Official
-Difficulty (Issue #268, §4); the other Tourism Facts v2 facts
-(geography, duration, result, route) are later slices.
+#264, trips-and-tourist-profile.md §3), the optional Official
+Difficulty (Issue #268, §4) and the optional Geography — Country and
+Region catalog references (Issue #271, §9); the other Tourism Facts v2
+facts (duration, result, route) are later slices.
 
 - `trips.event_id` is the primary key. Together with the `event_type`
   column (CHECK `= 'trip'`) it forms the composite FK
@@ -59,6 +60,12 @@ TRIP_EVENT_TYPE = "trip"
 TRIP_EVENT_FK = "fk_trips_event_id_event_type"
 TRIP_PRIMARY_KEY = "pk_trips"
 TOURISM_TYPE_CODE_UNIQUE = "uq_tourism_types_code"
+COUNTRY_CODE_UNIQUE = "uq_countries_code"
+REGION_COUNTRY_CODE_UNIQUE = "uq_regions_country_id_code"
+# trips-and-tourist-profile.md §9: the approved Region semantic types.
+REGION_SEMANTIC_TYPE_ADMINISTRATIVE_SUBJECT = "administrative_subject"
+REGION_SEMANTIC_TYPES: tuple[str, ...] = (REGION_SEMANTIC_TYPE_ADMINISTRATIVE_SUBJECT,)
+TRIP_REGION_FK = "fk_trips_region_id_country_id"
 
 # Issue #268 (trips-and-tourist-profile.md §4): the approved Official
 # Difficulty combinations, enforced by the database as well as by
@@ -117,6 +124,125 @@ class TourismType(Base):
     )
 
 
+class Country(Base):
+    """Country reference catalog (Issue #271; trips-and-tourist-profile.md
+    §9, Issue #258, PR #270).
+
+    `code` is the stable ISO 3166-1 alpha-2 code (machine identifier),
+    `name` the canonical Russian display name. The standard ISO 3166-1
+    set is loaded by the migration that creates this table. Entries are
+    never physically deleted — the lifecycle is `active` true/false — and
+    every reference to them is ON DELETE RESTRICT. `source_type`/
+    `source_reference` are the entry's provenance (where the definition
+    comes from), not a generic Provenance subsystem. Once a Trip has
+    referenced the entry (`first_used_at`), `code` and `name` can no longer
+    change through ordinary editing."""
+
+    __tablename__ = "countries"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code: Mapped[str] = mapped_column(sa.String(2), nullable=False)
+    name: Mapped[str] = mapped_column(sa.String(255), nullable=False)
+    active: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, default=True, server_default=sa.true()
+    )
+    source_type: Mapped[Optional[str]] = mapped_column(sa.String(64), nullable=True)
+    source_reference: Mapped[Optional[str]] = mapped_column(sa.String(500), nullable=True)
+    # §9: set when a Trip first references the entry; from then on its
+    # semantic fields are immutable by ordinary editing (never cleared).
+    first_used_at: Mapped[Optional[datetime]] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        server_default=sa.func.now(),
+        onupdate=sa.func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint("code", name=COUNTRY_CODE_UNIQUE),
+        sa.CheckConstraint("code ~ '^[A-Z]{2}$'", name="ck_countries_code_iso_alpha2"),
+        sa.CheckConstraint("length(btrim(name)) > 0", name="ck_countries_name_not_blank"),
+        sa.CheckConstraint(
+            "source_type IS NULL OR length(btrim(source_type)) > 0",
+            name="ck_countries_source_type_not_blank",
+        ),
+        sa.CheckConstraint(
+            "source_reference IS NULL OR length(btrim(source_reference)) > 0",
+            name="ck_countries_source_reference_not_blank",
+        ),
+    )
+
+
+class Region(Base):
+    """Region reference catalog (Issue #271; trips-and-tourist-profile.md
+    §9). A Region belongs to exactly one Country and carries a semantic
+    type; the only approved one is `administrative_subject` (the subjects
+    of the Russian Federation). `code` is unique within its Country. `(id, country_id)` is
+    unique so a Trip can reference the pair: changing the Country of a
+    Region some Trip already references is rejected by the database
+    (ON UPDATE RESTRICT), so history never silently changes meaning. Once a
+    Trip has referenced the Region (`first_used_at`), `code`, `name` and
+    `country_id` can no longer change through ordinary editing."""
+
+    __tablename__ = "regions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    country_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    code: Mapped[str] = mapped_column(sa.String(64), nullable=False)
+    name: Mapped[str] = mapped_column(sa.String(255), nullable=False)
+    # §9: what kind of Region this is; set at creation, never edited.
+    semantic_type: Mapped[str] = mapped_column(sa.String(64), nullable=False)
+    active: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, default=True, server_default=sa.true()
+    )
+    source_type: Mapped[Optional[str]] = mapped_column(sa.String(64), nullable=True)
+    source_reference: Mapped[Optional[str]] = mapped_column(sa.String(500), nullable=True)
+    # §9: set when a Trip first references the entry; from then on its
+    # semantic fields are immutable by ordinary editing (never cleared).
+    first_used_at: Mapped[Optional[datetime]] = mapped_column(
+        sa.DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        server_default=sa.func.now(),
+        onupdate=sa.func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["country_id"],
+            ["countries.id"],
+            name="fk_regions_country_id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        sa.UniqueConstraint("country_id", "code", name=REGION_COUNTRY_CODE_UNIQUE),
+        sa.UniqueConstraint("id", "country_id", name="uq_regions_id_country_id"),
+        sa.CheckConstraint("length(btrim(code)) > 0", name="ck_regions_code_not_blank"),
+        sa.CheckConstraint(
+            "semantic_type IN ('administrative_subject')", name="ck_regions_semantic_type"
+        ),
+        sa.CheckConstraint("length(btrim(name)) > 0", name="ck_regions_name_not_blank"),
+        sa.CheckConstraint(
+            "source_type IS NULL OR length(btrim(source_type)) > 0",
+            name="ck_regions_source_type_not_blank",
+        ),
+        sa.CheckConstraint(
+            "source_reference IS NULL OR length(btrim(source_reference)) > 0",
+            name="ck_regions_source_reference_not_blank",
+        ),
+    )
+
+
 class Trip(Base):
     """The tourism-specific extension of one ordinary `Event(type=trip)`."""
 
@@ -132,6 +258,11 @@ class Trip(Base):
     official_difficulty_mode: Mapped[Optional[str]] = mapped_column(sa.String(16), nullable=True)
     official_difficulty_value: Mapped[Optional[str]] = mapped_column(sa.String(8), nullable=True)
     official_difficulty_source: Mapped[Optional[str]] = mapped_column(sa.String(500), nullable=True)
+    # Issue #271: 0..1 Country and 0..1 Region — catalog references, never
+    # free text. A Region requires the Trip's Country and must belong to it
+    # (CHECK + composite FK below).
+    country_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    region_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
     )
@@ -167,6 +298,29 @@ class Trip(Base):
             "official_difficulty_source IS NULL OR length(btrim(official_difficulty_source)) > 0",
             name="ck_trips_official_difficulty_source_not_blank",
         ),
+        sa.ForeignKeyConstraint(
+            ["country_id"],
+            ["countries.id"],
+            name="fk_trips_country_id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        # Region must belong to the Trip's Country. With MATCH SIMPLE this
+        # FK is only checked when both columns are set — the CHECK below
+        # makes a Region without a Country impossible.
+        sa.ForeignKeyConstraint(
+            ["region_id", "country_id"],
+            ["regions.id", "regions.country_id"],
+            name=TRIP_REGION_FK,
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        sa.CheckConstraint(
+            "region_id IS NULL OR country_id IS NOT NULL",
+            name="ck_trips_region_requires_country",
+        ),
+        sa.Index("ix_trips_country_id", "country_id"),
+        sa.Index("ix_trips_region_id", "region_id"),
     )
 
 
@@ -211,10 +365,17 @@ class TripParticipant(Base):
 
 __all__ = [
     "TourismType",
+    "Country",
+    "Region",
     "Trip",
     "TripParticipant",
     "TRIP_EVENT_TYPE",
     "TRIP_EVENT_FK",
     "TRIP_PRIMARY_KEY",
     "TOURISM_TYPE_CODE_UNIQUE",
+    "COUNTRY_CODE_UNIQUE",
+    "REGION_COUNTRY_CODE_UNIQUE",
+    "REGION_SEMANTIC_TYPE_ADMINISTRATIVE_SUBJECT",
+    "REGION_SEMANTIC_TYPES",
+    "TRIP_REGION_FK",
 ]

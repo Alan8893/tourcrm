@@ -40,6 +40,20 @@ TourismType (no applicability check) and never derived from any other
 fact. Who may set it is the caller's concern
 (app.trips.official_difficulty_authorization).
 
+## Geography (Issue #271, trips-and-tourist-profile.md §9)
+
+A Trip references 0..1 Country and 0..1 Region catalog entries
+(`country_id`, `region_id`), checked by
+app.trips.geography.resolve_trip_geography: newly assigned entries must
+exist and be active, a Region requires the Trip's Country and must
+belong to it (the database enforces the same pairing); the first
+assignment of an entry marks it used, which freezes its semantic fields
+(app.trips.geography). Both may be given
+at creation and set, changed or cleared through ordinary Trip editing
+under exactly the TourismType lifecycle above; re-sending the stored
+pair is a no-op. Deactivating a catalog entry never touches Trips that
+reference it. Geography is never derived from any other fact.
+
 ## actual_participation
 
 Recorded per EventParticipation of the Trip's Event (any
@@ -89,6 +103,7 @@ from app.achievements import triggers as achievement_triggers
 from app.audit.service import record_audit_event
 from app.db.events import Event, EventParticipation
 from app.db.trips import TRIP_EVENT_TYPE, TRIP_PRIMARY_KEY, Trip, TripParticipant
+from app.trips.geography import mark_geography_used, resolve_trip_geography
 from app.trips.official_difficulty import OfficialDifficulty, official_difficulty_of
 from app.trips.tourism_types import resolve_assignable_tourism_type
 
@@ -198,12 +213,14 @@ def create_trip(
     actor_user_id: uuid.UUID,
     tourism_type_id: Optional[uuid.UUID] = None,
     official_difficulty: Optional[OfficialDifficulty] = None,
+    country_id: Optional[uuid.UUID] = None,
+    region_id: Optional[uuid.UUID] = None,
     request_id: Optional[str] = None,
 ) -> Trip:
     """Attach a Trip to `event` (already loaded and locked by the caller),
-    optionally with an active TourismType and an Official Difficulty, and
-    record `trip.created` in the same transaction (see module docstring
-    "Audit")."""
+    optionally with an active TourismType, an Official Difficulty and
+    Geography, and record `trip.created` in the same transaction (see
+    module docstring "Audit")."""
     if event.event_type != TRIP_EVENT_TYPE:
         raise EventNotTripError(event_id=event.id, event_type=event.event_type)
     if event.status in TRIP_CREATION_CLOSED_EVENT_STATUSES:
@@ -212,13 +229,21 @@ def create_trip(
         raise TripAlreadyExistsError(event_id=event.id)
     if tourism_type_id is not None:
         resolve_assignable_tourism_type(session, tourism_type_id)
+    resolve_trip_geography(session, country_id=country_id, region_id=region_id)
 
     event_id = event.id
     try:
-        trip = Trip(event_id=event_id, event_type=event.event_type, tourism_type_id=tourism_type_id)
+        trip = Trip(
+            event_id=event_id,
+            event_type=event.event_type,
+            tourism_type_id=tourism_type_id,
+            country_id=country_id,
+            region_id=region_id,
+        )
         _apply_official_difficulty(trip, official_difficulty)
         session.add(trip)
         session.flush()
+        mark_geography_used(session, country_id=country_id, region_id=region_id)
         record_audit_event(
             session,
             action="trip.created",
@@ -279,6 +304,40 @@ def set_trip_official_difficulty(
         return trip
     try:
         _apply_official_difficulty(trip, official_difficulty)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return trip
+
+
+def set_trip_geography(
+    session: Session,
+    *,
+    event: Event,
+    trip: Trip,
+    country_id: Optional[uuid.UUID],
+    region_id: Optional[uuid.UUID],
+) -> Trip:
+    """Ordinary Trip editing of the Geography (see module docstring):
+    the full resulting (`country_id`, `region_id`) pair; `None` clears.
+    `event` is already loaded and locked by the caller. Setting the pair
+    already stored is a no-op."""
+    if event.status not in TRIP_EDITING_OPEN_EVENT_STATUSES:
+        raise TripEditingClosedError(event_id=event.id, status=event.status)
+    if (trip.country_id, trip.region_id) == (country_id, region_id):
+        return trip
+    resolve_trip_geography(
+        session,
+        country_id=country_id,
+        region_id=region_id,
+        current_country_id=trip.country_id,
+        current_region_id=trip.region_id,
+    )
+    try:
+        trip.country_id = country_id
+        trip.region_id = region_id
+        mark_geography_used(session, country_id=country_id, region_id=region_id)
         session.commit()
     except Exception:
         session.rollback()
@@ -391,5 +450,6 @@ __all__ = [
     "create_trip",
     "set_trip_tourism_type",
     "set_trip_official_difficulty",
+    "set_trip_geography",
     "record_actual_participation",
 ]

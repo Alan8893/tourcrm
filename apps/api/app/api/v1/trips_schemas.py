@@ -2,8 +2,9 @@
 
 Single-resource responses are returned directly per ADR-0014 (no `data`
 wrapper). Only the canonical fields implemented so far: the Trip carries
-the optional TourismType reference (Issue #264) and the optional
-structured Official Difficulty (Issue #268), and TripParticipant
+the optional TourismType reference (Issue #264), the optional
+structured Official Difficulty (Issue #268) and the optional Geography
+— Country and Region references (Issue #271) —, and TripParticipant
 exposes the confirmed `actual_participation` fact plus its identity —
 never a registration status (that stays on EventParticipation).
 """
@@ -43,21 +44,29 @@ class TripCreateRequest(BaseModel):
     tourism_type_id: Optional[UUID] = None
     # Issue #268: optional Official Difficulty (Administrator only).
     official_difficulty: Optional[OfficialDifficultyIn] = None
+    # Issue #271: optional Geography (active entries; Region of the Country).
+    country_id: Optional[UUID] = None
+    region_id: Optional[UUID] = None
 
 
 class TripUpdateRequest(BaseModel):
-    """Ordinary Trip editing (Issues #264, #268). Only fields present in
-    the body are changed; `tourism_type_id: null` clears the TourismType,
-    `official_difficulty: null` clears the Official Difficulty."""
+    """Ordinary Trip editing (Issues #264, #268, #271). Only fields present
+    in the body are changed; `null` clears the TourismType, the Official
+    Difficulty, the Country or the Region. The resulting Region must
+    belong to the resulting Country."""
 
     tourism_type_id: Optional[UUID] = None
     official_difficulty: Optional[OfficialDifficultyIn] = None
+    country_id: Optional[UUID] = None
+    region_id: Optional[UUID] = None
 
 
 class TripOut(BaseModel):
     event_id: UUID
     tourism_type_id: Optional[UUID]
     official_difficulty: Optional[OfficialDifficultyOut]
+    country_id: Optional[UUID]
+    region_id: Optional[UUID]
     created_at: datetime
     updated_at: datetime
 

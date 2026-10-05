@@ -261,6 +261,8 @@ Planned и Actual характеристики не смешиваются и н
 
 Отдельные справочники географии: Region принадлежит ровно одной Country; деактивация вместо удаления; provenance записи (`source_type`, `source_reference`). Семантика — `docs/04-modules/trips-and-tourist-profile.md` §9.
 
+Реализовано (Issue #271): Country — `code` (ISO 3166-1 alpha-2, уникальный), `name` (русское каноническое название), `active`, provenance; стандартный набор ISO 3166-1 с русскими названиями Unicode CLDR 48.2.0 (`ru`) загружается миграцией. Region — `country_id`, `code` (уникален в пределах Country), `name`, `semantic_type` (`administrative_subject`), `active`, provenance; миграцией загружены 89 субъектов РФ (Конституция РФ, ст. 65, ч. 1; Country = `RU`, `administrative_subject`), их `code` — внутренние коды TourCRM без значения ОКАТО/ОКТМО/ISO 3166-2. После первого использования в Trip семантические поля записи (`code`/`name`, для Region также `country_id`) не изменяются обычным редактированием. Trip хранит `country_id` и `region_id`; Region Trip всегда принадлежит Country Trip.
+
 ## 12. Skills / Qualifications / Achievements
 
 ### Skill
