@@ -8,10 +8,11 @@ docs/03-architecture/data-model.md §9 (`Event 1:0..1 Trip`), and the
 Issue #245 PO/CTO decisions (G1-G9, GAP-A/GAP-B).
 
 Trip is a 1:0..1 extension of an ordinary `Event`; it has no lifecycle
-of its own (its lifecycle is the Event's, ADR-0018). Its only tourism
-attribute so far is the optional TourismType catalog reference (Issue
-#264, trips-and-tourist-profile.md §3); the other Tourism Facts v2 facts
-(difficulty, geography, duration, result, route) are later slices.
+of its own (its lifecycle is the Event's, ADR-0018). Its tourism
+attributes so far are the optional TourismType catalog reference (Issue
+#264, trips-and-tourist-profile.md §3) and the optional Official
+Difficulty (Issue #268, §4); the other Tourism Facts v2 facts
+(geography, duration, result, route) are later slices.
 
 - `trips.event_id` is the primary key. Together with the `event_type`
   column (CHECK `= 'trip'`) it forms the composite FK
@@ -59,6 +60,28 @@ TRIP_EVENT_FK = "fk_trips_event_id_event_type"
 TRIP_PRIMARY_KEY = "pk_trips"
 TOURISM_TYPE_CODE_UNIQUE = "uq_tourism_types_code"
 
+# Issue #268 (trips-and-tourist-profile.md §4): the approved Official
+# Difficulty combinations, enforced by the database as well as by
+# app.trips.official_difficulty. All three columns NULL = no Difficulty.
+_OFFICIAL_DIFFICULTY_COMBINATIONS_SQL = (
+    # COALESCE: a CHECK whose expression is NULL passes, and `value IN
+    # (...)`/`mode = ...` are NULL for a NULL column — never let that
+    # unknown slip through as "allowed".
+    "COALESCE("
+    "(official_difficulty_mode IS NULL"
+    " AND official_difficulty_value IS NULL AND official_difficulty_source IS NULL)"
+    " OR (official_difficulty_mode = 'NONE' AND official_difficulty_value IS NULL)"
+    " OR (official_difficulty_mode = 'DEGREE'"
+    " AND official_difficulty_value IN ('I', 'II', 'III')"
+    " AND official_difficulty_source IS NOT NULL)"
+    " OR (official_difficulty_mode = 'CATEGORY'"
+    " AND official_difficulty_value IN ('I', 'II', 'III', 'IV', 'V', 'VI')"
+    " AND official_difficulty_source IS NOT NULL)"
+    " OR (official_difficulty_mode = 'WEEKEND' AND official_difficulty_value IS NULL"
+    " AND official_difficulty_source IS NOT NULL),"
+    " false)"
+)
+
 
 class TourismType(Base):
     """TourismType reference catalog (Issue #264;
@@ -103,6 +126,12 @@ class Trip(Base):
     event_type: Mapped[str] = mapped_column(sa.String(32), nullable=False, default=TRIP_EVENT_TYPE)
     # Issue #264: 0..1 TourismType — a catalog reference, never free text.
     tourism_type_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # Issue #268: 0..1 Official Difficulty — one structured classification
+    # (mode, value for DEGREE/CATEGORY, source). Stored on the Trip row
+    # itself, so a Trip can never carry more than one.
+    official_difficulty_mode: Mapped[Optional[str]] = mapped_column(sa.String(16), nullable=True)
+    official_difficulty_value: Mapped[Optional[str]] = mapped_column(sa.String(8), nullable=True)
+    official_difficulty_source: Mapped[Optional[str]] = mapped_column(sa.String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
     )
@@ -131,6 +160,13 @@ class Trip(Base):
             onupdate="RESTRICT",
         ),
         sa.Index("ix_trips_tourism_type_id", "tourism_type_id"),
+        sa.CheckConstraint(
+            _OFFICIAL_DIFFICULTY_COMBINATIONS_SQL, name="ck_trips_official_difficulty_combination"
+        ),
+        sa.CheckConstraint(
+            "official_difficulty_source IS NULL OR length(btrim(official_difficulty_source)) > 0",
+            name="ck_trips_official_difficulty_source_not_blank",
+        ),
     )
 
 

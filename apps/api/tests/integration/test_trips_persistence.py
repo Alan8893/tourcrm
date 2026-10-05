@@ -337,12 +337,16 @@ def test_participation_with_a_trip_participant_cannot_be_deleted_no_cascade() ->
 @requires_postgres
 def test_trip_tables_carry_no_duplicated_registration_or_tourism_columns() -> None:
     inspector = sa.inspect(get_engine())
-    # Issue #264: the TourismType catalog reference is the only tourism
-    # column; no registration or free-text tourism column exists.
+    # Issues #264/#268: the TourismType catalog reference and the
+    # structured Official Difficulty are the only tourism columns; no
+    # registration or free-text tourism column exists.
     assert {c["name"] for c in inspector.get_columns("trips")} == {
         "event_id",
         "event_type",
         "tourism_type_id",
+        "official_difficulty_mode",
+        "official_difficulty_value",
+        "official_difficulty_source",
         "created_at",
         "updated_at",
     }

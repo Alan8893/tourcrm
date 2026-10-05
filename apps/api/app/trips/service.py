@@ -27,6 +27,19 @@ exactly as for Trip creation. Deactivating a catalog entry never touches
 Trips already referencing it. The TourismType is never derived from any
 other fact.
 
+## Official Difficulty (Issue #268, trips-and-tourist-profile.md §4)
+
+A Trip carries 0..1 Official Difficulty (mode, value, source), already
+validated by app.trips.official_difficulty.build_official_difficulty.
+It may be given at creation and set, changed or cleared through ordinary
+Trip editing under exactly the TourismType lifecycle above: open while
+the Event is `draft`/`published`/`in_progress`, closed when `completed`
+(historical — future correction workflow), `cancelled` or `archived`.
+Re-sending the stored Difficulty is a no-op. It is independent of the
+TourismType (no applicability check) and never derived from any other
+fact. Who may set it is the caller's concern
+(app.trips.official_difficulty_authorization).
+
 ## actual_participation
 
 Recorded per EventParticipation of the Trip's Event (any
@@ -76,6 +89,7 @@ from app.achievements import triggers as achievement_triggers
 from app.audit.service import record_audit_event
 from app.db.events import Event, EventParticipation
 from app.db.trips import TRIP_EVENT_TYPE, TRIP_PRIMARY_KEY, Trip, TripParticipant
+from app.trips.official_difficulty import OfficialDifficulty, official_difficulty_of
 from app.trips.tourism_types import resolve_assignable_tourism_type
 
 TRIP_CREATION_CLOSED_EVENT_STATUSES: tuple[str, ...] = ("cancelled", "archived")
@@ -171,17 +185,25 @@ def get_trip(session: Session, event_id: uuid.UUID) -> Optional[Trip]:
     return session.get(Trip, event_id)
 
 
+def _apply_official_difficulty(trip: Trip, difficulty: Optional[OfficialDifficulty]) -> None:
+    trip.official_difficulty_mode = difficulty.mode if difficulty is not None else None
+    trip.official_difficulty_value = difficulty.value if difficulty is not None else None
+    trip.official_difficulty_source = difficulty.source if difficulty is not None else None
+
+
 def create_trip(
     session: Session,
     *,
     event: Event,
     actor_user_id: uuid.UUID,
     tourism_type_id: Optional[uuid.UUID] = None,
+    official_difficulty: Optional[OfficialDifficulty] = None,
     request_id: Optional[str] = None,
 ) -> Trip:
     """Attach a Trip to `event` (already loaded and locked by the caller),
-    optionally with an active TourismType, and record `trip.created` in
-    the same transaction (see module docstring "Audit")."""
+    optionally with an active TourismType and an Official Difficulty, and
+    record `trip.created` in the same transaction (see module docstring
+    "Audit")."""
     if event.event_type != TRIP_EVENT_TYPE:
         raise EventNotTripError(event_id=event.id, event_type=event.event_type)
     if event.status in TRIP_CREATION_CLOSED_EVENT_STATUSES:
@@ -194,6 +216,7 @@ def create_trip(
     event_id = event.id
     try:
         trip = Trip(event_id=event_id, event_type=event.event_type, tourism_type_id=tourism_type_id)
+        _apply_official_difficulty(trip, official_difficulty)
         session.add(trip)
         session.flush()
         record_audit_event(
@@ -233,6 +256,29 @@ def set_trip_tourism_type(
         resolve_assignable_tourism_type(session, tourism_type_id)
     try:
         trip.tourism_type_id = tourism_type_id
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return trip
+
+
+def set_trip_official_difficulty(
+    session: Session,
+    *,
+    event: Event,
+    trip: Trip,
+    official_difficulty: Optional[OfficialDifficulty],
+) -> Trip:
+    """Ordinary Trip editing of the Official Difficulty (see module
+    docstring); `None` clears it. `event` is already loaded and locked by
+    the caller. Setting the Difficulty already stored is a no-op."""
+    if event.status not in TRIP_EDITING_OPEN_EVENT_STATUSES:
+        raise TripEditingClosedError(event_id=event.id, status=event.status)
+    if official_difficulty_of(trip) == official_difficulty:
+        return trip
+    try:
+        _apply_official_difficulty(trip, official_difficulty)
         session.commit()
     except Exception:
         session.rollback()
@@ -344,5 +390,6 @@ __all__ = [
     "get_trip",
     "create_trip",
     "set_trip_tourism_type",
+    "set_trip_official_difficulty",
     "record_actual_participation",
 ]

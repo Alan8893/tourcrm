@@ -4,8 +4,9 @@ Canonical sources: docs/05-api/trips-and-tourist-profile-api.md §3/§4,
 docs/05-api/endpoint-inventory.md §11, docs/04-modules/trips-and-
 tourist-profile.md, and the Issue #245 PO/CTO decisions. Only the
 operations defined so far: attach a Trip to an existing Event (optionally
-with a TourismType), read Trips, edit the Trip's TourismType (Issue
-#264), read recorded TripParticipants, and record the confirmed
+with a TourismType and an Official Difficulty), read Trips, edit the
+Trip's TourismType (Issue #264) and Official Difficulty (Issue #268),
+read recorded TripParticipants, and record the confirmed
 `actual_participation` fact for an existing EventParticipation. No Trip
 status endpoint (a Trip has no lifecycle of its own — use the Event
 lifecycle endpoints), no participant add/remove (registration stays
@@ -20,12 +21,16 @@ Event and `Authorizer` checks the permission's grants; the list uses
 `event_visibility_filter` (app.trips.queries). Existence-hiding as in
 the Event API: a missing Event, a missing Trip and an Event the caller
 may not act on under the endpoint's permission all receive the same
-404.
+404. Official Difficulty is administrative (trips-and-tourist-profile.md
+§4): giving, changing or clearing it additionally requires `trip.manage`
+with `all` scope (app.trips.official_difficulty_authorization) — a
+caller who may manage the Trip but not its Difficulty gets the generic
+403.
 """
 
 import logging
 import uuid
-from typing import NoReturn
+from typing import NoReturn, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
@@ -36,6 +41,8 @@ from app.api.errors import APIError
 from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.trips_schemas import (
+    OfficialDifficultyIn,
+    OfficialDifficultyOut,
     TripCreateRequest,
     TripOut,
     TripParticipantOut,
@@ -48,8 +55,10 @@ from app.db.events import Event
 from app.db.session import get_db
 from app.db.trips import Trip, TripParticipant
 from app.events.authorization import build_event_resource_context
+from app.trips import official_difficulty as official_difficulty_service
 from app.trips import service as trips_service
 from app.trips import tourism_types as tourism_type_service
+from app.trips.official_difficulty_authorization import require_official_difficulty_manager
 from app.trips.queries import TRIP_READ_PERMISSION, list_trip_participants, list_trips_page
 
 logger = logging.getLogger(__name__)
@@ -101,9 +110,15 @@ def _get_authorized_trip_event_or_404(
 
 
 def _trip_out(trip: Trip) -> TripOut:
+    difficulty = official_difficulty_service.official_difficulty_of(trip)
     return TripOut(
         event_id=trip.event_id,
         tourism_type_id=trip.tourism_type_id,
+        official_difficulty=(
+            OfficialDifficultyOut.model_validate(difficulty, from_attributes=True)
+            if difficulty is not None
+            else None
+        ),
         created_at=trip.created_at,
         updated_at=trip.updated_at,
     )
@@ -117,6 +132,21 @@ def _raise_for_tourism_type_error(exc: tourism_type_service.TourismTypeError) ->
     raise APIError(
         status.HTTP_422_UNPROCESSABLE_ENTITY, "tourism_type_not_found", str(exc)
     ) from exc
+
+
+def _build_official_difficulty(
+    payload: Optional[OfficialDifficultyIn],
+) -> Optional[official_difficulty_service.OfficialDifficulty]:
+    if payload is None:
+        return None
+    try:
+        return official_difficulty_service.build_official_difficulty(
+            mode=payload.mode, value=payload.value, source=payload.source
+        )
+    except official_difficulty_service.InvalidOfficialDifficultyError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_official_difficulty", str(exc)
+        ) from exc
 
 
 def _trip_participant_out(row: TripParticipant, person_id: uuid.UUID) -> TripParticipantOut:
@@ -186,12 +216,16 @@ def create_trip(
         permission_code=_TRIP_MANAGE_PERMISSION,
         lock=True,
     )
+    if payload.official_difficulty is not None:
+        require_official_difficulty_manager(db, user_id=principal.user_id, club_id=event.club_id)
+    official_difficulty = _build_official_difficulty(payload.official_difficulty)
     try:
         trip = trips_service.create_trip(
             db,
             event=event,
             actor_user_id=principal.user_id,
             tourism_type_id=payload.tourism_type_id,
+            official_difficulty=official_difficulty,
             request_id=get_request_id(request),
         )
     except trips_service.TripError as exc:
@@ -229,6 +263,12 @@ def update_trip(
         permission_code=_TRIP_MANAGE_PERMISSION,
         lock=True,
     )
+    # Everything that can reject the Official Difficulty without touching
+    # the Trip runs before any write, so a rejected body changes nothing.
+    difficulty_requested = "official_difficulty" in payload.model_fields_set
+    if difficulty_requested:
+        require_official_difficulty_manager(db, user_id=principal.user_id, club_id=event.club_id)
+    official_difficulty = _build_official_difficulty(payload.official_difficulty)
     if "tourism_type_id" in payload.model_fields_set:
         try:
             trip = trips_service.set_trip_tourism_type(
@@ -238,6 +278,13 @@ def update_trip(
             _raise_for_trip_error(exc)
         except tourism_type_service.TourismTypeError as exc:
             _raise_for_tourism_type_error(exc)
+    if difficulty_requested:
+        try:
+            trip = trips_service.set_trip_official_difficulty(
+                db, event=event, trip=trip, official_difficulty=official_difficulty
+            )
+        except trips_service.TripError as exc:
+            _raise_for_trip_error(exc)
     logger.info("trips.update.success event_id=%s user_id=%s", event_id, principal.user_id)
     return _trip_out(trip)
 

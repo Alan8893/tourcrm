@@ -30,7 +30,7 @@
 
 Event хранит общие свойства мероприятия: название, время, место, статус, организаторов и участников.
 
-Trip хранит туристскую специфику. Семантика туристских фактов Trip (Tourism Facts v2: TourismType, Official Difficulty, Geography, Duration Classification, Result, Route/GPX) определяется этим документом (§3–§12). На текущем этапе реализованы Trip Foundation (контур Trip→Event и туристский факт участия) и TourismType Foundation (§20); остальные туристские факты (Official Difficulty, Geography, Duration Classification, Result, Route/GPX) ещё не реализованы и реализуются отдельными задачами строго по семантике этого документа.
+Trip хранит туристскую специфику. Семантика туристских фактов Trip (Tourism Facts v2: TourismType, Official Difficulty, Geography, Duration Classification, Result, Route/GPX) определяется этим документом (§3–§12). На текущем этапе реализованы Trip Foundation (контур Trip→Event и туристский факт участия), TourismType Foundation и Official Difficulty Foundation (§20); остальные туристские факты (Geography, Duration Classification, Result, Route/GPX) ещё не реализованы и реализуются отдельными задачами строго по семантике этого документа.
 
 Этот документ — единственный источник бизнес-семантики туристских фактов Trip. `docs/03-architecture/data-model.md`, `docs/02-requirements/roles-and-permissions.md` и `docs/05-api/endpoint-inventory.md` ссылаются на него и не определяют эту семантику самостоятельно.
 
@@ -489,9 +489,15 @@ BR-TRIP-010: Импортированные данные должны сохра
 - автоматической классификации TourismType нет;
 - TourismType пока не используется как metric в Achievement Engine (§15).
 
+Реализовано в Official Difficulty Foundation (семантика — §4):
+
+- необязательная Official Difficulty Trip — одна классификация из режима `NONE`/`DEGREE`/`CATEGORY`/`WEEKEND`, значения (только для `DEGREE` и `CATEGORY`) и `source`, обязательного для всех режимов, кроме `NONE`;
+- устанавливает и изменяет её только Administrator в рамках обычного редактирования Trip; Trip, Event которого завершён, отменён или архивирован, закрыт для обычного изменения Difficulty;
+- матрицы применимости TourismType × Difficulty, автоматической классификации, Club Assessment, общей модели Provenance и Historical Correction Workflow нет;
+- Official Difficulty пока не используется как metric в Achievement Engine (§15).
+
 Семантика утверждена этим документом, но **ещё не реализована**:
 
-- Official Difficulty (§4) — без универсальной матрицы TourismType × Difficulty;
 - Geography (§9) — справочники Country/Region; значения Region не утверждены;
 - Duration Classification (§10);
 - Result (§8);
