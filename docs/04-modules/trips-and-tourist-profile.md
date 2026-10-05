@@ -504,7 +504,7 @@ BR-TRIP-010: Импортированные данные должны сохра
 
 Реализовано в Official Difficulty Foundation (семантика — §4):
 
-- необязательная Official Difficulty Trip — одна классификация из режима `NONE`/`DEGREE`/`CATEGORY`/`WEEKEND`, значения (только для `DEGREE` и `CATEGORY`) и `source`, обязательного для всех режимов, кроме `NONE`;
+- необязательная Official Difficulty Trip — одна классификация из режима `NONE`/`DEGREE`/`CATEGORY`, значения для `DEGREE` и `CATEGORY` и `source`, обязательного для всех режимов, кроме `NONE`; ПВД/поход выходного дня/некатегорийная классификация маршрута в Official Difficulty не входит;
 - устанавливает и изменяет её только Administrator в рамках обычного редактирования Trip; Trip, Event которого завершён, отменён или архивирован, закрыт для обычного изменения Difficulty;
 - матрицы применимости TourismType × Difficulty, автоматической классификации, Club Assessment, общей модели Provenance и Historical Correction Workflow нет;
 - Official Difficulty пока не используется как metric в Achievement Engine (§15).
