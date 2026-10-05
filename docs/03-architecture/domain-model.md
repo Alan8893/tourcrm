@@ -343,56 +343,51 @@ Canonical statuses: exactly `present`/`absent`. Absence reasons are a closed MVP
 
 ### Назначение
 
-Расширение Event для туристского похода/выезда.
+Туристское расширение Event для похода/выезда: `Event(type=trip) 1:0..1 Trip`. Бизнес-семантика Trip и его туристских фактов (Tourism Facts v2) определяется `docs/04-modules/trips-and-tourist-profile.md`; логическая структура — `docs/03-architecture/data-model.md` §9–§11. Этот раздел не является отдельным источником бизнес-правил.
+
+### Lifecycle
+
+Собственного lifecycle/status у Trip нет: используется lifecycle связанного Event (ADR-0018).
 
 ### Содержит
 
-- event_id;
-- tourism_type;
-- difficulty_category;
-- region;
-- route_id;
-- planned_distance;
-- actual_distance;
-- planned_duration;
-- actual_duration;
-- leader;
-- notes;
-- result/status.
+- event_id — обязательная связь с Event типа `trip`;
+- TourismType — 0..1 ссылка на справочник TourismType (не свободный текст);
+- Official Difficulty — не более одной официальной классификации: режим `NONE`/`DEGREE`/`CATEGORY`/`WEEKEND`, значение для `DEGREE` (I–III) или `CATEGORY` (I–VI), основание/source; `DEGREE` и `CATEGORY` взаимоисключающие;
+- Geography — 0..1 ссылка на Country и 0..1 ссылка на Region (Region принадлежит Country);
+- Duration Classification — `ONE_DAY`/`MULTI_DAY`/`UNCLASSIFIED`, отдельно от календарной длительности Event;
+- Result — `COMPLETED`/`PARTIALLY_COMPLETED`/`NOT_COMPLETED`, отдельно от lifecycle Event;
+- Route — физическое описание маршрута Trip (§14).
+
+Туристские факты независимы и не выводятся друг из друга автоматически (`trips-and-tourist-profile.md` §12). На текущем этапе реализован только Trip Foundation (`event_id`, TripParticipant); остальные факты реализуются отдельными задачами.
+
+Руководитель похода, плановая/фактическая продолжительность и заметки не являются каноническими туристскими фактами Trip без отдельного решения; плановая/фактическая дистанция относится к Planned/Actual представлениям Route.
 
 ## 13. TripParticipant
 
-Специализированные данные участия в походе:
+Туристское расширение `EventParticipation` для Trip: `EventParticipation 1:0..1 TripParticipant`.
 
-- person_id;
-- role_in_trip;
-- segment/part, если требуется;
-- actual participation;
-- completed_distance;
-- result;
-- notes.
+- Person определяется через EventParticipation и не дублируется;
+- регистрация остаётся `EventParticipation.registration_status`; собственного registration status у TripParticipant нет;
+- `actual_participation` — отдельный подтверждаемый туристский факт; Attendance остаётся отдельным операционным фактом;
+- роль в походе, сегменты участия, пройденная дистанция участника, индивидуальный результат и заметки не являются частью текущего контракта и требуют отдельного решения.
 
 Это позволяет не смешивать обычную регистрацию на событие с туристским стажем.
 
 ## 14. Route
 
-Логическая сущность маршрута.
+Каноническое физическое описание маршрута, связанное с Trip (`trips-and-tourist-profile.md` §11). Route — не классификатор: он не содержит и не определяет TourismType, Official Difficulty, Geography, Duration Classification или Result.
 
-Может включать:
+Route содержит раздельные представления:
 
-- название;
-- вид туризма;
-- регион;
-- описание;
-- плановую/фактическую дистанцию;
-- профиль высот;
-- точки;
-- GPX-файлы;
-- внешние ссылки.
+- Planned — плановая геометрия/точки, planned distance, planned elevation gain (если доступны данные высоты), необязательный Planned GPX;
+- Actual — фактическая геометрия/точки, actual distance, actual elevation gain (если доступны данные высоты), необязательный Actual GPX.
+
+Planned и Actual не смешиваются и не подменяют друг друга; технические характеристики воспроизводимы из соответствующего источника.
 
 ## 15. RoutePoint
 
-Географическая точка маршрута:
+Географическая точка маршрута, принадлежащая одному представлению — Planned или Actual:
 
 - latitude;
 - longitude;
@@ -406,9 +401,14 @@ Canonical statuses: exactly `present`/`absent`. Absence reasons are a closed MVP
 
 GPX хранится как файл/объект хранилища с метаданными.
 
+- GPX имеет явную роль: `PLANNED` или `ACTUAL`;
+- у Route не более одного канонического Planned GPX и не более одного канонического Actual GPX; дополнительные файлы — provenance/архивные артефакты, не канонические автоматически;
+- при `Trip → completed` текущий Actual GPX фиксируется как исторический факт; после завершения замена — только через будущий Historical Correction Workflow;
+- управление — существующий `trip.manage` и его scope; отдельной подсистемы версионирования GPX и отдельных GPX permissions нет.
+
 Исходный файл не должен помещаться непосредственно в PostgreSQL blob без отдельного обоснования.
 
-Производные данные могут индексироваться в БД для поиска и аналитики.
+Производные данные могут индексироваться в БД для поиска и аналитики, но не определяют туристские классификации.
 
 ## 17. TouristProfile
 
