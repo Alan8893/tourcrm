@@ -2328,3 +2328,274 @@ describe("EventsPage — deep link from a News item (TH-0120 / Issue #227)", () 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });
+
+// --- Manual status control (Issue #281 / ADR-0018) --------------------------
+
+type LifecycleRequest = { url: string; method: string; body: unknown };
+
+/** A stateful backend stub for one Event: GET returns the current status,
+ * POST /status and /archive apply the requested transition (or the
+ * configured rejection) and every request is recorded. */
+function mockLifecycleApi({
+  status,
+  rejection,
+}: {
+  status: string;
+  rejection?: { code: string; message: string; status: number };
+}) {
+  const range = fixedRange();
+  const state = { status, cancellation_reason: null as string | null };
+  const requests: LifecycleRequest[] = [];
+  let calendarCalls = 0;
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const method = init?.method ?? "GET";
+    requests.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    if (url.includes("/auth/me")) return jsonResponse(meResponse());
+    if (url.includes("/groups?status=active")) return jsonResponse(groupsResponse());
+    if (url.includes(encodeURIComponent(range.from))) {
+      calendarCalls += 1;
+      return jsonResponse(
+        calendarResponse([
+          calendarItem({
+            id: "ev-1",
+            title: "Ориентирование",
+            status,
+            start_at: "2026-03-15T17:00:00+03:00",
+            end_at: "2026-03-15T19:00:00+03:00",
+          }),
+        ]),
+      );
+    }
+    if (method === "POST" && (url.endsWith("/events/ev-1/status") || url.endsWith("/events/ev-1/archive"))) {
+      if (rejection) {
+        return jsonResponse(
+          { error: { code: rejection.code, message: rejection.message, details: {}, request_id: "r1" } },
+          rejection.status,
+        );
+      }
+      const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, string>) : {};
+      state.status = url.endsWith("/archive") ? "archived" : body.status;
+      state.cancellation_reason = body.cancellation_reason ?? state.cancellation_reason;
+      return jsonResponse(eventDetailResponse({ ...state }));
+    }
+    if (url.includes("/events/ev-1") && method === "GET") {
+      return jsonResponse(eventDetailResponse({ ...state }));
+    }
+    throw new Error(`Unexpected fetch: ${url} ${method}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return { requests, calendarCalls: () => calendarCalls };
+}
+
+async function openLifecycleEvent(title = "Ориентирование") {
+  renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+  const user = userEvent.setup();
+  const [entry] = await screen.findAllByText(title);
+  await user.click(entry);
+  const dialog = await screen.findByRole("dialog");
+  return { user, dialog };
+}
+
+const ALL_STATUS_ACTION_LABELS = ["Опубликовать", "Начать", "Завершить", "Отменить", "Архивировать"];
+
+describe("EventsPage — manual status control (Issue #281)", () => {
+  it.each([
+    ["draft", ["Опубликовать"]],
+    ["published", ["Начать", "Отменить"]],
+    ["in_progress", ["Завершить", "Отменить"]],
+    ["completed", ["Архивировать"]],
+    ["cancelled", ["Архивировать"]],
+  ])("shows only the canonical actions for a %s Event", async (status, expected) => {
+    mockLifecycleApi({ status });
+    const { dialog } = await openLifecycleEvent();
+    const group = await within(dialog).findByRole("group", { name: "Статус события" });
+    const labels = within(group)
+      .getAllByRole("button")
+      .map((button) => button.textContent?.trim());
+    expect(labels).toEqual(expected);
+    for (const label of ALL_STATUS_ACTION_LABELS.filter((label) => !expected.includes(label))) {
+      expect(within(group).queryByRole("button", { name: label })).not.toBeInTheDocument();
+    }
+  });
+
+  it("shows no status actions for an archived Event", async () => {
+    mockLifecycleApi({ status: "archived" });
+    const { dialog } = await openLifecycleEvent();
+    await within(dialog).findByText("Парк, ул. Лесная, 5");
+    expect(within(dialog).getByText("В архиве")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("group", { name: "Статус события" })).not.toBeInTheDocument();
+    for (const label of ALL_STATUS_ACTION_LABELS) {
+      expect(within(dialog).queryByRole("button", { name: label })).not.toBeInTheDocument();
+    }
+  });
+
+  it("starts a published Event through POST /status and refreshes the displayed status and calendar", async () => {
+    const api = mockLifecycleApi({ status: "published" });
+    const { user, dialog } = await openLifecycleEvent();
+    const calendarCallsBefore = api.calendarCalls();
+
+    await user.click(await within(dialog).findByRole("button", { name: "Начать" }));
+
+    expect(await within(dialog).findByText("Идёт сейчас")).toBeInTheDocument();
+    expect(api.requests).toContainEqual({
+      url: "/api/v1/events/ev-1/status",
+      method: "POST",
+      body: { status: "in_progress" },
+    });
+    // The new status's own actions replace the old ones.
+    expect(await within(dialog).findByRole("button", { name: "Завершить" })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Начать" })).not.toBeInTheDocument();
+    await waitFor(() => expect(api.calendarCalls()).toBeGreaterThan(calendarCallsBefore));
+  });
+
+  it("completes an in-progress Event manually", async () => {
+    const api = mockLifecycleApi({ status: "in_progress" });
+    const { user, dialog } = await openLifecycleEvent();
+
+    await user.click(await within(dialog).findByRole("button", { name: "Завершить" }));
+
+    expect(await within(dialog).findByText("Завершено")).toBeInTheDocument();
+    expect(api.requests).toContainEqual({
+      url: "/api/v1/events/ev-1/status",
+      method: "POST",
+      body: { status: "completed" },
+    });
+    expect(await within(dialog).findByRole("button", { name: "Архивировать" })).toBeInTheDocument();
+  });
+
+  it("archives through the dedicated archive endpoint", async () => {
+    const api = mockLifecycleApi({ status: "completed" });
+    const { user, dialog } = await openLifecycleEvent();
+
+    await user.click(await within(dialog).findByRole("button", { name: "Архивировать" }));
+
+    expect(await within(dialog).findByText("В архиве")).toBeInTheDocument();
+    expect(api.requests.some((r) => r.method === "POST" && r.url === "/api/v1/events/ev-1/archive")).toBe(true);
+    expect(api.requests.some((r) => r.method === "POST" && r.url.endsWith("/status"))).toBe(false);
+    expect(within(dialog).queryByRole("group", { name: "Статус события" })).not.toBeInTheDocument();
+  });
+
+  it("asks for a cancellation reason, never sends an empty one, and shows the cancelled state", async () => {
+    const api = mockLifecycleApi({ status: "published" });
+    const { user, dialog } = await openLifecycleEvent();
+
+    await user.click(await within(dialog).findByRole("button", { name: "Отменить" }));
+    const reasonDialog = await screen.findByRole("dialog", { name: "Отменить событие" });
+    const submit = within(reasonDialog).getByRole("button", { name: "Отменить событие" });
+    expect(submit).toBeDisabled();
+
+    await user.type(within(reasonDialog).getByLabelText("Причина отмены"), "   ");
+    expect(submit).toBeDisabled();
+    expect(api.requests.some((r) => r.method === "POST")).toBe(false);
+
+    await user.clear(within(reasonDialog).getByLabelText("Причина отмены"));
+    await user.type(within(reasonDialog).getByLabelText("Причина отмены"), "  Штормовое предупреждение ");
+    await user.click(submit);
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Отменить событие" })).not.toBeInTheDocument(),
+    );
+    expect(api.requests).toContainEqual({
+      url: "/api/v1/events/ev-1/status",
+      method: "POST",
+      body: { status: "cancelled", cancellation_reason: "Штормовое предупреждение" },
+    });
+    expect(await within(dialog).findByText("Отменено")).toBeInTheDocument();
+    expect(within(dialog).getByText("Причина отмены: Штормовое предупреждение")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Архивировать" })).toBeInTheDocument();
+  });
+
+  it("closing the reason dialog sends nothing", async () => {
+    const api = mockLifecycleApi({ status: "in_progress" });
+    const { user, dialog } = await openLifecycleEvent();
+
+    await user.click(await within(dialog).findByRole("button", { name: "Отменить" }));
+    const reasonDialog = await screen.findByRole("dialog", { name: "Отменить событие" });
+    await user.click(within(reasonDialog).getByRole("button", { name: "Отмена" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Отменить событие" })).not.toBeInTheDocument(),
+    );
+    expect(api.requests.some((r) => r.method === "POST")).toBe(false);
+    expect(within(dialog).getByText("Идёт сейчас")).toBeInTheDocument();
+  });
+
+  it("shows the backend's rejection of a transition and keeps the current status", async () => {
+    mockLifecycleApi({
+      status: "published",
+      rejection: {
+        code: "invalid_status_transition",
+        message: "'completed' -> 'in_progress' is not an allowed transition",
+        status: 409,
+      },
+    });
+    const { user, dialog } = await openLifecycleEvent();
+
+    await user.click(await within(dialog).findByRole("button", { name: "Начать" }));
+
+    expect(
+      await screen.findByText("'completed' -> 'in_progress' is not an allowed transition"),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText("Запланировано")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Начать" })).toBeEnabled();
+  });
+
+  it("shows the backend's cancellation error inside the reason dialog", async () => {
+    mockLifecycleApi({
+      status: "published",
+      rejection: { code: "not_found", message: "Event not found", status: 404 },
+    });
+    const { user, dialog } = await openLifecycleEvent();
+
+    await user.click(await within(dialog).findByRole("button", { name: "Отменить" }));
+    const reasonDialog = await screen.findByRole("dialog", { name: "Отменить событие" });
+    await user.type(within(reasonDialog).getByLabelText("Причина отмены"), "Нет инструктора");
+    await user.click(within(reasonDialog).getByRole("button", { name: "Отменить событие" }));
+
+    expect(await within(reasonDialog).findByRole("alert")).toHaveTextContent("Event not found");
+    expect(screen.getByRole("dialog", { name: "Отменить событие" })).toBeInTheDocument();
+    expect(within(dialog).getByText("Запланировано")).toBeInTheDocument();
+  });
+
+  it("offers no status actions for a recurring occurrence (the status endpoint is Event-only)", async () => {
+    const range = fixedRange();
+    stubFetch([
+      { match: "/auth/me", response: meResponse() },
+      { match: "/groups?status=active", response: groupsResponse() },
+      {
+        match: encodeURIComponent(range.from),
+        response: calendarResponse([
+          calendarItem({
+            id: "occ-1",
+            kind: "occurrence",
+            title: "Вечерняя серия",
+            series_id: "series-1",
+            series_version: 1,
+            start_at: "2026-03-15T17:00:00+03:00",
+            end_at: "2026-03-15T19:00:00+03:00",
+          }),
+        ]),
+      },
+      {
+        match: "/events/occurrences/occ-1",
+        response: {
+          id: "occ-1",
+          series_id: "series-1",
+          club_id: "club-1",
+          name: "Вечерняя серия",
+          description: null,
+          event_type: "training",
+          starts_at: "2026-03-15T17:00:00+03:00",
+          ends_at: "2026-03-15T19:00:00+03:00",
+          timezone: "Europe/Moscow",
+          status: "scheduled",
+          cancellation_reason: null,
+        },
+      },
+    ]);
+    const { dialog } = await openLifecycleEvent("Вечерняя серия");
+    await within(dialog).findByRole("button", { name: "Редактировать" });
+    expect(within(dialog).queryByRole("group", { name: "Статус события" })).not.toBeInTheDocument();
+  });
+});

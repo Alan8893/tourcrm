@@ -6,10 +6,12 @@ tests/integration/test_events.py.
 """
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from app.events.lifecycle import (
+    ALLOWED_STATUS_TRANSITIONS,
     CancellationReasonRequiredError,
     InconsistentCoordinatesError,
     InvalidEventStatusError,
@@ -17,6 +19,7 @@ from app.events.lifecycle import (
     InvalidEventTypeError,
     InvalidTimeRangeError,
     InvalidTimezoneError,
+    time_based_status_transitions,
     validate_coordinates,
     validate_event_type,
     validate_status,
@@ -199,3 +202,128 @@ def test_latitude_without_longitude_is_rejected() -> None:
 def test_longitude_without_latitude_is_rejected() -> None:
     with pytest.raises(InconsistentCoordinatesError):
         validate_coordinates(None, 37.618423)
+
+
+# --- ADR-0018 time-based lifecycle synchronization (Issue #281) -------------
+
+_START = datetime(2026, 10, 5, 10, 0, tzinfo=timezone.utc)
+_END = datetime(2026, 10, 5, 11, 0, tzinfo=timezone.utc)
+
+
+def _due(status: str, now: datetime) -> tuple[str, ...]:
+    return time_based_status_transitions(status, start_at=_START, end_at=_END, now=now)
+
+
+def test_published_before_start_has_nothing_due() -> None:
+    assert _due("published", _START - timedelta(seconds=1)) == ()
+
+
+def test_published_becomes_in_progress_when_start_at_is_reached() -> None:
+    assert _due("published", _START) == ("in_progress",)
+    assert _due("published", _START + timedelta(minutes=30)) == ("in_progress",)
+
+
+def test_in_progress_before_end_has_nothing_due() -> None:
+    assert _due("in_progress", _END - timedelta(seconds=1)) == ()
+
+
+def test_in_progress_becomes_completed_when_end_at_is_reached() -> None:
+    assert _due("in_progress", _END) == ("completed",)
+    assert _due("in_progress", _END + timedelta(days=3)) == ("completed",)
+
+
+def test_missed_published_converges_through_in_progress_to_completed() -> None:
+    # Reconciliation first runs at 11:30 for a 10:00-11:00 Event.
+    assert _due("published", _END + timedelta(minutes=30)) == ("in_progress", "completed")
+
+
+@pytest.mark.parametrize("status", ["draft", "cancelled", "completed", "archived"])
+def test_statuses_outside_time_driven_edges_are_never_changed(status: str) -> None:
+    for now in (_START - timedelta(hours=1), _START, _END, _END + timedelta(days=30)):
+        assert _due(status, now) == ()
+
+
+def test_reapplying_after_convergence_is_idempotent() -> None:
+    now = _END + timedelta(minutes=30)
+    status = "published"
+    for step in _due(status, now):
+        validate_status_transition(status, step)
+        status = step
+    assert status == "completed"
+    assert _due(status, now) == ()
+
+
+def test_every_time_based_step_is_an_allowed_adr_0018_edge() -> None:
+    now = _END + timedelta(minutes=30)
+    for status in CANONICAL_EVENT_STATUSES:
+        previous = status
+        for step in _due(status, now):
+            assert step in ALLOWED_STATUS_TRANSITIONS[previous]
+            previous = step
+
+
+def test_manual_early_completion_remains_an_allowed_transition() -> None:
+    # Issue #281 G: in_progress -> completed is allowed before end_at.
+    validate_status_transition("in_progress", "completed")
+    # ...and once completed, time never moves it again.
+    assert _due("completed", _START + timedelta(minutes=5)) == ()
+
+
+@pytest.mark.parametrize(
+    ("tz_name", "local_start", "local_end"),
+    [
+        ("Asia/Tokyo", datetime(2026, 10, 5, 10, 0), datetime(2026, 10, 5, 11, 0)),
+        ("Europe/Moscow", datetime(2026, 10, 5, 10, 0), datetime(2026, 10, 5, 11, 0)),
+        ("America/Los_Angeles", datetime(2026, 10, 5, 10, 0), datetime(2026, 10, 5, 11, 0)),
+        # Spans the US DST fall-back hour (01:00-02:00 occurs twice).
+        ("America/New_York", datetime(2026, 11, 1, 0, 30), datetime(2026, 11, 1, 1, 30, fold=1)),
+    ],
+)
+def test_time_based_transitions_respect_the_event_timezone(
+    tz_name: str, local_start: datetime, local_end: datetime
+) -> None:
+    zone = ZoneInfo(tz_name)
+    start_at = local_start.replace(tzinfo=zone)
+    end_at = local_end.replace(tzinfo=zone)
+
+    def due(status: str, now: datetime) -> tuple[str, ...]:
+        return time_based_status_transitions(status, start_at=start_at, end_at=end_at, now=now)
+
+    # The same instants expressed in UTC: the Event's local wall-clock is
+    # never compared against UTC "by eye".
+    utc_start = start_at.astimezone(timezone.utc)
+    utc_end = end_at.astimezone(timezone.utc)
+    assert due("published", utc_start - timedelta(seconds=1)) == ()
+    assert due("published", utc_start) == ("in_progress",)
+    assert due("in_progress", utc_end - timedelta(seconds=1)) == ()
+    assert due("in_progress", utc_end) == ("completed",)
+    # Local wall-clock 10:30 in the Event's zone (not UTC 10:30).
+    midway = start_at + (end_at - start_at) / 2
+    assert due("published", midway.astimezone(timezone.utc)) == ("in_progress",)
+
+
+def test_new_york_dst_fold_end_is_two_hours_after_start() -> None:
+    zone = ZoneInfo("America/New_York")
+    start_at = datetime(2026, 11, 1, 0, 30, tzinfo=zone)
+    end_at = datetime(2026, 11, 1, 1, 30, fold=1, tzinfo=zone)
+    one_hour_in = start_at.astimezone(timezone.utc) + timedelta(hours=1, minutes=30)
+    # Wall-clock says 01:00 (first pass), but only 1.5h of the 2h elapsed.
+    assert (
+        time_based_status_transitions(
+            "in_progress", start_at=start_at, end_at=end_at, now=one_hour_in
+        )
+        == ()
+    )
+
+
+@pytest.mark.parametrize("naive", ["start_at", "end_at", "now"])
+def test_naive_datetimes_are_rejected(naive: str) -> None:
+    kwargs = {"start_at": _START, "end_at": _END, "now": _START}
+    kwargs[naive] = kwargs[naive].replace(tzinfo=None)
+    with pytest.raises(ValueError):
+        time_based_status_transitions("published", **kwargs)
+
+
+def test_non_canonical_status_is_rejected_by_time_based_transitions() -> None:
+    with pytest.raises(InvalidEventStatusError):
+        time_based_status_transitions("planned", start_at=_START, end_at=_END, now=_END)

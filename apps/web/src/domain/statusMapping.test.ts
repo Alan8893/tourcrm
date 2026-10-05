@@ -4,6 +4,7 @@ import {
   documentRequirementResultLabel,
   documentStatusIcon,
   documentTypeLabel,
+  eventStatusActions,
   eventStatusIcon,
   groupStatusIcon,
   instanceStateIcon,
@@ -64,5 +65,20 @@ describe("statusMapping", () => {
     expect(instanceStateLabel("issued")).toBe("Выдан");
     expect(instanceStateLabel("in_repair")).toBe("В ремонте");
     expect(instanceStateLabel("written_off")).toBe("Списан");
+  });
+});
+
+describe("eventStatusActions (Issue #281, ADR-0018)", () => {
+  it.each([
+    ["draft", [["published", false]]],
+    ["published", [["in_progress", false], ["cancelled", true]]],
+    ["in_progress", [["completed", false], ["cancelled", true]]],
+    ["completed", [["archived", false]]],
+    ["cancelled", [["archived", false]]],
+    ["archived", []],
+  ] as const)("offers only the canonical edges from %s", (status, expected) => {
+    expect(
+      eventStatusActions(status).map((action) => [action.target, action.requiresReason]),
+    ).toEqual(expected);
   });
 });

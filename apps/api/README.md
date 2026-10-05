@@ -358,3 +358,27 @@ non-business helpers (`unique_id()`, `unique_token()`, and the
 `technical_id`/`technical_token` fixtures) — opaque synthetic values with no
 Person/User/Trip/Finance meaning. Domain-specific fixtures are added by the
 Issues that introduce those domain models.
+
+## Event lifecycle reconciliation (Issue #281, ADR-0018)
+
+Event status follows the schedule for the two time-driven transitions:
+`published -> in_progress` once `start_at` is reached and
+`in_progress -> completed` once `end_at` is reached. The backend applies
+them with a periodic, operator-scheduled command (the same mechanism as
+`python -m app.cli.reconcile_achievements`):
+
+```bash
+cd apps/api
+python -m app.cli.reconcile_event_lifecycle
+```
+
+Schedule it frequently (e.g. every minute from cron or the deployment's
+job scheduler; in development:
+`docker compose exec backend python -m app.cli.reconcile_event_lifecycle`).
+A run converges every missed transition in one pass (an Event whose
+`end_at` already passed goes `published -> in_progress -> completed`), so
+the service never has to be running at the exact moment. It never
+publishes a `draft` and never changes a `cancelled`, `completed` or
+`archived` Event. It is idempotent and safe to run concurrently (each
+Event is reconciled under its row lock); it exits non-zero if any Event
+could not be reconciled, and the next run retries it.
