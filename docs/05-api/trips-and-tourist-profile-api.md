@@ -6,19 +6,17 @@
 
 Покрывает:
 
-- походы и туристские мероприятия;
-- участников походов;
-- маршруты и точки маршрутов;
-- GPX-файлы и геоданные;
-- туристский опыт;
-- навыки;
-- квалификации;
-- достижения и их выдачу.
+- походы (Trip) и факт участия (TripParticipant);
+- маршруты, точки маршрутов и GPX-файлы;
+- туристский профиль, навыки, квалификации (черновые, не реализованы);
+- ссылки на Achievement API.
 
 Документ опирается на:
 
+- `docs/04-modules/trips-and-tourist-profile.md` — семантика туристских фактов (Tourism Facts v2);
 - `docs/03-architecture/domain-model.md`;
 - `docs/03-architecture/data-model.md`;
+- `docs/05-api/endpoint-inventory.md`;
 - `docs/05-api/api-contract.md`;
 - `docs/05-api/auth-and-authorization.md`.
 
@@ -28,13 +26,15 @@
 
 ### 2.1 Source of truth
 
+Бизнес-семантика туристских фактов (Tourism Facts v2) определяется `docs/04-modules/trips-and-tourist-profile.md`; логическая модель — `docs/03-architecture/data-model.md`. Этот документ описывает API-контракт и не вводит собственных бизнес-правил.
+
 Первичными фактами туристской деятельности являются:
 
-- `Event`;
-- `Trip`;
-- `TripParticipant`;
-- `Route`;
-- загруженные GPX/file objects;
+- `Event` — владелец lifecycle (у Trip собственного lifecycle нет);
+- `Trip` — туристское расширение Event;
+- `EventParticipation` — канонический источник участия/регистрации;
+- `TripParticipant` — туристское расширение EventParticipation (`actual_participation`);
+- туристские факты Trip: TourismType, Official Difficulty, Geography, Duration Classification, Result, Route с Planned/Actual представлениями и GPX;
 - вручную подтверждённые квалификации;
 - `AchievementAward`.
 
@@ -44,17 +44,26 @@
 
 Каждый endpoint проверяет authentication и permission/scope.
 
-Доступ инструктору обычно ограничивается собственными группами/мероприятиями, а участнику — собственными данными. Доступ родителя ограничивается связанными детьми.
+Trip, TripParticipant, Route и Planned/Actual GPX используют существующие `trip.read`/`trip.manage` и их scope (`docs/02-requirements/roles-and-permissions.md` §7, §11.1). Отдельные Route/GPX permissions (`gpx.upload`, `route.manage` и аналоги) не существуют.
 
 ### 2.3 Historical integrity
 
-После завершения похода изменение фактов, влияющих на стаж, километраж, результаты и достижения, должно проходить через правила аудита и проверки целостности.
+Исторический туристский факт после завершения Trip (`Event.status = completed`) не изменяется обычной операцией; исправление выполняется только через будущий Historical Correction Workflow (`trips-and-tourist-profile.md` §13), который не реализован и API которого не определён (§13 ниже).
 
 Удаление исторически значимого похода физически запрещено обычным пользователям.
+
+### 2.4 Статус разделов
+
+- §3–§4 — **реализованный** API Trip Foundation (Issue #245).
+- §5–§7 — Route/GPX: перечень endpoints из `docs/05-api/endpoint-inventory.md` §12 с канонической семантикой; **не реализовано**, полный контракт определяется перед реализацией.
+- §8–§10, §12 — **не реализовано**; черновые описания, требующие отдельных решений.
+- §11 — Achievements: контракт определён в другом месте.
 
 ---
 
 # 3. Trips API
+
+Реализовано (Issue #245). Trip идентифицируется id своего Event (`event_id`). Существование и отказ в доступе неразличимы: отсутствующий Event, отсутствующий Trip и Event, на который у вызывающего нет нужного permission/scope, дают одинаковый `404`. Изменяющие запросы требуют CSRF-токен.
 
 ## 3.1 List trips
 
@@ -62,310 +71,161 @@
 
 ### Permissions
 
-- `trip.read` + подходящий scope.
+- `trip.read` + scope (`all`/`own_events`/`own_groups`/`self`/`children`), применяемый к Event похода внутри SQL-запроса.
 
 ### Query parameters
 
-- `status`;
-- `tourism_type`;
-- `difficulty_category`;
-- `region`;
-- `leader_id`;
-- `participant_id`;
-- `from`;
-- `to`;
-- `search`;
+- `status` — статус Event;
 - `page`;
-- `page_size`;
-- `sort`.
+- `page_size` (1–100).
 
 ### Rules
 
-- возвращаются только `Trip`, доступные текущему пользователю;
-- архивные записи не включаются по умолчанию;
-- фильтрация по `participant_id` не должна обходить scope authorization.
+- возвращаются только Trip, доступные текущему пользователю;
+- Trip с `Event.status = archived` не включаются, если `status` не запрошен явно;
+- сортировка по `Event.start_at`, затем `event_id`.
+
+Фильтры по туристским фактам (TourismType, Difficulty, Geography и т.п.) не реализованы.
 
 ## 3.2 Get trip
 
-`GET /trips/{trip_id}`
+`GET /trips/{event_id}`
 
-Возвращает:
-
-- базовое мероприятие;
-- туристские характеристики;
-- маршрут;
-- руководителя;
-- состав участников согласно правам;
-- результаты;
-- связанные документы, если пользователь имеет право;
-- агрегированные показатели.
+`trip.read` + scope. Возвращает `event_id`, `created_at`, `updated_at`. Туристские факты Trip пока не реализованы и в ответе отсутствуют.
 
 ## 3.3 Create trip
 
 `POST /trips`
 
-Создаёт туристское расширение существующего `Event` либо создаёт event вместе с trip в рамках одной транзакции — конкретный вариант должен быть одинаковым во всех реализациях.
+### Permissions
 
-### Обязательные данные
+- `trip.manage` + scope на Event.
 
-- event information;
-- `tourism_type`;
-- `region`;
-- leader;
-- статус.
+### Request
 
-### Валидация
+- `event_id` — существующий Event.
 
-- `start_at < end_at`;
-- leader должен иметь соответствующее право/роль;
-- event type должен быть совместим с trip;
-- planned distance не может быть отрицательной;
-- координаты и геоданные валидируются отдельно.
+### Rules
 
-## 3.4 Update trip
+- Trip — расширение существующего Event; Event создаётся через Events API;
+- Event должен иметь `event_type = trip`, иначе `422 event_not_trip`;
+- Event не должен быть `cancelled`/`archived`, иначе `409 trip_event_lifecycle_closed`;
+- не более одного Trip на Event, иначе `409 trip_already_exists`;
+- создание фиксируется в audit (`trip.created`) в той же транзакции.
 
-`PATCH /trips/{trip_id}`
+TourismType, Difficulty, Geography, Result и Route не обязательны для создания Trip и в текущем контракте не передаются.
 
-Редактирует данные, разрешённые текущим статусом похода.
+## 3.4 Lifecycle
 
-После перехода в финальный статус критические поля изменяются только через специальный correction workflow.
+Отдельного lifecycle, статус-endpoint, complete- или archive-endpoint у Trip нет. Lifecycle Trip — это lifecycle связанного Event (ADR-0018, `docs/05-api/events-api.md`): `draft`/`published`/`in_progress`/`completed`/`cancelled`/`archived`.
 
-## 3.5 Change trip status
+Завершение Event не требует наличия Route, Actual GPX, Result, дистанции или других туристских фактов.
 
-`POST /trips/{trip_id}/status`
-
-Переходы:
-
-`draft -> planned -> registration_open -> in_progress -> completed`
-
-Допустимы технически необходимые состояния:
-
-- `cancelled`;
-- `archived`.
-
-Нельзя переводить завершённый поход обратно в активный без административного correction workflow.
-
-## 3.6 Complete trip
-
-`POST /trips/{trip_id}/complete`
-
-Перед завершением проверяются:
-
-- состав участников;
-- факт участия;
-- фактические даты;
-- фактический маршрут при наличии;
-- фактическая дистанция;
-- результаты;
-- обязательные документы, если для типа похода они настроены как обязательные.
-
-После завершения запускается пересчёт производных туристских показателей.
-
-## 3.7 Archive trip
-
-`POST /trips/{trip_id}/archive`
-
-Архивирует поход без удаления исторических фактов.
+Изменение туристских фактов Trip (TourismType, Official Difficulty, Geography, Duration Classification, Result) через API пока не реализовано; при реализации действуют правила авторизации и исторической фиксации из `trips-and-tourist-profile.md` §3–§12.
 
 ---
 
 # 4. Trip Participants API
 
+Реализовано (Issue #245). TripParticipant — расширение существующей `EventParticipation` Event этого Trip (1:0..1). Добавление/удаление участников и их регистрация выполняются только через Event participation API (ADR-0037); собственного registration status, роли в походе, дистанции, результата или заметок у TripParticipant нет.
+
 ## 4.1 List participants
 
-`GET /trips/{trip_id}/participants`
+`GET /trips/{event_id}/participants`
 
-Возвращает список участников согласно permissions.
+- `trip.read` + scope на Event; видимые строки — по тем же правилам, что и состав участников Event (`all`/`own_events`/`own_groups` — все, `self` — своя строка, `children` — строки активных детей);
+- `page`, `page_size` (1–100);
+- сортировка по фамилии, имени, id Person;
+- элемент: `event_participation_id`, `event_id`, `person_id`, `actual_participation`, `created_at`, `updated_at`.
 
-Поддерживает фильтры:
+## 4.2 Record actual participation
 
-- `role_in_trip`;
-- `participation_status`;
-- `search`.
+`PUT /trips/{event_id}/participants/{person_id}`
 
-## 4.2 Add participant
+### Permissions
 
-`POST /trips/{trip_id}/participants`
+- `trip.manage` + scope на Event.
 
 ### Request
 
-- `person_id`;
-- `role_in_trip`;
-- optional notes.
+- `actual_participation` — boolean.
 
 ### Rules
 
-- person должен быть допустимым участником клуба/мероприятия;
-- несовершеннолетний может участвовать только при выполнении обязательных consent/document rules;
-- нельзя создать две активные записи одного человека в одном trip.
-
-## 4.3 Update participant
-
-`PATCH /trips/{trip_id}/participants/{participant_id}`
-
-Изменяет роль, фактическое участие и другие разрешённые атрибуты.
-
-## 4.4 Remove participant
-
-`DELETE /trips/{trip_id}/participants/{participant_id}`
-
-Не удаляет историческую запись, если участник уже участвовал фактически или связанная запись попала в аудит/отчёт.
-
-В таких случаях используется логическое исключение участника из текущего состава.
-
-## 4.5 Record participation result
-
-`POST /trips/{trip_id}/participants/{participant_id}/result`
-
-Может фиксировать:
-
-- actual participation;
-- completed distance;
-- result;
-- notes.
-
-Изменение полей, влияющих на стаж после завершения похода, требует audit.
+- у Person должна быть `EventParticipation` в Event этого Trip (любой `registration_status`), иначе `422 participation_missing`;
+- Event `in_progress` — факт создаётся или изменяется;
+- Event `completed` — факт можно создать, если он ещё не записан; записанный факт исторически закрыт: повтор того же значения — no-op, изменение — `409 trip_participant_historically_closed` (исправление — будущий correction workflow);
+- прочие статусы Event — `409 actual_participation_lifecycle_closed`;
+- повтор уже сохранённого значения не пишет ничего и не создаёт audit record;
+- создание — audit `trip_participant.actual_participation_recorded`, изменение — `trip_participant.actual_participation_changed`;
+- EventParticipation не изменяется; отмена регистрации не удаляет и не сбрасывает факт.
 
 ---
 
 # 5. Routes API
 
-## 5.1 List routes
+**Не реализовано.** Перечень соответствует `docs/05-api/endpoint-inventory.md` §12; семантика — `trips-and-tourist-profile.md` §11–§12. Перед реализацией для каждого endpoint должен быть определён полный контракт (`endpoint-inventory.md` §27), включая способ связи Route с Trip.
 
-`GET /routes`
+Каноническая семантика:
 
-Фильтры:
+- Route — физическое описание маршрута, связанного с Trip; не классификатор;
+- Route содержит раздельные представления Planned и Actual (геометрия/точки, distance, elevation gain, если доступны данные высоты); они не смешиваются и не подменяют друг друга;
+- Route не содержит и не определяет TourismType, Official Difficulty, Geography, Duration Classification или Result; фильтры/поля Route по этим фактам не предусмотрены;
+- управление — `trip.manage` + scope Trip.
 
-- `tourism_type`;
-- `region`;
-- `search`;
-- `difficulty_category`;
-- pagination/sort.
+Endpoints:
 
-## 5.2 Get route
-
-`GET /routes/{route_id}`
-
-Возвращает:
-
-- metadata;
-- points;
-- distance;
-- elevation/profile if available;
-- associated GPX metadata;
-- linked trips согласно правам.
-
-## 5.3 Create route
-
-`POST /routes`
-
-Поля:
-
-- name;
-- tourism_type;
-- region;
-- description;
-- planned distance;
-- metadata.
-
-## 5.4 Update route
-
-`PATCH /routes/{route_id}`
-
-Изменяет только metadata и редактируемые компоненты.
-
-Фактический трек завершённого похода не должен перезаписывать эталонный логический маршрут без новой версии.
-
-## 5.5 Archive route
-
-`POST /routes/{route_id}/archive`
+- `GET /routes`
+- `POST /routes`
+- `GET /routes/{id}`
+- `PATCH /routes/{id}`
+- `POST /routes/{id}/archive`
 
 ---
 
 # 6. Route Points API
 
-## 6.1 List points
+**Не реализовано.** Endpoints (`endpoint-inventory.md` §12):
 
-`GET /routes/{route_id}/points`
+- `GET /routes/{id}/points`
+- `POST /routes/{id}/points`
+- `PATCH /route-points/{id}`
+- `POST /route-points/{id}/delete`
 
-Возвращает points в порядке `sequence`.
+Каноническая семантика:
 
-## 6.2 Create point
-
-`POST /routes/{route_id}/points`
-
-### Validation
-
-- latitude: `-90..90`;
-- longitude: `-180..180`;
-- sequence уникальна в пределах route;
-- elevation может отсутствовать, если источник её не предоставляет.
-
-## 6.3 Update point
-
-`PATCH /routes/{route_id}/points/{point_id}`
-
-## 6.4 Delete point
-
-`DELETE /routes/{route_id}/points/{point_id}`
-
-Для маршрута, уже использованного в завершённых походах, физическое удаление должно быть запрещено либо заменено версионированием.
+- точка принадлежит одному представлению — Planned или Actual;
+- latitude `-90..90`, longitude `-180..180`; elevation может отсутствовать, если источник её не предоставляет;
+- фактические данные завершённого Trip не изменяются обычным редактированием (`trips-and-tourist-profile.md` §13).
 
 ---
 
 # 7. GPX API
 
-## 7.1 Upload GPX
+**Не реализовано.** Endpoints (`endpoint-inventory.md` §12):
 
-`POST /routes/{route_id}/gpx`
+- `POST /routes/{id}/gpx/uploads`
+- `GET /gpx-files/{id}`
+- `GET /gpx-files/{id}/download`
+- `POST /gpx-files/{id}/process`
 
-`multipart/form-data`.
+Каноническая семантика (`trips-and-tourist-profile.md` §11.4–§11.7):
 
-### Requirements
-
-- проверка расширения и MIME;
-- ограничение размера файла;
-- безопасное имя объекта storage;
-- virus/malware scanning при наличии соответствующего сервиса;
-- parsing metadata;
-- validation GPX structure;
-- audit.
-
-### Parsed metadata
-
-Могут быть извлечены:
-
-- distance;
-- elevation gain/loss;
-- bounds;
-- number of points;
-- track start/end.
-
-Производные показатели должны иметь признак источника и не подменять вручную подтверждённые значения без правила приоритета.
-
-## 7.2 List GPX files
-
-`GET /routes/{route_id}/gpx`
-
-## 7.3 Get GPX metadata
-
-`GET /routes/{route_id}/gpx/{file_id}`
-
-## 7.4 Download GPX
-
-`GET /routes/{route_id}/gpx/{file_id}/download`
-
-Ответ не должен раскрывать внутренний путь storage.
-
-## 7.5 Delete GPX
-
-`DELETE /routes/{route_id}/gpx/{file_id}`
-
-Физическое удаление ограничивается permissions и правилами retention.
+- загружаемый GPX имеет явную роль `PLANNED` или `ACTUAL`;
+- у Route не более одного канонического Planned GPX и не более одного канонического Actual GPX; дополнительные файлы — provenance/архив и канонических фактов автоматически не создают;
+- Planned GPX не становится Actual, Actual GPX не перезаписывает Planned;
+- до завершения Trip Actual GPX может загружаться/заменяться в рамках `trip.manage` (Administrator — scope Trip; Instructor — только assigned/owned Trip, в том числе после похода; Member/Guardian — нет); последний загруженный — текущий канонический;
+- при `Trip → completed` текущий Actual GPX фиксируется как исторический факт; отсутствие Actual GPX не мешает завершению; после завершения обычное редактирование его не заменяет — только будущий Historical Correction Workflow;
+- обработка (`process`) вычисляет технические характеристики только для представления, соответствующего роли файла; значения воспроизводимы из этого источника;
+- загрузка или обработка GPX не изменяет TourismType, Official Difficulty, Geography, Duration Classification или Result;
+- общая подсистема версионирования GPX и несколько канонических Actual-треков не вводятся;
+- ответ не раскрывает внутренний путь storage; доступ к файлу — через авторизованный endpoint.
 
 ---
 
 # 8. Tourist Profile API
+
+**Не реализовано; черновик.** Состав производных показателей и правила их расчёта требуют отдельного PO-решения (`trips-and-tourist-profile.md` §16–§17); перечень ниже не утверждает конкретные агрегаты.
 
 ## 8.1 Get own tourist profile
 
@@ -412,6 +272,8 @@
 
 # 9. Skills API
 
+**Не реализовано; черновик.**
+
 ## 9.1 List skill catalog
 
 `GET /skills`
@@ -454,6 +316,8 @@
 
 # 10. Qualifications API
 
+**Не реализовано; черновик.** Квалификация не выводится автоматически из количества походов или километража без отдельно утверждённого правила.
+
 ## 10.1 List qualifications
 
 `GET /qualifications`
@@ -494,122 +358,21 @@
 
 # 11. Achievements API
 
-## 11.1 List achievement catalog
+Контракт Achievement Domain определён в `docs/04-modules/achievements-and-norms.md` (A1–A16) и реализован как `/api/v1/achievements/*` (Issue #220). Прежнее описание этого раздела (`/achievements`, `/people/{person_id}/achievements`, `award_mode`, `automatic_rule`) заменено и не является контрактом.
 
-`GET /achievements`
-
-## 11.2 Create achievement definition
-
-`POST /achievements`
-
-Поля:
-
-- name;
-- description;
-- category;
-- award_mode: `manual|automatic`;
-- automatic_rule;
-- active.
-
-Automatic rule должна быть валидируемой структурой, а не произвольным исполняемым кодом из БД.
-
-## 11.3 Update achievement definition
-
-`PATCH /achievements/{achievement_id}`
-
-Изменение правила не должно ретроспективно изменять историю уже выданных достижений без отдельного процесса recalculation.
-
-## 11.4 Get person achievements
-
-`GET /people/{person_id}/achievements`
-
-## 11.5 Manually award achievement
-
-`POST /people/{person_id}/achievements`
-
-### Request
-
-- achievement_id;
-- awarded_at;
-- source/reference;
-- note;
-- evidence document if needed.
-
-Создатель award фиксируется в audit/history.
-
-## 11.6 Revoke achievement
-
-`POST /people/{person_id}/achievements/{award_id}/revoke`
-
-Не удаляет запись награды, а фиксирует отзыв.
-
-## 11.7 Recalculate automatic achievements
-
-`POST /people/{person_id}/achievements/recalculate`
-
-Операция должна быть idempotent.
-
-Автоматическая выдача не должна создавать дубликаты при повторном запуске.
+Туристские факты Trip становятся источником Achievement metrics только после отдельного PO-решения; на текущем этапе утверждён единственный metric `completed_trips`.
 
 ---
 
 # 12. Tourist Experience
 
-## 12.1 List experience history
-
-`GET /people/{person_id}/tourist-experience`
-
-Возвращает историю подтверждённых фактов участия, а не только aggregate counters.
-
-## 12.2 Get experience summary
-
-`GET /people/{person_id}/tourist-experience/summary`
-
-Рекомендуемые поля:
-
-- trips_count;
-- completed_trips_count;
-- distance_total;
-- distance_by_tourism_type;
-- trips_by_difficulty;
-- first_trip_date;
-- latest_trip_date.
-
-Любой aggregate должен иметь определённое правило включения.
-
-### Default inclusion rule
-
-В агрегаты включаются только завершённые походы и фактически подтверждённое участие. Запланированные/отменённые мероприятия не учитываются.
+**Отложено.** Семантика туристского опыта, стажа, километража и квалификационных агрегатов (включая правила включения, разбивку по видам туризма и сложности) не утверждена и требует отдельного PO-решения и отдельной задачи (`trips-and-tourist-profile.md` §16–§17, `docs/04-modules/tourism-classification-and-experience.md`). Endpoints этого раздела не определены.
 
 ---
 
 # 13. Correction Workflow
 
-Изменения, которые могут повлиять на исторические показатели, должны выполняться через отдельный процесс.
-
-## 13.1 Create correction request
-
-`POST /trips/{trip_id}/corrections`
-
-Содержит:
-
-- target field;
-- current value;
-- proposed value;
-- reason;
-- evidence/document reference.
-
-## 13.2 Approve correction
-
-`POST /trips/{trip_id}/corrections/{correction_id}/approve`
-
-Требуется повышенное permission.
-
-## 13.3 Reject correction
-
-`POST /trips/{trip_id}/corrections/{correction_id}/reject`
-
-История решения сохраняется.
+Исторические туристские факты завершённого Trip исправляются только через будущий Historical Correction Workflow (`trips-and-tourist-profile.md` §13): correction сохраняет исходное значение, новое значение, причину и инициатора и фиксируется в audit. Права, подтверждение, API и структура correction не утверждены; endpoints не определены.
 
 ---
 
@@ -617,92 +380,59 @@ Automatic rule должна быть валидируемой структуро
 
 Все endpoint'ы используют общий error envelope из `api-contract.md`.
 
-Дополнительные доменные ошибки:
+Реализованные доменные коды Trips API (§3–§4):
 
-- `TRIP_NOT_EDITABLE_IN_STATUS`;
-- `INVALID_TRIP_STATUS_TRANSITION`;
-- `PARTICIPANT_ALREADY_EXISTS`;
-- `PARTICIPANT_NOT_ELIGIBLE`;
-- `REQUIRED_CONSENT_MISSING`;
-- `ROUTE_VERSION_CONFLICT`;
-- `GPX_INVALID_FORMAT`;
-- `GPX_TOO_LARGE`;
-- `QUALIFICATION_EXPIRED`;
-- `ACHIEVEMENT_DUPLICATE`;
-- `CORRECTION_REQUIRES_APPROVAL`.
+- `event_not_trip` (422);
+- `trip_event_lifecycle_closed` (409);
+- `trip_already_exists` (409);
+- `participation_missing` (422);
+- `actual_participation_lifecycle_closed` (409);
+- `trip_participant_historically_closed` (409).
+
+Коды ошибок нереализованных разделов определяются их контрактом при реализации.
 
 ---
 
 # 15. Transaction and side effects
 
-Критические операции должны выполняться транзакционно.
+Критические операции выполняются транзакционно.
 
-### Create/complete trip
-
-Минимальная атомарная граница включает изменение trip state и критические связанные records.
-
-### Complete trip
-
-После commit допускаются asynchronous side effects:
-
-- recalculation tourist profile;
-- automatic achievements;
-- notifications;
-- analytics refresh.
-
-Side effects должны быть retry-safe.
+- Создание Trip и запись `actual_participation` выполняются в одной транзакции со своим audit record (fail-closed).
+- После commit записи `actual_participation` и после перехода Event в `completed` запускается event-driven оценка Achievement Engine; её сбой не откатывает туристский факт, пропуски закрывает reconciliation (`achievements-and-norms.md` §22).
+- Пересчёт производных туристских показателей не определён до утверждения их семантики (§12).
 
 ---
 
 # 16. Audit requirements
 
-Audit обязателен для:
+Реализовано (`trips-and-tourist-profile.md` §19): `trip.created`, `trip_participant.actual_participation_recorded`, `trip_participant.actual_participation_changed`.
 
-- создание/изменение/архивирование похода;
-- изменение состава завершённого похода;
-- изменение фактической дистанции;
-- correction workflow;
-- загрузка/удаление GPX;
-- выдача/отзыв достижения;
-- создание/изменение квалификации;
-- ручное изменение туристского опыта.
+При реализации остальных разделов audit обязателен как минимум для: изменения туристских фактов Trip, загрузки/замены GPX, correction workflow, создания/изменения квалификации. Конкретные audit actions добавляются в словарь ADR-0024 вместе с реализацией.
 
 ---
 
 # 17. Acceptance Criteria
 
-## Trips
+## Trips (реализовано)
 
-- [ ] CRUD trip реализован согласно permissions.
-- [ ] Status transitions валидируются.
-- [ ] Завершённый поход защищён от неконтролируемых изменений.
-- [ ] Состав участников сохраняет исторические данные.
+- [x] Trip создаётся только как расширение Event типа `trip`; не более одного на Event.
+- [x] У Trip нет собственного lifecycle; используется lifecycle Event.
+- [x] `actual_participation` — отдельный факт поверх EventParticipation; исторически закрыт после завершения.
+- [x] Authorization через `trip.read`/`trip.manage` и scope Event.
 
-## Routes/GPX
+## Routes/GPX (при реализации)
 
-- [ ] Route CRUD соблюдает historical integrity.
-- [ ] Route points валидируются.
-- [ ] GPX проходит size/type/format validation.
-- [ ] Внутренний storage path не раскрывается.
-- [ ] Производные GPX metrics не подменяют подтверждённые факты автоматически.
-
-## Tourist Profile
-
-- [ ] Profile вычисляется из первичных фактов.
-- [ ] Recalculate idempotent.
-- [ ] В aggregate входят только данные по утверждённым правилам.
-
-## Achievements/Skills/Qualifications
-
-- [ ] Manual и automatic achievements поддерживаются.
-- [ ] Дубликаты наград предотвращаются.
-- [ ] Revoke не уничтожает историю.
-- [ ] Qualification history сохраняется.
+- [ ] Planned и Actual представления разделены.
+- [ ] GPX имеет роль `PLANNED`/`ACTUAL`; не более одного канонического файла каждой роли.
+- [ ] Actual GPX фиксируется при завершении Trip; после завершения не заменяется обычным редактированием.
+- [ ] Route/GPX не определяет TourismType, Official Difficulty, Geography, Duration Classification или Result.
+- [ ] GPX проходит size/type/format validation; внутренний storage path не раскрывается.
+- [ ] Используется `trip.manage`; новые permissions не вводятся.
 
 ## Security
 
 - [ ] Participant не видит чужой туристский профиль.
-- [ ] Guardian видит только связанные accounts/children согласно scope.
+- [ ] Guardian видит только связанных детей согласно scope.
 - [ ] Instructor не получает административные права через trip endpoints.
 - [ ] Все sensitive changes аудируются.
 
@@ -712,6 +442,7 @@ Audit обязателен для:
 
 Claude должен реализовывать API только после сверки этого документа с:
 
+- `trips-and-tourist-profile.md`;
 - `domain-model.md`;
 - `data-model.md`;
 - `roles-and-permissions.md`;

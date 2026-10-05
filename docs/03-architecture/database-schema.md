@@ -398,60 +398,64 @@ Expresses that an Event requires a document type from its participants, without 
 
 ## 10. Trips
 
+Бизнес-семантика — `docs/04-modules/trips-and-tourist-profile.md`; логическая модель — `docs/03-architecture/data-model.md` §9. Физические колонки нереализованных туристских фактов определяются вместе с их реализацией и не должны противоречить этим документам.
+
 ### `trips`
 
-Extension of Event.
+Extension of Event (`Event 1:0..1 Trip`). Implemented (Issue #245):
 
-- `event_id` PK/FK
-- `tourism_type`
-- `difficulty_category`
-- `region`
-- `route_id` FK nullable
-- `planned_distance_km` numeric
-- `actual_distance_km` numeric nullable
-- `planned_duration_minutes` integer nullable
-- `actual_duration_minutes` integer nullable
-- `leader_person_id` FK nullable
-- `result_status`
-- `notes`
+- `event_id` PK
+- `event_type` — always `trip` (CHECK)
+- timestamps
+
+Constraints (implemented):
+
+- composite FK `(event_id, event_type) -> events(id, event_type)` ON UPDATE/DELETE RESTRICT — a Trip exists only for an Event of type `trip`, and such an Event cannot change its type;
+- no Trip-specific status column: the lifecycle is the Event's.
+
+Tourism facts (not yet implemented; semantics in the module document §3–§12):
+
+- TourismType — nullable reference to the TourismType catalog, never free text;
+- Official Difficulty — at most one classification per Trip (one mode `NONE`/`DEGREE`/`CATEGORY`/`WEEKEND`, a value only for `DEGREE`/`CATEGORY`, and its source); never two independent degree/category columns;
+- Geography — nullable reference to Country and nullable reference to Region, never free text;
+- Duration Classification — `ONE_DAY`/`MULTI_DAY`/`UNCLASSIFIED`;
+- Result — `COMPLETED`/`PARTIALLY_COMPLETED`/`NOT_COMPLETED`; not a lifecycle status.
+
+Not canonical (legacy draft columns, not to be implemented): `tourism_type` as a string, `difficulty_category`, `region` as a string, `route_id` as a classifier field, `planned_distance_km`/`actual_distance_km` on Trip (distance belongs to the Route's Planned/Actual representation), `planned_duration_minutes`/`actual_duration_minutes`, `leader_person_id`, `result_status`, `notes`.
 
 ### `trip_participants`
 
-- `id` PK
-- `trip_id` FK
-- `person_id` FK
-- `role_in_trip`
-- `participation_status`
-- `completed_distance_km` numeric nullable
-- `result` nullable
-- `notes`
+Extension of `event_participations` (`EventParticipation 1:0..1 TripParticipant`). Implemented (Issue #245):
+
+- `event_participation_id` PK
+- `event_id` FK -> `trips.event_id`
+- `actual_participation` boolean
 - timestamps
 
-Constraints:
+Constraints (implemented):
 
-- one row per person/trip;
-- completed distance cannot be negative;
-- participation facts are not inferred solely from attendance.
+- composite FK `(event_id, event_participation_id) -> event_participations(event_id, id)` — the participation belongs to exactly this Trip's Event;
+- all FKs RESTRICT; no cascade;
+- no `person_id` (the Person is the participation's) and no registration/participation status (registration stays `event_participations.registration_status`);
+- participation facts are not inferred from attendance.
+
+Role in trip, participant distance, individual result and notes are not part of the contract without a separate decision.
 
 ## 11. Routes and geodata
 
+Semantics — `docs/04-modules/trips-and-tourist-profile.md` §11–§12 and `data-model.md` §10. Not yet implemented; the physical schema is defined with the implementation and must satisfy:
+
 ### `routes`
 
-- `id` PK
-- `club_id` FK nullable
-- `name`
-- `tourism_type`
-- `region`
-- `description`
-- `planned_distance_km` numeric nullable
-- `elevation_gain_m` numeric nullable
-- `status`
-- timestamps
+- the physical route description associated with a Trip; not a classifier — no TourismType, Difficulty, Geography, Duration Classification or Result columns;
+- separate Planned and Actual representations, each with its own distance and elevation gain (where elevation data is available); never mixed or substituted;
+- no standalone route lifecycle or Club-level route catalog is defined by the canonical model.
 
 ### `route_points`
 
 - `id` PK
 - `route_id` FK
+- representation — Planned or Actual
 - `sequence` integer
 - `name` nullable
 - `point_type` nullable
@@ -462,7 +466,7 @@ Constraints:
 
 Constraints:
 
-- sequence unique within route;
+- sequence unique within route and representation;
 - latitude in [-90,90]; longitude in [-180,180].
 
 ### `files`
@@ -485,10 +489,18 @@ Shared by `route_files` below, participant `documents` (§15), and — once a la
 
 ### `route_files`
 
+Links a Route to GPX `files`:
+
 - `route_id` FK
 - `file_id` FK
-- `file_type` (gpx/source/preview/etc.)
-- PK (`route_id`, `file_id`, `file_type`)
+- role — `PLANNED` or `ACTUAL`
+
+Constraints:
+
+- at most one canonical Planned GPX and at most one canonical Actual GPX per Route;
+- other files are provenance/archive artifacts and never canonical automatically;
+- after the Trip is completed the canonical Actual GPX is a historical fact; replacing it is only possible through the future Historical Correction Workflow;
+- no general-purpose GPX versioning subsystem.
 
 ## 12. Tourist profile
 
