@@ -419,9 +419,10 @@ Tourism facts (semantics in the module document §3–§12):
 - Official Difficulty — at most one classification per Trip (one mode `NONE`/`DEGREE`/`CATEGORY`/`WEEKEND`, a value only for `DEGREE`/`CATEGORY`, and its source); never two independent degree/category columns. Implemented (Issue #268): `official_difficulty_mode`/`_value`/`_source` with CHECK `ck_trips_official_difficulty_combination`;
 - Geography — nullable reference to Country and nullable reference to Region, never free text. Implemented (Issue #271): `country_id` FK -> `countries` and `region_id` with the composite FK `(region_id, country_id) -> regions(id, country_id)`, both ON UPDATE/DELETE RESTRICT, and CHECK `ck_trips_region_requires_country` (`region_id IS NULL OR country_id IS NOT NULL`) — a Trip's Region always belongs to the Trip's Country, and a Region a Trip references cannot be moved to another Country;
 
+- Duration Classification — `ONE_DAY`/`MULTI_DAY`/`UNCLASSIFIED`. Implemented (Issue #274): `duration_classification` NOT NULL, default `UNCLASSIFIED`, CHECK `ck_trips_duration_classification`; no Trip start/end columns — the planned interval stays `events.start_at`/`end_at`;
+
 Not yet implemented:
 
-- Duration Classification — `ONE_DAY`/`MULTI_DAY`/`UNCLASSIFIED`;
 - Result — `COMPLETED`/`PARTIALLY_COMPLETED`/`NOT_COMPLETED`; not a lifecycle status.
 
 Not canonical (legacy draft columns, not to be implemented): `tourism_type` as a string, `difficulty_category`, `region` as a string, `route_id` as a classifier field, `planned_distance_km`/`actual_distance_km` on Trip (distance belongs to the Route's Planned/Actual representation), `planned_duration_minutes`/`actual_duration_minutes`, `leader_person_id`, `result_status`, `notes`.

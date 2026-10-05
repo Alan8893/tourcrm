@@ -262,7 +262,7 @@ respect audit policy (ADR-0024/ADR-0032 §11).
 - `GET /trips/{id}/results`
 - `POST /trips/{id}/results`
 
-Implemented Trip endpoints and their exact contract (incl. `PATCH /trips/{event_id}` for ordinary editing, Issue #264, the structured `official_difficulty` on Trip create/read/update, Issue #268 — no separate Difficulty endpoint, and `country_id`/`region_id` on Trip create/read/update, Issue #271): `docs/05-api/trips-and-tourist-profile-api.md` §3–§4.
+Implemented Trip endpoints and their exact contract (incl. `PATCH /trips/{event_id}` for ordinary editing, Issue #264, the structured `official_difficulty` on Trip create/read/update, Issue #268 — no separate Difficulty endpoint, `country_id`/`region_id` on Trip create/read/update, Issue #271, and `duration_classification` on Trip create/read/update, Issue #274 — no separate Duration endpoint): `docs/05-api/trips-and-tourist-profile-api.md` §3–§4.
 
 ### 11.1 TourismType catalog — IMPLEMENTED (Issue #264)
 
