@@ -612,3 +612,69 @@ The Achievement Engine may now be implemented using:
 - Member recipients from the existing canonical membership/role model.
 
 All other tourism metrics and automatic repeatable-occurrence semantics remain explicitly outside the current implementation boundary.
+
+## 29. Definition semantic-field immutability — A14
+
+The Achievement Definition is a stable business identity. The following semantic fields are immutable after Definition creation:
+
+- `code`;
+- `source`;
+- `award_method`;
+- `repeatability`.
+
+The human-facing `name` and `description` may be edited without creating a new Definition.
+
+Changing any immutable semantic field requires creating a new Achievement Definition. This preserves the meaning of historical Awards and prevents a Definition from changing its award semantics underneath existing Award history.
+
+## 30. Rule Version immutability — A13
+
+An executable Achievement Requirement / Rule Version is immutable after creation.
+
+Any change to the executable rule condition or its normative reference creates a new Rule Version belonging to the same Achievement Definition.
+
+This applies even when the existing Rule Version has not yet been used to create or verify an Award. A Rule Version is a versioned executable artifact, not an editable draft.
+
+Therefore:
+
+- an existing Rule Version must not be edited in place;
+- changing a condition creates a new Rule Version;
+- changing the referenced Normative Requirement Set Version creates a new Rule Version;
+- the existing version remains available for historical/reference purposes;
+- activation/deactivation is lifecycle state, not mutation of the executable Rule content.
+
+## 31. Manual Award provenance — A15
+
+Manual Award issuance must remain distinguishable from automatic Engine calculation.
+
+A manual Award:
+
+- records `award_method = manual`;
+- records the Administrator who issued it;
+- preserves the Administrator's verification note/source when applicable;
+- may reference an exact Rule Version when the Administrator explicitly verifies the Award against that Rule Version;
+- may have no Rule Version reference when the manual Award is not being asserted as a determination against a specific Rule Version.
+
+For FSTR/manual normative Awards, the manual verification/source information must be retained so that the Award is not represented as though the Engine independently calculated it.
+
+The system must not silently attach the currently active Rule Version to a manual Award merely because one exists.
+
+Historical manual Awards retain the provenance recorded at issuance.
+
+## 32. Normative effective interval semantics — A16
+
+Normative Requirement Set Version applicability uses an inclusive calendar-date interval:
+
+`effective_from <= evaluation_date <= effective_to`
+
+when `effective_to` is present.
+
+Therefore:
+
+- `effective_from` is inclusive;
+- `effective_to` is inclusive;
+- a missing `effective_to` means the version has no configured end date.
+
+For a new automatic FSTR Award, the referenced Normative Requirement Set Version must be both active and applicable on the evaluation date according to this interval.
+
+These date semantics do not retrospectively change the provenance of an existing Award.
+
