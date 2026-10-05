@@ -411,7 +411,8 @@ def test_trip_endpoints_expose_only_their_canonical_methods_and_fields(real_clie
     components = schema["components"]["schemas"]
 
     assert set(paths["/api/v1/trips"]) == {"get", "post"}
-    # Issue #264: ordinary Trip editing (TourismType) — PATCH only.
+    # Issues #264/#268: ordinary Trip editing (TourismType, Official
+    # Difficulty) — PATCH only, no separate Difficulty endpoint.
     assert set(paths["/api/v1/trips/{event_id}"]) == {"get", "patch"}
     assert set(paths["/api/v1/trips/{event_id}/participants"]) == {"get"}
     assert set(paths["/api/v1/trips/{event_id}/participants/{person_id}"]) == {"put"}
@@ -421,12 +422,24 @@ def test_trip_endpoints_expose_only_their_canonical_methods_and_fields(real_clie
     }
     assert list_params == {"page", "page_size", "status"}
 
-    assert set(components["TripCreateRequest"]["properties"]) == {"event_id", "tourism_type_id"}
+    assert set(components["TripCreateRequest"]["properties"]) == {
+        "event_id",
+        "tourism_type_id",
+        "official_difficulty",
+    }
     assert set(components["TripCreateRequest"]["required"]) == {"event_id"}
-    assert set(components["TripUpdateRequest"]["properties"]) == {"tourism_type_id"}
+    assert set(components["TripUpdateRequest"]["properties"]) == {
+        "tourism_type_id",
+        "official_difficulty",
+    }
+    # Issue #268: one structured Official Difficulty — mode, value, source.
+    assert set(components["OfficialDifficultyIn"]["properties"]) == {"mode", "value", "source"}
+    assert set(components["OfficialDifficultyIn"]["required"]) == {"mode"}
+    assert set(components["OfficialDifficultyOut"]["properties"]) == {"mode", "value", "source"}
     assert set(components["TripOut"]["properties"]) == {
         "event_id",
         "tourism_type_id",
+        "official_difficulty",
         "created_at",
         "updated_at",
     }

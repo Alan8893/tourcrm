@@ -54,7 +54,7 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 
 ### 2.4 Статус разделов
 
-- §3–§4 — **реализованный** API Trip Foundation (Issue #245) и TourismType (Issue #264, §3.5–§3.6).
+- §3–§4 — **реализованный** API Trip Foundation (Issue #245), TourismType (Issue #264, §3.5–§3.6) и Official Difficulty (Issue #268, §3.7).
 - §5–§7 — Route/GPX: перечень endpoints из `docs/05-api/endpoint-inventory.md` §12 с канонической семантикой; **не реализовано**, полный контракт определяется перед реализацией.
 - §8–§10, §12 — **не реализовано**; черновые описания, требующие отдельных решений.
 - §11 — Achievements: контракт определён в другом месте.
@@ -91,7 +91,7 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 
 `GET /trips/{event_id}`
 
-`trip.read` + scope. Возвращает `event_id`, `tourism_type_id` (nullable), `created_at`, `updated_at`. Остальные туристские факты Trip пока не реализованы и в ответе отсутствуют.
+`trip.read` + scope. Возвращает `event_id`, `tourism_type_id` (nullable), `official_difficulty` (nullable, §3.7), `created_at`, `updated_at`. Остальные туристские факты Trip пока не реализованы и в ответе отсутствуют.
 
 ## 3.3 Create trip
 
@@ -104,7 +104,8 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 ### Request
 
 - `event_id` — существующий Event;
-- `tourism_type_id` — необязательная ссылка на активную запись справочника TourismType (§3.6).
+- `tourism_type_id` — необязательная ссылка на активную запись справочника TourismType (§3.6);
+- `official_difficulty` — необязательная Official Difficulty (§3.7).
 
 ### Rules
 
@@ -113,9 +114,10 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 - Event не должен быть `cancelled`/`archived`, иначе `409 trip_event_lifecycle_closed`;
 - не более одного Trip на Event, иначе `409 trip_already_exists`;
 - `tourism_type_id` несуществующей записи — `422 tourism_type_not_found`, неактивной — `422 tourism_type_inactive`;
+- `official_difficulty` — только Administrator (§3.7), иначе `403 forbidden`; недопустимая комбинация — `422`;
 - создание фиксируется в audit (`trip.created`) в той же транзакции.
 
-TourismType, Difficulty, Geography, Result и Route не обязательны для создания Trip; из них в текущем контракте передаётся только `tourism_type_id`.
+TourismType, Difficulty, Geography, Result и Route не обязательны для создания Trip; из них в текущем контракте передаются только `tourism_type_id` и `official_difficulty`.
 
 ## 3.4 Lifecycle
 
@@ -123,13 +125,13 @@ TourismType, Difficulty, Geography, Result и Route не обязательны 
 
 Завершение Event не требует наличия Route, Actual GPX, Result, дистанции или других туристских фактов.
 
-Изменение TourismType — §3.5. Изменение остальных туристских фактов Trip (Official Difficulty, Geography, Duration Classification, Result) через API пока не реализовано; при реализации действуют правила авторизации и исторической фиксации из `trips-and-tourist-profile.md` §3–§12.
+Изменение TourismType и Official Difficulty — §3.5. Изменение остальных туристских фактов Trip (Geography, Duration Classification, Result) через API пока не реализовано; при реализации действуют правила авторизации и исторической фиксации из `trips-and-tourist-profile.md` §3–§12.
 
 ## 3.5 Update trip
 
 `PATCH /trips/{event_id}`
 
-Обычное редактирование Trip (Issue #264). Изменяются только поля, присутствующие в запросе.
+Обычное редактирование Trip (Issues #264, #268). Изменяются только поля, присутствующие в запросе.
 
 ### Permissions
 
@@ -137,14 +139,16 @@ TourismType, Difficulty, Geography, Result и Route не обязательны 
 
 ### Request
 
-- `tourism_type_id` — ссылка на активную запись TourismType или `null` (снять).
+- `tourism_type_id` — ссылка на активную запись TourismType или `null` (снять);
+- `official_difficulty` — Official Difficulty (§3.7) или `null` (снять); только Administrator, иначе `403 forbidden`.
 
 ### Rules
 
+- запрос, отклонённый из-за `official_difficulty` (`403`/`422`), не изменяет и `tourism_type_id`;
 - редактирование открыто при `Event.status` `draft`/`published`/`in_progress`; при `completed` (исторический факт) и `cancelled`/`archived` — `409 trip_editing_closed`;
 - назначаемая запись должна существовать (`422 tourism_type_not_found`) и быть активной (`422 tourism_type_inactive`);
 - повтор уже сохранённого значения — no-op;
-- TourismType не выводится автоматически ни из каких данных.
+- TourismType и Official Difficulty не выводятся автоматически ни из каких данных.
 
 ## 3.6 TourismType catalog
 
@@ -160,6 +164,28 @@ TourismType, Difficulty, Geography, Result и Route не обязательны 
 DELETE отсутствует: записи не удаляются физически; на запись, использованную Trip, действует FK RESTRICT. Деактивация не изменяет Trip, уже ссылающиеся на запись.
 
 Authorization (отдельного permission нет): чтение — любой grant `trip.read`; создание/изменение/активация/деактивация — `trip.manage` с scope `all` (Administrator). Ошибки: `404 not_found`, `409 tourism_type_code_conflict`, `422 invalid_tourism_type`.
+
+## 3.7 Official Difficulty
+
+Реализовано (Issue #268; семантика — `trips-and-tourist-profile.md` §4). Одна необязательная структурированная классификация на Trip, передаётся в `POST /trips` и `PATCH /trips/{event_id}` и возвращается в Trip как `official_difficulty` (`null` — Difficulty не задана):
+
+```json
+{ "mode": "CATEGORY", "value": "III", "source": "..." }
+```
+
+| `mode` | `value` | `source` |
+|---|---|---|
+| `NONE` | отсутствует | необязателен |
+| `DEGREE` | `I`, `II`, `III` | обязателен |
+| `CATEGORY` | `I`, `II`, `III`, `IV`, `V`, `VI` | обязателен |
+| `WEEKEND` | отсутствует (не `degree = 0`) | обязателен |
+
+- `source` — непустая строка до 500 символов (пробелы по краям отбрасываются); это основание классификации, а не отдельная подсистема Provenance;
+- любая другая комбинация, неизвестные поля, режимы и значения — `422` (`invalid_official_difficulty` для недопустимой комбинации режима/значения/`source`); база данных повторяет это ограничение;
+- одновременно `DEGREE` и `CATEGORY` невозможны: это режимы одной классификации;
+- применимость к TourismType не проверяется (матрица TourismType × Difficulty не утверждена); Difficulty не выводится автоматически;
+- lifecycle — как у обычного редактирования Trip (§3.5): при `completed`/`cancelled`/`archived` — `409 trip_editing_closed`; Historical Correction Workflow не реализован;
+- Authorization (отдельного permission нет): чтение — вместе с Trip (`trip.read`); установка, изменение и снятие — `trip.manage` с scope `all` (Administrator). Instructor, управляющий Trip в своём scope, может создавать и редактировать Trip без Difficulty, но запрос с `official_difficulty` получает `403 forbidden`.
 
 ---
 
@@ -427,6 +453,7 @@ Endpoints:
 - `tourism_type_not_found` (422);
 - `tourism_type_inactive` (422);
 - `tourism_type_code_conflict` (409, каталог);
+- `invalid_official_difficulty` (422);
 - `participation_missing` (422);
 - `actual_participation_lifecycle_closed` (409);
 - `trip_participant_historically_closed` (409).

@@ -349,10 +349,18 @@ def test_admin_creates_trip_for_trip_event(client: TestClient) -> None:
 
     assert response.status_code == 201, response.text
     body = response.json()
-    # Issue #264: the only tourism fact so far is the optional TourismType.
-    assert set(body) == {"event_id", "tourism_type_id", "created_at", "updated_at"}
+    # Issues #264/#268: the tourism facts so far are the optional
+    # TourismType and the optional Official Difficulty.
+    assert set(body) == {
+        "event_id",
+        "tourism_type_id",
+        "official_difficulty",
+        "created_at",
+        "updated_at",
+    }
     assert body["event_id"] == str(world.event_id)
     assert body["tourism_type_id"] is None
+    assert body["official_difficulty"] is None
     detail = client.get(f"/api/v1/trips/{world.event_id}")
     assert detail.status_code == 200
     assert detail.json() == body
