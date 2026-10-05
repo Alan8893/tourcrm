@@ -54,7 +54,7 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 
 ### 2.4 Статус разделов
 
-- §3–§4 — **реализованный** API Trip Foundation (Issue #245), TourismType (Issue #264, §3.5–§3.6), Official Difficulty (Issue #268, §3.7) и Geography (Issue #271, §3.8).
+- §3–§4 — **реализованный** API Trip Foundation (Issue #245), TourismType (Issue #264, §3.5–§3.6), Official Difficulty (Issue #268, §3.7), Geography (Issue #271, §3.8) и Duration Classification (Issue #274, §3.9).
 - §5–§7 — Route/GPX: перечень endpoints из `docs/05-api/endpoint-inventory.md` §12 с канонической семантикой; **не реализовано**, полный контракт определяется перед реализацией.
 - §8–§10, §12 — **не реализовано**; черновые описания, требующие отдельных решений.
 - §11 — Achievements: контракт определён в другом месте.
@@ -91,7 +91,7 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 
 `GET /trips/{event_id}`
 
-`trip.read` + scope. Возвращает `event_id`, `tourism_type_id` (nullable), `official_difficulty` (nullable, §3.7), `country_id` и `region_id` (nullable, §3.8), `created_at`, `updated_at`. Остальные туристские факты Trip пока не реализованы и в ответе отсутствуют.
+`trip.read` + scope. Возвращает `event_id`, `tourism_type_id` (nullable), `official_difficulty` (nullable, §3.7), `country_id` и `region_id` (nullable, §3.8), `duration_classification` (§3.9), `created_at`, `updated_at`. Остальные туристские факты Trip пока не реализованы и в ответе отсутствуют.
 
 ## 3.3 Create trip
 
@@ -106,7 +106,8 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 - `event_id` — существующий Event;
 - `tourism_type_id` — необязательная ссылка на активную запись справочника TourismType (§3.6);
 - `official_difficulty` — необязательная Official Difficulty (§3.7);
-- `country_id`, `region_id` — необязательные ссылки на активные записи справочников Country/Region (§3.8).
+- `country_id`, `region_id` — необязательные ссылки на активные записи справочников Country/Region (§3.8);
+- `duration_classification` — необязательно, по умолчанию `UNCLASSIFIED` (§3.9).
 
 ### Rules
 
@@ -116,10 +117,11 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 - не более одного Trip на Event, иначе `409 trip_already_exists`;
 - `tourism_type_id` несуществующей записи — `422 tourism_type_not_found`, неактивной — `422 tourism_type_inactive`;
 - `official_difficulty` — только Administrator (§3.7), иначе `403 forbidden`; недопустимая комбинация — `422`;
+- `duration_classification` — только Administrator (§3.9), иначе `403 forbidden`; несоответствие плановому интервалу Event — `422 duration_classification_mismatch`;
 - Geography проверяется по §3.8 (`422 country_not_found`/`country_inactive`/`region_not_found`/`region_inactive`/`region_country_mismatch`);
 - создание фиксируется в audit (`trip.created`) в той же транзакции.
 
-TourismType, Difficulty, Geography, Result и Route не обязательны для создания Trip; из них в текущем контракте передаются только `tourism_type_id`, `official_difficulty`, `country_id` и `region_id`.
+TourismType, Difficulty, Geography, Result и Route не обязательны для создания Trip; из них в текущем контракте передаются только `tourism_type_id`, `official_difficulty`, `country_id`, `region_id` и `duration_classification`.
 
 ## 3.4 Lifecycle
 
@@ -127,13 +129,13 @@ TourismType, Difficulty, Geography, Result и Route не обязательны 
 
 Завершение Event не требует наличия Route, Actual GPX, Result, дистанции или других туристских фактов.
 
-Изменение TourismType, Official Difficulty и Geography — §3.5. Изменение остальных туристских фактов Trip (Duration Classification, Result) через API пока не реализовано; при реализации действуют правила авторизации и исторической фиксации из `trips-and-tourist-profile.md` §3–§12.
+Изменение TourismType, Official Difficulty, Geography и Duration Classification — §3.5. Изменение остальных туристских фактов Trip (Result) через API пока не реализовано; при реализации действуют правила авторизации и исторической фиксации из `trips-and-tourist-profile.md` §3–§12.
 
 ## 3.5 Update trip
 
 `PATCH /trips/{event_id}`
 
-Обычное редактирование Trip (Issues #264, #268, #271). Изменяются только поля, присутствующие в запросе.
+Обычное редактирование Trip (Issues #264, #268, #271, #274). Изменяются только поля, присутствующие в запросе.
 
 ### Permissions
 
@@ -143,11 +145,12 @@ TourismType, Difficulty, Geography, Result и Route не обязательны 
 
 - `tourism_type_id` — ссылка на активную запись TourismType или `null` (снять);
 - `official_difficulty` — Official Difficulty (§3.7) или `null` (снять); только Administrator, иначе `403 forbidden`;
-- `country_id`, `region_id` — ссылки на Country/Region (§3.8) или `null` (снять). Проверяется итоговая пара: поле, отсутствующее в запросе, сохраняет текущее значение.
+- `country_id`, `region_id` — ссылки на Country/Region (§3.8) или `null` (снять). Проверяется итоговая пара: поле, отсутствующее в запросе, сохраняет текущее значение;
+- `duration_classification` — `ONE_DAY`/`MULTI_DAY`/`UNCLASSIFIED` (§3.9; `UNCLASSIFIED` снимает классификацию, `null` не допускается); только Administrator, иначе `403 forbidden`.
 
 ### Rules
 
-- запрос, отклонённый из-за `official_difficulty` (`403`/`422`) или Geography (`422`), не изменяет и `tourism_type_id`;
+- запрос, отклонённый из-за `official_difficulty` (`403`/`422`), `duration_classification` (`403`/`422`) или Geography (`422`), не изменяет и `tourism_type_id`;
 - редактирование открыто при `Event.status` `draft`/`published`/`in_progress`; при `completed` (исторический факт) и `cancelled`/`archived` — `409 trip_editing_closed`;
 - назначаемая запись должна существовать (`422 tourism_type_not_found`) и быть активной (`422 tourism_type_inactive`);
 - повтор уже сохранённого значения — no-op;
@@ -235,6 +238,19 @@ DELETE отсутствует: записи не удаляются физиче
 
 Authorization (отдельного permission нет): чтение — любой grant `trip.read`; создание/изменение/активация/деактивация — `trip.manage` с scope `all` (Administrator); Instructor, Member и Guardian — `403 forbidden`. Ошибки: `404 not_found`, `409 country_code_conflict`, `409 region_code_conflict`, `409 country_in_use`, `409 region_in_use`, `422 country_not_found`, `422 invalid_geography`.
 
+
+## 3.9 Duration Classification
+
+Реализовано (Issue #274; семантика — `trips-and-tourist-profile.md` §10). У каждого Trip ровно одно значение `duration_classification`: `ONE_DAY`, `MULTI_DAY` или `UNCLASSIFIED` (классификация не установлена; значение по умолчанию). Передаётся в `POST /trips` и `PATCH /trips/{event_id}` и всегда возвращается в Trip (не `null`).
+
+- плановый интервал — только `start_at`/`end_at` Event; отдельных start/end у Trip нет;
+- при установке `ONE_DAY`/`MULTI_DAY` значение должно соответствовать текущему плановому интервалу Event: `MULTI_DAY` — интервал переходит через полночь, `ONE_DAY` — не переходит; иначе `422 duration_classification_mismatch`. `UNCLASSIFIED` допустим всегда;
+- «переходит через полночь» — локальная полночь в `timezone` Event лежит строго внутри интервала (окончание ровно в 00:00 не является переходом); порога в часах нет;
+- изменение `start_at`/`end_at` Event не блокируется и не меняет сохранённую классификацию; классификация никогда не вычисляется и не перезаписывается автоматически и не выводится из маршрута, GPX, дистанции или других фактов;
+- план вида 18:00 → 02:00 не является отдельным значением: существующая валидация Event (`end_at > start_at`) его принимает, и по правилу полуночи с ним согласованы только `MULTI_DAY` и `UNCLASSIFIED`; отдельного правила, отклоняющего такой план, нет;
+- другие значения и `null` — `422`; база данных повторяет ограничение (`ck_trips_duration_classification`);
+- lifecycle — как у обычного редактирования Trip (§3.5): при `completed`/`cancelled`/`archived` — `409 trip_editing_closed`; повтор сохранённого значения — no-op; Historical Correction Workflow не реализован;
+- Authorization (отдельного permission нет): чтение — вместе с Trip (`trip.read`); установка и изменение — `trip.manage` с scope `all` (Administrator). Instructor, управляющий Trip в своём scope, может создавать и редактировать Trip без этого поля, но запрос с `duration_classification` (включая `UNCLASSIFIED`) получает `403 forbidden`.
 ---
 
 # 4. Trip Participants API
@@ -502,6 +518,7 @@ Endpoints:
 - `tourism_type_inactive` (422);
 - `tourism_type_code_conflict` (409, каталог);
 - `invalid_official_difficulty` (422);
+- `duration_classification_mismatch` (422);
 - `country_not_found`, `country_inactive`, `region_not_found`, `region_inactive`, `region_country_mismatch` (422, Trip Geography);
 - `country_code_conflict`, `region_code_conflict`, `country_in_use`, `region_in_use` (409, справочники Geography);
 - `invalid_geography` (422, справочники Geography);

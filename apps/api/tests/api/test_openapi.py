@@ -442,6 +442,7 @@ def test_trip_endpoints_expose_only_their_canonical_methods_and_fields(real_clie
         "official_difficulty",
         "country_id",
         "region_id",
+        "duration_classification",
     }
     assert set(components["TripCreateRequest"]["required"]) == {"event_id"}
     assert set(components["TripUpdateRequest"]["properties"]) == {
@@ -449,6 +450,7 @@ def test_trip_endpoints_expose_only_their_canonical_methods_and_fields(real_clie
         "official_difficulty",
         "country_id",
         "region_id",
+        "duration_classification",
     }
     # Issue #268: one structured Official Difficulty — mode, value, source.
     assert set(components["OfficialDifficultyIn"]["properties"]) == {"mode", "value", "source"}
@@ -460,9 +462,16 @@ def test_trip_endpoints_expose_only_their_canonical_methods_and_fields(real_clie
         "official_difficulty",
         "country_id",
         "region_id",
+        "duration_classification",
         "created_at",
         "updated_at",
     }
+    # Issue #274: Duration Classification — the three approved values only;
+    # never null on the Trip.
+    for schema_name in ("TripCreateRequest", "TripUpdateRequest", "TripOut"):
+        prop = components[schema_name]["properties"]["duration_classification"]
+        assert prop["enum"] == ["ONE_DAY", "MULTI_DAY", "UNCLASSIFIED"], schema_name
+    assert "duration_classification" in components["TripOut"]["required"]
     assert set(components["TripParticipantRecordRequest"]["properties"]) == {"actual_participation"}
     assert set(components["TripParticipantOut"]["properties"]) == {
         "event_participation_id",

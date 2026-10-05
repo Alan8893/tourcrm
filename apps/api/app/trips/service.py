@@ -54,6 +54,16 @@ under exactly the TourismType lifecycle above; re-sending the stored
 pair is a no-op. Deactivating a catalog entry never touches Trips that
 reference it. Geography is never derived from any other fact.
 
+## Duration Classification (Issue #274, trips-and-tourist-profile.md §10)
+
+Every Trip carries one Duration Classification, `UNCLASSIFIED` until set.
+It may be given at creation and changed through ordinary Trip editing
+under exactly the TourismType lifecycle above. `ONE_DAY`/`MULTI_DAY`
+must agree with the Event's current planned interval when set
+(app.trips.duration_classification); the classification is never
+computed or overwritten automatically, and Event re-planning never
+changes it. Re-sending the stored value is a no-op.
+
 ## actual_participation
 
 Recorded per EventParticipation of the Trip's Event (any
@@ -103,6 +113,7 @@ from app.achievements import triggers as achievement_triggers
 from app.audit.service import record_audit_event
 from app.db.events import Event, EventParticipation
 from app.db.trips import TRIP_EVENT_TYPE, TRIP_PRIMARY_KEY, Trip, TripParticipant
+from app.trips.duration_classification import UNCLASSIFIED, validate_duration_classification
 from app.trips.geography import mark_geography_used, resolve_trip_geography
 from app.trips.official_difficulty import OfficialDifficulty, official_difficulty_of
 from app.trips.tourism_types import resolve_assignable_tourism_type
@@ -215,11 +226,12 @@ def create_trip(
     official_difficulty: Optional[OfficialDifficulty] = None,
     country_id: Optional[uuid.UUID] = None,
     region_id: Optional[uuid.UUID] = None,
+    duration_classification: str = UNCLASSIFIED,
     request_id: Optional[str] = None,
 ) -> Trip:
     """Attach a Trip to `event` (already loaded and locked by the caller),
-    optionally with an active TourismType, an Official Difficulty and
-    Geography, and record `trip.created` in the same transaction (see
+    optionally with an active TourismType, an Official Difficulty,
+    Geography and a Duration Classification, and record `trip.created` in the same transaction (see
     module docstring "Audit")."""
     if event.event_type != TRIP_EVENT_TYPE:
         raise EventNotTripError(event_id=event.id, event_type=event.event_type)
@@ -230,6 +242,12 @@ def create_trip(
     if tourism_type_id is not None:
         resolve_assignable_tourism_type(session, tourism_type_id)
     resolve_trip_geography(session, country_id=country_id, region_id=region_id)
+    validate_duration_classification(
+        duration_classification,
+        start_at=event.start_at,
+        end_at=event.end_at,
+        timezone=event.timezone,
+    )
 
     event_id = event.id
     try:
@@ -239,6 +257,7 @@ def create_trip(
             tourism_type_id=tourism_type_id,
             country_id=country_id,
             region_id=region_id,
+            duration_classification=duration_classification,
         )
         _apply_official_difficulty(trip, official_difficulty)
         session.add(trip)
@@ -304,6 +323,31 @@ def set_trip_official_difficulty(
         return trip
     try:
         _apply_official_difficulty(trip, official_difficulty)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return trip
+
+
+def set_trip_duration_classification(
+    session: Session, *, event: Event, trip: Trip, duration_classification: str
+) -> Trip:
+    """Ordinary Trip editing of the Duration Classification (see module
+    docstring); `UNCLASSIFIED` unsets it. `event` is already loaded and
+    locked by the caller. Setting the value already stored is a no-op."""
+    if event.status not in TRIP_EDITING_OPEN_EVENT_STATUSES:
+        raise TripEditingClosedError(event_id=event.id, status=event.status)
+    if trip.duration_classification == duration_classification:
+        return trip
+    validate_duration_classification(
+        duration_classification,
+        start_at=event.start_at,
+        end_at=event.end_at,
+        timezone=event.timezone,
+    )
+    try:
+        trip.duration_classification = duration_classification
         session.commit()
     except Exception:
         session.rollback()
@@ -450,6 +494,7 @@ __all__ = [
     "create_trip",
     "set_trip_tourism_type",
     "set_trip_official_difficulty",
+    "set_trip_duration_classification",
     "set_trip_geography",
     "record_actual_participation",
 ]

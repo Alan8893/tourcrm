@@ -512,9 +512,15 @@ BR-TRIP-010: Импортированные данные должны сохра
 - после первого использования в Trip семантические поля записи неизменяемы обычным редактированием (Country — `code`, `name`; Region — `code`, `name`, `country_id`); `active` и provenance изменяемы; модель коррекции/версионирования справочников не реализована;
 - автоматического определения Geography нет; Geography пока не используется как metric в Achievement Engine (§15).
 
+Реализовано в Duration Classification Foundation (семантика — §10):
+
+- у Trip одно значение `ONE_DAY`/`MULTI_DAY`/`UNCLASSIFIED`; без установки — `UNCLASSIFIED`; плановый интервал — только `start_at`/`end_at` Event, отдельных start/end у Trip нет;
+- при установке `ONE_DAY`/`MULTI_DAY` проверяется соответствие плановому интервалу Event (переход через локальную полночь в часовом поясе Event); классификация не вычисляется и не перезаписывается автоматически;
+- устанавливает и изменяет её только Administrator в рамках обычного редактирования Trip; Trip, Event которого завершён, отменён или архивирован, закрыт для обычного изменения классификации;
+- Duration Classification пока не используется как metric в Achievement Engine (§15).
+
 Семантика утверждена этим документом, но **ещё не реализована**:
 
-- Duration Classification (§10);
 - Result (§8);
 - Route, Planned/Actual представления и Planned/Actual GPX (§11).
 

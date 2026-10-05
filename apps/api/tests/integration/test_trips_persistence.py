@@ -350,6 +350,7 @@ def test_trip_tables_carry_no_duplicated_registration_or_tourism_columns() -> No
         "official_difficulty_source",
         "country_id",
         "region_id",
+        "duration_classification",
         "created_at",
         "updated_at",
     }

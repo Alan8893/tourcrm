@@ -11,9 +11,10 @@ Trip is a 1:0..1 extension of an ordinary `Event`; it has no lifecycle
 of its own (its lifecycle is the Event's, ADR-0018). Its tourism
 attributes so far are the optional TourismType catalog reference (Issue
 #264, trips-and-tourist-profile.md §3), the optional Official
-Difficulty (Issue #268, §4) and the optional Geography — Country and
-Region catalog references (Issue #271, §9); the other Tourism Facts v2
-facts (duration, result, route) are later slices.
+Difficulty (Issue #268, §4), the optional Geography — Country and
+Region catalog references (Issue #271, §9) — and the Duration
+Classification (Issue #274, §10); the other Tourism Facts v2 facts
+(result, route) are later slices.
 
 - `trips.event_id` is the primary key. Together with the `event_type`
   column (CHECK `= 'trip'`) it forms the composite FK
@@ -263,6 +264,12 @@ class Trip(Base):
     # (CHECK + composite FK below).
     country_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
     region_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # Issue #274: exactly one Duration Classification — `UNCLASSIFIED` until
+    # set. A semantic fact, not a second source of the planned interval
+    # (that stays Event.start_at/end_at).
+    duration_classification: Mapped[str] = mapped_column(
+        sa.String(16), nullable=False, default="UNCLASSIFIED", server_default="UNCLASSIFIED"
+    )
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
     )
@@ -318,6 +325,10 @@ class Trip(Base):
         sa.CheckConstraint(
             "region_id IS NULL OR country_id IS NOT NULL",
             name="ck_trips_region_requires_country",
+        ),
+        sa.CheckConstraint(
+            "duration_classification IN ('ONE_DAY', 'MULTI_DAY', 'UNCLASSIFIED')",
+            name="ck_trips_duration_classification",
         ),
         sa.Index("ix_trips_country_id", "country_id"),
         sa.Index("ix_trips_region_id", "region_id"),

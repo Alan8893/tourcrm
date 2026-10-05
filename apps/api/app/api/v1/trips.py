@@ -4,10 +4,11 @@ Canonical sources: docs/05-api/trips-and-tourist-profile-api.md §3/§4,
 docs/05-api/endpoint-inventory.md §11, docs/04-modules/trips-and-
 tourist-profile.md, and the Issue #245 PO/CTO decisions. Only the
 operations defined so far: attach a Trip to an existing Event (optionally
-with a TourismType, an Official Difficulty and Geography), read Trips,
-edit the Trip's TourismType (Issue #264), Official Difficulty (Issue
-#268) and Geography (Issue #271), read recorded TripParticipants, and
-record the confirmed `actual_participation` fact for an existing
+with a TourismType, an Official Difficulty, Geography and a Duration
+Classification), read Trips, edit the Trip's TourismType (Issue #264),
+Official Difficulty (Issue #268), Geography (Issue #271) and Duration
+Classification (Issue #274), read recorded TripParticipants, and record
+the confirmed `actual_participation` fact for an existing
 EventParticipation. No Trip status endpoint (a Trip has no lifecycle of
 its own — use the Event lifecycle endpoints), no participant add/remove
 (registration stays EventParticipation's, ADR-0037), no correction
@@ -26,7 +27,8 @@ may not act on under the endpoint's permission all receive the same
 §4): giving, changing or clearing it additionally requires `trip.manage`
 with `all` scope (app.trips.official_difficulty_authorization) — a
 caller who may manage the Trip but not its Difficulty gets the generic
-403.
+403. The same holds for the Duration Classification (§10,
+app.trips.duration_classification_authorization).
 """
 
 import logging
@@ -56,10 +58,14 @@ from app.db.events import Event
 from app.db.session import get_db
 from app.db.trips import Trip, TripParticipant
 from app.events.authorization import build_event_resource_context
+from app.trips import duration_classification as duration_classification_service
 from app.trips import geography as geography_service
 from app.trips import official_difficulty as official_difficulty_service
 from app.trips import service as trips_service
 from app.trips import tourism_types as tourism_type_service
+from app.trips.duration_classification_authorization import (
+    require_duration_classification_manager,
+)
 from app.trips.official_difficulty_authorization import require_official_difficulty_manager
 from app.trips.queries import TRIP_READ_PERMISSION, list_trip_participants, list_trips_page
 
@@ -123,6 +129,7 @@ def _trip_out(trip: Trip) -> TripOut:
         ),
         country_id=trip.country_id,
         region_id=trip.region_id,
+        duration_classification=trip.duration_classification,
         created_at=trip.created_at,
         updated_at=trip.updated_at,
     )
@@ -164,6 +171,17 @@ def _raise_for_geography_error(exc: geography_service.GeographyError) -> NoRetur
     raise APIError(
         status.HTTP_422_UNPROCESSABLE_ENTITY, codes.get(type(exc), "invalid_geography"), str(exc)
     ) from exc
+
+
+def _check_duration_classification(value: str, event: Event) -> None:
+    try:
+        duration_classification_service.validate_duration_classification(
+            value, start_at=event.start_at, end_at=event.end_at, timezone=event.timezone
+        )
+    except duration_classification_service.DurationClassificationMismatchError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "duration_classification_mismatch", str(exc)
+        ) from exc
 
 
 def _trip_participant_out(row: TripParticipant, person_id: uuid.UUID) -> TripParticipantOut:
@@ -236,6 +254,11 @@ def create_trip(
     if payload.official_difficulty is not None:
         require_official_difficulty_manager(db, user_id=principal.user_id, club_id=event.club_id)
     official_difficulty = _build_official_difficulty(payload.official_difficulty)
+    if "duration_classification" in payload.model_fields_set:
+        require_duration_classification_manager(
+            db, user_id=principal.user_id, club_id=event.club_id
+        )
+    _check_duration_classification(payload.duration_classification, event)
     try:
         trip = trips_service.create_trip(
             db,
@@ -245,6 +268,7 @@ def create_trip(
             official_difficulty=official_difficulty,
             country_id=payload.country_id,
             region_id=payload.region_id,
+            duration_classification=payload.duration_classification,
             request_id=get_request_id(request),
         )
     except trips_service.TripError as exc:
@@ -290,6 +314,18 @@ def update_trip(
     if difficulty_requested:
         require_official_difficulty_manager(db, user_id=principal.user_id, club_id=event.club_id)
     official_difficulty = _build_official_difficulty(payload.official_difficulty)
+    duration_requested = "duration_classification" in payload.model_fields_set
+    if duration_requested:
+        require_duration_classification_manager(
+            db, user_id=principal.user_id, club_id=event.club_id
+        )
+        # Checked before any write (re-sending the stored value is a no-op);
+        # a closed Trip is left to the setter's 409.
+        if (
+            event.status in trips_service.TRIP_EDITING_OPEN_EVENT_STATUSES
+            and payload.duration_classification != trip.duration_classification
+        ):
+            _check_duration_classification(payload.duration_classification, event)
     geography_requested = bool({"country_id", "region_id"} & payload.model_fields_set)
     country_id = payload.country_id if "country_id" in payload.model_fields_set else trip.country_id
     region_id = payload.region_id if "region_id" in payload.model_fields_set else trip.region_id
@@ -320,6 +356,16 @@ def update_trip(
         try:
             trip = trips_service.set_trip_official_difficulty(
                 db, event=event, trip=trip, official_difficulty=official_difficulty
+            )
+        except trips_service.TripError as exc:
+            _raise_for_trip_error(exc)
+    if duration_requested:
+        try:
+            trip = trips_service.set_trip_duration_classification(
+                db,
+                event=event,
+                trip=trip,
+                duration_classification=payload.duration_classification,
             )
         except trips_service.TripError as exc:
             _raise_for_trip_error(exc)
