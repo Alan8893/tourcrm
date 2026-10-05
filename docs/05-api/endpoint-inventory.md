@@ -262,6 +262,19 @@ respect audit policy (ADR-0024/ADR-0032 §11).
 - `GET /trips/{id}/results`
 - `POST /trips/{id}/results`
 
+Implemented Trip endpoints and their exact contract (incl. `PATCH /trips/{event_id}` for ordinary editing, Issue #264): `docs/05-api/trips-and-tourist-profile-api.md` §3–§4.
+
+### 11.1 TourismType catalog — IMPLEMENTED (Issue #264)
+
+- `GET /tourism-types`
+- `POST /tourism-types`
+- `GET /tourism-types/{id}`
+- `PATCH /tourism-types/{id}`
+- `POST /tourism-types/{id}/activate`
+- `POST /tourism-types/{id}/deactivate`
+
+No DELETE. Reads require `trip.read`; mutations require `trip.manage` with `all` scope (Administrator). No TourismType-specific permission.
+
 ## 12. Routes and GPX
 
 - `GET /routes`

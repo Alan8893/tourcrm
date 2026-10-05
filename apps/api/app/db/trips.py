@@ -8,10 +8,10 @@ docs/03-architecture/data-model.md §9 (`Event 1:0..1 Trip`), and the
 Issue #245 PO/CTO decisions (G1-G9, GAP-A/GAP-B).
 
 Trip is a 1:0..1 extension of an ordinary `Event`; it has no lifecycle
-of its own (its lifecycle is the Event's, ADR-0018) and, in this slice,
-no tourism attributes: tourism type, region, difficulty, route,
-distance, duration, leader and result status are all deferred by the PO
-decision because their canonical contracts conflict.
+of its own (its lifecycle is the Event's, ADR-0018). Its only tourism
+attribute so far is the optional TourismType catalog reference (Issue
+#264, trips-and-tourist-profile.md §3); the other Tourism Facts v2 facts
+(difficulty, geography, duration, result, route) are later slices.
 
 - `trips.event_id` is the primary key. Together with the `event_type`
   column (CHECK `= 'trip'`) it forms the composite FK
@@ -43,6 +43,7 @@ of the Trip's Event — never a second registration source:
 
 import uuid
 from datetime import datetime
+from typing import Optional
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID
@@ -56,6 +57,41 @@ TRIP_EVENT_TYPE = "trip"
 # specific violations.
 TRIP_EVENT_FK = "fk_trips_event_id_event_type"
 TRIP_PRIMARY_KEY = "pk_trips"
+TOURISM_TYPE_CODE_UNIQUE = "uq_tourism_types_code"
+
+
+class TourismType(Base):
+    """TourismType reference catalog (Issue #264;
+    trips-and-tourist-profile.md §3, Issue #256).
+
+    An extensible catalog: no value is seeded or hardcoded. Entries are
+    never physically deleted — the lifecycle is `active` true/false — and
+    `trips.tourism_type_id` references them with ON DELETE RESTRICT, so a
+    historically referenced entry cannot be removed either."""
+
+    __tablename__ = "tourism_types"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code: Mapped[str] = mapped_column(sa.String(64), nullable=False)
+    name: Mapped[str] = mapped_column(sa.String(255), nullable=False)
+    active: Mapped[bool] = mapped_column(
+        sa.Boolean, nullable=False, default=True, server_default=sa.true()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        server_default=sa.func.now(),
+        onupdate=sa.func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint("code", name=TOURISM_TYPE_CODE_UNIQUE),
+        sa.CheckConstraint("length(btrim(code)) > 0", name="ck_tourism_types_code_not_blank"),
+        sa.CheckConstraint("length(btrim(name)) > 0", name="ck_tourism_types_name_not_blank"),
+    )
 
 
 class Trip(Base):
@@ -65,6 +101,8 @@ class Trip(Base):
 
     event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     event_type: Mapped[str] = mapped_column(sa.String(32), nullable=False, default=TRIP_EVENT_TYPE)
+    # Issue #264: 0..1 TourismType — a catalog reference, never free text.
+    tourism_type_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
     )
@@ -85,6 +123,14 @@ class Trip(Base):
             ondelete="RESTRICT",
             onupdate="RESTRICT",
         ),
+        sa.ForeignKeyConstraint(
+            ["tourism_type_id"],
+            ["tourism_types.id"],
+            name="fk_trips_tourism_type_id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        sa.Index("ix_trips_tourism_type_id", "tourism_type_id"),
     )
 
 
@@ -127,4 +173,12 @@ class TripParticipant(Base):
     )
 
 
-__all__ = ["Trip", "TripParticipant", "TRIP_EVENT_TYPE", "TRIP_EVENT_FK", "TRIP_PRIMARY_KEY"]
+__all__ = [
+    "TourismType",
+    "Trip",
+    "TripParticipant",
+    "TRIP_EVENT_TYPE",
+    "TRIP_EVENT_FK",
+    "TRIP_PRIMARY_KEY",
+    "TOURISM_TYPE_CODE_UNIQUE",
+]

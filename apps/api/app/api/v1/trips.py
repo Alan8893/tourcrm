@@ -3,8 +3,9 @@
 Canonical sources: docs/05-api/trips-and-tourist-profile-api.md §3/§4,
 docs/05-api/endpoint-inventory.md §11, docs/04-modules/trips-and-
 tourist-profile.md, and the Issue #245 PO/CTO decisions. Only the
-operations this slice defines: attach a Trip to an existing Event, read
-Trips, read recorded TripParticipants, and record the confirmed
+operations defined so far: attach a Trip to an existing Event (optionally
+with a TourismType), read Trips, edit the Trip's TourismType (Issue
+#264), read recorded TripParticipants, and record the confirmed
 `actual_participation` fact for an existing EventParticipation. No Trip
 status endpoint (a Trip has no lifecycle of its own — use the Event
 lifecycle endpoints), no participant add/remove (registration stays
@@ -39,6 +40,7 @@ from app.api.v1.trips_schemas import (
     TripOut,
     TripParticipantOut,
     TripParticipantRecordRequest,
+    TripUpdateRequest,
 )
 from app.authorization.context import ResourceContext
 from app.authorization.service import Authorizer
@@ -47,6 +49,7 @@ from app.db.session import get_db
 from app.db.trips import Trip, TripParticipant
 from app.events.authorization import build_event_resource_context
 from app.trips import service as trips_service
+from app.trips import tourism_types as tourism_type_service
 from app.trips.queries import TRIP_READ_PERMISSION, list_trip_participants, list_trips_page
 
 logger = logging.getLogger(__name__)
@@ -98,7 +101,22 @@ def _get_authorized_trip_event_or_404(
 
 
 def _trip_out(trip: Trip) -> TripOut:
-    return TripOut(event_id=trip.event_id, created_at=trip.created_at, updated_at=trip.updated_at)
+    return TripOut(
+        event_id=trip.event_id,
+        tourism_type_id=trip.tourism_type_id,
+        created_at=trip.created_at,
+        updated_at=trip.updated_at,
+    )
+
+
+def _raise_for_tourism_type_error(exc: tourism_type_service.TourismTypeError) -> NoReturn:
+    if isinstance(exc, tourism_type_service.TourismTypeInactiveError):
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "tourism_type_inactive", str(exc)
+        ) from exc
+    raise APIError(
+        status.HTTP_422_UNPROCESSABLE_ENTITY, "tourism_type_not_found", str(exc)
+    ) from exc
 
 
 def _trip_participant_out(row: TripParticipant, person_id: uuid.UUID) -> TripParticipantOut:
@@ -119,6 +137,8 @@ def _raise_for_trip_error(exc: trips_service.TripError) -> NoReturn:
         raise APIError(status.HTTP_409_CONFLICT, "trip_event_lifecycle_closed", str(exc)) from exc
     if isinstance(exc, trips_service.TripAlreadyExistsError):
         raise APIError(status.HTTP_409_CONFLICT, "trip_already_exists", str(exc)) from exc
+    if isinstance(exc, trips_service.TripEditingClosedError):
+        raise APIError(status.HTTP_409_CONFLICT, "trip_editing_closed", str(exc)) from exc
     if isinstance(exc, trips_service.TripParticipationMissingError):
         raise APIError(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "participation_missing", str(exc)
@@ -171,10 +191,13 @@ def create_trip(
             db,
             event=event,
             actor_user_id=principal.user_id,
+            tourism_type_id=payload.tourism_type_id,
             request_id=get_request_id(request),
         )
     except trips_service.TripError as exc:
         _raise_for_trip_error(exc)
+    except tourism_type_service.TourismTypeError as exc:
+        _raise_for_tourism_type_error(exc)
     logger.info("trips.create.success event_id=%s user_id=%s", event.id, principal.user_id)
     return _trip_out(trip)
 
@@ -188,6 +211,34 @@ def get_trip(
     _event, trip, _context = _get_authorized_trip_event_or_404(
         db, event_id=event_id, user_id=principal.user_id, permission_code=TRIP_READ_PERMISSION
     )
+    return _trip_out(trip)
+
+
+@router.patch("/{event_id}", response_model=TripOut)
+def update_trip(
+    event_id: uuid.UUID,
+    payload: TripUpdateRequest,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> TripOut:
+    event, trip, _context = _get_authorized_trip_event_or_404(
+        db,
+        event_id=event_id,
+        user_id=principal.user_id,
+        permission_code=_TRIP_MANAGE_PERMISSION,
+        lock=True,
+    )
+    if "tourism_type_id" in payload.model_fields_set:
+        try:
+            trip = trips_service.set_trip_tourism_type(
+                db, event=event, trip=trip, tourism_type_id=payload.tourism_type_id
+            )
+        except trips_service.TripError as exc:
+            _raise_for_trip_error(exc)
+        except tourism_type_service.TourismTypeError as exc:
+            _raise_for_tourism_type_error(exc)
+    logger.info("trips.update.success event_id=%s user_id=%s", event_id, principal.user_id)
     return _trip_out(trip)
 
 

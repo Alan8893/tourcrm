@@ -18,6 +18,7 @@ from app.api.v1.memberships import router as memberships_router
 from app.api.v1.news import router as news_router
 from app.api.v1.persons import router as persons_router
 from app.api.v1.role_assignments import router as role_assignments_router
+from app.api.v1.tourism_types import router as tourism_types_router
 from app.api.v1.trips import router as trips_router
 from app.api.v1.users import router as users_router
 
@@ -50,4 +51,5 @@ router.include_router(inventory_quantities_router)
 router.include_router(inventory_issues_router)
 router.include_router(users_router)
 router.include_router(trips_router)
+router.include_router(tourism_types_router)
 router.include_router(achievements_router)
