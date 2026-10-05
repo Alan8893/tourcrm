@@ -337,9 +337,12 @@ def test_participation_with_a_trip_participant_cannot_be_deleted_no_cascade() ->
 @requires_postgres
 def test_trip_tables_carry_no_duplicated_registration_or_tourism_columns() -> None:
     inspector = sa.inspect(get_engine())
+    # Issue #264: the TourismType catalog reference is the only tourism
+    # column; no registration or free-text tourism column exists.
     assert {c["name"] for c in inspector.get_columns("trips")} == {
         "event_id",
         "event_type",
+        "tourism_type_id",
         "created_at",
         "updated_at",
     }
@@ -352,6 +355,11 @@ def test_trip_tables_carry_no_duplicated_registration_or_tourism_columns() -> No
     }
 
     trip_fks = {fk["name"]: fk for fk in inspector.get_foreign_keys("trips")}
+    assert trip_fks["fk_trips_tourism_type_id"]["referred_table"] == "tourism_types"
+    assert trip_fks["fk_trips_tourism_type_id"]["options"] == {
+        "onupdate": "RESTRICT",
+        "ondelete": "RESTRICT",
+    }
     assert trip_fks["fk_trips_event_id_event_type"]["referred_columns"] == ["id", "event_type"]
     assert trip_fks["fk_trips_event_id_event_type"]["options"] == {
         "onupdate": "RESTRICT",
