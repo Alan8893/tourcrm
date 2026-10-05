@@ -30,7 +30,7 @@
 
 Event хранит общие свойства мероприятия: название, время, место, статус, организаторов и участников.
 
-Trip хранит туристскую специфику. Семантика туристских фактов Trip (Tourism Facts v2: TourismType, Official Difficulty, Geography, Duration Classification, Result, Route/GPX) определяется этим документом (§3–§12). На текущем этапе реализованы Trip Foundation (контур Trip→Event и туристский факт участия), TourismType Foundation, Official Difficulty Foundation и Geography Foundation (§20); остальные туристские факты (Duration Classification, Result, Route/GPX) ещё не реализованы и реализуются отдельными задачами строго по семантике этого документа.
+Trip хранит туристскую специфику. Семантика туристских фактов Trip (Tourism Facts v2: TourismType, Official Difficulty, Geography, Duration Classification, Result, Route/GPX) определяется этим документом (§3–§12). На текущем этапе реализованы Trip Foundation (контур Trip→Event и туристский факт участия), TourismType Foundation, Official Difficulty Foundation, Geography Foundation, Duration Classification Foundation и Result Foundation (§20); остальные туристские факты (Route/GPX) ещё не реализованы и реализуются отдельными задачами строго по семантике этого документа.
 
 Этот документ — единственный источник бизнес-семантики туристских фактов Trip. `docs/03-architecture/data-model.md`, `docs/02-requirements/roles-and-permissions.md` и `docs/05-api/endpoint-inventory.md` ссылаются на него и не определяют эту семантику самостоятельно.
 
@@ -524,9 +524,15 @@ BR-TRIP-010: Импортированные данные должны сохра
 - устанавливает и изменяет её только Administrator в рамках обычного редактирования Trip; Trip, Event которого завершён, отменён или архивирован, закрыт для обычного изменения классификации;
 - Duration Classification пока не используется как metric в Achievement Engine (§15).
 
+Реализовано в Result Foundation (семантика — §8):
+
+- необязательный Result Trip: `COMPLETED`/`PARTIALLY_COMPLETED`/`NOT_COMPLETED`; отсутствие Result не блокирует создание или завершение Trip;
+- Result независим от `Event.status`: не устанавливается, не меняется и не вычисляется по статусу Event или другим фактам и сам статус не меняет;
+- устанавливают, изменяют и снимают Result Administrator и Instructor в рамках существующего `trip.manage` и его scope; Trip, Event которого завершён, отменён или архивирован, закрыт для обычного изменения Result;
+- `result_summary` не реализован; Result пока не используется как metric в Achievement Engine (§15).
+
 Семантика утверждена этим документом, но **ещё не реализована**:
 
-- Result (§8);
 - Route, Planned/Actual представления и Planned/Actual GPX (§11).
 
 Не входят в текущую модель без отдельного решения:

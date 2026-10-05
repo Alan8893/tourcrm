@@ -443,6 +443,7 @@ def test_trip_endpoints_expose_only_their_canonical_methods_and_fields(real_clie
         "country_id",
         "region_id",
         "duration_classification",
+        "result",
     }
     assert set(components["TripCreateRequest"]["required"]) == {"event_id"}
     assert set(components["TripUpdateRequest"]["properties"]) == {
@@ -451,6 +452,7 @@ def test_trip_endpoints_expose_only_their_canonical_methods_and_fields(real_clie
         "country_id",
         "region_id",
         "duration_classification",
+        "result",
     }
     # Issue #268: one structured Official Difficulty — mode, value, source.
     assert set(components["OfficialDifficultyIn"]["properties"]) == {"mode", "value", "source"}
@@ -463,6 +465,7 @@ def test_trip_endpoints_expose_only_their_canonical_methods_and_fields(real_clie
         "country_id",
         "region_id",
         "duration_classification",
+        "result",
         "created_at",
         "updated_at",
     }
@@ -472,6 +475,12 @@ def test_trip_endpoints_expose_only_their_canonical_methods_and_fields(real_clie
         prop = components[schema_name]["properties"]["duration_classification"]
         assert prop["enum"] == ["ONE_DAY", "MULTI_DAY", "UNCLASSIFIED"], schema_name
     assert "duration_classification" in components["TripOut"]["required"]
+    # Issue #276: Result — the three approved values, nullable (no Result).
+    for schema_name in ("TripCreateRequest", "TripUpdateRequest", "TripOut"):
+        variants = components[schema_name]["properties"]["result"]["anyOf"]
+        enums = [variant["enum"] for variant in variants if "enum" in variant]
+        assert enums == [["COMPLETED", "PARTIALLY_COMPLETED", "NOT_COMPLETED"]], schema_name
+        assert {"type": "null"} in variants, schema_name
     assert set(components["TripParticipantRecordRequest"]["properties"]) == {"actual_participation"}
     assert set(components["TripParticipantOut"]["properties"]) == {
         "event_participation_id",

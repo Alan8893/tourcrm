@@ -54,7 +54,7 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 
 ### 2.4 Статус разделов
 
-- §3–§4 — **реализованный** API Trip Foundation (Issue #245), TourismType (Issue #264, §3.5–§3.6), Official Difficulty (Issue #268, §3.7), Geography (Issue #271, §3.8) и Duration Classification (Issue #274, §3.9).
+- §3–§4 — **реализованный** API Trip Foundation (Issue #245), TourismType (Issue #264, §3.5–§3.6), Official Difficulty (Issue #268, §3.7), Geography (Issue #271, §3.8), Duration Classification (Issue #274, §3.9) и Result (Issue #276, §3.10).
 - §5–§7 — Route/GPX: перечень endpoints из `docs/05-api/endpoint-inventory.md` §12 с канонической семантикой; **не реализовано**, полный контракт определяется перед реализацией.
 - §8–§10, §12 — **не реализовано**; черновые описания, требующие отдельных решений.
 - §11 — Achievements: контракт определён в другом месте.
@@ -91,7 +91,7 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 
 `GET /trips/{event_id}`
 
-`trip.read` + scope. Возвращает `event_id`, `tourism_type_id` (nullable), `official_difficulty` (nullable, §3.7), `country_id` и `region_id` (nullable, §3.8), `duration_classification` (§3.9), `created_at`, `updated_at`. Остальные туристские факты Trip пока не реализованы и в ответе отсутствуют.
+`trip.read` + scope. Возвращает `event_id`, `tourism_type_id` (nullable), `official_difficulty` (nullable, §3.7), `country_id` и `region_id` (nullable, §3.8), `duration_classification` (§3.9), `result` (nullable, §3.10), `created_at`, `updated_at`. Route/GPX пока не реализованы и в ответе отсутствуют.
 
 ## 3.3 Create trip
 
@@ -107,7 +107,8 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 - `tourism_type_id` — необязательная ссылка на активную запись справочника TourismType (§3.6);
 - `official_difficulty` — необязательная Official Difficulty (§3.7);
 - `country_id`, `region_id` — необязательные ссылки на активные записи справочников Country/Region (§3.8);
-- `duration_classification` — необязательно, по умолчанию `UNCLASSIFIED` (§3.9).
+- `duration_classification` — необязательно, по умолчанию `UNCLASSIFIED` (§3.9);
+- `result` — необязательный Result (§3.10).
 
 ### Rules
 
@@ -121,7 +122,7 @@ Trip, TripParticipant, Route и Planned/Actual GPX используют суще
 - Geography проверяется по §3.8 (`422 country_not_found`/`country_inactive`/`region_not_found`/`region_inactive`/`region_country_mismatch`);
 - создание фиксируется в audit (`trip.created`) в той же транзакции.
 
-TourismType, Difficulty, Geography, Result и Route не обязательны для создания Trip; из них в текущем контракте передаются только `tourism_type_id`, `official_difficulty`, `country_id`, `region_id` и `duration_classification`.
+TourismType, Difficulty, Geography, Result и Route не обязательны для создания Trip; из них в текущем контракте передаются только `tourism_type_id`, `official_difficulty`, `country_id`, `region_id`, `duration_classification` и `result`.
 
 ## 3.4 Lifecycle
 
@@ -129,13 +130,13 @@ TourismType, Difficulty, Geography, Result и Route не обязательны 
 
 Завершение Event не требует наличия Route, Actual GPX, Result, дистанции или других туристских фактов.
 
-Изменение TourismType, Official Difficulty, Geography и Duration Classification — §3.5. Изменение остальных туристских фактов Trip (Result) через API пока не реализовано; при реализации действуют правила авторизации и исторической фиксации из `trips-and-tourist-profile.md` §3–§12.
+Изменение TourismType, Official Difficulty, Geography, Duration Classification и Result — §3.5. Result не является lifecycle Trip и не связан с `Event.status` (§3.10).
 
 ## 3.5 Update trip
 
 `PATCH /trips/{event_id}`
 
-Обычное редактирование Trip (Issues #264, #268, #271, #274). Изменяются только поля, присутствующие в запросе.
+Обычное редактирование Trip (Issues #264, #268, #271, #274, #276). Изменяются только поля, присутствующие в запросе.
 
 ### Permissions
 
@@ -146,7 +147,8 @@ TourismType, Difficulty, Geography, Result и Route не обязательны 
 - `tourism_type_id` — ссылка на активную запись TourismType или `null` (снять);
 - `official_difficulty` — Official Difficulty (§3.7) или `null` (снять); только Administrator, иначе `403 forbidden`;
 - `country_id`, `region_id` — ссылки на Country/Region (§3.8) или `null` (снять). Проверяется итоговая пара: поле, отсутствующее в запросе, сохраняет текущее значение;
-- `duration_classification` — `ONE_DAY`/`MULTI_DAY`/`UNCLASSIFIED` (§3.9; `UNCLASSIFIED` снимает классификацию, `null` не допускается); только Administrator, иначе `403 forbidden`.
+- `duration_classification` — `ONE_DAY`/`MULTI_DAY`/`UNCLASSIFIED` (§3.9; `UNCLASSIFIED` снимает классификацию, `null` не допускается); только Administrator, иначе `403 forbidden`;
+- `result` — `COMPLETED`/`PARTIALLY_COMPLETED`/`NOT_COMPLETED` или `null` (снять) (§3.10); по `trip.manage` + scope (Administrator и Instructor своего Trip).
 
 ### Rules
 
@@ -251,6 +253,17 @@ Authorization (отдельного permission нет): чтение — люб�
 - другие значения и `null` — `422`; база данных повторяет ограничение (`ck_trips_duration_classification`);
 - lifecycle — как у обычного редактирования Trip (§3.5): при `completed`/`cancelled`/`archived` — `409 trip_editing_closed`; повтор сохранённого значения — no-op; Historical Correction Workflow не реализован;
 - Authorization (отдельного permission нет): чтение — вместе с Trip (`trip.read`); установка и изменение — `trip.manage` с scope `all` (Administrator). Instructor, управляющий Trip в своём scope, может создавать и редактировать Trip без этого поля, но запрос с `duration_classification` (включая `UNCLASSIFIED`) получает `403 forbidden`.
+
+## 3.10 Result
+
+Реализовано (Issue #276; семантика — `trips-and-tourist-profile.md` §8). У Trip не более одного Result — фактического результата самого Trip: `COMPLETED`, `PARTIALLY_COMPLETED` или `NOT_COMPLETED`; `null` — Result не установлен (значение по умолчанию). Передаётся в `POST /trips` и `PATCH /trips/{event_id}` (`null` снимает Result) и возвращается в Trip как `result`.
+
+- другие значения — `422`; база данных повторяет ограничение (`ck_trips_result`);
+- Result не является lifecycle/статусом Trip или Event: его отсутствие не блокирует создание, публикацию, начало или завершение; `Event.status = completed` не устанавливает `COMPLETED`, `Event.status = cancelled` не устанавливает `NOT_COMPLETED`; установка Result не меняет `Event.status`, смена `Event.status` не меняет Result;
+- Result не выводится из маршрута, GPX, `actual_participation`, Duration Classification, Geography, TourismType, Difficulty или других фактов; это не результат участника и не официальный спортивный результат;
+- lifecycle — как у обычного редактирования Trip (§3.5): при `completed`/`cancelled`/`archived` — `409 trip_editing_closed`; повтор сохранённого значения — no-op; Historical Correction Workflow не реализован;
+- Authorization (отдельного permission нет): чтение — вместе с Trip (`trip.read`); установка, изменение и снятие — существующий `trip.manage` + scope на Event (Administrator — scope Trip; Instructor — только assigned/owned Trip; Member/Guardian — нет, `404`);
+- `result_summary` не реализован.
 ---
 
 # 4. Trip Participants API

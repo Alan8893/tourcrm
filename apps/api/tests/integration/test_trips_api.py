@@ -358,6 +358,7 @@ def test_admin_creates_trip_for_trip_event(client: TestClient) -> None:
         "country_id",
         "region_id",
         "duration_classification",
+        "result",
         "created_at",
         "updated_at",
     }
@@ -367,6 +368,7 @@ def test_admin_creates_trip_for_trip_event(client: TestClient) -> None:
     assert body["country_id"] is None
     assert body["region_id"] is None
     assert body["duration_classification"] == "UNCLASSIFIED"
+    assert body["result"] is None
     detail = client.get(f"/api/v1/trips/{world.event_id}")
     assert detail.status_code == 200
     assert detail.json() == body

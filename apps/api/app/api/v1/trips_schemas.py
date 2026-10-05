@@ -4,8 +4,9 @@ Single-resource responses are returned directly per ADR-0014 (no `data`
 wrapper). Only the canonical fields implemented so far: the Trip carries
 the optional TourismType reference (Issue #264), the optional
 structured Official Difficulty (Issue #268) and the optional Geography
-— Country and Region references (Issue #271) — and the Duration
-Classification (Issue #274), and TripParticipant
+— Country and Region references (Issue #271) —, the Duration
+Classification (Issue #274) and the optional Result (Issue #276), and
+TripParticipant
 exposes the confirmed `actual_participation` fact plus its identity —
 never a registration status (that stays on EventParticipation).
 """
@@ -20,6 +21,8 @@ OfficialDifficultyMode = Literal["NONE", "DEGREE", "CATEGORY", "WEEKEND"]
 OfficialDifficultyValue = Literal["I", "II", "III", "IV", "V", "VI"]
 # Issue #274 (trips-and-tourist-profile.md §10).
 DurationClassification = Literal["ONE_DAY", "MULTI_DAY", "UNCLASSIFIED"]
+# Issue #276 (trips-and-tourist-profile.md §8).
+TripResult = Literal["COMPLETED", "PARTIALLY_COMPLETED", "NOT_COMPLETED"]
 
 
 class OfficialDifficultyIn(BaseModel):
@@ -53,12 +56,14 @@ class TripCreateRequest(BaseModel):
     # Issue #274: Duration Classification (Administrator only); omitted =
     # `UNCLASSIFIED`.
     duration_classification: DurationClassification = "UNCLASSIFIED"
+    # Issue #276: optional Result of the Trip (Trip's trip.manage scope).
+    result: Optional[TripResult] = None
 
 
 class TripUpdateRequest(BaseModel):
-    """Ordinary Trip editing (Issues #264, #268, #271). Only fields present
-    in the body are changed; `null` clears the TourismType, the Official
-    Difficulty, the Country or the Region. The resulting Region must
+    """Ordinary Trip editing (Issues #264, #268, #271, #274, #276). Only
+    fields present in the body are changed; `null` clears the TourismType,
+    the Official Difficulty, the Country, the Region or the Result. The resulting Region must
     belong to the resulting Country. `duration_classification` is never
     null — `UNCLASSIFIED` unsets it."""
 
@@ -67,6 +72,7 @@ class TripUpdateRequest(BaseModel):
     country_id: Optional[UUID] = None
     region_id: Optional[UUID] = None
     duration_classification: DurationClassification = "UNCLASSIFIED"
+    result: Optional[TripResult] = None
 
 
 class TripOut(BaseModel):
@@ -76,6 +82,7 @@ class TripOut(BaseModel):
     country_id: Optional[UUID]
     region_id: Optional[UUID]
     duration_classification: DurationClassification
+    result: Optional[TripResult]
     created_at: datetime
     updated_at: datetime
 

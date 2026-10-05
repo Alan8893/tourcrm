@@ -421,9 +421,7 @@ Tourism facts (semantics in the module document §3–§12):
 
 - Duration Classification — `ONE_DAY`/`MULTI_DAY`/`UNCLASSIFIED`. Implemented (Issue #274): `duration_classification` NOT NULL, default `UNCLASSIFIED`, CHECK `ck_trips_duration_classification`; no Trip start/end columns — the planned interval stays `events.start_at`/`end_at`;
 
-Not yet implemented:
-
-- Result — `COMPLETED`/`PARTIALLY_COMPLETED`/`NOT_COMPLETED`; not a lifecycle status.
+- Result — `COMPLETED`/`PARTIALLY_COMPLETED`/`NOT_COMPLETED`; not a lifecycle status. Implemented (Issue #276): nullable `result` (NULL — no Result) with CHECK `ck_trips_result`; no trigger or default ties it to `events.status`.
 
 Not canonical (legacy draft columns, not to be implemented): `tourism_type` as a string, `difficulty_category`, `region` as a string, `route_id` as a classifier field, `planned_distance_km`/`actual_distance_km` on Trip (distance belongs to the Route's Planned/Actual representation), `planned_duration_minutes`/`actual_duration_minutes`, `leader_person_id`, `result_status`, `notes`.
 
