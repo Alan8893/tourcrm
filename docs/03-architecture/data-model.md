@@ -167,7 +167,7 @@ MVP-типы: `rescheduled`, `cancelled`.
 Туристские факты Trip (семантика — модульный документ §3–§12; физическое хранение определяется при реализации):
 
 - TourismType — 0..1 ссылка на справочник TourismType, не свободный текст;
-- Official Difficulty — не более одной официальной классификации (режим `NONE`/`DEGREE`/`CATEGORY`/`WEEKEND`, значение и обязательное основание/source);
+- Official Difficulty — не более одной официальной классификации на Trip: один режим `NONE`/`DEGREE`/`CATEGORY`/`WEEKEND`, значение только для `DEGREE` (I–III) или `CATEGORY` (I–VI) и обязательное основание/source установленной классификации. `DEGREE` и `CATEGORY` взаимоисключающие режимы одной классификации, а не два независимых поля; Trip не может иметь их одновременно;
 - Geography — 0..1 ссылка на Country и 0..1 ссылка на Region, не свободный текст;
 - Duration Classification — `ONE_DAY`/`MULTI_DAY`/`UNCLASSIFIED`, отдельно от времени начала/окончания Event;
 - Result — `COMPLETED`/`PARTIALLY_COMPLETED`/`NOT_COMPLETED`, отдельно от lifecycle Event;
@@ -255,7 +255,7 @@ Planned и Actual характеристики не смешиваются и н
 
 ### Official Difficulty
 
-Структурированная официальная классификация сложности Trip (режим, значение, основание/source), а не универсальный enum: применимость режимов/значений зависит от TourismType и нормативного источника. Семантика — `docs/04-modules/trips-and-tourist-profile.md` §4.
+Структурированная официальная классификация сложности Trip — не более одной на Trip (один режим, значение, основание/source; без одновременных `DEGREE` и `CATEGORY`), а не универсальный enum: применимость режимов/значений зависит от TourismType и нормативного источника. Семантика — `docs/04-modules/trips-and-tourist-profile.md` §4.
 
 ### Country / Region
 

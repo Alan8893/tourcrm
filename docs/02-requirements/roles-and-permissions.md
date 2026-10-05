@@ -78,6 +78,7 @@ permission исключение, а не пересмотр общей scope-м�
 - `trip.manage`
 - `achievement.read`
 - `achievement.award`
+- `achievement.manage`
 - `knowledge.read`
 - `knowledge.manage`
 - `document.read`
@@ -200,7 +201,8 @@ Feature setting не может расширить permissions.
 | Trip: Official Difficulty, Duration Classification — установка/изменение | ✅ (обычное редактирование Trip) | ❌ | ❌ | ❌ |
 | Справочники Country/Region, справочные данные Difficulty: управление | ✅ | ❌ | ❌ | ❌ |
 | Achievement: чтение | `all` | `own_groups` | `self` | `children` |
-| Achievement: выдача | `all` | `own_groups` | ❌ | ❌ |
+| Achievement: ручная выдача и отзыв Award (`achievement.award`) | `all` | ❌ | ❌ | ❌ |
+| Achievement: управление Definitions, Rule Versions, Normative Sets (`achievement.manage`) | `all` | ❌ | ❌ | ❌ |
 | Knowledge: чтение | ✅ | ✅ | ✅ | ✅ |
 | Knowledge: управление | ✅ | по permission | ❌ | ❌ |
 | Documents: чтение | `all` | `own_groups` | `self` | `children` |
