@@ -333,8 +333,8 @@ def update_trip(
     country_id = payload.country_id if "country_id" in payload.model_fields_set else trip.country_id
     region_id = payload.region_id if "region_id" in payload.model_fields_set else trip.region_id
     # Geography is checked up front as well (the setter re-checks under its
-    # own locks) so a rejected pair never lets an earlier field commit; a
-    # closed Trip is left to the setters' 409.
+    # own locks) so a rejected pair is reported before any write; a closed
+    # Trip is left to the setters' 409.
     if geography_requested and event.status in trips_service.TRIP_EDITING_OPEN_EVENT_STATUSES:
         try:
             geography_service.resolve_trip_geography(
@@ -346,46 +346,56 @@ def update_trip(
             )
         except geography_service.GeographyError as exc:
             _raise_for_geography_error(exc)
-    if "tourism_type_id" in payload.model_fields_set:
-        try:
-            trip = trips_service.set_trip_tourism_type(
-                db, event=event, trip=trip, tourism_type_id=payload.tourism_type_id
-            )
-        except trips_service.TripError as exc:
-            _raise_for_trip_error(exc)
-        except tourism_type_service.TourismTypeError as exc:
-            _raise_for_tourism_type_error(exc)
-    if difficulty_requested:
-        try:
-            trip = trips_service.set_trip_official_difficulty(
-                db, event=event, trip=trip, official_difficulty=official_difficulty
-            )
-        except trips_service.TripError as exc:
-            _raise_for_trip_error(exc)
-    if duration_requested:
-        try:
-            trip = trips_service.set_trip_duration_classification(
-                db,
-                event=event,
-                trip=trip,
-                duration_classification=payload.duration_classification,
-            )
-        except trips_service.TripError as exc:
-            _raise_for_trip_error(exc)
-    if "result" in payload.model_fields_set:
-        try:
-            trip = trips_service.set_trip_result(db, event=event, trip=trip, result=payload.result)
-        except trips_service.TripError as exc:
-            _raise_for_trip_error(exc)
-    if geography_requested:
-        try:
-            trip = trips_service.set_trip_geography(
-                db, event=event, trip=trip, country_id=country_id, region_id=region_id
-            )
-        except trips_service.TripError as exc:
-            _raise_for_trip_error(exc)
-        except geography_service.GeographyError as exc:
-            _raise_for_geography_error(exc)
+    # One transaction for the whole update (app.trips.service "Ordinary Trip
+    # editing is one transaction"): the setters only flush; nothing is
+    # committed unless every requested fact was applied.
+    try:
+        if "tourism_type_id" in payload.model_fields_set:
+            try:
+                trip = trips_service.set_trip_tourism_type(
+                    db, event=event, trip=trip, tourism_type_id=payload.tourism_type_id
+                )
+            except trips_service.TripError as exc:
+                _raise_for_trip_error(exc)
+            except tourism_type_service.TourismTypeError as exc:
+                _raise_for_tourism_type_error(exc)
+        if difficulty_requested:
+            try:
+                trip = trips_service.set_trip_official_difficulty(
+                    db, event=event, trip=trip, official_difficulty=official_difficulty
+                )
+            except trips_service.TripError as exc:
+                _raise_for_trip_error(exc)
+        if duration_requested:
+            try:
+                trip = trips_service.set_trip_duration_classification(
+                    db,
+                    event=event,
+                    trip=trip,
+                    duration_classification=payload.duration_classification,
+                )
+            except trips_service.TripError as exc:
+                _raise_for_trip_error(exc)
+        if "result" in payload.model_fields_set:
+            try:
+                trip = trips_service.set_trip_result(
+                    db, event=event, trip=trip, result=payload.result
+                )
+            except trips_service.TripError as exc:
+                _raise_for_trip_error(exc)
+        if geography_requested:
+            try:
+                trip = trips_service.set_trip_geography(
+                    db, event=event, trip=trip, country_id=country_id, region_id=region_id
+                )
+            except trips_service.TripError as exc:
+                _raise_for_trip_error(exc)
+            except geography_service.GeographyError as exc:
+                _raise_for_geography_error(exc)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     logger.info("trips.update.success event_id=%s user_id=%s", event_id, principal.user_id)
     return _trip_out(trip)
 

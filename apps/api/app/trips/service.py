@@ -75,6 +75,15 @@ lifecycle: no Event status sets, changes or requires it, and setting it
 never changes the Event. Re-sending the stored value is a no-op. It is
 never derived from any other fact.
 
+## Ordinary Trip editing is one transaction
+
+`set_trip_tourism_type`, `set_trip_official_difficulty`,
+`set_trip_duration_classification`, `set_trip_result` and
+`set_trip_geography` only change (and flush) the Trip; they never commit.
+The caller — the `PATCH /trips/{event_id}` endpoint — commits once after
+every requested fact was applied and rolls the whole update back if any
+of them fails, so an ordinary Trip update is never partially applied.
+
 ## actual_participation
 
 Recorded per EventParticipation of the Trip's Event (any
@@ -312,12 +321,8 @@ def set_trip_tourism_type(
         return trip
     if tourism_type_id is not None:
         resolve_assignable_tourism_type(session, tourism_type_id)
-    try:
-        trip.tourism_type_id = tourism_type_id
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
+    trip.tourism_type_id = tourism_type_id
+    session.flush()
     return trip
 
 
@@ -335,12 +340,8 @@ def set_trip_official_difficulty(
         raise TripEditingClosedError(event_id=event.id, status=event.status)
     if official_difficulty_of(trip) == official_difficulty:
         return trip
-    try:
-        _apply_official_difficulty(trip, official_difficulty)
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
+    _apply_official_difficulty(trip, official_difficulty)
+    session.flush()
     return trip
 
 
@@ -353,12 +354,8 @@ def set_trip_result(session: Session, *, event: Event, trip: Trip, result: Optio
     if trip.result == result:
         return trip
     validate_trip_result(result)
-    try:
-        trip.result = result
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
+    trip.result = result
+    session.flush()
     return trip
 
 
@@ -378,12 +375,8 @@ def set_trip_duration_classification(
         end_at=event.end_at,
         timezone=event.timezone,
     )
-    try:
-        trip.duration_classification = duration_classification
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
+    trip.duration_classification = duration_classification
+    session.flush()
     return trip
 
 
@@ -410,14 +403,10 @@ def set_trip_geography(
         current_country_id=trip.country_id,
         current_region_id=trip.region_id,
     )
-    try:
-        trip.country_id = country_id
-        trip.region_id = region_id
-        mark_geography_used(session, country_id=country_id, region_id=region_id)
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
+    trip.country_id = country_id
+    trip.region_id = region_id
+    mark_geography_used(session, country_id=country_id, region_id=region_id)
+    session.flush()
     return trip
 
 

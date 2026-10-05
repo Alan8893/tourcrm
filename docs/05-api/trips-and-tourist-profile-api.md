@@ -152,7 +152,7 @@ TourismType, Difficulty, Geography, Result и Route не обязательны 
 
 ### Rules
 
-- запрос, отклонённый из-за `official_difficulty` (`403`/`422`), `duration_classification` (`403`/`422`) или Geography (`422`), не изменяет и `tourism_type_id`;
+- `PATCH` применяется атомарно, одной транзакцией: если любое из переданных полей отклонено (`403`/`409`/`422`) или запрос завершился ошибкой, не сохраняется ни одно поле запроса;
 - редактирование открыто при `Event.status` `draft`/`published`/`in_progress`; при `completed` (исторический факт) и `cancelled`/`archived` — `409 trip_editing_closed`;
 - назначаемая запись должна существовать (`422 tourism_type_not_found`) и быть активной (`422 tourism_type_inactive`);
 - повтор уже сохранённого значения — no-op;

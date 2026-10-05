@@ -573,6 +573,196 @@ def test_result_requires_authentication_and_csrf(client: TestClient) -> None:
     assert _stored(world.event_id) is None
 
 
+# --- atomic ordinary editing (PR #278 review) -----------------------------------------
+
+
+def _region_of(code: str) -> tuple[uuid.UUID, uuid.UUID]:
+    with session_scope() as session:
+        region = session.execute(select(Region).where(Region.code == code)).scalar_one()
+        return region.country_id, region.id
+
+
+def _hr() -> uuid.UUID:
+    with session_scope() as session:
+        return session.execute(select(Country.id).where(Country.code == "HR")).scalar_one()
+
+
+def test_patch_rejected_by_another_field_does_not_store_the_result(client: TestClient) -> None:
+    """A valid `result` in the same body as a Geography pair that fails
+    domain validation: the whole PATCH is rejected and nothing is stored."""
+    world = _world(with_trip=True)
+    _authenticate_as(world.admin)
+    _ru, altai = _region_of("ALTAY_REPUBLIC")
+    tourism_type_id = _tourism_type()
+    response = _patch(
+        client,
+        f"/trips/{world.event_id}",
+        {
+            "tourism_type_id": str(tourism_type_id),
+            "result": "COMPLETED",
+            "country_id": str(_hr()),
+            "region_id": str(altai),
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "region_country_mismatch"
+    with session_scope() as session:
+        trip = session.get(Trip, world.event_id)
+        assert trip is not None
+        assert (trip.result, trip.tourism_type_id, trip.country_id) == (None, None, None)
+
+
+def test_failure_after_the_result_setter_rolls_back_the_whole_patch(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Result setter has already run (and flushed) when a later setter
+    in the same PATCH fails: nothing of the update may be committed."""
+    from app.trips import geography as geography_service
+    from app.trips import service as trips_service
+
+    world = _world(with_trip=True)
+    _authenticate_as(world.admin)
+    ru, altai = _region_of("ALTAY_REPUBLIC")
+    tourism_type_id = _tourism_type()
+    applied: list[str | None] = []
+    real_set_result = trips_service.set_trip_result
+
+    def tracking_set_result(session, **kwargs):  # type: ignore[no-untyped-def]
+        trip = real_set_result(session, **kwargs)
+        applied.append(trip.result)
+        return trip
+
+    def failing_set_geography(session, *, event, trip, country_id, region_id):  # type: ignore[no-untyped-def]
+        raise geography_service.RegionInactiveError(region_id)
+
+    monkeypatch.setattr(trips_service, "set_trip_result", tracking_set_result)
+    monkeypatch.setattr(trips_service, "set_trip_geography", failing_set_geography)
+    response = _patch(
+        client,
+        f"/trips/{world.event_id}",
+        {
+            "tourism_type_id": str(tourism_type_id),
+            "duration_classification": "MULTI_DAY",
+            "result": "PARTIALLY_COMPLETED",
+            "country_id": str(ru),
+            "region_id": str(altai),
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "region_inactive"
+    # The Result setter did run before the failure ...
+    assert applied == ["PARTIALLY_COMPLETED"]
+    # ... yet nothing of the update was committed.
+    with session_scope() as session:
+        trip = session.get(Trip, world.event_id)
+        assert trip is not None
+        assert trip.result is None
+        assert trip.tourism_type_id is None
+        assert trip.duration_classification == "UNCLASSIFIED"
+        assert (trip.country_id, trip.region_id) == (None, None)
+
+
+def test_unexpected_error_after_the_result_setter_rolls_back_the_whole_patch(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.trips import service as trips_service
+
+    world = _world(with_trip=True)
+    _authenticate_as(world.admin)
+    ru, altai = _region_of("ALTAY_REPUBLIC")
+
+    def broken_set_geography(session, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("storage failure")
+
+    monkeypatch.setattr(trips_service, "set_trip_geography", broken_set_geography)
+    with pytest.raises(RuntimeError):
+        _patch(
+            client,
+            f"/trips/{world.event_id}",
+            {"result": "COMPLETED", "country_id": str(ru), "region_id": str(altai)},
+        )
+    assert _stored(world.event_id) is None
+
+
+def test_successful_multi_fact_patch_is_committed_together(client: TestClient) -> None:
+    world = _world(with_trip=True)
+    _authenticate_as(world.admin)
+    ru, altai = _region_of("ALTAY_REPUBLIC")
+    tourism_type_id = _tourism_type()
+    response = _patch(
+        client,
+        f"/trips/{world.event_id}",
+        {
+            "tourism_type_id": str(tourism_type_id),
+            "result": "COMPLETED",
+            "country_id": str(ru),
+            "region_id": str(altai),
+        },
+    )
+    assert response.status_code == 200, response.text
+    with session_scope() as session:
+        trip = session.get(Trip, world.event_id)
+        assert trip is not None
+        assert (trip.result, trip.tourism_type_id, trip.country_id, trip.region_id) == (
+            "COMPLETED",
+            tourism_type_id,
+            ru,
+            altai,
+        )
+
+
+# --- create path authorization (PR #278 review) ----------------------------------------
+
+
+def test_administrator_creates_a_trip_with_a_result(client: TestClient) -> None:
+    world = _world()
+    _authenticate_as(world.admin)
+    response = _create(client, world.event_id, result="NOT_COMPLETED")
+    assert response.status_code == 201, response.text
+    assert _stored(world.event_id) == "NOT_COMPLETED"
+
+
+def test_instructor_assigned_to_the_event_creates_a_trip_with_a_result(
+    client: TestClient,
+) -> None:
+    """The existing create contract: `trip.manage` resolved on the target
+    Event (Instructor — `own_events`/`own_groups`); `result` rides on the
+    same check, exactly as TourismType/Geography."""
+    world = _world()
+    _authenticate_as(world.instructor_events)
+    response = _create(client, world.event_id, result="PARTIALLY_COMPLETED")
+    assert response.status_code == 201, response.text
+    assert _stored(world.event_id) == "PARTIALLY_COMPLETED"
+
+
+def test_instructor_cannot_use_create_with_result_outside_their_scope(
+    client: TestClient,
+) -> None:
+    """An Instructor who manages one Trip Event cannot create a Trip — with
+    or without a Result — for an Event outside their scope."""
+    own = _world()
+    foreign = _world()
+    _authenticate_as(own.instructor_events)
+    for body in ({"result": "COMPLETED"}, {"result": None}, {}):
+        response = _create(client, foreign.event_id, **body)
+        assert response.status_code == 404, body
+    assert not _trip_exists(foreign.event_id)
+    # Still fine within their own scope.
+    assert _create(client, own.event_id, result="COMPLETED").status_code == 201
+
+
+@pytest.mark.parametrize("role", ["member", "guardian", "instructor_unrelated"])
+def test_roles_outside_trip_manage_scope_cannot_create_with_a_result(
+    client: TestClient, role: str
+) -> None:
+    world = _world()
+    _authenticate_as(getattr(world, role))
+    response = _create(client, world.event_id, result="COMPLETED")
+    # Existence-hiding 404 of the ordinary trip.manage check.
+    assert response.status_code == 404
+    assert not _trip_exists(world.event_id)
+
+
 # --- migration -------------------------------------------------------------------------
 
 
