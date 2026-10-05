@@ -59,6 +59,7 @@ import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.achievements import triggers as achievement_triggers
 from app.db.event_recurrence import EventOccurrence
 from app.db.events import Event, EventGroupTarget, EventStaffAssignment
 from app.db.trips import TRIP_EVENT_FK
@@ -597,6 +598,11 @@ def transition_event_status(
     occurrence.updated_by = updated_by
 
     session.commit()
+    if new_status == "completed":
+        # Issue #220 (A7): a completed Trip is a canonical fact of the
+        # `completed_trips` achievement metric — evaluated after commit,
+        # never blocking this transition.
+        achievement_triggers.event_completed(session, event_id=event.id)
     return event
 
 

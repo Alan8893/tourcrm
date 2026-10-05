@@ -13,7 +13,9 @@ import { PersonDetailPage } from "./pages/PersonDetailPage";
 import { GroupsPage } from "./pages/GroupsPage";
 import { GroupDetailPage } from "./pages/GroupDetailPage";
 import { EventsPage } from "./pages/EventsPage";
-import { PlaceholderPage } from "./pages/PlaceholderPage";
+import { AchievementsPage } from "./pages/AchievementsPage";
+import { AchievementDefinitionPage } from "./pages/AchievementDefinitionPage";
+import { NormativeSetPage } from "./pages/NormativeSetPage";
 import { ReportsPage } from "./pages/ReportsPage";
 import { ExportPage } from "./pages/ExportPage";
 import { ImportPage } from "./pages/ImportPage";
@@ -69,7 +71,15 @@ export function App() {
                 <Route path="events" element={<EventsPage />} />
               </Route>
               <Route element={<SectionGuard section="achievements" />}>
-                <Route path="achievements" element={<PlaceholderPage title="Достижения" />} />
+                {/* Issue #220: Administrator sees the Achievements
+                    administration; other roles keep the placeholder. The
+                    detail pages are Administrator-only (UX guard; backend
+                    authoritative). */}
+                <Route path="achievements" element={<AchievementsPage />} />
+                <Route element={<AdministratorGuard />}>
+                  <Route path="achievements/definitions/:definitionId" element={<AchievementDefinitionPage />} />
+                  <Route path="achievements/normative-sets/:setId" element={<NormativeSetPage />} />
+                </Route>
               </Route>
               <Route element={<SectionGuard section="reports" />}>
                 <Route path="reports" element={<ReportsPage />} />

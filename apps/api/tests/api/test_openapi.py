@@ -2,7 +2,6 @@
 
 _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
     "route",
-    "achievement",
     "equipment",
     "payment",
     "finance",
@@ -36,6 +35,8 @@ _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
 # unimplemented (people-api.md §32). "trip" is no longer forbidden either:
 # Issue #245 adds the Trip / TripParticipant tourism-fact foundation (see
 # _TRIP_PATHS below) — no route/GPX/tourist-profile endpoints.
+# "achievement" is no longer forbidden either: Issue #220 adds the
+# Achievement Domain administration API (see _ACHIEVEMENT_PATHS below).
 
 
 def test_openapi_schema_is_served(real_client) -> None:
@@ -287,6 +288,30 @@ _TRIP_PATHS = {
     "/api/v1/trips/{event_id}/participants/{person_id}",
 }
 
+# Issue #220: Achievement Definitions / Rule Versions / Normative Sets /
+# Awards / reconciliation. No DELETE anywhere (A1/A2/A4).
+_ACHIEVEMENT_PATHS = {
+    "/api/v1/achievements/rule-catalog",
+    "/api/v1/achievements/definitions",
+    "/api/v1/achievements/definitions/{definition_id}",
+    "/api/v1/achievements/definitions/{definition_id}/activate",
+    "/api/v1/achievements/definitions/{definition_id}/deactivate",
+    "/api/v1/achievements/definitions/{definition_id}/rule-versions",
+    "/api/v1/achievements/rule-versions/{rule_version_id}",
+    "/api/v1/achievements/rule-versions/{rule_version_id}/activate",
+    "/api/v1/achievements/rule-versions/{rule_version_id}/deactivate",
+    "/api/v1/achievements/normative-sets",
+    "/api/v1/achievements/normative-sets/{set_id}",
+    "/api/v1/achievements/normative-sets/{set_id}/versions",
+    "/api/v1/achievements/normative-versions/{version_id}",
+    "/api/v1/achievements/normative-versions/{version_id}/activate",
+    "/api/v1/achievements/normative-versions/{version_id}/deactivate",
+    "/api/v1/achievements/awards",
+    "/api/v1/achievements/awards/{award_id}",
+    "/api/v1/achievements/awards/{award_id}/revoke",
+    "/api/v1/achievements/reconciliation",
+}
+
 _EVENT_RECURRENCE_PATHS = {
     "/api/v1/events/series",
     "/api/v1/events/series/{series_id}",
@@ -341,6 +366,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _INVENTORY_QUANTITY_PATHS
         | _INVENTORY_ISSUE_PATHS
         | _TRIP_PATHS
+        | _ACHIEVEMENT_PATHS
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()
@@ -397,6 +423,29 @@ def test_trip_endpoints_expose_only_their_canonical_methods_and_fields(real_clie
         "created_at",
         "updated_at",
     }
+
+
+def test_achievement_endpoints_never_expose_delete(real_client) -> None:
+    """Issue #220 (A1/A2/A4): Definitions, versions and Awards are never
+    physically removed."""
+    paths = real_client.get("/openapi.json").json()["paths"]
+    for path in _ACHIEVEMENT_PATHS:
+        assert "delete" not in paths[path], path
+    assert set(paths["/api/v1/achievements/awards/{award_id}"]) == {"get"}
+    assert set(paths["/api/v1/achievements/awards/{award_id}/revoke"]) == {"post"}
+    # A13: a Rule Version is immutable from creation — read only, no PATCH.
+    assert set(paths["/api/v1/achievements/rule-versions/{rule_version_id}"]) == {"get"}
+    assert "RuleVersionUpdateRequest" not in real_client.get("/openapi.json").json()[
+        "components"
+    ]["schemas"]
+    # A15: the manual Award names its Rule Version explicitly (optional).
+    manual = real_client.get("/openapi.json").json()["components"]["schemas"][
+        "ManualAwardCreateRequest"
+    ]
+    assert set(manual["properties"]) == {
+        "definition_id", "person_id", "rule_version_id", "verification_note"
+    }
+    assert set(manual["required"]) == {"definition_id", "person_id"}
 
 
 def test_event_document_matrix_endpoint_shape(real_client) -> None:

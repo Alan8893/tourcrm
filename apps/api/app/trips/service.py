@@ -58,6 +58,7 @@ import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.achievements import triggers as achievement_triggers
 from app.audit.service import record_audit_event
 from app.db.events import Event, EventParticipation
 from app.db.trips import TRIP_EVENT_TYPE, TRIP_PRIMARY_KEY, Trip, TripParticipant
@@ -271,6 +272,10 @@ def record_actual_participation(
     except Exception:
         session.rollback()
         raise
+    # Issue #220 (A7): `actual_participation` feeds the `completed_trips`
+    # achievement metric — evaluated after commit, never blocking this
+    # canonical fact.
+    achievement_triggers.trip_participation_changed(session, person_id=person_id)
     return row
 
 
