@@ -288,6 +288,15 @@ _TRIP_PATHS = {
     "/api/v1/trips/{event_id}/participants/{person_id}",
 }
 
+# Issue #264: the TourismType catalog. No DELETE (deactivate/reactivate
+# lifecycle only).
+_TOURISM_TYPE_PATHS = {
+    "/api/v1/tourism-types",
+    "/api/v1/tourism-types/{tourism_type_id}",
+    "/api/v1/tourism-types/{tourism_type_id}/activate",
+    "/api/v1/tourism-types/{tourism_type_id}/deactivate",
+}
+
 # Issue #220: Achievement Definitions / Rule Versions / Normative Sets /
 # Awards / reconciliation. No DELETE anywhere (A1/A2/A4).
 _ACHIEVEMENT_PATHS = {
@@ -367,6 +376,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _INVENTORY_ISSUE_PATHS
         | _TRIP_PATHS
         | _ACHIEVEMENT_PATHS
+        | _TOURISM_TYPE_PATHS
     )
     for fragment in _FORBIDDEN_DOMAIN_PATH_FRAGMENTS:
         assert fragment not in str(schema["paths"]).lower()
@@ -401,7 +411,8 @@ def test_trip_endpoints_expose_only_their_canonical_methods_and_fields(real_clie
     components = schema["components"]["schemas"]
 
     assert set(paths["/api/v1/trips"]) == {"get", "post"}
-    assert set(paths["/api/v1/trips/{event_id}"]) == {"get"}
+    # Issue #264: ordinary Trip editing (TourismType) — PATCH only.
+    assert set(paths["/api/v1/trips/{event_id}"]) == {"get", "patch"}
     assert set(paths["/api/v1/trips/{event_id}/participants"]) == {"get"}
     assert set(paths["/api/v1/trips/{event_id}/participants/{person_id}"]) == {"put"}
 
@@ -410,8 +421,15 @@ def test_trip_endpoints_expose_only_their_canonical_methods_and_fields(real_clie
     }
     assert list_params == {"page", "page_size", "status"}
 
-    assert set(components["TripCreateRequest"]["properties"]) == {"event_id"}
-    assert set(components["TripOut"]["properties"]) == {"event_id", "created_at", "updated_at"}
+    assert set(components["TripCreateRequest"]["properties"]) == {"event_id", "tourism_type_id"}
+    assert set(components["TripCreateRequest"]["required"]) == {"event_id"}
+    assert set(components["TripUpdateRequest"]["properties"]) == {"tourism_type_id"}
+    assert set(components["TripOut"]["properties"]) == {
+        "event_id",
+        "tourism_type_id",
+        "created_at",
+        "updated_at",
+    }
     assert set(components["TripParticipantRecordRequest"]["properties"]) == {
         "actual_participation"
     }
@@ -446,6 +464,25 @@ def test_achievement_endpoints_never_expose_delete(real_client) -> None:
         "definition_id", "person_id", "rule_version_id", "verification_note"
     }
     assert set(manual["required"]) == {"definition_id", "person_id"}
+
+
+def test_tourism_type_endpoints_expose_only_their_canonical_methods(real_client) -> None:
+    """Issue #264: catalog CRUD without DELETE plus the two lifecycle
+    actions."""
+    schema = real_client.get("/openapi.json").json()
+    paths = schema["paths"]
+    assert set(paths["/api/v1/tourism-types"]) == {"get", "post"}
+    assert set(paths["/api/v1/tourism-types/{tourism_type_id}"]) == {"get", "patch"}
+    assert set(paths["/api/v1/tourism-types/{tourism_type_id}/activate"]) == {"post"}
+    assert set(paths["/api/v1/tourism-types/{tourism_type_id}/deactivate"]) == {"post"}
+    assert set(schema["components"]["schemas"]["TourismTypeOut"]["properties"]) == {
+        "id",
+        "code",
+        "name",
+        "active",
+        "created_at",
+        "updated_at",
+    }
 
 
 def test_event_document_matrix_endpoint_shape(real_client) -> None:

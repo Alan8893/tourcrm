@@ -13,6 +13,20 @@ A Trip extends an existing ordinary Event. Allowed only when the Event's
 most one Trip per Event (`pk_trips`). The Trip has no lifecycle of its
 own — every lifecycle question is answered by `Event.status`.
 
+## TourismType (Issue #264, trips-and-tourist-profile.md §3)
+
+A Trip references 0..1 TourismType catalog entry (`tourism_type_id`).
+Assigning or changing it — at creation or through ordinary Trip editing
+— requires the entry to exist and be active
+(app.trips.tourism_types.resolve_assignable_tourism_type); clearing it is
+always allowed while editing is open. Ordinary editing of the TourismType
+is open while the Event is `draft`/`published`/`in_progress`; a
+`completed` Trip's TourismType is a historical fact (changes go through
+the future correction workflow), and `cancelled`/`archived` are closed
+exactly as for Trip creation. Deactivating a catalog entry never touches
+Trips already referencing it. The TourismType is never derived from any
+other fact.
+
 ## actual_participation
 
 Recorded per EventParticipation of the Trip's Event (any
@@ -62,8 +76,10 @@ from app.achievements import triggers as achievement_triggers
 from app.audit.service import record_audit_event
 from app.db.events import Event, EventParticipation
 from app.db.trips import TRIP_EVENT_TYPE, TRIP_PRIMARY_KEY, Trip, TripParticipant
+from app.trips.tourism_types import resolve_assignable_tourism_type
 
 TRIP_CREATION_CLOSED_EVENT_STATUSES: tuple[str, ...] = ("cancelled", "archived")
+TRIP_EDITING_OPEN_EVENT_STATUSES: tuple[str, ...] = ("draft", "published", "in_progress")
 ACTUAL_PARTICIPATION_OPEN_EVENT_STATUSES: tuple[str, ...] = ("in_progress", "completed")
 _COMPLETED_STATUS = "completed"
 
@@ -102,6 +118,16 @@ class TripAlreadyExistsError(TripError):
     def __init__(self, *, event_id: uuid.UUID) -> None:
         super().__init__(f"Event {event_id} already has a Trip")
         self.event_id = event_id
+
+
+class TripEditingClosedError(TripError):
+    """Ordinary Trip editing is closed for the Event's status
+    (`completed` — historical; `cancelled`/`archived` — closed)."""
+
+    def __init__(self, *, event_id: uuid.UUID, status: str) -> None:
+        super().__init__(f"Trip of Event {event_id} with status {status!r} cannot be edited")
+        self.event_id = event_id
+        self.status = status
 
 
 class TripParticipationMissingError(TripError):
@@ -150,21 +176,24 @@ def create_trip(
     *,
     event: Event,
     actor_user_id: uuid.UUID,
+    tourism_type_id: Optional[uuid.UUID] = None,
     request_id: Optional[str] = None,
 ) -> Trip:
-    """Attach a Trip to `event` (already loaded and locked by the caller)
-    and record `trip.created` in the same transaction (see module
-    docstring "Audit")."""
+    """Attach a Trip to `event` (already loaded and locked by the caller),
+    optionally with an active TourismType, and record `trip.created` in
+    the same transaction (see module docstring "Audit")."""
     if event.event_type != TRIP_EVENT_TYPE:
         raise EventNotTripError(event_id=event.id, event_type=event.event_type)
     if event.status in TRIP_CREATION_CLOSED_EVENT_STATUSES:
         raise TripEventLifecycleClosedError(event_id=event.id, status=event.status)
     if get_trip(session, event.id) is not None:
         raise TripAlreadyExistsError(event_id=event.id)
+    if tourism_type_id is not None:
+        resolve_assignable_tourism_type(session, tourism_type_id)
 
     event_id = event.id
     try:
-        trip = Trip(event_id=event_id, event_type=event.event_type)
+        trip = Trip(event_id=event_id, event_type=event.event_type, tourism_type_id=tourism_type_id)
         session.add(trip)
         session.flush()
         record_audit_event(
@@ -184,6 +213,27 @@ def create_trip(
         if _constraint_name(exc) == TRIP_PRIMARY_KEY:
             raise TripAlreadyExistsError(event_id=event_id) from exc
         raise
+    except Exception:
+        session.rollback()
+        raise
+    return trip
+
+
+def set_trip_tourism_type(
+    session: Session, *, event: Event, trip: Trip, tourism_type_id: Optional[uuid.UUID]
+) -> Trip:
+    """Ordinary Trip editing of the TourismType (see module docstring).
+    `event` is already loaded and locked by the caller. Setting the value
+    already stored is a no-op."""
+    if event.status not in TRIP_EDITING_OPEN_EVENT_STATUSES:
+        raise TripEditingClosedError(event_id=event.id, status=event.status)
+    if trip.tourism_type_id == tourism_type_id:
+        return trip
+    if tourism_type_id is not None:
+        resolve_assignable_tourism_type(session, tourism_type_id)
+    try:
+        trip.tourism_type_id = tourism_type_id
+        session.commit()
     except Exception:
         session.rollback()
         raise
@@ -281,15 +331,18 @@ def record_actual_participation(
 
 __all__ = [
     "TRIP_CREATION_CLOSED_EVENT_STATUSES",
+    "TRIP_EDITING_OPEN_EVENT_STATUSES",
     "ACTUAL_PARTICIPATION_OPEN_EVENT_STATUSES",
     "TripError",
     "EventNotTripError",
     "TripEventLifecycleClosedError",
     "TripAlreadyExistsError",
+    "TripEditingClosedError",
     "TripParticipationMissingError",
     "ActualParticipationLifecycleClosedError",
     "TripParticipantHistoricallyClosedError",
     "get_trip",
     "create_trip",
+    "set_trip_tourism_type",
     "record_actual_participation",
 ]
