@@ -280,6 +280,17 @@ respect audit policy (ADR-0024/ADR-0032 §11).
 
 File access must enforce document/file permissions.
 
+Domain semantics for this section are defined by `docs/04-modules/trips-and-tourist-profile.md` §11–§12 (Tourism Facts v2, Issue #259 TD4–TD9); this inventory does not redefine them:
+
+- A Route is the physical route description associated with a Trip, not a classifier. It holds separate Planned and Actual representations (geometry/points, distance, elevation gain where elevation is available); Planned and Actual data are never mixed or substituted for one another.
+- Route points (`/routes/{id}/points`, `/route-points/{id}`) belong to one representation — Planned or Actual.
+- A GPX file uploaded through `POST /routes/{id}/gpx/uploads` carries an explicit role, `PLANNED` or `ACTUAL`. A Route has at most one canonical Planned GPX and at most one canonical Actual GPX; additional files are provenance/archive artifacts and do not become canonical automatically.
+- `POST /gpx-files/{id}/process` derives technical characteristics only for the representation matching the file's role; results must be reproducible from that source.
+- Before the Trip is completed, Actual GPX may be uploaded/replaced; at `Trip → completed` the current Actual GPX becomes a historical canonical fact; missing Actual GPX does not block completion. After completion, none of these endpoints may replace the historical Actual GPX through ordinary editing — replacement belongs to the future Historical Correction Workflow, which has no endpoint in this inventory.
+- Route/GPX operations never set or change TourismType, Official Difficulty, Geography, Duration Classification or Result.
+- Route/GPX management is authorized by the existing `trip.manage` and its scope (Administrator — authorized Trip scope; Instructor — assigned/owned Trip; Member/Guardian — none). No Route/GPX-specific permission (`gpx.upload`, `route.manage` or similar) exists.
+- No endpoint is added for these semantics. Per §27, each of these entries still requires a module-specific contract (permission, scope, request/response schema, validation, errors, transaction boundary, audit, concurrency, idempotency, side effects) before implementation; `docs/05-api/trips-and-tourist-profile-api.md` must be reconciled with these semantics first.
+
 ## 13. Tourist profiles
 
 - `GET /persons/{id}/tourist-profile`

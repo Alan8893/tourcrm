@@ -148,53 +148,69 @@ MVP-типы: `rescheduled`, `cancelled`.
 
 ## 9. Trip domain
 
+Бизнес-семантика Trip и его туристских фактов определяется `docs/04-modules/trips-and-tourist-profile.md`; этот раздел описывает только логическую структуру и не является отдельным источником бизнес-правил. При расхождении приоритет имеет модульный документ.
+
 ### Trip
 
-Расширение Event 1:1.
+Туристское расширение Event.
 
 `Event 1:0..1 Trip`
 
-Поля:
+Реализованные поля (Trip Foundation):
 
-- event_id;
-- tourism_type;
-- difficulty_category nullable;
-- region nullable;
-- route_id nullable;
-- planned_distance nullable;
-- actual_distance nullable;
-- planned_duration nullable;
-- actual_duration nullable;
-- leader_person_id;
-- result_status;
-- notes.
+- event_id — первичный ключ и обязательная связь с Event типа `trip`;
+- created_at;
+- updated_at.
+
+Собственного lifecycle/status у Trip нет — используется lifecycle Event.
+
+Туристские факты Trip (семантика — модульный документ §3–§12; физическое хранение определяется при реализации):
+
+- TourismType — 0..1 ссылка на справочник TourismType, не свободный текст;
+- Official Difficulty — не более одной официальной классификации на Trip: один режим `NONE`/`DEGREE`/`CATEGORY`/`WEEKEND`, значение только для `DEGREE` (I–III) или `CATEGORY` (I–VI) и обязательное основание/source установленной классификации. `DEGREE` и `CATEGORY` взаимоисключающие режимы одной классификации, а не два независимых поля; Trip не может иметь их одновременно;
+- Geography — 0..1 ссылка на Country и 0..1 ссылка на Region, не свободный текст;
+- Duration Classification — `ONE_DAY`/`MULTI_DAY`/`UNCLASSIFIED`, отдельно от времени начала/окончания Event;
+- Result — `COMPLETED`/`PARTIALLY_COMPLETED`/`NOT_COMPLETED`, отдельно от lifecycle Event;
+- Route — физическое описание маршрута Trip (§10).
+
+Прежние поля логической модели `tourism_type` (строка), `difficulty_category`, `region` (строка), `route_id`, `planned_distance`/`actual_distance`, `planned_duration`/`actual_duration`, `leader_person_id`, `result_status`, `notes` не являются каноническими: туристские факты моделируются как указано выше, плановая/фактическая дистанция относится к Planned/Actual представлениям Route, а продолжительность, руководитель и заметки требуют отдельного решения.
 
 ### TripParticipant
 
-Специализированная связь участника с походом.
+Специализированное расширение EventParticipation для Trip.
 
-`Trip 1:N TripParticipant`
-`Person 1:N TripParticipant`
+`EventParticipation 1:0..1 TripParticipant`
 
-Поля:
+Реализованные поля:
 
-- trip_id;
-- person_id;
-- role_in_trip;
+- event_participation_id — первичный ключ и связь с EventParticipation;
+- event_id — Event этого Trip;
 - actual_participation;
-- completed_distance nullable;
-- result nullable;
-- notes nullable.
+- created_at;
+- updated_at.
+
+Person определяется через EventParticipation и не дублируется; собственного registration status у TripParticipant нет. Роль в походе, пройденная дистанция участника, индивидуальный результат и заметки не являются частью текущего контракта и требуют отдельного решения.
 
 ## 10. Route domain
 
+Семантика — `docs/04-modules/trips-and-tourist-profile.md` §11–§12.
+
 ### Route
 
-Логический маршрут, который может использоваться несколькими мероприятиями.
+Каноническое физическое описание маршрута, связанное с Trip. Route не является классификатором и не содержит и не определяет TourismType, Official Difficulty, Geography, Duration Classification или Result.
+
+Route содержит раздельные представления:
+
+- Planned — плановая геометрия/точки, planned distance, planned elevation gain (если доступны данные высоты), необязательный канонический Planned GPX;
+- Actual — фактическая геометрия/точки, actual distance, actual elevation gain (если доступны данные высоты), необязательный канонический Actual GPX.
+
+Planned и Actual характеристики не смешиваются и не заменяют друг друга; технические характеристики каждого представления воспроизводимы из его собственного источника.
 
 ### RoutePoint
 
 `Route 1:N RoutePoint`
+
+Точка принадлежит конкретному представлению маршрута — Planned или Actual; плановые и фактические точки не смешиваются.
 
 Поля:
 
@@ -207,11 +223,17 @@ MVP-типы: `rescheduled`, `cancelled`.
 - point_type nullable;
 - description nullable.
 
-### RouteFile
+### RouteFile (GPX)
 
 Метаданные внешнего/файлового объекта GPX.
 
 `Route 1:N RouteFile`
+
+- каждый GPX имеет явную роль: `PLANNED` или `ACTUAL`;
+- у Route не более одного канонического Planned GPX и не более одного канонического Actual GPX;
+- дополнительные файлы являются provenance/архивными артефактами и не становятся каноническими автоматически;
+- после завершения Trip канонический Actual GPX — исторический факт; замена — только через будущий Historical Correction Workflow;
+- отдельная подсистема версионирования GPX не вводится.
 
 Исходный GPX не хранится непосредственно в PostgreSQL blob без отдельного ADR.
 
@@ -229,11 +251,15 @@ MVP-типы: `rescheduled`, `cancelled`.
 
 ### TourismType
 
-Справочник видов туризма.
+Справочник видов туризма (`code`, `name`, `active`); деактивация вместо удаления. Значения каталога не утверждены. Семантика — `docs/04-modules/trips-and-tourist-profile.md` §3.
 
-### DifficultyCategory
+### Official Difficulty
 
-Справочник/enum сложности.
+Структурированная официальная классификация сложности Trip — не более одной на Trip (один режим, значение, основание/source; без одновременных `DEGREE` и `CATEGORY`), а не универсальный enum: применимость режимов/значений зависит от TourismType и нормативного источника. Семантика — `docs/04-modules/trips-and-tourist-profile.md` §4.
+
+### Country / Region
+
+Отдельные справочники географии: Region принадлежит ровно одной Country; деактивация вместо удаления; provenance записи (`source_type`, `source_reference`). Семантика — `docs/04-modules/trips-and-tourist-profile.md` §9.
 
 ## 12. Skills / Qualifications / Achievements
 

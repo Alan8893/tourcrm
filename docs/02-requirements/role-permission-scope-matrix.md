@@ -161,7 +161,10 @@ The frontend must not reconstruct these relationships itself. Backend authorizat
 | Permission | admin | instructor | member | guardian |
 |---|---|---|---|---|
 | `achievement.read` | `all` | `own_groups` | `self` | `children` |
-| `achievement.award` | `all` | `own_groups` | — | — |
+| `achievement.award` | `all` | — | — | — |
+| `achievement.manage` | `all` | — | — | — |
+
+`achievement.award` (ручная выдача и отзыв Award) и `achievement.manage` (Definitions, Rule Versions, Normative Requirement Sets) — только Administrator (`docs/04-modules/achievements-and-norms.md` §25, A10). Instructor не выдаёт и не отзывает Achievement Award.
 
 ## 10. Documents
 
