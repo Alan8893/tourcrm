@@ -13,8 +13,8 @@ attributes so far are the optional TourismType catalog reference (Issue
 #264, trips-and-tourist-profile.md §3), the optional Official
 Difficulty (Issue #268, §4), the optional Geography — Country and
 Region catalog references (Issue #271, §9) — and the Duration
-Classification (Issue #274, §10); the other Tourism Facts v2 facts
-(result, route) are later slices.
+Classification (Issue #274, §10) and the optional Result (Issue #276,
+§8); Route is a later slice.
 
 - `trips.event_id` is the primary key. Together with the `event_type`
   column (CHECK `= 'trip'`) it forms the composite FK
@@ -270,6 +270,9 @@ class Trip(Base):
     duration_classification: Mapped[str] = mapped_column(
         sa.String(16), nullable=False, default="UNCLASSIFIED", server_default="UNCLASSIFIED"
     )
+    # Issue #276: 0..1 Result of the Trip itself — not the Event/Trip
+    # lifecycle and not a participant's result.
+    result: Mapped[Optional[str]] = mapped_column(sa.String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
     )
@@ -329,6 +332,10 @@ class Trip(Base):
         sa.CheckConstraint(
             "duration_classification IN ('ONE_DAY', 'MULTI_DAY', 'UNCLASSIFIED')",
             name="ck_trips_duration_classification",
+        ),
+        sa.CheckConstraint(
+            "result IS NULL OR result IN ('COMPLETED', 'PARTIALLY_COMPLETED', 'NOT_COMPLETED')",
+            name="ck_trips_result",
         ),
         sa.Index("ix_trips_country_id", "country_id"),
         sa.Index("ix_trips_region_id", "region_id"),

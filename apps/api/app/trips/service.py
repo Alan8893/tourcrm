@@ -64,6 +64,26 @@ must agree with the Event's current planned interval when set
 computed or overwritten automatically, and Event re-planning never
 changes it. Re-sending the stored value is a no-op.
 
+## Result (Issue #276, trips-and-tourist-profile.md §8)
+
+A Trip carries 0..1 Result (`COMPLETED`/`PARTIALLY_COMPLETED`/
+`NOT_COMPLETED`, app.trips.result). It may be given at creation and set,
+changed or cleared through ordinary Trip editing under exactly the
+TourismType lifecycle above — in particular a `completed`, `cancelled` or
+`archived` Trip is closed for it. It is independent of the Event
+lifecycle: no Event status sets, changes or requires it, and setting it
+never changes the Event. Re-sending the stored value is a no-op. It is
+never derived from any other fact.
+
+## Ordinary Trip editing is one transaction
+
+`set_trip_tourism_type`, `set_trip_official_difficulty`,
+`set_trip_duration_classification`, `set_trip_result` and
+`set_trip_geography` only change (and flush) the Trip; they never commit.
+The caller — the `PATCH /trips/{event_id}` endpoint — commits once after
+every requested fact was applied and rolls the whole update back if any
+of them fails, so an ordinary Trip update is never partially applied.
+
 ## actual_participation
 
 Recorded per EventParticipation of the Trip's Event (any
@@ -116,6 +136,7 @@ from app.db.trips import TRIP_EVENT_TYPE, TRIP_PRIMARY_KEY, Trip, TripParticipan
 from app.trips.duration_classification import UNCLASSIFIED, validate_duration_classification
 from app.trips.geography import mark_geography_used, resolve_trip_geography
 from app.trips.official_difficulty import OfficialDifficulty, official_difficulty_of
+from app.trips.result import validate_trip_result
 from app.trips.tourism_types import resolve_assignable_tourism_type
 
 TRIP_CREATION_CLOSED_EVENT_STATUSES: tuple[str, ...] = ("cancelled", "archived")
@@ -227,6 +248,7 @@ def create_trip(
     country_id: Optional[uuid.UUID] = None,
     region_id: Optional[uuid.UUID] = None,
     duration_classification: str = UNCLASSIFIED,
+    result: Optional[str] = None,
     request_id: Optional[str] = None,
 ) -> Trip:
     """Attach a Trip to `event` (already loaded and locked by the caller),
@@ -258,6 +280,7 @@ def create_trip(
             country_id=country_id,
             region_id=region_id,
             duration_classification=duration_classification,
+            result=validate_trip_result(result),
         )
         _apply_official_difficulty(trip, official_difficulty)
         session.add(trip)
@@ -298,12 +321,8 @@ def set_trip_tourism_type(
         return trip
     if tourism_type_id is not None:
         resolve_assignable_tourism_type(session, tourism_type_id)
-    try:
-        trip.tourism_type_id = tourism_type_id
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
+    trip.tourism_type_id = tourism_type_id
+    session.flush()
     return trip
 
 
@@ -321,12 +340,22 @@ def set_trip_official_difficulty(
         raise TripEditingClosedError(event_id=event.id, status=event.status)
     if official_difficulty_of(trip) == official_difficulty:
         return trip
-    try:
-        _apply_official_difficulty(trip, official_difficulty)
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
+    _apply_official_difficulty(trip, official_difficulty)
+    session.flush()
+    return trip
+
+
+def set_trip_result(session: Session, *, event: Event, trip: Trip, result: Optional[str]) -> Trip:
+    """Ordinary Trip editing of the Result (see module docstring); `None`
+    clears it. `event` is already loaded and locked by the caller. Setting
+    the value already stored is a no-op. Never touches the Event."""
+    if event.status not in TRIP_EDITING_OPEN_EVENT_STATUSES:
+        raise TripEditingClosedError(event_id=event.id, status=event.status)
+    if trip.result == result:
+        return trip
+    validate_trip_result(result)
+    trip.result = result
+    session.flush()
     return trip
 
 
@@ -346,12 +375,8 @@ def set_trip_duration_classification(
         end_at=event.end_at,
         timezone=event.timezone,
     )
-    try:
-        trip.duration_classification = duration_classification
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
+    trip.duration_classification = duration_classification
+    session.flush()
     return trip
 
 
@@ -378,14 +403,10 @@ def set_trip_geography(
         current_country_id=trip.country_id,
         current_region_id=trip.region_id,
     )
-    try:
-        trip.country_id = country_id
-        trip.region_id = region_id
-        mark_geography_used(session, country_id=country_id, region_id=region_id)
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
+    trip.country_id = country_id
+    trip.region_id = region_id
+    mark_geography_used(session, country_id=country_id, region_id=region_id)
+    session.flush()
     return trip
 
 
@@ -495,6 +516,7 @@ __all__ = [
     "set_trip_tourism_type",
     "set_trip_official_difficulty",
     "set_trip_duration_classification",
+    "set_trip_result",
     "set_trip_geography",
     "record_actual_participation",
 ]

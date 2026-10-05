@@ -351,6 +351,7 @@ def test_trip_tables_carry_no_duplicated_registration_or_tourism_columns() -> No
         "country_id",
         "region_id",
         "duration_classification",
+        "result",
         "created_at",
         "updated_at",
     }
