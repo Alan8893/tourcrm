@@ -216,6 +216,13 @@ describe("Achievements — definitions", () => {
 describe("Achievements — awards", () => {
   const handlers: MockApiHandler[] = [
     { match: "/auth/me", body: meResponse(["admin"]) },
+    {
+      match: "/achievements/definitions/d1/rule-versions",
+      body: collection([
+        ruleVersion({ id: "r2", version_number: 2, status: "active" }),
+        ruleVersion({ id: "r1", version_number: 1, status: "inactive" }),
+      ]),
+    },
     { match: "/achievements/definitions", body: collection([definition()]) },
   ];
 
@@ -304,11 +311,56 @@ describe("Achievements — awards", () => {
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "Достижение может получить только участник",
     );
+    // A15: no Rule Version chosen — none is sent, even though r2 is active.
     expect(bodyOf(fetchMock, "POST", "/achievements/awards")).toEqual({
       definition_id: "d1",
       person_id: "p9",
+      rule_version_id: null,
       verification_note: "Проверено",
     });
+  });
+
+  it("sends exactly the Rule Version the Administrator selects", async () => {
+    const user = userEvent.setup();
+    const fetchMock = renderAchievements("/achievements", [
+      ...handlers,
+      { method: "POST", match: "/achievements/awards", status: 201, body: award({ award_method: "manual" }) },
+      { match: "/achievements/awards", body: collection([]) },
+      {
+        match: "/persons",
+        body: collection([{ id: "p9", first_name: "Олег", last_name: "Сидоров", middle_name: null }]),
+      },
+    ]);
+    await user.click(await screen.findByRole("tab", { name: "Выдачи" }));
+    await user.click(await screen.findByRole("button", { name: /Выдать вручную/ }));
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() =>
+      expect(within(dialog).getByRole("option", { name: "Первый поход" })).toBeInTheDocument(),
+    );
+    await user.selectOptions(within(dialog).getByLabelText("Достижение"), "d1");
+    const ruleSelect = within(dialog).getByLabelText("Проверено по версии правила");
+    // Nothing is preselected — the active version is not attached implicitly.
+    expect(ruleSelect).toHaveValue("");
+    await waitFor(() =>
+      expect(within(dialog).getByRole("option", { name: "Версия 1 (Неактивно)" })).toBeInTheDocument(),
+    );
+    await user.selectOptions(ruleSelect, "r1");
+    await user.type(within(dialog).getByLabelText("Поиск участника"), "Сид");
+    await waitFor(() =>
+      expect(within(dialog).getByRole("option", { name: "Сидоров Олег" })).toBeInTheDocument(),
+    );
+    await user.selectOptions(within(dialog).getByLabelText("Участник"), "p9");
+    await user.type(within(dialog).getByLabelText(/Основание/), "Маршрутная книжка");
+    await user.click(within(dialog).getByRole("button", { name: "Выдать" }));
+
+    await waitFor(() =>
+      expect(bodyOf(fetchMock, "POST", "/achievements/awards")).toEqual({
+        definition_id: "d1",
+        person_id: "p9",
+        rule_version_id: "r1",
+        verification_note: "Маршрутная книжка",
+      }),
+    );
   });
 });
 
@@ -325,11 +377,28 @@ describe("Achievement definition page", () => {
     ];
   }
 
-  it("shows rule versions; a used version offers no edit", async () => {
-    renderAchievements("/achievements/definitions/d1", pageHandlers());
-    const card = await screen.findByTestId("rule-version-card");
-    expect(await within(card).findByText("Завершённые походы >= 1")).toBeInTheDocument();
-    expect(within(card).queryByRole("button", { name: "Изменить" })).not.toBeInTheDocument();
+  it("shows rule versions read-only — used or not, no edit (A13)", async () => {
+    const fetchMock = renderAchievements(
+      "/achievements/definitions/d1",
+      pageHandlers([
+        {
+          match: "/achievements/definitions/d1/rule-versions",
+          body: collection([
+            ruleVersion({ id: "r2", version_number: 2, is_used: false, status: "inactive" }),
+            ruleVersion(),
+          ]),
+        },
+      ]),
+    );
+    const cards = await screen.findAllByTestId("rule-version-card");
+    expect(cards).toHaveLength(2);
+    expect(await within(cards[1]).findByText("Завершённые походы >= 1")).toBeInTheDocument();
+    for (const card of cards) {
+      expect(within(card).queryByRole("button", { name: "Изменить" })).not.toBeInTheDocument();
+    }
+    expect(within(cards[0]).getByRole("button", { name: "Сделать активной" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Новая версия правила/ })).toBeInTheDocument();
+    expect(requests(fetchMock).some(([method]) => method === "PATCH")).toBe(false);
   });
 
   it("creates a nested rule version from the backend catalog", async () => {
@@ -353,7 +422,7 @@ describe("Achievement definition page", () => {
     const value = within(dialog).getAllByLabelText("Значение")[0];
     await user.clear(value);
     await user.type(value, "3");
-    await user.click(within(dialog).getByRole("button", { name: "Создать" }));
+    await user.click(within(dialog).getByRole("button", { name: "Создать версию" }));
 
     await waitFor(() =>
       expect(bodyOf(fetchMock, "POST", "/definitions/d1/rule-versions")).toEqual({

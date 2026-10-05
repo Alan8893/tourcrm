@@ -8,7 +8,7 @@ Canonical source: docs/04-modules/achievements-and-norms.md (A1-A12).
     POST       /achievements/definitions/{definition_id}/activate
     POST       /achievements/definitions/{definition_id}/deactivate
     GET/POST   /achievements/definitions/{definition_id}/rule-versions
-    GET/PATCH  /achievements/rule-versions/{rule_version_id}
+    GET        /achievements/rule-versions/{rule_version_id}
     POST       /achievements/rule-versions/{rule_version_id}/activate
     POST       /achievements/rule-versions/{rule_version_id}/deactivate
     GET/POST   /achievements/normative-sets
@@ -23,7 +23,8 @@ Canonical source: docs/04-modules/achievements-and-norms.md (A1-A12).
     POST       /achievements/reconciliation
 
 There is no DELETE anywhere: Definitions, versions and Awards are never
-physically removed (A1/A2/A4).
+physically removed (A1/A2/A4). There is no PATCH for a Rule Version: it
+is immutable from creation (A13) — a changed rule is a new version.
 
 Authorization (A10, app.achievements.authorization), checked before any
 record is loaded: `achievement.manage` for Definitions / Rule Versions /
@@ -79,7 +80,6 @@ from app.api.v1.achievements_schemas import (
     RuleCatalogOut,
     RuleVersionCreateRequest,
     RuleVersionOut,
-    RuleVersionUpdateRequest,
     SourceLiteral,
 )
 from app.db.achievements import (
@@ -100,6 +100,8 @@ _STATUS_BY_ERROR_CODE: dict[str, int] = {
     "invalid_rule": status.HTTP_422_UNPROCESSABLE_ENTITY,
     "unsupported_metric": status.HTTP_422_UNPROCESSABLE_ENTITY,
     "normative_reference_required": status.HTTP_422_UNPROCESSABLE_ENTITY,
+    "rule_version_definition_mismatch": status.HTTP_422_UNPROCESSABLE_ENTITY,
+    "verification_note_required": status.HTTP_422_UNPROCESSABLE_ENTITY,
     "recipient_not_member": status.HTTP_422_UNPROCESSABLE_ENTITY,
     "revocation_reason_required": status.HTTP_422_UNPROCESSABLE_ENTITY,
     "duplicate_code": status.HTTP_409_CONFLICT,
@@ -418,30 +420,6 @@ def get_rule_version(
     return _rule_out(rule, achievement_service.rule_version_is_used(db, rule.id))
 
 
-@router.patch("/rule-versions/{rule_version_id}", response_model=RuleVersionOut)
-def update_rule_version(
-    rule_version_id: uuid.UUID,
-    payload: RuleVersionUpdateRequest,
-    principal: CurrentPrincipal = Depends(require_authenticated_principal),
-    db: Session = Depends(get_db),
-    _csrf: None = Depends(require_csrf_token),
-) -> RuleVersionOut:
-    _require(db, principal, PERMISSION_MANAGE)
-    fields = payload.model_fields_set
-    try:
-        rule = achievement_service.update_rule_version(
-            db,
-            rule_version_id=rule_version_id,
-            condition=payload.condition,
-            condition_set="condition" in fields,
-            normative_set_version_id=payload.normative_set_version_id,
-            normative_set="normative_set_version_id" in fields,
-        )
-    except achievement_service.AchievementError as exc:
-        _raise(exc)
-    return _rule_out(rule, False)
-
-
 def _set_rule_status(
     db: Session, principal: CurrentPrincipal, rule_version_id: uuid.UUID, new_status: str
 ) -> RuleVersionOut:
@@ -688,6 +666,7 @@ def create_manual_award(
             db,
             definition_id=payload.definition_id,
             person_id=payload.person_id,
+            rule_version_id=payload.rule_version_id,
             verification_note=payload.verification_note,
             actor_user_id=principal.user_id,
         )

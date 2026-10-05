@@ -287,6 +287,8 @@ export function useSetDefinitionStatus() {
   });
 }
 
+/** A13: a Rule Version is immutable from creation — there is only a
+ * "create" for its content, never an update. */
 export type RuleVersionFields = {
   condition: RuleNode;
   normative_set_version_id: string | null;
@@ -297,15 +299,6 @@ export function useCreateRuleVersion() {
   return useMutation<RuleVersion, ApiError, { definitionId: string; fields: RuleVersionFields }>({
     mutationFn: ({ definitionId, fields }) =>
       post<RuleVersion>(`/definitions/${encodeURIComponent(definitionId)}/rule-versions`, fields),
-    onSuccess: () => invalidate(),
-  });
-}
-
-export function useUpdateRuleVersion() {
-  const invalidate = useInvalidateAchievements();
-  return useMutation<RuleVersion, ApiError, { ruleVersionId: string; fields: RuleVersionFields }>({
-    mutationFn: ({ ruleVersionId, fields }) =>
-      patch<RuleVersion>(`/rule-versions/${encodeURIComponent(ruleVersionId)}`, fields),
     onSuccess: () => invalidate(),
   });
 }
@@ -363,7 +356,14 @@ export function useCreateManualAward() {
   return useMutation<
     AchievementAward,
     ApiError,
-    { definition_id: string; person_id: string; verification_note: string | null }
+    {
+      definition_id: string;
+      person_id: string;
+      /** A15: the Rule Version explicitly verified against, or `null` —
+       * never filled in from the current active version. */
+      rule_version_id: string | null;
+      verification_note: string | null;
+    }
   >({
     mutationFn: (fields) => post<AchievementAward>("/awards", fields),
     onSuccess: () => invalidate(),

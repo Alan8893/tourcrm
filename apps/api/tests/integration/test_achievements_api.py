@@ -44,6 +44,10 @@ _LONG_AGO = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
 _COMPLETED_TRIPS_1 = {"metric": "completed_trips", "operator": ">=", "value": 1}
 
 
+def _trips(count: int) -> dict:
+    return {"metric": "completed_trips", "operator": ">=", "value": count}
+
+
 @pytest.fixture
 def client() -> TestClient:
     test_client = TestClient(app, raise_server_exceptions=True)
@@ -217,10 +221,19 @@ def _normative_version(client: TestClient, **overrides: object) -> dict:
     return response.json()
 
 
-def _award(client: TestClient, definition_id: str, person_id: uuid.UUID, note: str | None = None):  # type: ignore[no-untyped-def]
+def _award(  # type: ignore[no-untyped-def]
+    client: TestClient,
+    definition_id: str,
+    person_id: uuid.UUID,
+    note: str | None = None,
+    *,
+    rule_version_id: str | None = None,
+):
     body: dict = {"definition_id": definition_id, "person_id": str(person_id)}
     if note is not None:
         body["verification_note"] = note
+    if rule_version_id is not None:
+        body["rule_version_id"] = rule_version_id
     return _post(client, "/awards", body)
 
 
@@ -347,9 +360,15 @@ def test_definition_semantics_are_not_editable(client: TestClient) -> None:
     world = _world()
     _authenticate_as(world.admin)
     definition = _definition(client, repeatability="non_repeatable")
-    response = _patch(client, f"/definitions/{definition['id']}", {"repeatability": "repeatable"})
+    response = _patch(client, f"/definitions/{definition['id']}", {
+        "code": "changed", "source": "fstr", "award_method": "automatic",
+        "repeatability": "repeatable",
+    })
     assert response.status_code == 200
-    assert response.json()["repeatability"] == "non_repeatable"
+    semantic = ("code", "source", "award_method", "repeatability")
+    assert {key: response.json()[key] for key in semantic} == {
+        key: definition[key] for key in semantic
+    }
 
 
 def test_definition_validation_and_duplicate_code(client: TestClient) -> None:
@@ -480,29 +499,61 @@ def test_club_rule_may_have_no_normative_version(client: TestClient) -> None:
     assert rule["normative_set_version_id"] is None
 
 
-def test_unused_rule_version_is_editable_used_one_is_immutable(client: TestClient) -> None:
+def _rule_version_content(client: TestClient, rule_id: str) -> tuple:
+    rule = _get(client, f"/rule-versions/{rule_id}").json()
+    return rule["condition"], rule["normative_set_version_id"], rule["version_number"]
+
+
+def test_rule_version_is_immutable_from_creation_even_when_unused(client: TestClient) -> None:
+    """A13: no in-place change of an existing Rule Version — used or not."""
+    world = _world()
+    _authenticate_as(world.admin)
+    definition = _definition(client, source="fstr")
+    normative = _normative_version(client)
+    other_normative = _normative_version(client)
+    rule = _rule(client, definition["id"], normative_set_version_id=normative["id"])
+    assert rule["is_used"] is False
+    before = _rule_version_content(client, rule["id"])
+
+    condition_change = _patch(
+        client, f"/rule-versions/{rule['id']}", {"condition": _trips(5)}
+    )
+    assert condition_change.status_code == 405
+    assert _rule_version_content(client, rule["id"]) == before
+
+    normative_change = _patch(
+        client,
+        f"/rule-versions/{rule['id']}",
+        {"normative_set_version_id": other_normative["id"]},
+    )
+    assert normative_change.status_code == 405
+    assert _rule_version_content(client, rule["id"]) == before
+
+
+def test_rule_change_is_a_new_version_and_lifecycle_still_works(client: TestClient) -> None:
     world = _world()
     _authenticate_as(world.admin)
     definition = _definition(client)
-    rule = _rule(client, definition["id"])
-    new_condition = {"metric": "completed_trips", "operator": ">=", "value": 2}
-    edited = _patch(client, f"/rule-versions/{rule['id']}", {"condition": new_condition})
-    assert edited.status_code == 200
-    assert edited.json()["condition"] == new_condition
+    v1 = _rule(client, definition["id"], _trips(1))
+    award = _award(client, definition["id"], world.member_person, rule_version_id=v1["id"]).json()
 
-    award = _award(client, definition["id"], world.member_person).json()
-    assert award["rule_version_id"] == rule["id"]
-    assert _get(client, f"/rule-versions/{rule['id']}").json()["is_used"] is True
+    v2 = _rule(client, definition["id"], _trips(2), activate=False)
+    assert (v2["definition_id"], v2["version_number"], v2["condition"]) == (
+        definition["id"],
+        2,
+        _trips(2),
+    )
+    assert _get(client, f"/rule-versions/{v1['id']}").json()["condition"] == _trips(1)
 
-    response = _patch(client, f"/rule-versions/{rule['id']}", {"condition": _COMPLETED_TRIPS_1})
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "version_in_use"
-    assert _get(client, f"/rule-versions/{rule['id']}").json()["condition"] == new_condition
+    # Lifecycle (A11) is not content mutation.
+    assert _post(client, f"/rule-versions/{v2['id']}/activate").json()["status"] == "active"
+    assert _get(client, f"/rule-versions/{v1['id']}").json()["status"] == "inactive"
+    assert _post(client, f"/rule-versions/{v2['id']}/deactivate").json()["status"] == "inactive"
+    assert _post(client, f"/rule-versions/{v1['id']}/activate").json()["status"] == "active"
+    assert _get(client, f"/rule-versions/{v1['id']}").json()["condition"] == _trips(1)
 
-    # A change is a new Rule Version of the same Definition.
-    v2 = _rule(client, definition["id"], _COMPLETED_TRIPS_1)
-    assert v2["definition_id"] == definition["id"]
-    assert v2["version_number"] == 2
+    # The historical Award keeps its original Rule Version.
+    assert _get(client, f"/awards/{award['id']}").json()["rule_version_id"] == v1["id"]
 
 
 # --- Normative Requirement Sets (§4/§5) --------------------------------------------
@@ -562,8 +613,14 @@ def test_used_normative_version_is_immutable(client: TestClient) -> None:
     assert edited.status_code == 200
 
     definition = _definition(client, source="fstr")
-    _rule(client, definition["id"], normative_set_version_id=normative["id"])
-    award = _award(client, definition["id"], world.member_person, note="Проверено по маршрутке")
+    rule = _rule(client, definition["id"], normative_set_version_id=normative["id"])
+    award = _award(
+        client,
+        definition["id"],
+        world.member_person,
+        note="Проверено по маршрутке",
+        rule_version_id=rule["id"],
+    )
     assert award.status_code == 201
     assert award.json()["normative_set_version_id"] == normative["id"]
 
@@ -601,7 +658,10 @@ def test_fstr_manual_verification_is_preserved(client: TestClient) -> None:
     normative = _normative_version(client)
     definition = _definition(client, source="fstr", award_method="both")
     rule = _rule(client, definition["id"], normative_set_version_id=normative["id"])
-    award = _award(client, definition["id"], world.member_person, note="Маршрутная книжка").json()
+    award = _award(
+        client, definition["id"], world.member_person, note="Маршрутная книжка",
+        rule_version_id=rule["id"],
+    ).json()
     assert award["award_method"] == "manual"
     assert award["awarded_by_user_id"] == str(world.admin)
     assert award["evaluation_trigger"] is None
@@ -662,6 +722,120 @@ def test_unknown_person_or_definition_is_not_found(client: TestClient) -> None:
     assert _award(client, str(uuid.uuid4()), world.member_person).status_code == 404
 
 
+# --- manual Award provenance (A15) ----------------------------------------------------
+
+
+def test_manual_award_without_rule_version_never_gets_the_active_one(client: TestClient) -> None:
+    world = _world()
+    _authenticate_as(world.admin)
+    normative = _normative_version(client)
+    _post(client, f"/normative-versions/{normative['id']}/activate")
+    definition = _definition(client, award_method="both")
+    active = _rule(client, definition["id"], normative_set_version_id=normative["id"])
+    assert active["status"] == "active"
+
+    response = _post(client, "/awards", {
+        "definition_id": definition["id"],
+        "person_id": str(world.member_person),
+        "rule_version_id": None,
+        "verification_note": "Проверено",
+    })
+    assert response.status_code == 201, response.text
+    award = response.json()
+    assert award["rule_version_id"] is None
+    assert award["normative_set_version_id"] is None
+    assert award["award_method"] == "manual"
+
+
+def test_manual_award_records_exactly_the_selected_rule_version(client: TestClient) -> None:
+    world = _world()
+    _authenticate_as(world.admin)
+    normative = _normative_version(client)
+    definition = _definition(client, source="fstr", award_method="both")
+    selected = _rule(client, definition["id"], normative_set_version_id=normative["id"])
+    award = _award(
+        client, definition["id"], world.member_person, note="Маршрутная книжка",
+        rule_version_id=selected["id"],
+    ).json()
+    assert award["rule_version_id"] == selected["id"]
+    assert award["rule_version_number"] == 1
+    assert award["normative_set_version_id"] == normative["id"]
+
+
+def test_manual_award_keeps_an_explicit_inactive_historical_rule_version(
+    client: TestClient,
+) -> None:
+    world = _world()
+    _authenticate_as(world.admin)
+    definition = _definition(client, repeatability="repeatable")
+    historical = _rule(client, definition["id"], _trips(1))
+    current = _rule(client, definition["id"], _trips(2))
+    assert _get(client, f"/rule-versions/{historical['id']}").json()["status"] == "inactive"
+
+    award = _award(
+        client, definition["id"], world.member_person, rule_version_id=historical["id"]
+    ).json()
+    assert award["rule_version_id"] == historical["id"]
+    assert award["rule_version_id"] != current["id"]
+
+
+def test_manual_award_rejects_a_rule_version_of_another_definition(client: TestClient) -> None:
+    world = _world()
+    _authenticate_as(world.admin)
+    definition = _definition(client)
+    other = _definition(client)
+    foreign_rule = _rule(client, other["id"])
+    response = _award(
+        client, definition["id"], world.member_person, rule_version_id=foreign_rule["id"]
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "rule_version_definition_mismatch"
+    assert _get(client, "/awards").json()["pagination"]["total"] == 0
+
+    missing = _award(
+        client, definition["id"], world.member_person, rule_version_id=str(uuid.uuid4())
+    )
+    assert missing.status_code == 404
+
+
+@pytest.mark.parametrize("note", [None, "", "   "])
+def test_fstr_manual_award_requires_a_verification_note(
+    client: TestClient, note: str | None
+) -> None:
+    world = _world()
+    _authenticate_as(world.admin)
+    definition = _definition(client, source="fstr")
+    response = _award(client, definition["id"], world.member_person, note)
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "verification_note_required"
+    assert _get(client, "/awards").json()["pagination"]["total"] == 0
+
+
+def test_normative_manual_verification_requires_a_note(client: TestClient) -> None:
+    world = _world()
+    _authenticate_as(world.admin)
+    normative = _normative_version(client)
+    definition = _definition(client, source="club")
+    rule = _rule(client, definition["id"], normative_set_version_id=normative["id"])
+    response = _award(
+        client, definition["id"], world.member_person, "  ", rule_version_id=rule["id"]
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "verification_note_required"
+
+
+def test_fstr_manual_award_with_note_is_created(client: TestClient) -> None:
+    world = _world()
+    _authenticate_as(world.admin)
+    definition = _definition(client, source="fstr")
+    response = _award(client, definition["id"], world.member_person, "  Маршрутная книжка  ")
+    assert response.status_code == 201, response.text
+    award = response.json()
+    assert award["verification_note"] == "Маршрутная книжка"
+    assert award["rule_version_id"] is None
+    assert award["normative_set_version_id"] is None
+
+
 # --- revocation (A2) ---------------------------------------------------------------
 
 
@@ -670,7 +844,9 @@ def test_revocation_requires_reason_and_preserves_the_award(client: TestClient) 
     _authenticate_as(world.admin)
     definition = _definition(client)
     rule = _rule(client, definition["id"])
-    award = _award(client, definition["id"], world.member_person, note="ok").json()
+    award = _award(
+        client, definition["id"], world.member_person, note="ok", rule_version_id=rule["id"]
+    ).json()
 
     for reason in ("", "   "):
         response = _post(client, f"/awards/{award['id']}/revoke", {"reason": reason})

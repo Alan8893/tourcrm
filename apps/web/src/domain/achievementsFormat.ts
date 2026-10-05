@@ -103,7 +103,9 @@ export function describeRule(node: RuleNode, catalog?: RuleCatalog): string {
 
 const CODE_MESSAGES: Record<string, string> = {
   duplicate_code: "Запись с таким кодом уже существует.",
-  version_in_use: "Версия уже использована в выданных достижениях и не изменяется — создайте новую версию.",
+  version_in_use: "Версия нормативов уже использована в выданных достижениях и не изменяется — создайте новую версию.",
+  rule_version_definition_mismatch: "Выбранная версия правила относится к другому достижению.",
+  verification_note_required: "Для ручной проверки по ФСТР или нормативам укажите основание / результат проверки.",
   definition_inactive: "Достижение неактивно: новые выдачи невозможны.",
   manual_award_not_allowed: "Это достижение выдаётся только автоматически.",
   already_awarded: "Это однократное достижение уже выдавалось этому участнику.",

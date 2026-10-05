@@ -81,11 +81,6 @@ class RuleVersionCreateRequest(BaseModel):
     normative_set_version_id: Optional[UUID] = None
 
 
-class RuleVersionUpdateRequest(BaseModel):
-    condition: Optional[dict[str, Any]] = None
-    normative_set_version_id: Optional[UUID] = None
-
-
 class RuleVersionOut(BaseModel):
     id: UUID
     definition_id: UUID
@@ -159,8 +154,13 @@ class NormativeVersionOut(BaseModel):
 
 
 class ManualAwardCreateRequest(BaseModel):
+    """A15: `rule_version_id` is the Rule Version the Administrator
+    explicitly verified against; omitted/null means no Rule Version is
+    asserted (the current active one is never attached implicitly)."""
+
     definition_id: UUID
     person_id: UUID
+    rule_version_id: Optional[UUID] = None
     verification_note: Optional[str] = None
 
 

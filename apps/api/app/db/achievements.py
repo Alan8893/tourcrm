@@ -8,8 +8,8 @@ The domain is separated exactly as §2 requires:
 - `AchievementDefinition` — the stable identity of an achievement
   (`source`, `award_method`, `repeatability`, `active`/`inactive`
   lifecycle, A1/A3). Never physically deleted (no DELETE path exists).
-- `AchievementRuleVersion` — an immutable-after-use version of the
-  executable Requirement / Rule of one Definition (A4/A5/A11). The
+- `AchievementRuleVersion` — an immutable-from-creation version of the
+  executable Requirement / Rule of one Definition (A4/A5/A11/A13). The
   structured condition tree is stored as data (`condition`), never as
   code. At most one Rule Version per Definition is `active`
   (`uq_achievement_rule_versions_one_active`), so "exactly one current
@@ -225,13 +225,14 @@ class AchievementDefinition(Base):
 
 
 class AchievementRuleVersion(Base):
-    """One version of a Definition's executable Requirement / Rule (A4).
+    """One version of a Definition's executable Requirement / Rule (A4/A13).
 
     `condition` is the structured nested `AND`/`OR` condition tree (A5),
     validated by app.achievements.conditions against the approved metric
     catalog (A8) before it is stored. Content (`condition`,
-    `normative_set_version_id`) is immutable once an Award references the
-    version — enforced by app.achievements.service."""
+    `normative_set_version_id`) is immutable from creation (A13): the
+    service layer offers no operation that changes it; only `status`
+    (lifecycle) changes."""
 
     __tablename__ = "achievement_rule_versions"
 

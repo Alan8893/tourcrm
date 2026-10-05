@@ -1,10 +1,10 @@
 """Achievement Domain application service (Issue #220).
 
-Canonical source: docs/04-modules/achievements-and-norms.md (A1-A12).
+Canonical source: docs/04-modules/achievements-and-norms.md (A1-A16).
 Callers (the API layer) have already checked authorization
 (app.achievements.authorization); this module never does.
 
-## Definitions (A1, A3)
+## Definitions (A1, A3, A14)
 
 Created `inactive`; activated/deactivated explicitly, any number of
 times. Only `name`/`description` are editable afterwards: `code`,
@@ -13,16 +13,18 @@ identity/semantics and are fixed at creation (a changed semantics is a
 new Definition, a changed Rule a new Rule Version). Never deleted.
 Lifecycle changes never touch Awards.
 
-## Rule Versions (A4, A5, A8, A11)
+## Rule Versions (A4, A5, A8, A11, A13)
 
 Each Rule Version belongs to one Definition and is numbered per
 Definition. Its condition tree is validated against the approved metric
-catalog on every write — a tree with an unsupported metric is rejected.
+catalog on creation — a tree with an unsupported metric is rejected.
 `source = fstr` requires a Normative Requirement Set Version reference.
-Content may be edited only while no Award references the version
-("used"); afterwards a change means a new Rule Version. Activating a
-Rule Version deactivates the Definition's previously active one, so
-exactly one is current. Changing Rule Versions never touches Awards.
+A Rule Version is immutable from creation (A13): there is no operation
+that changes its condition or normative reference, used or not — a
+changed rule is a new Rule Version. Only its lifecycle status changes:
+activating a Rule Version deactivates the Definition's previously active
+one, so exactly one is current. Changing Rule Versions never touches
+Awards.
 
 ## Normative Requirement Sets (§4, §5)
 
@@ -30,15 +32,21 @@ A set is a named source; each version carries the §4 metadata. Versions
 are created `inactive` — nothing is seeded or activated automatically.
 A version's content is immutable once an Award references it.
 
-## Awards (A2, A3, A9, A12)
+## Awards (A2, A3, A9, A12, A15)
 
 - Manual issuance requires an `active` Definition whose `award_method`
   is `manual` or `both`, a Member recipient, and — for `non_repeatable` —
   no earlier Award of that Definition for that Person in any state. The
   Award is recorded as `award_method = manual` with the issuing
-  Administrator; the Definition's current active Rule Version (and its
-  Normative Set Version), when one exists, is recorded as the verified
-  basis. It is never presented as an Engine calculation.
+  Administrator. Its Rule Version provenance is explicit (A15): only a
+  Rule Version the Administrator names — which must belong to the same
+  Definition, in any lifecycle state — is recorded, together with that
+  version's own Normative Set Version reference; without one both stay
+  NULL. The current active Rule Version is never attached implicitly.
+  For FSTR / normative manual verification (an `fstr` Definition, or a
+  named Rule Version that references a Normative Set Version) a
+  non-blank verification note is required. A manual Award is never
+  presented as an Engine calculation.
 - Revocation is the single `active -> revoked` transition, requires an
   explicit reason, and keeps the Award and its provenance intact.
 """
@@ -130,6 +138,20 @@ class VersionInUseError(AchievementError):
     """A4/§5: a version already used by an Award is immutable."""
 
     code = "version_in_use"
+
+
+class RuleVersionDefinitionMismatchError(AchievementError):
+    """A15: a manual Award may reference only a Rule Version of its own
+    Definition."""
+
+    code = "rule_version_definition_mismatch"
+
+
+class VerificationNoteRequiredError(AchievementError):
+    """A15: FSTR / normative manual verification must keep explicit
+    verification information."""
+
+    code = "verification_note_required"
 
 
 class DefinitionInactiveError(AchievementError):
@@ -492,32 +514,6 @@ def create_rule_version(
     return rule
 
 
-def update_rule_version(
-    session: Session,
-    *,
-    rule_version_id: uuid.UUID,
-    condition: Any,
-    condition_set: bool,
-    normative_set_version_id: Optional[uuid.UUID],
-    normative_set: bool,
-) -> AchievementRuleVersion:
-    """Edit an unused Rule Version (A4: a used one is immutable)."""
-    rule = get_rule_version(session, rule_version_id, lock=True)
-    if rule_version_is_used(session, rule.id):
-        raise VersionInUseError(
-            "This rule version is already used by an Award; create a new rule version instead"
-        )
-    definition = get_definition(session, rule.definition_id)
-    if condition_set:
-        rule.condition = _validated_condition(condition)
-    if normative_set:
-        rule.normative_set_version_id = _validated_normative_reference(
-            session, definition=definition, version_id=normative_set_version_id
-        )
-    _commit(session)
-    return rule
-
-
 def set_rule_version_status(
     session: Session, *, rule_version_id: uuid.UUID, status: str
 ) -> AchievementRuleVersion:
@@ -542,17 +538,6 @@ def set_rule_version_status(
     return rule
 
 
-def active_rule_version(
-    session: Session, definition_id: uuid.UUID
-) -> Optional[AchievementRuleVersion]:
-    return session.execute(
-        sa.select(AchievementRuleVersion).where(
-            AchievementRuleVersion.definition_id == definition_id,
-            AchievementRuleVersion.status == STATUS_ACTIVE,
-        )
-    ).scalar_one_or_none()
-
-
 # --- Awards -----------------------------------------------------------------------
 
 
@@ -571,6 +556,7 @@ def issue_manual_award(
     *,
     definition_id: uuid.UUID,
     person_id: uuid.UUID,
+    rule_version_id: Optional[uuid.UUID],
     verification_note: Optional[str],
     actor_user_id: uuid.UUID,
 ) -> AchievementAward:
@@ -597,16 +583,29 @@ def issue_manual_award(
                 "This non-repeatable achievement was already awarded to this person"
             )
 
-    rule = active_rule_version(session, definition.id)
+    # A15: only an explicitly named Rule Version — never the current
+    # active one by default.
+    rule = get_rule_version(session, rule_version_id) if rule_version_id is not None else None
+    if rule is not None and rule.definition_id != definition.id:
+        raise RuleVersionDefinitionMismatchError(
+            "The rule version belongs to a different achievement definition"
+        )
+    normative_set_version_id = rule.normative_set_version_id if rule is not None else None
+    note = _optional_text(verification_note)
+    if note is None and (definition.source == SOURCE_FSTR or normative_set_version_id is not None):
+        raise VerificationNoteRequiredError(
+            "A manual FSTR / normative verification requires a verification note"
+        )
+
     award = AchievementAward(
         definition_id=definition.id,
         definition_repeatability=definition.repeatability,
         person_id=person_id,
         award_method=AWARD_METHOD_MANUAL,
         rule_version_id=rule.id if rule is not None else None,
-        normative_set_version_id=rule.normative_set_version_id if rule is not None else None,
+        normative_set_version_id=normative_set_version_id,
         awarded_by_user_id=actor_user_id,
-        verification_note=_optional_text(verification_note),
+        verification_note=note,
         status=AWARD_STATUS_ACTIVE,
     )
     try:
@@ -652,6 +651,8 @@ __all__ = [
     "InvalidRuleError",
     "NormativeReferenceRequiredError",
     "VersionInUseError",
+    "RuleVersionDefinitionMismatchError",
+    "VerificationNoteRequiredError",
     "DefinitionInactiveError",
     "ManualAwardNotAllowedError",
     "RecipientNotMemberError",
@@ -672,9 +673,7 @@ __all__ = [
     "set_normative_version_status",
     "get_rule_version",
     "create_rule_version",
-    "update_rule_version",
     "set_rule_version_status",
-    "active_rule_version",
     "get_award",
     "issue_manual_award",
     "revoke_award",

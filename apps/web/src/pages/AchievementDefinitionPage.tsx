@@ -11,11 +11,9 @@ import {
   useSetDefinitionStatus,
   useSetRuleVersionStatus,
   useUpdateDefinition,
-  useUpdateRuleVersion,
   type AchievementDefinition,
   type RuleCatalog,
   type RuleNode,
-  type RuleVersion,
 } from "../api/achievements";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
@@ -161,7 +159,7 @@ function RuleVersionsSection({
   const versions = useRuleVersions(definition.id);
   const setStatus = useSetRuleVersionStatus();
   const notify = useNotify();
-  const [editor, setEditor] = useState<{ version: RuleVersion | null } | null>(null);
+  const [creating, setCreating] = useState(false);
 
   return (
     <section className={styles.section}>
@@ -171,14 +169,14 @@ function RuleVersionsSection({
           variant="primary"
           icon="action.add"
           disabled={!catalog}
-          onClick={() => setEditor({ version: null })}
+          onClick={() => setCreating(true)}
         >
           Новая версия правила
         </Button>
       </div>
       <p className={styles.muted}>
-        Действует только одна активная версия. Версия, по которой уже выданы достижения, не
-        изменяется — изменения оформляются новой версией.
+        Версия правила не изменяется после создания. Чтобы изменить условия или нормативы,
+        создайте новую версию — прежние версии сохраняются. Действует только одна активная версия.
       </p>
       {versions.isLoading ? <Loading label="Загружаем версии…" /> : null}
       {versions.isError ? <ErrorState illustration="error" title="Не удалось загрузить версии" /> : null}
@@ -218,24 +216,14 @@ function RuleVersionsSection({
                   >
                     {version.status === "active" ? "Деактивировать" : "Сделать активной"}
                   </Button>
-                  {!version.is_used ? (
-                    <Button variant="secondary" disabled={!catalog} onClick={() => setEditor({ version })}>
-                      Изменить
-                    </Button>
-                  ) : null}
                 </div>
               </Card>
             </li>
           ))}
         </ul>
       ) : null}
-      {editor && catalog ? (
-        <RuleVersionDialog
-          definition={definition}
-          catalog={catalog}
-          version={editor.version}
-          onClose={() => setEditor(null)}
-        />
+      {creating && catalog ? (
+        <RuleVersionDialog definition={definition} catalog={catalog} onClose={() => setCreating(false)} />
       ) : null}
     </section>
   );
@@ -244,41 +232,42 @@ function RuleVersionsSection({
 function RuleVersionDialog({
   definition,
   catalog,
-  version,
   onClose,
 }: {
   definition: AchievementDefinition;
   catalog: RuleCatalog;
-  version: RuleVersion | null;
   onClose: () => void;
 }) {
-  const [condition, setCondition] = useState<RuleNode>(version?.condition ?? newRootCondition(catalog));
+  const [condition, setCondition] = useState<RuleNode>(() => newRootCondition(catalog));
   const [normativeSetId, setNormativeSetId] = useState("");
-  const [normativeVersionId, setNormativeVersionId] = useState(version?.normative_set_version_id ?? "");
+  const [normativeVersionId, setNormativeVersionId] = useState("");
   const sets = useNormativeSets();
   const normativeVersions = useNormativeVersions(normativeSetId || undefined);
   const create = useCreateRuleVersion();
-  const update = useUpdateRuleVersion();
-  const mutation = version ? update : create;
   const notify = useNotify();
 
   function submit() {
-    const fields = { condition, normative_set_version_id: normativeVersionId || null };
-    const onSuccess = () => {
-      notify("success", version ? "Версия правила сохранена" : "Версия правила создана");
-      onClose();
-    };
-    if (version) update.mutate({ ruleVersionId: version.id, fields }, { onSuccess });
-    else create.mutate({ definitionId: definition.id, fields }, { onSuccess });
+    create.mutate(
+      {
+        definitionId: definition.id,
+        fields: { condition, normative_set_version_id: normativeVersionId || null },
+      },
+      {
+        onSuccess: (created) => {
+          notify("success", `Создана версия правила ${created.version_number}`);
+          onClose();
+        },
+      },
+    );
   }
 
   return (
     <FormDialog
-      title={version ? `Версия правила ${version.version_number}` : "Новая версия правила"}
-      description="Новая версия создаётся неактивной. Доступны только утверждённые показатели."
-      submitLabel={version ? "Сохранить" : "Создать"}
-      pending={mutation.isPending}
-      error={mutation.isError ? achievementErrorMessage(mutation.error) : null}
+      title="Новая версия правила"
+      description="Создаётся новая неактивная версия со своим номером; существующие версии не меняются. Доступны только утверждённые показатели."
+      submitLabel="Создать версию"
+      pending={create.isPending}
+      error={create.isError ? achievementErrorMessage(create.error) : null}
       onClose={onClose}
       onSubmit={submit}
     >

@@ -433,6 +433,19 @@ def test_achievement_endpoints_never_expose_delete(real_client) -> None:
         assert "delete" not in paths[path], path
     assert set(paths["/api/v1/achievements/awards/{award_id}"]) == {"get"}
     assert set(paths["/api/v1/achievements/awards/{award_id}/revoke"]) == {"post"}
+    # A13: a Rule Version is immutable from creation — read only, no PATCH.
+    assert set(paths["/api/v1/achievements/rule-versions/{rule_version_id}"]) == {"get"}
+    assert "RuleVersionUpdateRequest" not in real_client.get("/openapi.json").json()[
+        "components"
+    ]["schemas"]
+    # A15: the manual Award names its Rule Version explicitly (optional).
+    manual = real_client.get("/openapi.json").json()["components"]["schemas"][
+        "ManualAwardCreateRequest"
+    ]
+    assert set(manual["properties"]) == {
+        "definition_id", "person_id", "rule_version_id", "verification_note"
+    }
+    assert set(manual["required"]) == {"definition_id", "person_id"}
 
 
 def test_event_document_matrix_endpoint_shape(real_client) -> None:

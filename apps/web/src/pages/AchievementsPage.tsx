@@ -11,6 +11,7 @@ import {
   useDefinitions,
   useNormativeSets,
   useRevokeAward,
+  useRuleVersions,
   useRunReconciliation,
   type AchievementAward,
   type AchievementSource,
@@ -495,8 +496,10 @@ function ManualAwardDialog({ definitionId, onClose }: { definitionId?: string; o
   const [selectedDefinition, setSelectedDefinition] = useState(definitionId ?? "");
   const [search, setSearch] = useState("");
   const [personId, setPersonId] = useState("");
+  const [ruleVersionId, setRuleVersionId] = useState("");
   const [note, setNote] = useState("");
   const definitions = useAllActiveDefinitions();
+  const ruleVersions = useRuleVersions(selectedDefinition || undefined);
   const persons = usePersons({ page: 1, search, enabled: search.trim().length > 0 });
   const create = useCreateManualAward();
   const notify = useNotify();
@@ -515,6 +518,7 @@ function ManualAwardDialog({ definitionId, onClose }: { definitionId?: string; o
           {
             definition_id: selectedDefinition,
             person_id: personId,
+            rule_version_id: ruleVersionId || null,
             verification_note: note.trim() || null,
           },
           {
@@ -534,7 +538,21 @@ function ManualAwardDialog({ definitionId, onClose }: { definitionId?: string; o
           value: definition.id,
           label: definition.name,
         }))}
-        onChange={setSelectedDefinition}
+        onChange={(value) => {
+          setSelectedDefinition(value);
+          setRuleVersionId("");
+        }}
+      />
+      <SelectField
+        label="Проверено по версии правила"
+        value={ruleVersionId}
+        placeholder="Без привязки к версии правила"
+        options={(ruleVersions.data?.items ?? []).map((version) => ({
+          value: version.id,
+          label: `Версия ${version.version_number} (${LIFECYCLE_LABELS[version.status]})`,
+        }))}
+        onChange={setRuleVersionId}
+        hint="Указывайте версию, только если выдача проверена именно по ней. Активная версия не подставляется автоматически."
       />
       <Input
         label="Поиск участника"
@@ -558,7 +576,7 @@ function ManualAwardDialog({ definitionId, onClose }: { definitionId?: string; o
         label="Основание / результат проверки"
         value={note}
         onChange={setNote}
-        hint="Например, проверенная маршрутная книжка."
+        hint="Например, проверенная маршрутная книжка. Для ФСТР и проверки по нормативам обязательно."
       />
     </FormDialog>
   );
