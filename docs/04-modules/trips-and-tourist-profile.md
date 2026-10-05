@@ -159,6 +159,11 @@ Result — фактический результат самого Trip, отде
 
 Каноническое решение (Issue #259, TD3):
 
+Правила управления Result (PO decision, TH-276):
+- устанавливать и изменять Result могут Administrator и Instructor в рамках существующего права управления соответствующим Trip/Event и его scope; новых permissions не вводится;
+- после того как Event/Trip достиг статуса completed, cancelled или archived, Result закрыт для обычного редактирования;
+- историческое исправление Result выполняется только через будущий correction workflow; отдельная модель correction/versioning сейчас не реализуется.
+
 - значения:
   - `COMPLETED` — маршрут/поход выполнен;
   - `PARTIALLY_COMPLETED` — выполнен частично;
