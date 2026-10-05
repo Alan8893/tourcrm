@@ -109,6 +109,8 @@ credentials — отдельная административная операц
 `event.schedule.manage` и `attendance.correct` не являются каноническими
 permissions и не должны использоваться как отдельные права.
 
+Route и Planned/Actual GPX — часть управления Trip (Tourism Facts v2, Issue #259 TD6–TD9; семантика — `docs/04-modules/trips-and-tourist-profile.md` §11): их управление использует существующий `trip.manage` и его существующий scope. `gpx.upload`, `route.manage`, `route.gpx.manage` и любые другие Route/GPX-specific permissions не являются каноническими и не вводятся. Official Difficulty, Duration Classification и Geography также не получают собственных permissions (Issues #257, #258, #259).
+
 `guardian_relationship.read`/`guardian_relationship.manage` приняты ADR-0025 §2 для доступа к `GuardianRelationship`; ранее использовавшийся в `docs/05-api/people-api.md` код `guardian.read` не являлся каноническим и заменён этими permissions.
 
 Для People Management действует отдельная объектная policy из ADR-0035: наличие `person.read`, `person.update`, `membership.manage` или `guardian_relationship.manage` само по себе не отменяет scope, object relationship и lifecycle restrictions.
@@ -193,6 +195,10 @@ Feature setting не может расширить permissions.
 | Attendance: correction | по `attendance.update` + reason/audit | по `attendance.update` + scope + reason/audit | ❌ | ❌ |
 | Trip: чтение | ✅ | ✅ | self | children |
 | Trip: управление | ✅ | assigned/owned | ❌ | ❌ |
+| Route, Planned/Actual GPX: управление (`trip.manage`) | в пределах авторизованного scope Trip | только assigned/owned Trip | ❌ | ❌ |
+| Actual GPX после завершения Trip: замена/коррекция | только через будущий Historical Correction Workflow (авторизация не определена) | то же | ❌ | ❌ |
+| Trip: Official Difficulty, Duration Classification — установка/изменение | ✅ (обычное редактирование Trip) | ❌ | ❌ | ❌ |
+| Справочники Country/Region, справочные данные Difficulty: управление | ✅ | ❌ | ❌ | ❌ |
 | Achievement: чтение | `all` | `own_groups` | `self` | `children` |
 | Achievement: выдача | `all` | `own_groups` | ❌ | ❌ |
 | Knowledge: чтение | ✅ | ✅ | ✅ | ✅ |
@@ -305,6 +311,19 @@ GuardianRelationship сама по себе не является grant: дос�
 одного permission инструктор видит других инструкторов своего клуба; это не отменяет и не
 ослабляет ничего из вышесказанного для `person.read`, `event.read`, `group.read` или любого
 другого permission — co-membership по-прежнему не даёт доступа к Person/Event/Group данным.
+
+### 11.1 Trip: Route/GPX и туристские факты (Tourism Facts v2)
+
+Семантика — `docs/04-modules/trips-and-tourist-profile.md` §3–§12.
+
+- Planned/Actual GPX и Route управляются через существующий `trip.manage`; параллельная модель scope для GPX не вводится:
+  - Administrator — в пределах авторизованного scope Trip;
+  - Instructor — только для Trip в своём существующем `assigned/owned` scope (в том числе загрузка Actual GPX после похода);
+  - Member и Guardian — не управляют Planned/Actual GPX.
+- До завершения Trip Actual GPX загружается и заменяется в рамках `trip.manage`; при `Trip → completed` текущий Actual GPX фиксируется как исторический факт. После завершения обычное редактирование не может его заменить; замена/коррекция — только через будущий Historical Correction Workflow, который не реализован и авторизация которого не определена этим документом.
+- Official Difficulty и Duration Classification устанавливает и изменяет Administrator; Instructor не получает Difficulty- или duration-classification-specific permission.
+- Назначение Trip существующих записей Geography выполняется по правам операции редактирования Trip; Geography-specific permission не вводится.
+- Справочники Country/Region, справочные данные Difficulty и её нормативная применимость ведёт только Administrator.
 
 ## 12. Event authorization contract
 
