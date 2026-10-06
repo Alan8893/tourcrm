@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 
@@ -380,5 +380,124 @@ describe("GroupDetailPage — role-aware tabs (Issue #285)", () => {
     expect(await screen.findByText("17 марта, 18:00–19:30")).toBeInTheDocument();
     expect(screen.getByText("Тренировка")).toBeInTheDocument();
     expect(screen.getByText("Запланировано")).toBeInTheDocument();
+  });
+});
+
+// --- Issue #286: remove / transfer actions ----------------------------------
+
+describe("GroupDetailPage — membership actions (Issue #286)", () => {
+  const ACTIVE = {
+    id: "m1",
+    group_id: "g1",
+    club_membership_id: "cm1",
+    valid_from: "2026-01-01T00:00:00Z",
+    valid_to: null,
+    membership_status: "active",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const ENDED = { ...ACTIVE, id: "m0", membership_status: "ended", valid_to: "2025-06-01T00:00:00Z" };
+  const group = (id: string, name: string, clubId = "club-1") => ({ ...GROUP, id, name, club_id: clubId });
+
+  function renderAs(roleCode: string) {
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse(roleCode) },
+      { match: "/group-memberships/m1/transfer", response: { ...ACTIVE, id: "m2", group_id: "g2" } },
+      { match: "/group-memberships/m1/end", response: { ...ACTIVE, membership_status: "ended" } },
+      {
+        match: "/groups?status=active",
+        response: {
+          items: [GROUP, group("g2", "Старшая группа"), group("g3", "Чужой клуб", "club-2")],
+          pagination: { page: 1, page_size: 100, total: 3, pages: 1 },
+        },
+      },
+      {
+        match: "/groups/g1/members",
+        response: { items: [ACTIVE, ENDED], pagination: { page: 1, page_size: 50, total: 2, pages: 1 } },
+      },
+      { match: "/groups/g1/schedule?from=", response: emptyCollection() },
+      { match: "/groups/g1", response: GROUP },
+      { match: "/memberships/cm1", response: { id: "cm1", person_id: "p1", club_id: "club-1" } },
+      {
+        match: "/persons/p1",
+        response: { id: "p1", first_name: "Анна", last_name: "Иванова", middle_name: null, birth_date: null },
+      },
+    ]);
+    renderWithProviders(
+      <Routes>
+        <Route path="/groups/:groupId" element={<GroupDetailPage />} />
+      </Routes>,
+      { route: "/groups/g1" },
+    );
+    return fetchMock;
+  }
+
+  function mutationCalls(fetchMock: ReturnType<typeof stubFetch>) {
+    return fetchMock.mock.calls
+      .filter(([, init]) => (init?.method ?? "GET") !== "GET")
+      .map(([input, init]) => ({ url: String(input), body: init?.body }));
+  }
+
+  async function openParticipants() {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Участники" }));
+    await screen.findAllByText("Иванова Анна");
+    return user;
+  }
+
+  it("offers Administrator move/remove on the active membership only", async () => {
+    renderAs("admin");
+    await openParticipants();
+
+    expect(screen.getAllByRole("button", { name: "Переместить" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Удалить" })).toHaveLength(1);
+  });
+
+  it("offers an Instructor no membership management actions", async () => {
+    renderAs("instructor");
+    await openParticipants();
+
+    expect(screen.queryByRole("button", { name: "Переместить" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Удалить" })).not.toBeInTheDocument();
+  });
+
+  it("removes only after confirmation, with one end request", async () => {
+    const fetchMock = renderAs("admin");
+    const user = await openParticipants();
+
+    await user.click(screen.getByRole("button", { name: "Удалить" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("История участия сохранится");
+    await user.click(screen.getByRole("button", { name: "Отмена" }));
+    expect(mutationCalls(fetchMock)).toEqual([]);
+
+    await user.click(screen.getByRole("button", { name: "Удалить" }));
+    const confirm = await screen.findByRole("dialog");
+    await user.click(within(confirm).getByRole("button", { name: "Удалить" }));
+
+    await waitFor(() => expect(mutationCalls(fetchMock)).toHaveLength(1));
+    expect(mutationCalls(fetchMock)[0].url).toContain("/group-memberships/m1/end");
+  });
+
+  it("transfers with ONE transfer request to a same-Club active Group, after confirmation", async () => {
+    const fetchMock = renderAs("admin");
+    const user = await openParticipants();
+
+    await user.click(screen.getByRole("button", { name: "Переместить" }));
+    const dialog = await screen.findByRole("dialog");
+    const select = await within(dialog).findByLabelText("Целевая группа");
+    const options = within(select).getAllByRole("option").map((option) => option.textContent);
+    // Not the current Group, not another Club's Group.
+    expect(options).toEqual(["Выберите группу", "Старшая группа"]);
+    const confirm = within(dialog).getByRole("button", { name: "Переместить" });
+    expect(confirm).toBeDisabled();
+
+    await user.selectOptions(select, "g2");
+    await user.click(confirm);
+
+    await waitFor(() => expect(mutationCalls(fetchMock)).toHaveLength(1));
+    const [call] = mutationCalls(fetchMock);
+    expect(call.url).toContain("/group-memberships/m1/transfer");
+    expect(JSON.parse(String(call.body))).toEqual({ target_group_id: "g2" });
   });
 });

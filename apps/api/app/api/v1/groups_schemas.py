@@ -63,6 +63,14 @@ class GroupMembershipCreateRequest(BaseModel):
     valid_to: Optional[datetime] = None
 
 
+class GroupMembershipTransferRequest(BaseModel):
+    """people-api.md §15.3 (Issue #286): `POST /group-memberships/{id}/
+    transfer` — the target Group of the atomic single-participant
+    Transfer. The source is the path's GroupMembership."""
+
+    target_group_id: UUID
+
+
 class GroupMembershipUpdateRequest(BaseModel):
     """PATCH: only `valid_from` is a genuinely mutable field
     (people-api.md §15). `group_id`/`club_membership_id`/

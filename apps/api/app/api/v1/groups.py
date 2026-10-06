@@ -7,8 +7,9 @@ docs/05-api/endpoint-inventory.md §7 (endpoint list — `POST
 /groups/{id}/members/bulk` is deliberately NOT implemented here, per
 people-api.md §15.4's explicit deferral), ADR-0021 (persistence), ADR-0022
 (cross-Club integrity), ADR-0013 (scopes), ADR-0014 (response envelope),
-ADR-0024 (audit). No `/transfer` endpoint exists anywhere in this module
-(people-api.md §15.3, closing GAP-GROUP-004).
+ADR-0024 (audit). `POST /group-memberships/{id}/transfer` is the atomic
+single-participant Transfer of people-api.md §15.3 (Issue #286); bulk
+transfer is not implemented (§15.4).
 
 Existence-hiding for every item-level endpoint, mirroring
 app.api.v1.guardian_relationships/app.api.v1.events exactly: an object
@@ -44,6 +45,7 @@ from app.api.v1.groups_schemas import (
     GroupInstructorAssignmentOut,
     GroupMembershipCreateRequest,
     GroupMembershipOut,
+    GroupMembershipTransferRequest,
     GroupMembershipUpdateRequest,
     GroupOut,
     GroupUpdateRequest,
@@ -615,6 +617,76 @@ def end_group_membership(
             status.HTTP_409_CONFLICT, "invalid_group_membership_transition", str(exc)
         ) from exc
     return _group_membership_out(membership)
+
+
+@group_memberships_router.post(
+    "/{membership_id}/transfer",
+    status_code=status.HTTP_201_CREATED,
+    response_model=GroupMembershipOut,
+)
+def transfer_group_membership(
+    membership_id: uuid.UUID,
+    payload: GroupMembershipTransferRequest,
+    request: Request,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> GroupMembershipOut:
+    """people-api.md §15.3 (Issue #286): atomically end the active source
+    membership and create the participant's membership in the target
+    Group — one transaction (app.groups.service.transfer_group_membership).
+    Returns the new target membership (`201 Created`).
+
+    Authorization reuses `group.manage` + scope + object relationship on
+    BOTH sides, with existence-hiding: an unauthorized/nonexistent source
+    is `404 group_membership_not_found`, an unauthorized/nonexistent
+    target `404 group_not_found`. The source is locked `FOR UPDATE`, as
+    for `POST .../end`, so concurrent Transfers of one membership
+    serialize and only the first succeeds. Error codes are the existing
+    GroupMembership ones (§15/§15.1/§15.2), plus `invalid_group_transfer`
+    for a target equal to the source Group.
+    """
+    membership = _get_authorized_group_membership_or_404(
+        db,
+        membership_id=membership_id,
+        user_id=principal.user_id,
+        permission_code="group.manage",
+        lock=True,
+    )
+    _get_authorized_group_or_404(
+        db,
+        group_id=payload.target_group_id,
+        user_id=principal.user_id,
+        permission_code="group.manage",
+    )
+    try:
+        target = group_service.transfer_group_membership(
+            db,
+            membership=membership,
+            target_group_id=payload.target_group_id,
+            actor_user_id=principal.user_id,
+            request_id=get_request_id(request),
+        )
+    except InvalidGroupMembershipStatusTransitionError as exc:
+        raise APIError(
+            status.HTTP_409_CONFLICT, "invalid_group_membership_transition", str(exc)
+        ) from exc
+    except group_service.GroupMembershipTransferSameGroupError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_group_transfer", str(exc)
+        ) from exc
+    except (
+        group_service.GroupMembershipClubMismatchError,
+        group_service.ClubMembershipNotActiveError,
+    ) as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "group_membership_club_mismatch", str(exc)
+        ) from exc
+    except group_service.GroupArchivedError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "group_archived", str(exc)) from exc
+    except group_service.DuplicateActiveGroupMembershipError as exc:
+        raise APIError(status.HTTP_409_CONFLICT, "duplicate_group_membership", str(exc)) from exc
+    return _group_membership_out(target)
 
 
 # --- GroupInstructorAssignment -------------------------------------------

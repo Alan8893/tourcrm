@@ -256,14 +256,17 @@ _GROUP_PATHS = {
     "/api/v1/groups/{group_id}/members",
     "/api/v1/group-memberships/{membership_id}",
     "/api/v1/group-memberships/{membership_id}/end",
+    # Issue #286: atomic single-participant Transfer (people-api.md §15.3).
+    "/api/v1/group-memberships/{membership_id}/transfer",
     "/api/v1/groups/{group_id}/instructors",
     "/api/v1/group-instructor-assignments/{assignment_id}/end",
     # Issue #88 / TH-0083: Group Schedule.
     "/api/v1/groups/{group_id}/schedule",
 }
-# No `/api/v1/groups/{group_id}/members/bulk` and no
-# `/api/v1/groups/{group_id}/members/{person_id}/transfer` — both are
-# deliberately not implemented (people-api.md §15.3-15.4, Issue #71 §3).
+# No `/api/v1/groups/{group_id}/members/bulk` (bulk transfer is out of
+# scope, people-api.md §15.4) and no
+# `/api/v1/groups/{group_id}/members/{person_id}/transfer` (the only
+# Transfer is the per-membership endpoint above, §15.3).
 
 _USER_PATHS = {
     "/api/v1/users",

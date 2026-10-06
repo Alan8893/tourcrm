@@ -120,6 +120,47 @@ export function useAddGroupMember() {
   });
 }
 
+function invalidateMembershipViews(queryClient: ReturnType<typeof useQueryClient>, groupIds: string[]) {
+  for (const groupId of groupIds) {
+    void queryClient.invalidateQueries({ queryKey: ["groups", "members", groupId] });
+  }
+  // The Person side (`GET /persons/{id}/groups`) lists the same rows.
+  void queryClient.invalidateQueries({ queryKey: ["persons", "groups"] });
+}
+
+/** `POST /api/v1/group-memberships/{id}/end` (people-api.md §15.1) —
+ * "Удалить из группы" (Issue #286): ends the current membership; the
+ * historical row is kept, never deleted. */
+export function useEndGroupMembership() {
+  const queryClient = useQueryClient();
+  return useMutation<GroupMembership, ApiError, { membershipId: string; groupId: string }>({
+    mutationFn: ({ membershipId }) =>
+      apiFetch<GroupMembership>(`/group-memberships/${membershipId}/end`, { method: "POST" }),
+    onSuccess: (_membership, { groupId }) => invalidateMembershipViews(queryClient, [groupId]),
+  });
+}
+
+/** `POST /api/v1/group-memberships/{id}/transfer` (people-api.md §15.3,
+ * Issue #286) — "Переместить": ONE request; the backend ends the source
+ * membership and creates the target one atomically. Never implemented
+ * client-side as end + add. Resolves to the new target membership. */
+export function useTransferGroupMembership() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    GroupMembership,
+    ApiError,
+    { membershipId: string; sourceGroupId: string; targetGroupId: string }
+  >({
+    mutationFn: ({ membershipId, targetGroupId }) =>
+      apiFetch<GroupMembership>(`/group-memberships/${membershipId}/transfer`, {
+        method: "POST",
+        body: JSON.stringify({ target_group_id: targetGroupId }),
+      }),
+    onSuccess: (_membership, { sourceGroupId, targetGroupId }) =>
+      invalidateMembershipViews(queryClient, [sourceGroupId, targetGroupId]),
+  });
+}
+
 const GROUP_SCHEDULE_HORIZON_DAYS = 180;
 
 export function useGroupSchedule(groupId: string | undefined) {
