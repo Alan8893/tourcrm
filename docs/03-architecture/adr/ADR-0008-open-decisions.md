@@ -21,6 +21,8 @@ Living document
 
 Нужно выбрать конкретный Redis worker framework после появления первой обязательной фоновой задачи.
 
+Периодический запуск system jobs (scheduler) решён отдельно в `ADR-0044 — Scheduler for periodic system jobs` и не требует Redis worker framework. ODR-005 остаётся открытым для asynchronous queued jobs (notifications, file processing и т.п.).
+
 ## ODR-006: financial/accounting scope
 
 Нужно определить, является ли финансовый модуль внутренним управленческим учётом или должен соответствовать внешнему бухгалтерскому/налоговому учёту.
