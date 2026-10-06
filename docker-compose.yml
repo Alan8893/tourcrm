@@ -65,6 +65,43 @@ services:
     networks:
       - tourcrm-dev
 
+  # Scheduler for periodic system jobs (Issue #289, ADR-0044) — DEVELOPMENT
+  # ONLY, like everything in this file. Opt-in via the `scheduler` profile,
+  # so a plain `docker compose up` still starts the application without it:
+  #   docker compose --profile scheduler up
+  # Same Dockerfile/build context/user/DATABASE_URL and the same bind-mounted
+  # source as `backend`, so it runs the same code; supercronic is the
+  # container's main process (PID 1) and invokes the official CLIs from the
+  # repository crontab. One replica, no HTTP, no published port.
+  scheduler:
+    profiles: ["scheduler"]
+    build:
+      context: ./apps/api
+      args:
+        UID: ${HOST_UID:-1000}
+        GID: ${HOST_GID:-1000}
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    command: ["supercronic", "-json", "/app/scheduler/crontab"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    volumes:
+      - ./apps/api:/app
+    depends_on:
+      # The backend applies migrations (`alembic upgrade head`) before it
+      # turns healthy, so the scheduler never runs against an unmigrated
+      # schema (ADR-0044 §10).
+      backend:
+        condition: service_healthy
+    # The image's HEALTHCHECK probes the API's HTTP port; the scheduler has
+    # none. Its liveness is "supercronic is running" (ADR-0044 §6.5).
+    healthcheck:
+      disable: true
+    # supercronic waits for a running job on SIGTERM; one run is bounded at
+    # 55s by the crontab's timeout, so give it that long before SIGKILL.
+    stop_grace_period: 60s
+    networks:
+      - tourcrm-dev
+
   frontend:
     build:
       context: ./apps/web

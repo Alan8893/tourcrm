@@ -1,0 +1,16 @@
+# TourCRM periodic system jobs (Issue #289, ADR-0044).
+#
+# Run by supercronic as the scheduler container's main process (PID 1):
+#
+#     supercronic -json /app/scheduler/crontab
+#
+# Every job invokes an official system CLI — the scheduler holds no
+# business logic. supercronic never starts a job while that job's previous
+# run is still going (do NOT pass `-overlapping`), so each command is
+# wrapped in a wall-clock `timeout` to keep one stuck run from blocking all
+# later ones. Rationale for the bound: apps/api/README.md "Scheduler".
+# Validate with: supercronic -test apps/api/scheduler/crontab
+
+# Event lifecycle reconciliation (ADR-0018): published -> in_progress at
+# start_at, in_progress -> completed at end_at. Every minute.
+* * * * * timeout --verbose --kill-after=5s 50s python -m app.cli.reconcile_event_lifecycle

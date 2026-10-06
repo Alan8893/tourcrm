@@ -364,16 +364,16 @@ Issues that introduce those domain models.
 Event status follows the schedule for the two time-driven transitions:
 `published -> in_progress` once `start_at` is reached and
 `in_progress -> completed` once `end_at` is reached. The backend applies
-them with a periodic, operator-scheduled command (the same mechanism as
-`python -m app.cli.reconcile_achievements`):
+them with a system CLI:
 
 ```bash
 cd apps/api
 python -m app.cli.reconcile_event_lifecycle
 ```
 
-Schedule it frequently (e.g. every minute from cron or the deployment's
-job scheduler; in development:
+The [scheduler](#scheduler-for-periodic-system-jobs-issue-289-adr-0044)
+runs it **every minute**; it can also be run by hand at any time (in
+development:
 `docker compose exec backend python -m app.cli.reconcile_event_lifecycle`).
 A run converges every missed transition in one pass (an Event whose
 `end_at` already passed goes `published -> in_progress -> completed`), so
@@ -382,3 +382,119 @@ publishes a `draft` and never changes a `cancelled`, `completed` or
 `archived` Event. It is idempotent and safe to run concurrently (each
 Event is reconciled under its row lock); it exits non-zero if any Event
 could not be reconciled, and the next run retries it.
+
+## Scheduler for periodic system jobs (Issue #289, ADR-0044)
+
+Periodic system jobs are run by a dedicated scheduler process,
+[supercronic](https://github.com/aptible/supercronic), never by the
+FastAPI process (no startup task, background loop or in-process
+scheduler; no Redis/broker). The scheduler only invokes official system
+CLIs; it holds no business logic. It is meant to run as **exactly one
+replica per deployment** (ADR-0044 §3).
+
+| | |
+|---|---|
+| Technology | supercronic `v0.2.49`, pinned in `apps/api/Dockerfile` with SHA-256 checksums for `amd64`/`arm64`; the build fails on a mismatch |
+| Crontab | `apps/api/scheduler/crontab` (version-controlled; `/app/scheduler/crontab` in the image) |
+| Command | `supercronic -json /app/scheduler/crontab` — the container's main process (PID 1) |
+| Image | the API image (`apps/api/Dockerfile`), same code and `DATABASE_URL` as the backend; runs as the non-root `app` user |
+| Jobs | `* * * * *` `timeout --verbose --kill-after=5s 50s python -m app.cli.reconcile_event_lifecycle` |
+| Network | serves no HTTP, publishes no port, needs only PostgreSQL |
+
+### Behaviour
+
+- **Every minute** supercronic starts the reconciliation CLI. It never
+  starts it again while the previous run is still going (the
+  `-overlapping` flag is not used); a run that outlives its minute is
+  reported as `job took too long to run`, and the skipped start as
+  `not starting: job is still running`.
+- **Failure.** A run that exits non-zero (an Event that could not be
+  reconciled, the database unreachable, an unhandled error) is logged as
+  `"level":"error","msg":"error running command: exit status N"`, with the
+  CLI's own output/traceback before it. The scheduler keeps running and
+  the next minute's run is the retry — there is no other retry loop.
+  The CLI's per-Event failure isolation is unchanged.
+- **Timeout.** One run is bounded: after 50 s `timeout` sends `SIGTERM`
+  (exit status `124`, logged as `timeout: sending signal TERM to command
+  'python'`), and `SIGKILL` 5 s later if it is still alive (exit status
+  `137`). Why 50 s:
+  - a normal run is short — measured against PostgreSQL 16: ~0.6 s with
+    nothing due (interpreter start-up dominates), ~1 s for 100 and ~4.7 s
+    for 1 000 missed `published -> completed` Events (~4 ms per Event);
+    the codebase sets no database statement/lock timeouts, so the only
+    open-ended waits are a row lock held by a concurrent writer or a hung
+    connection, which is what the bound is for;
+  - 50 s + 5 s stays under the one-minute interval, so a timed-out run
+    ends before the next minute's run is due and never delays it;
+  - a timed-out run loses no work: each Event is reconciled and committed
+    in its own transaction, and due Events are processed in a stable
+    order, so the next run continues from the first Event not yet
+    reconciled — even a catch-up larger than one run can handle converges
+    over successive minutes.
+- **Database state after a killed run.** Committed Events stay committed;
+  the Event in progress has an uncommitted transaction, which PostgreSQL
+  rolls back when the connection closes — no partial transition, no open
+  session or lock left for the next run (covered by
+  `tests/integration/test_scheduler_crontab.py`). If the run was killed
+  while its server-side statement was waiting on a row lock, PostgreSQL
+  finishes that wait and then aborts it; until then the next run waits on
+  the same row, and if the lock is held longer than the bound that run
+  also times out, visibly, every minute. A completed Event's achievement
+  hook runs after its commit; if a kill lands exactly there, the existing
+  achievement reconciliation (`python -m app.cli.reconcile_achievements`)
+  is what creates any missed Award, as for any other hook failure.
+- **Restart.** Missed minutes are not replayed; the first run after the
+  scheduler (or the database) comes back converges every missed
+  transition (ADR-0018). Restarting a stopped scheduler is the deployment
+  topology's job (restart policy).
+- **Shutdown.** On `SIGTERM` supercronic stops starting runs, waits for a
+  running one and exits `0`. Allow a stop grace period of at least 55 s
+  (the development Compose service uses 60 s).
+
+### Logs
+
+supercronic writes everything to the container's stderr: one JSON line
+per event (`starting`, each line of the CLI's output with
+`"channel":"stdout"`/`"stderr"`, `job succeeded` or
+`error running command: exit status N`), tagged with `job.command`,
+`job.schedule` and `iteration`. Neither the scheduler nor the CLI prints
+the environment; a connection error names the host/port, never the
+password.
+
+```bash
+docker compose logs -f scheduler
+```
+
+### Running it in development
+
+The development `docker-compose.yml` has a `scheduler` service behind the
+opt-in `scheduler` profile, so a plain `docker compose up` still starts the
+application without it:
+
+```bash
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose --profile scheduler up --build
+```
+
+It waits for `backend` to be healthy (i.e. migrations applied) and uses
+the same bind-mounted source. Like the rest of that file it is
+**development only** — no production deployment topology exists yet
+(ADR-0044 §7); a future one must run this image with
+`supercronic -json /app/scheduler/crontab` as a single, dedicated replica.
+
+To check the scheduler configuration locally:
+
+```bash
+# crontab syntax (no database needed)
+docker compose run --rm --no-deps scheduler supercronic -test /app/scheduler/crontab
+# the exact crontab command against PostgreSQL
+DATABASE_URL=postgresql+psycopg://test:test@localhost:5432/tourcrm_test \
+  pytest tests/integration/test_scheduler_crontab.py -v
+```
+
+CI (`scheduler` job) builds the image, checks the installed supercronic
+version against the pin, runs `supercronic -test` on the crontab without a
+database, checks the non-root user, and runs
+`.github/scripts/scheduler-smoke-test.sh`: real every-minute iterations
+against PostgreSQL (success) and against an unreachable database (logged
+failures, scheduler still running, next run still happens, no password in
+the logs), then a graceful `SIGTERM` stop.

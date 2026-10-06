@@ -28,6 +28,32 @@ ARG GID=1000
 RUN groupadd --gid "${GID}" app \
     && useradd --uid "${UID}" --gid app --shell /bin/bash --create-home app
 
+# Scheduler for periodic system jobs (Issue #289, ADR-0044): supercronic,
+# pinned to one release and verified against SHA-256 checksums fixed here,
+# so every build installs byte-identical binaries (the build fails on any
+# mismatch). Installed at build time, never downloaded at container start,
+# and outside /app so the development bind mount cannot hide it. The same
+# image runs the API (default CMD) and, with
+# `supercronic -json /app/scheduler/crontab` as its command, the scheduler.
+# The checksums were computed from the official release assets of
+# https://github.com/aptible/supercronic/releases/tag/v0.2.49; update the
+# version and both checksums together.
+ARG SUPERCRONIC_VERSION=v0.2.49
+ARG SUPERCRONIC_SHA256_AMD64=a53ae236602c7338aba3fbaff40bda6300eae3b9fedb8261eb06cfe3724430c1
+ARG SUPERCRONIC_SHA256_ARM64=02aa0cb229ba09050cba6638059dadb9eedc2276632ea43d6a57a2f8c1629dd5
+RUN set -eu; \
+    arch="$(dpkg --print-architecture)"; \
+    case "${arch}" in \
+        amd64) sha256="${SUPERCRONIC_SHA256_AMD64}" ;; \
+        arm64) sha256="${SUPERCRONIC_SHA256_ARM64}" ;; \
+        *) echo "supercronic: unsupported architecture ${arch}" >&2; exit 1 ;; \
+    esac; \
+    python -c "import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" \
+        "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${arch}" \
+        /usr/local/bin/supercronic; \
+    echo "${sha256}  /usr/local/bin/supercronic" | sha256sum -c -; \
+    chmod 0755 /usr/local/bin/supercronic
+
 COPY requirements.txt requirements-dev.txt ./
 RUN pip install --no-cache-dir -r requirements-dev.txt
 
@@ -42,6 +68,8 @@ EXPOSE 8000
 # container healthcheck answers "is this process alive", not "is its
 # PostgreSQL dependency also up", so it must not fail merely because the
 # database had a blip.
+# The scheduler serves no HTTP, so its service disables this healthcheck
+# (see the `scheduler` service in docker-compose.yml).
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=5 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live', timeout=2)" || exit 1
 

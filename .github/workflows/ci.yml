@@ -100,6 +100,57 @@ jobs:
       - name: Integration tests (PostgreSQL + Alembic)
         run: pytest tests/integration -v
 
+  scheduler:
+    # Issue #289, ADR-0044: builds the API image (which pins supercronic and
+    # verifies its SHA-256 at build time), validates the repository crontab
+    # with `supercronic -test` (no database), then runs the scheduler
+    # container through real every-minute iterations.
+    name: Scheduler (image build, crontab validation, runtime smoke test)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: tourcrm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d tourcrm_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      IMAGE: tourcrm-api:ci
+      # Ephemeral, CI-only credentials for a disposable service container,
+      # reached from containers on the host network.
+      DATABASE_URL: postgresql+psycopg://test:test@localhost:5432/tourcrm_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build API image (pinned, checksum-verified supercronic)
+        run: docker build -t "$IMAGE" apps/api
+
+      - name: supercronic version matches the pinned release
+        run: |
+          pinned="$(sed -n 's/^ARG SUPERCRONIC_VERSION=//p' apps/api/Dockerfile)"
+          installed="$(docker run --rm "$IMAGE" supercronic -version)"
+          echo "pinned=$pinned installed=$installed"
+          test -n "$pinned" && test "$installed" = "$pinned"
+
+      - name: Validate crontab (supercronic -test, no database)
+        run: docker run --rm --network none "$IMAGE" supercronic -test /app/scheduler/crontab
+
+      - name: Image runs as non-root
+        run: test "$(docker run --rm "$IMAGE" id -u)" != "0"
+
+      - name: Apply migrations to the CI database
+        run: docker run --rm --network host -e DATABASE_URL "$IMAGE" alembic upgrade head
+
+      - name: Scheduler runtime smoke test
+        run: .github/scripts/scheduler-smoke-test.sh "$IMAGE" "$DATABASE_URL"
+
   frontend:
     name: Frontend (lint, typecheck, test, build)
     runs-on: ubuntu-latest
