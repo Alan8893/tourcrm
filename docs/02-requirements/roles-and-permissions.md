@@ -184,7 +184,7 @@ Feature setting не может расширить permissions.
 | GuardianRelationship: terminate | ✅ | ❌ | ❌ | ❌ |
 | Группы: чтение | `all` | `own_groups` | own membership | children's groups |
 | Группы: управление | ✅ | ❌ | ❌ | ❌ |
-| Event: чтение | `all` | applicable `own_groups` / `own_events` | own participation | children's participation |
+| Event: чтение | `all` | applicable `own_groups` / `own_events` | Member Event object policy (`self`) | `children` / canonical Guardian Event policy |
 | Event: создание | `all` | according to documented event policy and scope | ❌ | ❌ |
 | Event: изменение | `all` | assigned/owned scope | ❌ | ❌ |
 | Event: отмена | `all` | permission + scope | ❌ | ❌ |
