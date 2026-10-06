@@ -7,6 +7,7 @@ import { StatusBadge } from "../components/ui/StatusBadge";
 import { Button } from "../components/ui/Button";
 import { Dialog } from "../components/ui/Dialog";
 import { SearchInput } from "../components/ui/SearchInput";
+import { FilterSelect } from "../components/ui/FilterSelect";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { Loading } from "../components/ui/Loading";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -14,11 +15,15 @@ import { ErrorState } from "../components/ui/ErrorState";
 import { useNotify } from "../components/ui/notificationContext";
 import {
   useAddGroupMember,
+  useAllGroups,
   useArchiveGroup,
+  useEndGroupMembership,
   useGroup,
   useGroupMembers,
   useGroupSchedule,
+  useTransferGroupMembership,
 } from "../api/groups";
+import type { GroupMembership } from "../api/groups";
 import { useCurrentUser } from "../api/auth";
 import type { ApiError } from "../api/client";
 import { useMembershipPersonName, usePersons, personFullName } from "../api/people";
@@ -235,10 +240,17 @@ function MembersTab({
           {membersQuery.data.items.map((membership) => (
             <li key={membership.id} className={styles.memberRow}>
               <MemberName clubMembershipId={membership.club_membership_id} />
-              <StatusBadge
-                status={membership.membership_status === "active" ? "status.ongoing" : "status.ended"}
-                label={membership.membership_status === "active" ? "Активно" : "Завершено"}
-              />
+              <span className={styles.memberRowActions}>
+                <StatusBadge
+                  status={membership.membership_status === "active" ? "status.ongoing" : "status.ended"}
+                  label={membership.membership_status === "active" ? "Активно" : "Завершено"}
+                />
+                {/* Issue #286: managing a current membership is group.manage
+                    (Administrator) only — UX only, the backend authorizes. */}
+                {isAdmin && membership.membership_status === "active" ? (
+                  <MembershipActions membership={membership} clubId={clubId} />
+                ) : null}
+              </span>
             </li>
           ))}
         </ul>
@@ -330,6 +342,148 @@ function AddParticipantDialog({
           </ul>
         ) : null}
       </div>
+    </Dialog>
+  );
+}
+
+/** Issue #286: "Переместить" / "Удалить" for one current membership. Both
+ * ask for confirmation; each is exactly ONE backend call (transfer is the
+ * atomic `POST .../transfer`, never end + add from the client). */
+function MembershipActions({ membership, clubId }: { membership: GroupMembership; clubId: string }) {
+  const [dialog, setDialog] = useState<"transfer" | "remove" | null>(null);
+  const { name } = useMembershipPersonName(membership.club_membership_id);
+  const who = name ?? "Участник";
+
+  return (
+    <>
+      <Button variant="secondary" onClick={() => setDialog("transfer")}>
+        Переместить
+      </Button>
+      <Button variant="destructive" onClick={() => setDialog("remove")}>
+        Удалить
+      </Button>
+      {dialog === "remove" ? (
+        <RemoveMemberDialog membership={membership} who={who} onClose={() => setDialog(null)} />
+      ) : null}
+      {dialog === "transfer" ? (
+        <TransferMemberDialog
+          membership={membership}
+          clubId={clubId}
+          who={who}
+          onClose={() => setDialog(null)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function RemoveMemberDialog({
+  membership,
+  who,
+  onClose,
+}: {
+  membership: GroupMembership;
+  who: string;
+  onClose: () => void;
+}) {
+  const endMembership = useEndGroupMembership();
+  const notify = useNotify();
+
+  return (
+    <ConfirmDialog
+      open
+      title="Удалить из группы?"
+      description={`${who} больше не будет участником этой группы. История участия сохранится.`}
+      confirmLabel="Удалить"
+      destructive
+      pending={endMembership.isPending}
+      onCancel={onClose}
+      onConfirm={() =>
+        endMembership.mutate(
+          { membershipId: membership.id, groupId: membership.group_id },
+          {
+            onSuccess: () => {
+              notify("success", `${who}: удалён(а) из группы`);
+              onClose();
+            },
+            onError: (error) => notify("error", error.message),
+          },
+        )
+      }
+    />
+  );
+}
+
+function TransferMemberDialog({
+  membership,
+  clubId,
+  who,
+  onClose,
+}: {
+  membership: GroupMembership;
+  clubId: string;
+  who: string;
+  onClose: () => void;
+}) {
+  const groupsQuery = useAllGroups("active");
+  const transfer = useTransferGroupMembership();
+  const notify = useNotify();
+  const [targetGroupId, setTargetGroupId] = useState("");
+
+  // Offer only active Groups of the same Club, other than the current one
+  // (people-api.md §15.3); the backend re-checks all of this.
+  const targets = (groupsQuery.data ?? []).filter(
+    (group) => group.club_id === clubId && group.id !== membership.group_id,
+  );
+  const targetName = targets.find((group) => group.id === targetGroupId)?.name;
+
+  return (
+    <Dialog
+      open
+      title="Переместить в другую группу"
+      description={`${who} будет переведён(а) в выбранную группу. Текущее участие завершится и сохранится в истории.`}
+      onClose={onClose}
+      actions={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={transfer.isPending}>
+            Отмена
+          </Button>
+          <Button
+            variant="primary"
+            disabled={!targetGroupId || transfer.isPending}
+            onClick={() =>
+              transfer.mutate(
+                { membershipId: membership.id, sourceGroupId: membership.group_id, targetGroupId },
+                {
+                  onSuccess: () => {
+                    notify("success", `${who}: перемещён(а) в группу «${targetName ?? ""}»`);
+                    onClose();
+                  },
+                  onError: (error) => notify("error", error.message),
+                },
+              )
+            }
+          >
+            Переместить
+          </Button>
+        </>
+      }
+    >
+      {groupsQuery.isLoading ? <Loading label="Загружаем группы…" /> : null}
+      {groupsQuery.isSuccess && targets.length === 0 ? (
+        <p>Нет других активных групп этого клуба.</p>
+      ) : null}
+      {groupsQuery.isSuccess && targets.length > 0 ? (
+        <FilterSelect
+          label="Целевая группа"
+          value={targetGroupId}
+          options={[
+            { value: "", label: "Выберите группу" },
+            ...targets.map((group) => ({ value: group.id, label: group.name })),
+          ]}
+          onChange={setTargetGroupId}
+        />
+      ) : null}
     </Dialog>
   );
 }
