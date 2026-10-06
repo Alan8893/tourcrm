@@ -46,6 +46,19 @@ Backend обязан ограничивать результаты по canonica
 
 Канонические scopes: `all`, `own_groups`, `own_events`, `self`, `children`, `none`. `assigned_events` является алиасом `own_events`.
 
+### Member Event visibility
+
+Для Member `event.read` использует следующий object policy в scope `self`:
+
+- Event с активным `EventGroupTarget` доступен, если Person Member имеет active GroupMembership хотя бы в одной целевой Group;
+- Event без active GroupTarget (club-wide Event) доступен в пределах active ClubMembership Member;
+- EventParticipation не требуется для visibility;
+- ended/historical GroupMembership не авторизует текущий доступ;
+- Event другого Club и Event, targeted only to unrelated Groups, недоступны;
+- authorization filtering выполняется backend до count, pagination и serialization.
+
+Member получает только read access; Event management permissions этим правилом не предоставляются.
+
 ## 5. Event details
 
 ### GET `/api/v1/events/{event_id}`
