@@ -77,8 +77,11 @@ name alone never grants unrestricted Event visibility.
   responsible groups.
 - `event.read` with `own_events` may read Events explicitly assigned to the
   requester.
-- `event.read` with `self` may read Events where the requester has an allowed
-  self relationship, such as own participation/registration.
+- `event.read` with `self` for a Member follows the canonical Member Event object
+  policy: active GroupMembership authorizes Events targeted to that Group, while
+  club-wide Events are readable within the Member's active ClubMembership.
+  EventParticipation is not required. Unrelated Group-targeted Events and
+  cross-Club Events remain unauthorized.
 - `event.read` with `children` may read only Events related to the requester's
   children through active GuardianRelationship; it does not expose the club's
   complete Event catalog.
