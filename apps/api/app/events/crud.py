@@ -568,18 +568,22 @@ def update_event_with_targeting(
     return event
 
 
-def transition_event_status(
+def apply_status_transition(
     session: Session,
     *,
     event: Event,
     new_status: str,
     cancellation_reason: Optional[str],
-    updated_by: uuid.UUID,
-) -> Event:
-    """Move `event` to `new_status` per ADR-0018's exact transition
-    graph. Raises EventTransitionNotAllowedError (persisting nothing) for
-    a request targeting `archived` — that transition is reachable only
-    through archive_event(), which alone requires `event.manage`.
+    updated_by: Optional[uuid.UUID],
+) -> None:
+    """The no-commit body of `transition_event_status` — validates one
+    ADR-0018 edge and applies it to `event` and its linked occurrence.
+    Extracted so time-based lifecycle reconciliation
+    (app.events.lifecycle_reconciliation) applies exactly the same
+    transition, occurrence mirroring included, inside its own
+    transaction. `updated_by=None` marks a system-driven write, matching
+    the nullable-actor convention for non-user writes (see
+    app.events.materialization). The caller must hold the Event row lock.
     """
     if new_status == ARCHIVED_STATUS:
         raise EventTransitionNotAllowedError(
@@ -597,6 +601,27 @@ def transition_event_status(
     occurrence.cancellation_reason = event.cancellation_reason
     occurrence.updated_by = updated_by
 
+
+def transition_event_status(
+    session: Session,
+    *,
+    event: Event,
+    new_status: str,
+    cancellation_reason: Optional[str],
+    updated_by: uuid.UUID,
+) -> Event:
+    """Move `event` to `new_status` per ADR-0018's exact transition
+    graph. Raises EventTransitionNotAllowedError (persisting nothing) for
+    a request targeting `archived` — that transition is reachable only
+    through archive_event(), which alone requires `event.manage`.
+    """
+    apply_status_transition(
+        session,
+        event=event,
+        new_status=new_status,
+        cancellation_reason=cancellation_reason,
+        updated_by=updated_by,
+    )
     session.commit()
     if new_status == "completed":
         # Issue #220 (A7): a completed Trip is a canonical fact of the
@@ -638,6 +663,7 @@ __all__ = [
     "create_event_with_targeting",
     "update_event",
     "update_event_with_targeting",
+    "apply_status_transition",
     "transition_event_status",
     "archive_event",
 ]

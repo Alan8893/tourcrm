@@ -140,6 +140,43 @@ export function eventStatusLabel(status: EventStatus): string {
   }
 }
 
+/** One manual Event lifecycle action offered in Event Detail (Issue #281).
+ * `archived` is reached through `POST /events/{id}/archive`; every other
+ * target through `POST /events/{id}/status`. `requiresReason` marks the
+ * cancellation edges, which must collect a non-empty reason first. */
+export type EventStatusAction = {
+  target: Exclude<EventStatus, "draft">;
+  label: string;
+  requiresReason: boolean;
+};
+
+const PUBLISH: EventStatusAction = { target: "published", label: "Опубликовать", requiresReason: false };
+const START: EventStatusAction = { target: "in_progress", label: "Начать", requiresReason: false };
+const COMPLETE: EventStatusAction = { target: "completed", label: "Завершить", requiresReason: false };
+const CANCEL: EventStatusAction = { target: "cancelled", label: "Отменить", requiresReason: true };
+const ARCHIVE: EventStatusAction = { target: "archived", label: "Архивировать", requiresReason: false };
+
+/** Which lifecycle buttons Event Detail shows for the Event's current,
+ * backend-returned status — ADR-0018's canonical edges, used only to
+ * decide which controls to render. The backend stays authoritative: it
+ * re-validates every transition (and the caller's permission) and its
+ * rejection is shown to the user as-is. */
+export function eventStatusActions(status: EventStatus): readonly EventStatusAction[] {
+  switch (status) {
+    case "draft":
+      return [PUBLISH];
+    case "published":
+      return [START, CANCEL];
+    case "in_progress":
+      return [COMPLETE, CANCEL];
+    case "completed":
+    case "cancelled":
+      return [ARCHIVE];
+    case "archived":
+      return [];
+  }
+}
+
 /** app.events.vocabulary.CANONICAL_EVENT_TYPES (events-and-schedule.md §3) —
  * the closed, backend-validated event_type vocabulary. Calendar create/edit
  * forms and filters must only offer these values. */

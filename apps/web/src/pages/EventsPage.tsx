@@ -29,12 +29,14 @@ import {
 } from "../api/documents";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import {
+  useArchiveEvent,
   useCalendarRange,
   useCreateEvent,
   useEvent,
   useOccurrence,
   useRegisterForEvent,
   useRescheduleOccurrence,
+  useTransitionEventStatus,
   useUpdateEvent,
   useWithdrawFromEvent,
   type CalendarItem,
@@ -45,11 +47,13 @@ import {
   documentRequirementResultIcon,
   documentRequirementResultLabel,
   documentTypeLabel,
+  eventStatusActions,
   eventStatusIcon,
   eventStatusLabel,
   eventTypeLabel,
   CANONICAL_EVENT_TYPES,
   type EventStatus,
+  type EventStatusAction,
 } from "../domain/statusMapping";
 import {
   addDays,
@@ -68,6 +72,8 @@ import {
 } from "../domain/calendarDate";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { hasAdministratorRole } from "../shell/navigation";
+import type { IconId } from "../assets/icons";
+import { FormDialog, TextAreaField } from "./InventoryForms";
 import styles from "./EventsPage.module.css";
 
 const MOBILE_QUERY = "(max-width: 767.98px)";
@@ -869,7 +875,12 @@ function EventDetailDialog({
   const eventQuery = useEvent(item.kind === "event" ? item.id : undefined);
   const occurrenceQuery = useOccurrence(item.kind === "occurrence" ? item.id : undefined);
   const query = item.kind === "event" ? eventQuery : occurrenceQuery;
-  const cancelled = item.status === "cancelled";
+  // Issue #281: once loaded, the Event's own backend detail is the source
+  // of its current status (it changes after a lifecycle action or a
+  // backend reconciliation), not the calendar row the dialog opened from.
+  const status = (eventQuery.data?.status ?? item.status) as EventStatus;
+  const cancellationReason = eventQuery.data ? eventQuery.data.cancellation_reason : item.cancellation_reason;
+  const cancelled = status === "cancelled";
   const [documentsOpen, setDocumentsOpen] = useState(false);
   // Participant Export (participant-export-api.md §1-§2, import-export-ui.md
   // §8) and the competition-documents workflow (Issue #175: documents are
@@ -882,7 +893,8 @@ function EventDetailDialog({
   return (
     <Dialog open title={item.title} description={eventTypeLabel(item.event_type)} onClose={onClose}>
       <div className={styles.detailBody}>
-        <StatusBadge status={eventStatusIcon(item.status as EventStatus)} label={eventStatusLabel(item.status as EventStatus)} />
+        <StatusBadge status={eventStatusIcon(status)} label={eventStatusLabel(status)} />
+        {item.kind === "event" && eventQuery.data ? <EventStatusActions event={eventQuery.data} /> : null}
         {item.kind === "occurrence" ? (
           <p className={styles.detailRecurring}>
             <RecurringBadge /> Повторяющееся событие
@@ -903,8 +915,8 @@ function EventDetailDialog({
           </div>
         </dl>
         {item.description ? <p>{item.description}</p> : null}
-        {cancelled && item.cancellation_reason ? (
-          <p className={styles.cancellationReason}>Причина отмены: {item.cancellation_reason}</p>
+        {cancelled && cancellationReason ? (
+          <p className={styles.cancellationReason}>Причина отмены: {cancellationReason}</p>
         ) : null}
         {query.isLoading ? <Loading label="Загружаем подробности…" /> : null}
         {query.isError ? (
@@ -1425,6 +1437,115 @@ function EventSelfRegistration({ event }: { event: EventDetail }) {
         </Button>
       )}
     </div>
+  );
+}
+
+/** Issue #281 / ADR-0018: manual lifecycle control. Renders only the
+ * actions `eventStatusActions` lists for the Event's current backend
+ * status; the backend decides whether the transition (and the caller's
+ * permission) is actually allowed, and its rejection is shown as-is. */
+function EventStatusActions({ event }: { event: EventDetail }) {
+  const notify = useNotify();
+  const transition = useTransitionEventStatus();
+  const archive = useArchiveEvent();
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const actions = eventStatusActions(event.status as EventStatus);
+  if (actions.length === 0) return null;
+
+  const pending = transition.isPending || archive.isPending;
+  const onSuccess = (updated: EventDetail) =>
+    notify("success", `Статус изменён: ${eventStatusLabel(updated.status as EventStatus)}`);
+
+  const run = (action: EventStatusAction) => {
+    if (action.requiresReason) {
+      transition.reset();
+      setCancelOpen(true);
+      return;
+    }
+    const onError = (error: { message: string }) => notify("error", error.message);
+    if (action.target === "archived") {
+      archive.mutate(event.id, { onSuccess, onError });
+    } else {
+      transition.mutate({ eventId: event.id, status: action.target }, { onSuccess, onError });
+    }
+  };
+
+  return (
+    <div className={styles.statusActions} role="group" aria-label="Статус события">
+      {actions.map((action) => (
+        <Button
+          key={action.target}
+          variant={action.target === "cancelled" ? "destructive" : "secondary"}
+          icon={statusActionIcon(action)}
+          disabled={pending}
+          onClick={() => run(action)}
+        >
+          {action.label}
+        </Button>
+      ))}
+      {cancelOpen ? (
+        <CancelEventDialog
+          eventTitle={event.title}
+          pending={transition.isPending}
+          error={transition.isError ? transition.error.message : null}
+          onClose={() => setCancelOpen(false)}
+          onSubmit={(reason) =>
+            transition.mutate(
+              { eventId: event.id, status: "cancelled", cancellation_reason: reason },
+              {
+                onSuccess: (updated) => {
+                  onSuccess(updated);
+                  setCancelOpen(false);
+                },
+              },
+            )
+          }
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function statusActionIcon(action: EventStatusAction): IconId {
+  switch (action.target) {
+    case "cancelled":
+      return "action.cancel";
+    case "archived":
+      return "action.archive";
+    default:
+      return "action.confirm";
+  }
+}
+
+function CancelEventDialog({
+  eventTitle,
+  pending,
+  error,
+  onClose,
+  onSubmit,
+}: {
+  eventTitle: string;
+  pending: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSubmit: (reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  const trimmed = reason.trim();
+  return (
+    <FormDialog
+      title="Отменить событие"
+      description={eventTitle}
+      submitLabel="Отменить событие"
+      destructive
+      pending={pending}
+      error={error}
+      canSubmit={trimmed !== ""}
+      onClose={onClose}
+      onSubmit={() => onSubmit(trimmed)}
+    >
+      <TextAreaField label="Причина отмены" value={reason} onChange={setReason} />
+    </FormDialog>
   );
 }
 

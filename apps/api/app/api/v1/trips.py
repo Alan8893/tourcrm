@@ -34,7 +34,7 @@ app.trips.duration_classification_authorization).
 
 import logging
 import uuid
-from typing import NoReturn, Optional
+from typing import NoReturn, Optional, TypeGuard, get_args
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
@@ -45,12 +45,14 @@ from app.api.errors import APIError
 from app.api.request_context import get_request_id
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.trips_schemas import (
+    DurationClassification,
     OfficialDifficultyIn,
     OfficialDifficultyOut,
     TripCreateRequest,
     TripOut,
     TripParticipantOut,
     TripParticipantRecordRequest,
+    TripResult,
     TripUpdateRequest,
 )
 from app.authorization.context import ResourceContext
@@ -118,6 +120,33 @@ def _get_authorized_trip_event_or_404(
     return event, trip, context
 
 
+_DURATION_CLASSIFICATIONS: frozenset[str] = frozenset(get_args(DurationClassification))
+_TRIP_RESULTS: frozenset[str] = frozenset(get_args(TripResult))
+
+
+def _is_duration_classification(value: str) -> TypeGuard[DurationClassification]:
+    return value in _DURATION_CLASSIFICATIONS
+
+
+def _is_trip_result(value: str) -> TypeGuard[TripResult]:
+    return value in _TRIP_RESULTS
+
+
+def _duration_classification_out(value: str) -> DurationClassification:
+    # The persisted value is already constrained by ck_trips_duration_classification;
+    # this only narrows the ORM `str` to the response Literal.
+    if _is_duration_classification(value):
+        return value
+    raise ValueError(f"Unknown persisted duration_classification {value!r}")
+
+
+def _trip_result_out(value: Optional[str]) -> Optional[TripResult]:
+    # Constrained by ck_trips_result; narrows the ORM `str | None` to the Literal.
+    if value is None or _is_trip_result(value):
+        return value
+    raise ValueError(f"Unknown persisted result {value!r}")
+
+
 def _trip_out(trip: Trip) -> TripOut:
     difficulty = official_difficulty_service.official_difficulty_of(trip)
     return TripOut(
@@ -130,8 +159,8 @@ def _trip_out(trip: Trip) -> TripOut:
         ),
         country_id=trip.country_id,
         region_id=trip.region_id,
-        duration_classification=trip.duration_classification,
-        result=trip.result,
+        duration_classification=_duration_classification_out(trip.duration_classification),
+        result=_trip_result_out(trip.result),
         created_at=trip.created_at,
         updated_at=trip.updated_at,
     )

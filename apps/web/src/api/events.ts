@@ -251,6 +251,48 @@ export function useUpdateEvent() {
   });
 }
 
+// --- Event lifecycle (POST /api/v1/events/{id}/status | /archive) ---------
+// Issue #281 / ADR-0018: manual status control from Event Detail. The
+// backend validates the transition graph, the cancellation reason and the
+// caller's permission; these hooks only send the request and refresh the
+// cached detail/calendar views from the returned Event.
+
+export type EventStatusTransitionInput = {
+  eventId: string;
+  status: "published" | "in_progress" | "completed" | "cancelled";
+  cancellation_reason?: string;
+};
+
+function useApplyEventLifecycleResult() {
+  const queryClient = useQueryClient();
+  return (event: EventDetail) => {
+    queryClient.setQueryData(["events", "detail", event.id], event);
+    invalidateCalendarAndEvent(queryClient, event.id);
+  };
+}
+
+export function useTransitionEventStatus() {
+  const applyResult = useApplyEventLifecycleResult();
+  return useMutation<EventDetail, ApiError, EventStatusTransitionInput>({
+    mutationFn: ({ eventId, status, cancellation_reason }) =>
+      apiFetch<EventDetail>(`/events/${eventId}/status`, {
+        method: "POST",
+        body: JSON.stringify(
+          cancellation_reason === undefined ? { status } : { status, cancellation_reason },
+        ),
+      }),
+    onSuccess: applyResult,
+  });
+}
+
+export function useArchiveEvent() {
+  const applyResult = useApplyEventLifecycleResult();
+  return useMutation<EventDetail, ApiError, string>({
+    mutationFn: (eventId) => apiFetch<EventDetail>(`/events/${eventId}/archive`, { method: "POST" }),
+    onSuccess: applyResult,
+  });
+}
+
 // --- Occurrence detail / reschedule (events-api.md §16, event-recurrence-api.md) -
 
 export type OccurrenceDetail = {

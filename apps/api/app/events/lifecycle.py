@@ -134,6 +134,47 @@ def validate_status_transition(
         )
 
 
+def time_based_status_transitions(
+    current_status: str, *, start_at: datetime, end_at: datetime, now: datetime
+) -> tuple[str, ...]:
+    """ADR-0018 "Time-based lifecycle synchronization": the ordered
+    statuses `current_status` must pass through so that it reflects the
+    Event's own schedule at `now` — empty when nothing is due.
+
+    Only the two forward operational edges are time-driven:
+    `published -> in_progress` once `start_at` is reached and
+    `in_progress -> completed` once `end_at` is reached. A missed moment
+    converges in one call (`published` after `end_at` yields
+    `("in_progress", "completed")`). `draft` is never published by time,
+    and `cancelled`/`archived`/`completed` are never changed by time.
+    Every returned step is checked against ALLOWED_STATUS_TRANSITIONS via
+    validate_status_transition, so this never encodes a second graph.
+
+    `start_at`/`end_at` are the canonical `timestamptz` instants of the
+    schedule; `Event.timezone` is the IANA zone those instants are
+    expressed in for display and wall-clock entry, never a second offset
+    to apply on top. Comparing aware instants is therefore exact in every
+    Event timezone (including across DST changes); naive datetimes are
+    rejected rather than silently interpreted in some implicit zone.
+    """
+    for name, value in (("start_at", start_at), ("end_at", end_at), ("now", now)):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError(f"{name} must be a timezone-aware datetime")
+    validate_status(current_status)
+
+    steps: list[str] = []
+    status = current_status
+    if status == "published" and now >= start_at:
+        validate_status_transition(status, "in_progress")
+        status = "in_progress"
+        steps.append(status)
+    if status == "in_progress" and now >= end_at:
+        validate_status_transition(status, "completed")
+        status = "completed"
+        steps.append(status)
+    return tuple(steps)
+
+
 def validate_time_range(start_at: datetime, end_at: datetime) -> None:
     if not end_at > start_at:
         raise InvalidTimeRangeError("end_at must be after start_at")
@@ -166,6 +207,7 @@ __all__ = [
     "validate_event_type",
     "validate_status",
     "validate_status_transition",
+    "time_based_status_transitions",
     "validate_time_range",
     "validate_timezone",
     "validate_coordinates",
