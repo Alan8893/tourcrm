@@ -35,9 +35,12 @@ RUN groupadd --gid "${GID}" app \
 # and outside /app so the development bind mount cannot hide it. The same
 # image runs the API (default CMD) and, with
 # `supercronic -json /app/scheduler/crontab` as its command, the scheduler.
-# The checksums were computed from the official release assets of
-# https://github.com/aptible/supercronic/releases/tag/v0.2.49; update the
-# version and both checksums together.
+# The SHA-256 values are the asset digests GitHub publishes for
+# https://github.com/aptible/supercronic/releases/tag/v0.2.49 (the same
+# binaries also match the maintainers' SHA1SUM values in those release
+# notes: amd64 e63c11a9726b775a6a11801e81af4f3fb926aa68, arm64
+# 0b6c5bb743e0b0dafed1132198c81807927ac413). Update the version and both
+# checksums together, from that release's published digests.
 ARG SUPERCRONIC_VERSION=v0.2.49
 ARG SUPERCRONIC_SHA256_AMD64=a53ae236602c7338aba3fbaff40bda6300eae3b9fedb8261eb06cfe3724430c1
 ARG SUPERCRONIC_SHA256_ARM64=02aa0cb229ba09050cba6638059dadb9eedc2276632ea43d6a57a2f8c1629dd5
