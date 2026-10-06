@@ -58,6 +58,19 @@ the same relationship/lifecycle checks, as app.events.authorization's own
 Guardian must not have to wait for the child's direct participation to
 see a recurring group activity.
 
+`self` depends on the permission being checked (Issue #285, PO decision
+2026-10-06, ADR-0029): for `event.read` it is the Member Event object
+policy of ADR-0020 §2/§3 applied at occurrence level
+(`_member_occurrence_read_condition` — a recurring occurrence with no
+active `EventOccurrenceGroupTarget` is club-wide within the requester's
+active ClubMembership; a targeted one needs an active GroupMembership in
+a target Group; `EventOccurrenceParticipant` neither required nor by
+itself sufficient). It applies to recurring occurrences only
+(`series_id IS NOT NULL`): the occurrence backing an ordinary Event never
+has occurrence-level relationship rows (ADR-0033) and is authorized
+through its Event, so treating it as "untargeted" here would expose it.
+Every other permission keeps the participation-based `_self_condition`.
+
 Every nested EXISTS below that references the outer occurrence explicitly
 correlates against `EventOccurrence`/the immediately-enclosing aliased
 table via `.correlate(...)`, rather than relying on SQLAlchemy's default
@@ -89,6 +102,7 @@ from app.db.identity import ClubMembership, GuardianRelationship, User
 _ACTIVE_CLUB_MEMBERSHIP_STATUS = "active"
 _ACTIVE_GUARDIAN_RELATIONSHIP_STATUS = "active"
 _ACTIVE_GROUP_MEMBERSHIP_STATUS = "active"
+_EVENT_READ_PERMISSION = "event.read"
 
 
 def _active_interval(valid_from: Any, valid_to: Any) -> sa.ColumnElement[bool]:
@@ -151,6 +165,93 @@ def _self_condition(occurrence_id: Any, person_id: Any) -> sa.ColumnElement[bool
             ),
         )
     )
+
+
+def _member_occurrence_read_condition(
+    occurrence_id: Any, occurrence_club_id: Any, occurrence_series_id: Any, person_id: Any
+) -> sa.ColumnElement[bool]:
+    """ADR-0029 `self` for `event.read` (Issue #285): the Member Event
+    object policy of ADR-0020 §2/§3 at occurrence level — a recurring
+    occurrence, the requester's Person with an active ClubMembership in
+    the occurrence's Club, AND either no active `EventOccurrenceGroupTarget`
+    (club-wide) or an active GroupMembership — through that same Club's
+    active ClubMembership — in a Group of that Club with an active
+    `EventOccurrenceGroupTarget` for the occurrence. See module docstring
+    for the recurring-only restriction. Each EXISTS is one level deep and
+    explicitly correlated to the outer occurrence."""
+    if occurrence_series_id is None:
+        return sa.false()
+    is_recurring: sa.ColumnElement[bool] = (
+        sa.true()
+        if isinstance(occurrence_series_id, uuid.UUID)
+        else occurrence_series_id.is_not(None)
+    )
+
+    club_membership = aliased(ClubMembership)
+    has_active_club_membership = sa.exists(
+        sa.select(club_membership.id)
+        .where(
+            club_membership.person_id == person_id,
+            club_membership.club_id == occurrence_club_id,
+            club_membership.status == _ACTIVE_CLUB_MEMBERSHIP_STATUS,
+        )
+        .correlate(EventOccurrence)
+    )
+
+    any_target = aliased(EventOccurrenceGroupTarget)
+    has_active_group_target = sa.exists(
+        sa.select(any_target.id)
+        .where(
+            any_target.occurrence_id == occurrence_id,
+            _active_interval(any_target.valid_from, any_target.valid_to),
+        )
+        .correlate(EventOccurrence)
+    )
+
+    target = aliased(EventOccurrenceGroupTarget)
+    grp = aliased(Group)
+    group_membership = aliased(GroupMembership)
+    member_club_membership = aliased(ClubMembership)
+    targets_member_group = sa.exists(
+        sa.select(target.id)
+        .join(grp, grp.id == target.group_id)
+        .join(group_membership, group_membership.group_id == grp.id)
+        .join(
+            member_club_membership, member_club_membership.id == group_membership.club_membership_id
+        )
+        .where(
+            target.occurrence_id == occurrence_id,
+            _active_interval(target.valid_from, target.valid_to),
+            grp.club_id == occurrence_club_id,
+            group_membership.membership_status == _ACTIVE_GROUP_MEMBERSHIP_STATUS,
+            _active_interval(group_membership.valid_from, group_membership.valid_to),
+            member_club_membership.person_id == person_id,
+            member_club_membership.club_id == occurrence_club_id,
+            member_club_membership.status == _ACTIVE_CLUB_MEMBERSHIP_STATUS,
+        )
+        .correlate(EventOccurrence)
+    )
+
+    return sa.and_(
+        is_recurring,
+        has_active_club_membership,
+        sa.or_(sa.not_(has_active_group_target), targets_member_group),
+    )
+
+
+def _self_scope_condition(
+    permission_code: str,
+    occurrence_id: Any,
+    occurrence_club_id: Any,
+    occurrence_series_id: Any,
+    person_id: Any,
+) -> sa.ColumnElement[bool]:
+    """`self` for `permission_code` — see module docstring."""
+    if permission_code == _EVENT_READ_PERMISSION:
+        return _member_occurrence_read_condition(
+            occurrence_id, occurrence_club_id, occurrence_series_id, person_id
+        )
+    return _self_condition(occurrence_id, person_id)
 
 
 def _child_condition(
@@ -234,12 +335,13 @@ def build_series_resource_context(*, series: EventSeries) -> ResourceContext:
 
 
 def build_occurrence_resource_context(
-    session: Session, *, occurrence: EventOccurrence, user_id: uuid.UUID
+    session: Session, *, occurrence: EventOccurrence, user_id: uuid.UUID, permission_code: str
 ) -> ResourceContext:
     """Resolve the full ResourceContext for one already-loaded
     EventOccurrence against the acting user (ADR-0029/ADR-0030), running
     each relationship predicate as its own scalar EXISTS query — mirrors
-    app.events.authorization.build_event_resource_context exactly."""
+    app.events.authorization.build_event_resource_context exactly,
+    including the `permission_code`-dependent meaning of `self`."""
     person_id = _person_id_for_user(session, user_id)
     is_own_event = session.execute(
         sa.select(_own_occurrence_condition(occurrence.id, user_id))
@@ -247,7 +349,17 @@ def build_occurrence_resource_context(
     is_own_group = session.execute(
         sa.select(_own_group_condition(occurrence.id, occurrence.club_id, user_id))
     ).scalar()
-    is_self = session.execute(sa.select(_self_condition(occurrence.id, person_id))).scalar()
+    is_self = session.execute(
+        sa.select(
+            _self_scope_condition(
+                permission_code,
+                occurrence.id,
+                occurrence.club_id,
+                occurrence.series_id,
+                person_id,
+            )
+        )
+    ).scalar()
     is_child = session.execute(
         sa.select(_child_condition(occurrence.id, occurrence.club_id, person_id))
     ).scalar()
@@ -306,9 +418,7 @@ def occurrence_visibility_filter(
     clauses: list[sa.ColumnElement[bool]] = []
     for grant in grants:
         club_boundary: sa.ColumnElement[bool] = (
-            sa.true()
-            if grant.club_id is None
-            else EventOccurrence.club_id == grant.club_id
+            sa.true() if grant.club_id is None else EventOccurrence.club_id == grant.club_id
         )
         if grant.scope_type == "all":
             scope_predicate: sa.ColumnElement[bool] = sa.true()
@@ -319,7 +429,13 @@ def occurrence_visibility_filter(
                 EventOccurrence.id, EventOccurrence.club_id, user_id
             )
         elif grant.scope_type == "self":
-            scope_predicate = _self_condition(EventOccurrence.id, person_id)
+            scope_predicate = _self_scope_condition(
+                permission_code,
+                EventOccurrence.id,
+                EventOccurrence.club_id,
+                EventOccurrence.series_id,
+                person_id,
+            )
         elif grant.scope_type == "children":
             scope_predicate = _child_condition(
                 EventOccurrence.id, EventOccurrence.club_id, person_id

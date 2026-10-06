@@ -342,11 +342,7 @@ def _grant_permission(
                 scopes=[RolePermissionScope(scope_type=scope_type)],
             )
         )
-        session.add(
-            UserRoleAssignment(
-                user_id=user_id, role_id=role.id, club_id=club_id
-            )
-        )
+        session.add(UserRoleAssignment(user_id=user_id, role_id=role.id, club_id=club_id))
         session.commit()
 
 
@@ -837,28 +833,51 @@ def test_own_groups_scope_sees_only_targeted_group_events(client: TestClient) ->
 
 
 @requires_postgres
-def test_self_scope_sees_only_own_participation(client: TestClient) -> None:
+def test_self_scope_follows_member_event_policy_not_participation(client: TestClient) -> None:
+    # Issue #285 / ADR-0020 §2/§3: `event.read` + `self` is the Member Event
+    # object policy — club-wide Events within the active ClubMembership and
+    # Events targeted to an active Group of the Member; EventParticipation
+    # is neither required nor by itself sufficient.
     with session_scope() as session:
         club = _make_club()
+        other_club = _make_club()
         person = _make_person()
         user = _make_user(person)
-        session.add_all([club, person, user])
+        session.add_all([club, other_club, person, user])
         session.commit()
-        mine = _make_event(session, club, title="mine")
-        other = _make_event(session, club, title="other")
-        session.add_all([mine, other])
+        membership = _make_club_membership(club, person)
+        my_group = _make_group(club)
+        other_group = _make_group(club)
+        session.add_all([membership, my_group, other_group])
         session.commit()
-        session.add(_make_event_participation(mine, person))
+        session.add(_make_group_membership(my_group, membership))
+        club_wide = _make_event(session, club, title="club-wide")
+        targeted_mine = _make_event(session, club, title="mine")
+        targeted_other = _make_event(session, club, title="other")
+        foreign = _make_event(session, other_club, title="foreign")
+        session.add_all([club_wide, targeted_mine, targeted_other, foreign])
         session.commit()
-        club_id, user_id = club.id, user.id
-        mine_id, other_id = mine.id, other.id
-    _grant_permission(user_id, "event.read", scope_type="self", club_id=club_id)
+        session.add_all(
+            [
+                _make_event_group_target(targeted_mine, my_group),
+                _make_event_group_target(targeted_other, other_group),
+                _make_event_participation(targeted_other, person),
+                _make_event_participation(foreign, person),
+            ]
+        )
+        session.commit()
+        user_id = user.id
+        visible = {club_wide.id, targeted_mine.id}
+        hidden = {targeted_other.id, foreign.id}
+    # Global (club_id=None) grant: the policy itself — not the grant's Club
+    # boundary — must keep the other Club's Event out.
+    _grant_permission(user_id, "event.read", scope_type="self", club_id=None)
     _authenticate_as(user_id)
 
     response = client.get("/api/v1/events/calendar", params=_DEFAULT_RANGE)
     ids = {item["id"] for item in response.json()["items"]}
-    assert str(mine_id) in ids
-    assert str(other_id) not in ids
+    assert {str(i) for i in visible} <= ids
+    assert not ({str(i) for i in hidden} & ids)
 
 
 @requires_postgres
@@ -1166,33 +1185,53 @@ def test_own_groups_scope_denies_unrelated_instructor(client: TestClient) -> Non
 
 
 @requires_postgres
-def test_self_scope_sees_only_occurrence_with_own_active_participation(
+def test_self_scope_occurrences_follow_member_event_policy_not_participation(
     client: TestClient,
 ) -> None:
+    # Issue #285 / ADR-0029: the same Member policy at occurrence level —
+    # untargeted recurring occurrences are club-wide, targeted ones need an
+    # active GroupMembership in a target Group; occurrence participation
+    # alone never authorizes.
     with session_scope() as session:
         club = _make_club()
         person = _make_person()
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
+        membership = _make_club_membership(club, person)
+        my_group = _make_group(club)
+        other_group = _make_group(club)
+        session.add_all([membership, my_group, other_group])
+        session.commit()
+        session.add(_make_group_membership(my_group, membership))
         series = _make_series(session, club_id=club.id)
-        mine = _make_occurrence(series=series, club_id=club.id)
-        other = _make_occurrence(
+        club_wide = _make_occurrence(series=series, club_id=club.id)
+        targeted_mine = _make_occurrence(
             series=series, club_id=club.id, starts_at=_START + datetime.timedelta(hours=3)
         )
-        session.add_all([mine, other])
+        targeted_other = _make_occurrence(
+            series=series, club_id=club.id, starts_at=_START + datetime.timedelta(hours=6)
+        )
+        session.add_all([club_wide, targeted_mine, targeted_other])
         session.commit()
-        session.add(_make_occurrence_participant(mine, person))
+        session.add_all(
+            [
+                _make_occurrence_group_target(targeted_mine, my_group),
+                _make_occurrence_group_target(targeted_other, other_group),
+                _make_occurrence_participant(targeted_other, person),
+            ]
+        )
         session.commit()
         club_id, user_id = club.id, user.id
-        mine_id, other_id = mine.id, other.id
+        visible = {club_wide.id, targeted_mine.id}
+        hidden_id = targeted_other.id
     _grant_permission(user_id, "event.read", scope_type="self", club_id=club_id)
     _authenticate_as(user_id)
 
     response = client.get("/api/v1/events/calendar", params=_DEFAULT_RANGE)
     ids = {item["id"] for item in response.json()["items"]}
-    assert str(mine_id) in ids
-    assert str(other_id) not in ids
+    assert {str(i) for i in visible} <= ids
+    assert str(hidden_id) not in ids
 
 
 @requires_postgres

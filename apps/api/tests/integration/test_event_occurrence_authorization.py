@@ -154,9 +154,7 @@ def _grant_permission(
             scopes=[RolePermissionScope(scope_type=scope_type)],
         )
     )
-    session.add(
-        UserRoleAssignment(user_id=user_id, role_id=role.id, club_id=club_id)
-    )
+    session.add(UserRoleAssignment(user_id=user_id, role_id=role.id, club_id=club_id))
     session.commit()
 
 
@@ -173,7 +171,9 @@ def test_all_scope_grants_access_within_club_boundary() -> None:
             s, user_id=user_id, permission_code="event.read", scope_type="all", club_id=club_id
         )
 
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=user_id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=user_id, permission_code="event.read"
+        )
         authorizer = Authorizer(session=s, user_id=user_id, permission_code="event.read")
         assert authorizer.is_allowed(context) is True
 
@@ -194,7 +194,9 @@ def test_own_events_scope_requires_active_occurrence_staff_assignment() -> None:
         )
 
         # Not yet assigned -> denied.
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=staff_user.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=staff_user.id, permission_code="event.read"
+        )
         authorizer = Authorizer(session=s, user_id=staff_user.id, permission_code="event.read")
         assert authorizer.is_allowed(context) is False
 
@@ -206,7 +208,9 @@ def test_own_events_scope_requires_active_occurrence_staff_assignment() -> None:
             valid_from=_START,
             actor_user_id=admin_id,
         )
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=staff_user.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=staff_user.id, permission_code="event.read"
+        )
         assert authorizer.is_allowed(context) is True
 
 
@@ -245,7 +249,9 @@ def test_assigned_events_alias_behaves_identically_to_own_events() -> None:
         grants = applicable_grants(s, staff_user.id, "event.read")
         assert grants[0].scope_type == "own_events"
 
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=staff_user.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=staff_user.id, permission_code="event.read"
+        )
         authorizer = Authorizer(session=s, user_id=staff_user.id, permission_code="event.read")
         assert authorizer.is_allowed(context) is True
 
@@ -271,7 +277,9 @@ def test_own_groups_scope_requires_group_target_and_instructor_assignment() -> N
         )
 
         # No group target yet, no instructor assignment yet -> denied.
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=instructor_user.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=instructor_user.id, permission_code="event.read"
+        )
         authorizer = Authorizer(session=s, user_id=instructor_user.id, permission_code="event.read")
         assert authorizer.is_allowed(context) is False
 
@@ -279,7 +287,9 @@ def test_own_groups_scope_requires_group_target_and_instructor_assignment() -> N
             s, occurrence_id=occ.id, group_id=group.id, valid_from=_START, actor_user_id=admin_id
         )
         # Group targeted but requester is not yet an instructor for it -> still denied.
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=instructor_user.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=instructor_user.id, permission_code="event.read"
+        )
         assert authorizer.is_allowed(context) is False
 
         s.add(
@@ -291,7 +301,9 @@ def test_own_groups_scope_requires_group_target_and_instructor_assignment() -> N
             )
         )
         s.commit()
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=instructor_user.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=instructor_user.id, permission_code="event.read"
+        )
         assert authorizer.is_allowed(context) is True
 
 
@@ -339,17 +351,35 @@ def test_own_groups_scope_rejects_cross_club_group() -> None:
             club_id=club_id,
         )
 
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=instructor_user.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=instructor_user.id, permission_code="event.read"
+        )
         authorizer = Authorizer(session=s, user_id=instructor_user.id, permission_code="event.read")
         assert authorizer.is_allowed(context) is False
 
 
 @requires_postgres
-def test_self_scope_requires_active_occurrence_participation() -> None:
+def test_event_read_self_scope_is_the_member_policy_not_occurrence_participation() -> None:
+    # Issue #285 / ADR-0029 (PO decision 2026-10-06): for `event.read`,
+    # `self` is the Member Event object policy — occurrence-level
+    # participation alone does NOT authorize. The occurrence here is
+    # targeted only to a Group the requester is not a member of.
     with session_scope() as s:
         club_id, admin_id = _make_club_and_user(s)
         series = _make_series_v1(s, club_id=club_id, user_id=admin_id)
         occ = _make_occurrence(s, series_id=series.id, club_id=club_id, anchor=_START)
+        unrelated_group = Group(
+            club_id=club_id, name=f"G-{uuid.uuid4().hex[:6]}", status="active", valid_from=_START
+        )
+        s.add(unrelated_group)
+        s.commit()
+        create_occurrence_group_target(
+            s,
+            occurrence_id=occ.id,
+            group_id=unrelated_group.id,
+            valid_from=_START - timedelta(days=1),
+            actor_user_id=admin_id,
+        )
         participant_person, participant_user = _make_person_user(s, club_id=club_id)
         _grant_permission(
             s,
@@ -358,10 +388,47 @@ def test_self_scope_requires_active_occurrence_participation() -> None:
             scope_type="self",
             club_id=club_id,
         )
+        create_occurrence_participant(
+            s,
+            occurrence_id=occ.id,
+            person_id=participant_person.id,
+            registration_status="registered",
+            valid_from=_START,
+            actor_user_id=admin_id,
+        )
 
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=participant_user.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=participant_user.id, permission_code="event.read"
+        )
         authorizer = Authorizer(
             session=s, user_id=participant_user.id, permission_code="event.read"
+        )
+        assert authorizer.is_allowed(context) is False
+
+
+@requires_postgres
+def test_self_scope_for_other_permissions_still_requires_occurrence_participation() -> None:
+    # The Member policy is `event.read`-only: any other permission reusing
+    # the occurrence relationships with `self` (here `attendance.read`)
+    # keeps the occurrence-level participation rule unchanged.
+    with session_scope() as s:
+        club_id, admin_id = _make_club_and_user(s)
+        series = _make_series_v1(s, club_id=club_id, user_id=admin_id)
+        occ = _make_occurrence(s, series_id=series.id, club_id=club_id, anchor=_START)
+        participant_person, participant_user = _make_person_user(s, club_id=club_id)
+        _grant_permission(
+            s,
+            user_id=participant_user.id,
+            permission_code="attendance.read",
+            scope_type="self",
+            club_id=club_id,
+        )
+        authorizer = Authorizer(
+            session=s, user_id=participant_user.id, permission_code="attendance.read"
+        )
+
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=participant_user.id, permission_code="attendance.read"
         )
         assert authorizer.is_allowed(context) is False
 
@@ -373,7 +440,9 @@ def test_self_scope_requires_active_occurrence_participation() -> None:
             valid_from=_START,
             actor_user_id=admin_id,
         )
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=participant_user.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=participant_user.id, permission_code="attendance.read"
+        )
         assert authorizer.is_allowed(context) is True
 
 
@@ -402,7 +471,9 @@ def test_children_scope_requires_participation_plus_active_guardian_relationship
         )
 
         # No GuardianRelationship yet -> denied.
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=guardian_user.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=guardian_user.id, permission_code="event.read"
+        )
         authorizer = Authorizer(session=s, user_id=guardian_user.id, permission_code="event.read")
         assert authorizer.is_allowed(context) is False
 
@@ -416,7 +487,9 @@ def test_children_scope_requires_participation_plus_active_guardian_relationship
             )
         )
         s.commit()
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=guardian_user.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=guardian_user.id, permission_code="event.read"
+        )
         assert authorizer.is_allowed(context) is True
 
 
@@ -454,7 +527,9 @@ def test_children_scope_denies_inactive_guardian_relationship() -> None:
             club_id=club_id,
         )
 
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=guardian_user.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=guardian_user.id, permission_code="event.read"
+        )
         authorizer = Authorizer(session=s, user_id=guardian_user.id, permission_code="event.read")
         assert authorizer.is_allowed(context) is False
 
@@ -484,7 +559,9 @@ def test_children_scope_denies_unrelated_child() -> None:
             club_id=club_id,
         )
 
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=guardian_user.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=guardian_user.id, permission_code="event.read"
+        )
         authorizer = Authorizer(session=s, user_id=guardian_user.id, permission_code="event.read")
         assert authorizer.is_allowed(context) is False
 
@@ -525,7 +602,9 @@ def test_children_scope_denies_when_child_membership_is_in_a_different_club() ->
             club_id=club_id,
         )
 
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=guardian_user.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=guardian_user.id, permission_code="event.read"
+        )
         authorizer = Authorizer(session=s, user_id=guardian_user.id, permission_code="event.read")
         assert authorizer.is_allowed(context) is False
 
@@ -541,26 +620,32 @@ def test_none_scope_denies_everything() -> None:
             s, user_id=user.id, permission_code="event.read", scope_type="none", club_id=club_id
         )
 
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=user.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=user.id, permission_code="event.read"
+        )
         authorizer = Authorizer(session=s, user_id=user.id, permission_code="event.read")
         assert authorizer.is_allowed(context) is False
 
 
 @requires_postgres
 def test_occurrence_club_id_alone_never_grants_non_all_access() -> None:
-    """The occurrence belongs to the requester's own club, but no
-    relationship of any kind exists — every non-`all` scope must deny."""
+    """The occurrence belongs to the grant's club, but no relationship of
+    any kind exists (not even a ClubMembership — the Member `event.read`
+    `self` policy of Issue #285 needs an active one) — every non-`all`
+    scope must deny."""
     with session_scope() as s:
         club_id, admin_id = _make_club_and_user(s)
         series = _make_series_v1(s, club_id=club_id, user_id=admin_id)
         occ = _make_occurrence(s, series_id=series.id, club_id=club_id, anchor=_START)
-        _, user = _make_person_user(s, club_id=club_id)
+        _, user = _make_person_user(s)
 
         for scope in ("own_events", "own_groups", "self", "children"):
             _grant_permission(
                 s, user_id=user.id, permission_code="event.read", scope_type=scope, club_id=club_id
             )
-            context = build_occurrence_resource_context(s, occurrence=occ, user_id=user.id)
+            context = build_occurrence_resource_context(
+                s, occurrence=occ, user_id=user.id, permission_code="event.read"
+            )
             authorizer = Authorizer(session=s, user_id=user.id, permission_code="event.read")
             assert authorizer.is_allowed(context) is False, f"{scope} incorrectly granted access"
 
@@ -640,6 +725,8 @@ def test_unauthorized_occurrence_is_hidden_not_403() -> None:
             club_id=club_id,
         )
 
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=outsider.id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=outsider.id, permission_code="event.read"
+        )
         authorizer = Authorizer(session=s, user_id=outsider.id, permission_code="event.read")
         assert authorizer.is_allowed(context) is False

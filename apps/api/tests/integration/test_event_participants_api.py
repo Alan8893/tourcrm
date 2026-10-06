@@ -525,6 +525,10 @@ def test_member_self_scope_sees_only_own_row(client: TestClient) -> None:
         other = _make_person()
         session.add_all([member_person, member_user, other])
         session.flush()
+        # Issue #285: the club-wide Event is visible through the Member's
+        # active ClubMembership (Member Event object policy); the row
+        # restriction to the Member's own participation is unchanged.
+        session.add(_make_club_membership(club, member_person))
         event = _make_event(session, club)
         session.add_all([_participation(event, member_person), _participation(event, other)])
         session.commit()
@@ -554,6 +558,7 @@ def test_member_with_cancelled_own_participation_sees_empty_list(client: TestCli
         other = _make_person()
         session.add_all([member_person, member_user, other])
         session.flush()
+        session.add(_make_club_membership(club, member_person))
         event = _make_event(session, club)
         session.add_all(
             [_participation(event, member_person, "cancelled"), _participation(event, other)]
@@ -570,7 +575,9 @@ def test_member_with_cancelled_own_participation_sees_empty_list(client: TestCli
 
 
 @requires_postgres
-def test_member_self_scope_without_participation_is_404(client: TestClient) -> None:
+def test_member_self_scope_without_club_membership_is_404(client: TestClient) -> None:
+    # Issue #285: under the Member Event object policy the requester needs an
+    # active ClubMembership in the Event's Club; this one has none.
     event_id, _actor, _ids = _admin_setup([({}, "registered")])
     with session_scope() as session:
         event = session.get(Event, event_id)

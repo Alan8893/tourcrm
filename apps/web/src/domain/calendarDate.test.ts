@@ -5,6 +5,7 @@ import {
   addMonths,
   buildMonthGrid,
   formatDateParam,
+  formatScheduleRange,
   isSameDay,
   monthGridRange,
   monthLabel,
@@ -151,5 +152,19 @@ describe("toDatetimeLocalValue", () => {
     const date = new Date(2026, 8, 5, 17, 45);
     const roundTripped = new Date(toDatetimeLocalValue(date));
     expect(roundTripped.getTime()).toBe(date.getTime());
+  });
+});
+
+describe("formatScheduleRange", () => {
+  it("shows the date once with a start–end time range for a same-day entry", () => {
+    const start = new Date(2026, 2, 17, 18, 0).toISOString();
+    const end = new Date(2026, 2, 17, 19, 30).toISOString();
+    expect(formatScheduleRange(start, end)).toBe("17 марта, 18:00–19:30");
+  });
+
+  it("shows both dates for an entry ending on another day", () => {
+    const start = new Date(2026, 2, 17, 18, 0).toISOString();
+    const end = new Date(2026, 2, 18, 10, 0).toISOString();
+    expect(formatScheduleRange(start, end)).toBe("17 марта, 18:00 – 18 марта, 10:00");
   });
 });

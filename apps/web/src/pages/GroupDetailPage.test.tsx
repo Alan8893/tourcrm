@@ -42,6 +42,7 @@ afterEach(() => {
 describe("GroupDetailPage", () => {
   it("shows identity, status and a back link, and switches tabs on click", async () => {
     const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse("admin") },
       { match: "/groups/g1/members", response: emptyCollection() },
       { match: "/groups/g1/schedule?from=", response: emptyCollection() },
       { match: "/groups/g1", response: GROUP },
@@ -90,7 +91,7 @@ describe("GroupDetailPage", () => {
 
   it("hides the add-participant control for a non-admin role", async () => {
     stubFetch([
-      { match: "/auth/me", response: meResponse("member") },
+      { match: "/auth/me", response: meResponse("instructor") },
       { match: "/groups/g1/members", response: emptyCollection() },
       { match: "/groups/g1", response: GROUP },
     ]);
@@ -256,16 +257,11 @@ describe("GroupDetailPage — Member (Issue #282)", () => {
     renderAs("member");
 
     expect(await screen.findByRole("heading", { name: "Ориентирование" })).toBeInTheDocument();
-    expect(screen.getByText("Начальная группа")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Архивировать" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Экспорт участников" })).not.toBeInTheDocument();
-
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("tab", { name: "Участники" }));
-    expect(await screen.findByText("Список участников этой группы вам недоступен.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Добавить участника" })).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Расписание" }));
+    // Issue #285: the schedule is the Member's only tab; a backend denial
+    // is still shown as "no access", never as a failure.
     expect(await screen.findByText("Расписание этой группы вам недоступно.")).toBeInTheDocument();
   });
 
@@ -299,5 +295,90 @@ describe("GroupDetailPage — Member (Issue #282)", () => {
     await user.click(screen.getByRole("tab", { name: "Участники" }));
     expect(await screen.findByText("В группе пока нет участников")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Архивировать" })).not.toBeInTheDocument();
+  });
+});
+
+// --- Issue #285: role-aware tabs and schedule presentation --------------------
+
+describe("GroupDetailPage — role-aware tabs (Issue #285)", () => {
+  const SCHEDULE = {
+    items: [
+      {
+        id: "e1",
+        kind: "event",
+        club_id: "club-1",
+        event_type: "lesson",
+        title: "Тренировка",
+        description: null,
+        start_at: new Date(2026, 2, 17, 18, 0).toISOString(),
+        end_at: new Date(2026, 2, 17, 19, 30).toISOString(),
+        timezone: "Europe/Moscow",
+        status: "published",
+        cancellation_reason: null,
+        series_id: null,
+        series_version: null,
+      },
+    ],
+    pagination: { page: 1, page_size: 50, total: 1, pages: 1 },
+  };
+
+  function renderAs(roleCodes: string[]) {
+    const fetchMock = stubFetch([
+      {
+        match: "/auth/me",
+        response: {
+          ...meResponse(roleCodes[0]),
+          role_assignments: roleCodes.map((role_code) => ({ role_code, club_id: "club-1", scope_type: "all" })),
+        },
+      },
+      { match: "/groups/g1/members", response: emptyCollection() },
+      { match: "/groups/g1/schedule?from=", response: SCHEDULE },
+      { match: "/groups/g1", response: GROUP },
+    ]);
+    renderWithProviders(
+      <Routes>
+        <Route path="/groups/:groupId" element={<GroupDetailPage />} />
+      </Routes>,
+      { route: "/groups/g1" },
+    );
+    return fetchMock;
+  }
+
+  async function tabNames(): Promise<string[]> {
+    await screen.findByRole("heading", { name: "Ориентирование" });
+    return screen.getAllByRole("tab").map((tab) => tab.textContent ?? "");
+  }
+
+  it("gives Administrator overview, participants and schedule", async () => {
+    renderAs(["admin"]);
+    expect(await tabNames()).toEqual(["Обзор", "Участники", "Расписание"]);
+    expect(screen.getByText("Начальная группа")).toBeInTheDocument();
+  });
+
+  it("gives Instructor participants and schedule, opening on participants", async () => {
+    renderAs(["instructor"]);
+    expect(await tabNames()).toEqual(["Участники", "Расписание"]);
+    expect(screen.queryByText("Начальная группа")).not.toBeInTheDocument();
+    expect(await screen.findByText("В группе пока нет участников")).toBeInTheDocument();
+  });
+
+  it("gives Member only the schedule and never requests the participant list", async () => {
+    const fetchMock = renderAs(["member"]);
+    expect(await tabNames()).toEqual(["Расписание"]);
+    expect(screen.queryByText("Начальная группа")).not.toBeInTheDocument();
+    expect(await screen.findByText("Тренировка")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/groups/g1/members"))).toBe(false);
+  });
+
+  it("gives a Member who is also an Instructor the union of both", async () => {
+    renderAs(["member", "instructor"]);
+    expect(await tabNames()).toEqual(["Участники", "Расписание"]);
+  });
+
+  it("shows each schedule entry's date, start/end time, title and status", async () => {
+    renderAs(["member"]);
+    expect(await screen.findByText("17 марта, 18:00–19:30")).toBeInTheDocument();
+    expect(screen.getByText("Тренировка")).toBeInTheDocument();
+    expect(screen.getByText("Запланировано")).toBeInTheDocument();
   });
 });

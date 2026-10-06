@@ -696,9 +696,7 @@ def test_concurrent_successor_creation_yields_exactly_one_winner() -> None:
 
         with session_scope() as check:
             successor_count = (
-                check.execute(
-                    select(EventSeries).where(EventSeries.supersedes_series_id == v1_id)
-                )
+                check.execute(select(EventSeries).where(EventSeries.supersedes_series_id == v1_id))
                 .scalars()
                 .all()
             )
@@ -1099,9 +1097,7 @@ def test_occurrence_with_existing_cancelled_exception_cannot_be_rescheduled() ->
         assert fresh is not None
         assert fresh.status == "cancelled"
         exception = verify.execute(
-            select(EventOccurrenceException).where(
-                EventOccurrenceException.occurrence_id == occ.id
-            )
+            select(EventOccurrenceException).where(EventOccurrenceException.occurrence_id == occ.id)
         ).scalar_one()
         assert exception.exception_type == "cancelled"
 
@@ -1817,7 +1813,9 @@ def test_occurrence_authorization_follows_the_same_club_boundary() -> None:
         v1 = _make_series_v1(s, club_id=club_id, user_id=user_id)
         occ = _make_occurrence(s, series_id=v1.id, club_id=club_id, anchor=_START)
         _grant_all_scope(s, user_id=user_id, permission_code="event.read", club_id=club_id)
-        context = build_occurrence_resource_context(s, occurrence=occ, user_id=user_id)
+        context = build_occurrence_resource_context(
+            s, occurrence=occ, user_id=user_id, permission_code="event.read"
+        )
         authorizer = Authorizer(session=s, user_id=user_id, permission_code="event.read")
         assert authorizer.is_allowed(context) is True
 

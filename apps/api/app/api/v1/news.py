@@ -49,7 +49,7 @@ from app.authorization.service import AuthorizationDenied, Authorizer
 from app.db.events import Event
 from app.db.news import News
 from app.db.session import get_db
-from app.events.authorization import build_event_resource_context
+from app.events.authorization import EVENT_READ_PERMISSION, build_event_resource_context
 from app.imports.authorization import resolve_sole_club_id
 from app.news import service as news_service
 from app.news.image import NEWS_IMAGE_MIME_TYPE, delete_news_image, read_news_image, set_news_image
@@ -116,10 +116,12 @@ def _linked_event_out(
     if event is None:
         return None
     if not is_admin:
-        context = build_event_resource_context(db, event=event, user_id=user_id)
-        if not Authorizer(session=db, user_id=user_id, permission_code="event.read").is_allowed(
-            context
-        ):
+        context = build_event_resource_context(
+            db, event=event, user_id=user_id, permission_code=EVENT_READ_PERMISSION
+        )
+        if not Authorizer(
+            session=db, user_id=user_id, permission_code=EVENT_READ_PERMISSION
+        ).is_allowed(context):
             return None
     return NewsLinkedEventOut(
         id=event.id,

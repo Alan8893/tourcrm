@@ -233,7 +233,9 @@ def _get_authorized_event_with_context_or_404(
     if event is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
 
-    context = build_event_resource_context(db, event=event, user_id=user_id)
+    context = build_event_resource_context(
+        db, event=event, user_id=user_id, permission_code=permission_code
+    )
     authorizer = Authorizer(session=db, user_id=user_id, permission_code=permission_code)
     if not authorizer.is_allowed(context):
         # Deliberately the same detail/status as "does not exist" above —
@@ -806,9 +808,13 @@ def _get_authorized_attendance_target_or_404(
     if target.event_id is not None:
         event = db.get(Event, target.event_id)
         assert event is not None  # ADR-0033 §1: the FK guarantees this.
-        context = build_event_resource_context(db, event=event, user_id=user_id)
+        context = build_event_resource_context(
+            db, event=event, user_id=user_id, permission_code=permission_code
+        )
     else:
-        context = build_occurrence_resource_context(db, occurrence=target, user_id=user_id)
+        context = build_occurrence_resource_context(
+            db, occurrence=target, user_id=user_id, permission_code=permission_code
+        )
 
     authorizer = Authorizer(session=db, user_id=user_id, permission_code=permission_code)
     if not authorizer.is_allowed(context):
@@ -1320,9 +1326,7 @@ def update_event_document_requirement_endpoint(
     _require_document_permission_for_event_or_404(
         db, event=event, user_id=principal.user_id, permission_code="document.manage"
     )
-    requirement = _get_authorized_requirement_or_404(
-        db, event=event, requirement_id=requirement_id
-    )
+    requirement = _get_authorized_requirement_or_404(db, event=event, requirement_id=requirement_id)
 
     requirement = update_event_document_requirement(
         db, requirement=requirement, required=payload.required
@@ -1348,9 +1352,7 @@ def delete_event_document_requirement_endpoint(
     _require_document_permission_for_event_or_404(
         db, event=event, user_id=principal.user_id, permission_code="document.manage"
     )
-    requirement = _get_authorized_requirement_or_404(
-        db, event=event, requirement_id=requirement_id
-    )
+    requirement = _get_authorized_requirement_or_404(db, event=event, requirement_id=requirement_id)
 
     delete_event_document_requirement(db, requirement=requirement)
 
@@ -1381,7 +1383,7 @@ def _package_content_disposition(event_title: str) -> str:
     base_name = f"competition-documents-{sanitized}.zip"
     ascii_fallback = base_name.encode("ascii", errors="replace").decode("ascii").replace("?", "_")
     encoded = quote(base_name, safe="")
-    return f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{encoded}'
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
 
 
 @router.post("/{event_id}/document-package")
