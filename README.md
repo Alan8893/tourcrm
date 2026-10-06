@@ -81,6 +81,13 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up --build
 применяет миграции Alembic (Issue #5) — они идемпотентны, это не
 destructive-операция.
 
+Scheduler периодических system jobs (supercronic, Event lifecycle
+reconciliation каждую минуту — Issue #289, ADR-0044) по умолчанию **не**
+запускается: он подключается opt-in профилем
+`HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose --profile scheduler up --build`
+(логи — `docker compose logs -f scheduler`). Подробности — в
+`apps/api/README.md`, раздел «Scheduler for periodic system jobs».
+
 **Зачем `HOST_UID`/`HOST_GID`**: `backend`/`frontend` работают от
 непривилегированного пользователя (не root), и его uid/gid внутри
 контейнера подставляется из этих переменных — по умолчанию `1000:1000`
@@ -144,8 +151,10 @@ HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up --build
 `main`. Jobs: `backend` (ruff, mypy, unit+API tests — без БД), `integration`
 (тесты с реальным ephemeral PostgreSQL service container, credentials
 `test`/`test`/`tourcrm_test`, не production), `frontend` (eslint, tsc, vitest,
-vite build), `repository` (root-level structural/Docker Compose config
-checks). Падение любого обязательного шага — `failure`, без `|| true`.
+vite build), `scheduler` (сборка API image с pinned supercronic и проверкой
+SHA-256, `supercronic -test` для crontab без БД, runtime smoke test
+scheduler-контейнера — `.github/scripts/scheduler-smoke-test.sh`),
+`repository` (root-level structural/Docker Compose config checks). Падение любого обязательного шага — `failure`, без `|| true`.
 
 Локально команды CI воспроизводятся напрямую (см. `apps/api/README.md` и
 `apps/web/README.md` за деталями):
