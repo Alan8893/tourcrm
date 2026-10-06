@@ -192,9 +192,7 @@ def _make_event_staff_assignment(
     return EventStaffAssignment(**defaults)  # type: ignore[arg-type]
 
 
-def _make_event_group_target(
-    event: Event, group: Group, **overrides: object
-) -> EventGroupTarget:
+def _make_event_group_target(event: Event, group: Group, **overrides: object) -> EventGroupTarget:
     defaults: dict[str, object] = {
         "event_id": event.id,
         "group_id": group.id,
@@ -254,11 +252,7 @@ def _grant_permission(
                 scopes=[RolePermissionScope(scope_type=scope_type)],
             )
         )
-        session.add(
-            UserRoleAssignment(
-                user_id=user_id, role_id=role.id, club_id=club_id
-            )
-        )
+        session.add(UserRoleAssignment(user_id=user_id, role_id=role.id, club_id=club_id))
         session.commit()
 
 
@@ -613,27 +607,44 @@ def test_own_groups_scope_enforces_group_club_matches_event_club(
 
 
 @requires_postgres
-def test_self_scope_sees_event_with_own_participation_but_not_others(
+def test_self_scope_follows_member_event_policy_not_participation(
     client: TestClient,
 ) -> None:
+    # Issue #285 / ADR-0020 §2/§3: `event.read` + `self` is the Member Event
+    # object policy — an Event targeted to the requester's active Group is
+    # readable without participation; one targeted only to an unrelated
+    # Group is not, even with EventParticipation.
     with session_scope() as session:
         club = _make_club()
         person = _make_person()
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        participated_event = _make_event(club)
-        other_event = _make_event(club)
-        session.add_all([participated_event, other_event])
+        membership = _make_club_membership(club, person)
+        my_group = _make_group(club)
+        unrelated = _make_group(club)
+        session.add_all([membership, my_group, unrelated])
         session.commit()
-        session.add(_make_event_participation(participated_event, person))
+        session.add(_make_group_membership(my_group, membership))
+        # Published: a `draft` is never readable under `self` (ADR-0018).
+        my_event = _make_event(club, status="published")
+        other_event = _make_event(club, status="published")
+        session.add_all([my_event, other_event])
+        session.commit()
+        session.add_all(
+            [
+                _make_event_group_target(my_event, my_group),
+                _make_event_group_target(other_event, unrelated),
+                _make_event_participation(other_event, person),
+            ]
+        )
         session.commit()
         user_id = user.id
-        participated_id, other_id = participated_event.id, other_event.id
+        my_event_id, other_id = my_event.id, other_event.id
     _grant_permission(user_id, "event.read", scope_type="self")
     _authenticate_as(user_id)
 
-    ok = client.get(f"/api/v1/events/{participated_id}")
+    ok = client.get(f"/api/v1/events/{my_event_id}")
     assert ok.status_code == 200
     denied = client.get(f"/api/v1/events/{other_id}")
     assert denied.status_code == 404
@@ -711,9 +722,7 @@ def test_children_scope_denies_when_relationship_not_active(
         session.add(_make_club_membership(club, guardian_person))
         session.add(_make_club_membership(club, child_person))
         session.add(
-            _make_guardian_relationship(
-                guardian_person, child_person, status=relationship_status
-            )
+            _make_guardian_relationship(guardian_person, child_person, status=relationship_status)
         )
         session.add(_make_event_participation(event, child_person))
         session.commit()
@@ -1151,9 +1160,13 @@ def test_create_event_with_no_groups_is_club_wide(client: TestClient) -> None:
     assert body["instructor_ids"] == []
 
     with session_scope() as session:
-        targets = session.execute(
-            select(EventGroupTarget).where(EventGroupTarget.event_id == uuid.UUID(body["id"]))
-        ).scalars().all()
+        targets = (
+            session.execute(
+                select(EventGroupTarget).where(EventGroupTarget.event_id == uuid.UUID(body["id"]))
+            )
+            .scalars()
+            .all()
+        )
         assert targets == []
 
 
@@ -1184,9 +1197,13 @@ def test_create_event_with_one_group_creates_target(client: TestClient) -> None:
     assert body["group_ids"] == [str(group_id)]
 
     with session_scope() as session:
-        targets = session.execute(
-            select(EventGroupTarget).where(EventGroupTarget.event_id == uuid.UUID(body["id"]))
-        ).scalars().all()
+        targets = (
+            session.execute(
+                select(EventGroupTarget).where(EventGroupTarget.event_id == uuid.UUID(body["id"]))
+            )
+            .scalars()
+            .all()
+        )
         assert len(targets) == 1
         assert targets[0].group_id == group_id
         assert targets[0].valid_to is None
@@ -1221,9 +1238,13 @@ def test_create_event_with_multiple_groups_creates_all_targets(client: TestClien
     assert set(uuid.UUID(gid) for gid in body["group_ids"]) == group_ids
 
     with session_scope() as session:
-        targets = session.execute(
-            select(EventGroupTarget).where(EventGroupTarget.event_id == uuid.UUID(body["id"]))
-        ).scalars().all()
+        targets = (
+            session.execute(
+                select(EventGroupTarget).where(EventGroupTarget.event_id == uuid.UUID(body["id"]))
+            )
+            .scalars()
+            .all()
+        )
         assert {t.group_id for t in targets} == group_ids
 
 
@@ -1285,11 +1306,15 @@ def test_create_event_with_instructor_assignment_succeeds(client: TestClient) ->
     assert body["instructor_ids"] == [str(instructor_id)]
 
     with session_scope() as session:
-        assignments = session.execute(
-            select(EventStaffAssignment).where(
-                EventStaffAssignment.event_id == uuid.UUID(body["id"])
+        assignments = (
+            session.execute(
+                select(EventStaffAssignment).where(
+                    EventStaffAssignment.event_id == uuid.UUID(body["id"])
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(assignments) == 1
         assert assignments[0].user_id == instructor_id
         assert assignments[0].role_in_event == "instructor"
@@ -1334,9 +1359,7 @@ def test_create_event_with_instructor_from_another_club_is_rejected(client: Test
         creator = _make_user(creator_person)
         instructor_person = _make_person()
         instructor = _make_user(instructor_person)
-        session.add_all(
-            [club, other_club, creator_person, creator, instructor_person, instructor]
-        )
+        session.add_all([club, other_club, creator_person, creator, instructor_person, instructor])
         session.commit()
         session.add(_make_club_membership(other_club, instructor_person))
         session.commit()
@@ -1384,11 +1407,15 @@ def test_group_targeting_does_not_create_participation(client: TestClient) -> No
     assert response.status_code == 201, response.text
 
     with session_scope() as session:
-        participations = session.execute(
-            select(EventParticipation).where(
-                EventParticipation.event_id == uuid.UUID(response.json()["id"])
+        participations = (
+            session.execute(
+                select(EventParticipation).where(
+                    EventParticipation.event_id == uuid.UUID(response.json()["id"])
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert participations == []
 
 
@@ -1419,11 +1446,15 @@ def test_instructor_assignment_does_not_create_group_membership(client: TestClie
     assert response.status_code == 201, response.text
 
     with session_scope() as session:
-        instructor_assignments = session.execute(
-            select(GroupInstructorAssignment).where(
-                GroupInstructorAssignment.user_id == instructor_id
+        instructor_assignments = (
+            session.execute(
+                select(GroupInstructorAssignment).where(
+                    GroupInstructorAssignment.user_id == instructor_id
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert instructor_assignments == []
         group_memberships = session.execute(select(GroupMembership)).scalars().all()
         assert group_memberships == []
@@ -1457,25 +1488,27 @@ def test_repeated_identical_update_does_not_duplicate_targeting(client: TestClie
     _authenticate_as(user_id)
 
     payload = {"group_ids": [str(group_id)], "instructor_ids": [str(instructor_id)]}
-    first = client.patch(
-        f"/api/v1/events/{event_id}", json=payload, headers=_csrf_headers(client)
-    )
+    first = client.patch(f"/api/v1/events/{event_id}", json=payload, headers=_csrf_headers(client))
     assert first.status_code == 200, first.text
-    second = client.patch(
-        f"/api/v1/events/{event_id}", json=payload, headers=_csrf_headers(client)
-    )
+    second = client.patch(f"/api/v1/events/{event_id}", json=payload, headers=_csrf_headers(client))
     assert second.status_code == 200, second.text
     assert second.json()["group_ids"] == [str(group_id)]
     assert second.json()["instructor_ids"] == [str(instructor_id)]
 
     with session_scope() as session:
-        targets = session.execute(
-            select(EventGroupTarget).where(EventGroupTarget.event_id == event_id)
-        ).scalars().all()
+        targets = (
+            session.execute(select(EventGroupTarget).where(EventGroupTarget.event_id == event_id))
+            .scalars()
+            .all()
+        )
         assert len(targets) == 1
-        assignments = session.execute(
-            select(EventStaffAssignment).where(EventStaffAssignment.event_id == event_id)
-        ).scalars().all()
+        assignments = (
+            session.execute(
+                select(EventStaffAssignment).where(EventStaffAssignment.event_id == event_id)
+            )
+            .scalars()
+            .all()
+        )
         assert len(assignments) == 1
 
 
@@ -1604,17 +1637,13 @@ def test_create_event_rolls_back_entirely_on_group_target_failure(client: TestCl
     unique_title = f"Atomicity check {uuid.uuid4().hex[:8]}"
     response = client.post(
         "/api/v1/events",
-        json=_create_event_payload(
-            club_id, title=unique_title, group_ids=[str(foreign_group_id)]
-        ),
+        json=_create_event_payload(club_id, title=unique_title, group_ids=[str(foreign_group_id)]),
         headers=_csrf_headers(client),
     )
     assert response.status_code == 422, response.text
 
     with session_scope() as session:
-        orphaned = session.execute(
-            select(Event).where(Event.title == unique_title)
-        ).scalars().all()
+        orphaned = session.execute(select(Event).where(Event.title == unique_title)).scalars().all()
         assert orphaned == []
 
 
