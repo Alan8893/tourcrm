@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 
 import { PageHeader } from "../components/ui/PageHeader";
 import { Tabs } from "../components/ui/Tabs";
@@ -20,11 +20,20 @@ import {
   useGroupSchedule,
 } from "../api/groups";
 import { useCurrentUser } from "../api/auth";
+import type { ApiError } from "../api/client";
 import { useMembershipPersonName, usePersons, personFullName } from "../api/people";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { groupStatusIcon, groupStatusLabel, eventStatusIcon, eventStatusLabel } from "../domain/statusMapping";
 import type { EventStatus } from "../domain/statusMapping";
+import type { GroupsShortcutState } from "./GroupsPage";
 import styles from "./GroupDetailPage.module.css";
+
+/** A nested read (`/members`, `/schedule`) the backend does not grant this
+ * user answers 403/404 under its own authorization contract — shown as
+ * "no access" rather than as a failure. */
+function isAccessDenied(error: ApiError): boolean {
+  return error.status === 403 || error.status === 404;
+}
 
 export function GroupDetailPage() {
   const { groupId } = useParams<{ groupId: string }>();
@@ -37,6 +46,12 @@ export function GroupDetailPage() {
   // group.manage is admin-only in the current MVP (people-api.md §14) —
   // same UX-only convention as PeoplePage/PersonDetailPage's isAdmin.
   const isAdmin = meQuery.data?.role_assignments.some((a) => a.role_code === "admin") ?? false;
+  // Issue #282: reached through the Member single-group shortcut, the
+  // Groups list is never shown — a "back to all groups" link would only
+  // bounce back here.
+  const location = useLocation();
+  const viaGroupsShortcut =
+    (location.state as Partial<GroupsShortcutState> | null)?.groupsShortcut === true;
 
   if (groupQuery.isLoading) {
     return <Loading label="Загружаем группу…" />;
@@ -59,7 +74,7 @@ export function GroupDetailPage() {
     <div>
       <PageHeader
         title={group.name}
-        back={{ to: "/groups", label: "Все группы" }}
+        back={viaGroupsShortcut ? undefined : { to: "/groups", label: "Все группы" }}
         titleExtra={
           <StatusBadge status={groupStatusIcon(group.status)} label={groupStatusLabel(group.status)} />
         }
@@ -77,7 +92,7 @@ export function GroupDetailPage() {
                 </Button>
               </Link>
             ) : null}
-            {group.status === "active" ? (
+            {isAdmin && group.status === "active" ? (
               <Button variant="destructive" onClick={() => setConfirmArchive(true)}>
                 Архивировать
               </Button>
@@ -183,11 +198,19 @@ function MembersTab({
 
       {membersQuery.isLoading ? <Loading label="Загружаем участников…" /> : null}
       {membersQuery.isError ? (
-        <ErrorState
-          illustration="error"
-          title="Не удалось загрузить участников"
-          description={membersQuery.error.message}
-        />
+        isAccessDenied(membersQuery.error) ? (
+          <ErrorState
+            illustration="403"
+            title="Нет доступа"
+            description="Список участников этой группы вам недоступен."
+          />
+        ) : (
+          <ErrorState
+            illustration="error"
+            title="Не удалось загрузить участников"
+            description={membersQuery.error.message}
+          />
+        )
       ) : null}
       {membersQuery.isSuccess && membersQuery.data.items.length === 0 ? (
         <EmptyState
@@ -312,6 +335,15 @@ function ScheduleTab({ groupId }: { groupId: string }) {
 
   if (scheduleQuery.isLoading) return <Loading label="Загружаем расписание…" />;
   if (scheduleQuery.isError) {
+    if (isAccessDenied(scheduleQuery.error)) {
+      return (
+        <ErrorState
+          illustration="403"
+          title="Нет доступа"
+          description="Расписание этой группы вам недоступно."
+        />
+      );
+    }
     return <ErrorState illustration="error" title="Не удалось загрузить расписание" description={scheduleQuery.error.message} />;
   }
   if (!scheduleQuery.data || scheduleQuery.data.items.length === 0) {

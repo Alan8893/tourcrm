@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 
 import { GroupDetailPage } from "./GroupDetailPage";
-import { renderWithProviders, stubFetch } from "../test/renderWithProviders";
+import { renderWithHistory, renderWithProviders, stubFetch } from "../test/renderWithProviders";
 
 const GROUP = {
   id: "g1",
@@ -218,5 +218,86 @@ describe("GroupDetailPage — Participant Export contextual action (TH-0118.5)",
 
     expect(await screen.findByRole("heading", { name: "Ориентирование" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Экспорт участников" })).not.toBeInTheDocument();
+  });
+});
+
+// --- Issue #282: Member Group Detail ----------------------------------------
+
+describe("GroupDetailPage — Member (Issue #282)", () => {
+  const NOT_FOUND = {
+    response: { error: { code: "group_not_found", message: "Group not found", details: {}, request_id: "r1" } },
+    status: 404,
+  };
+
+  function renderAs(roleCode: string, initialEntries: Array<string | { pathname: string; state: unknown }> = ["/groups/g1"]) {
+    stubFetch([
+      { match: "/auth/me", response: meResponse(roleCode) },
+      ...(roleCode === "member"
+        ? [
+            { match: "/groups/g1/members", ...NOT_FOUND },
+            { match: "/groups/g1/schedule?from=", ...NOT_FOUND },
+          ]
+        : [
+            { match: "/groups/g1/members", response: emptyCollection() },
+            { match: "/groups/g1/schedule?from=", response: emptyCollection() },
+          ]),
+      { match: "/groups/g1", response: GROUP },
+    ]);
+    return renderWithHistory(
+      <Routes>
+        <Route path="/groups" element={<p>groups list</p>} />
+        <Route path="/groups/:groupId" element={<GroupDetailPage />} />
+      </Routes>,
+      { initialEntries },
+    );
+  }
+
+  it("shows a Member the group without any group.manage action", async () => {
+    renderAs("member");
+
+    expect(await screen.findByRole("heading", { name: "Ориентирование" })).toBeInTheDocument();
+    expect(screen.getByText("Начальная группа")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Архивировать" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Экспорт участников" })).not.toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "Участники" }));
+    expect(await screen.findByText("Список участников этой группы вам недоступен.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Добавить участника" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Расписание" }));
+    expect(await screen.findByText("Расписание этой группы вам недоступно.")).toBeInTheDocument();
+  });
+
+  it("keeps the back link on a direct Group Detail entry and never redirects away", async () => {
+    const { router } = renderAs("member");
+
+    expect(await screen.findByRole("heading", { name: "Ориентирование" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Все группы/ })).toHaveAttribute("href", "/groups");
+    expect(router.state.location.pathname).toBe("/groups/g1");
+  });
+
+  it("drops the back-to-list link when reached through the single-group shortcut", async () => {
+    const { router } = renderAs("member", [{ pathname: "/groups/g1", state: { groupsShortcut: true } }]);
+
+    expect(await screen.findByRole("heading", { name: "Ориентирование" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Все группы/ })).not.toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/groups/g1");
+  });
+
+  it("still offers Administrator the archive action", async () => {
+    renderAs("admin");
+
+    expect(await screen.findByRole("button", { name: "Архивировать" })).toBeInTheDocument();
+  });
+
+  it("does not offer an Instructor the archive action", async () => {
+    renderAs("instructor");
+
+    expect(await screen.findByRole("heading", { name: "Ориентирование" })).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "Участники" }));
+    expect(await screen.findByText("В группе пока нет участников")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Архивировать" })).not.toBeInTheDocument();
   });
 });

@@ -7,10 +7,11 @@ schedule-api.md` §2, ADR-0013 (scopes), ADR-0021 (Group persistence),
 ADR-0022 (cross-Club ownership integrity).
 
 This is deliberately a *separate* module from `app.groups.authorization`:
-that module's `own_groups`-only resolution (`build_group_resource_context`)
-backs `group.read`/`group.manage` access to the *Group entity itself* and
-explicitly treats `self`/`children` as inapplicable/fail-closed (see its
-own module docstring). ODR-0002 defines a *different* policy for the
+that module's resolution (`build_group_resource_context`) backs
+`group.read`/`group.manage` access to the *Group entity itself* and
+treats `children` as inapplicable/fail-closed, resolving `self` only for
+the Group list/item reads (Issue #282; see its own module docstring).
+ODR-0002 defines a *different* policy for the
 Group's *schedule* under `event.read`: `self`/`children` ARE applicable
 here, resolved via active `GroupMembership` (never `GroupInstructorAssignment`,
 never `Event.created_by`).
