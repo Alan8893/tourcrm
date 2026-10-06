@@ -80,8 +80,12 @@ name alone never grants unrestricted Event visibility.
 - `event.read` with `self` for a Member follows the canonical Member Event object
   policy: active GroupMembership authorizes Events targeted to that Group, while
   club-wide Events are readable within the Member's active ClubMembership.
-  EventParticipation is not required. Unrelated Group-targeted Events and
-  cross-Club Events remain unauthorized.
+  EventParticipation is not required and does not by itself authorize: an
+  Event targeted only to unrelated Groups is not readable even with an
+  EventParticipation. Unrelated Group-targeted Events and cross-Club Events
+  remain unauthorized. The same policy applies to recurring EventOccurrences
+  through occurrence-level GroupTargets (ADR-0029). A `draft` Event is not
+  available to users before publication (ADR-0018).
 - `event.read` with `children` may read only Events related to the requester's
   children through active GuardianRelationship; it does not expose the club's
   complete Event catalog.

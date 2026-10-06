@@ -52,9 +52,11 @@ Backend обязан ограничивать результаты по canonica
 
 - Event с активным `EventGroupTarget` доступен, если Person Member имеет active GroupMembership хотя бы в одной целевой Group;
 - Event без active GroupTarget (club-wide Event) доступен в пределах active ClubMembership Member;
-- EventParticipation не требуется для visibility;
+- EventParticipation не требуется для visibility и сама по себе её не даёт: Event, targeted only to unrelated Groups, недоступен даже при наличии EventParticipation;
 - ended/historical GroupMembership не авторизует текущий доступ;
 - Event другого Club и Event, targeted only to unrelated Groups, недоступны;
+- `draft` Event недоступен до публикации (ADR-0018);
+- та же policy применяется к recurring EventOccurrences в calendar projection через occurrence-level GroupTarget (ADR-0029);
 - authorization filtering выполняется backend до count, pagination и serialization.
 
 Member получает только read access; Event management permissions этим правилом не предоставляются.

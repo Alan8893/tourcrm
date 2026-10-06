@@ -36,7 +36,7 @@ Canonical scopes remain unchanged:
 - `all` — authorized objects within the caller's allowed Club boundary;
 - `own_events` — occurrence-level staff/responsibility relationship;
 - `own_groups` — occurrence-level group target plus applicable active GroupInstructorAssignment;
-- `self` — occurrence-level participation for the requester's Person;
+- `self` — for `event.read`, the Member Event object policy of ADR-0020 §2/§3 applied at occurrence level (PO decision 2026-10-06, Issue #285): the requester's Person has an active ClubMembership in the occurrence's Club and either the occurrence has no active occurrence-level GroupTarget (club-wide) or the Person has an active GroupMembership in a Group with an active occurrence-level GroupTarget; occurrence-level participation is neither required nor by itself sufficient, and ended membership or another Club never authorizes. For other permissions, `self` remains occurrence-level participation for the requester's Person;
 - `children` — occurrence-level participation for a child plus active GuardianRelationship and the Club-membership requirements of ADR-0023;
 - `none` — no access.
 

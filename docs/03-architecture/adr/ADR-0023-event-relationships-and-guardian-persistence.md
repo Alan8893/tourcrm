@@ -82,7 +82,7 @@ For Event access in Club X, guardian authorization requires an active valid Guar
 
 `EventParticipation` remains a separate persistence entity.
 
-- `self` Event visibility requires an eligible EventParticipation relationship for the requesting Person;
+- `self` Event visibility (`event.read`) follows the Member Event object policy of ADR-0020 §2/§3 (PO decision 2026-10-06, Issue #285): EventParticipation is neither required nor by itself sufficient; the earlier requirement of an eligible EventParticipation relationship no longer applies to `event.read`;
 - `children` Event visibility may derive from child EventParticipation or active child GroupMembership reached through active EventGroupTarget;
 - group targeting does not create participation;
 - participation does not imply attendance;
