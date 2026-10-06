@@ -151,9 +151,10 @@ Invitation secrets are never returned after creation.
 - `DELETE /groups/{id}` — permanent delete, Administrator only; explicit destructive confirmation; atomic deletion of Group + historical GroupMembership/GroupInstructorAssignment + removable EventGroupTarget/SeriesGroupTarget relationships; rejected if the Group is the sole remaining target of an affected targeted Event/EventSeries; Events/EventSeries/EventOccurrences are never cascade-deleted or converted to club-wide; detailed contract in `docs/05-api/people-api.md`.
 - `GET /groups/{id}/members`
 - `POST /groups/{id}/members`
-- `POST /groups/{id}/members/bulk`
+- Bulk GroupMembership transfer is not part of the current MVP implementation contract (Issue #286); no bulk transfer endpoint is to be implemented by this slice.
 - `PATCH /group-memberships/{id}`
 - `POST /group-memberships/{id}/end`
+- `POST /group-memberships/{id}/transfer` — atomic single-participant transfer to another active Group; preserves historical source membership and prevents two simultaneously active memberships for this explicit transfer operation.
 - `GET /groups/{id}/instructors`
 - `POST /groups/{id}/instructors`
 - `POST /group-instructor-assignments/{id}/end`
