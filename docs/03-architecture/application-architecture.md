@@ -49,6 +49,8 @@ Monitoring / Logs / Metrics receive telemetry from all services.
 
 The exact reverse proxy, object-storage implementation and worker technology are architecture decisions documented separately before implementation.
 
+Periodic system jobs are triggered by a dedicated single-replica scheduler that invokes system CLI entrypoints and needs no Redis (`docs/03-architecture/adr/ADR-0044-scheduler-for-periodic-system-jobs.md`); the queue worker technology remains open (ADR-0008 ODR-005).
+
 ## 4. Frontend
 
 ### 4.1 Technology

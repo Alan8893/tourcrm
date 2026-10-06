@@ -97,7 +97,7 @@ Production baseline:
 3. `db` — PostgreSQL.
 4. `redis` — Redis, если включены фоновые задачи/кэш.
 5. `worker` — background worker при наличии asynchronous jobs.
-6. `scheduler` — отдельный scheduler только если это оправдано выбранным job framework.
+6. `scheduler` — отдельный single-replica scheduler для периодических system jobs (supercronic, запускает system CLI) — см. `docs/03-architecture/adr/ADR-0044-scheduler-for-periodic-system-jobs.md`. Не зависит от выбора queue/job framework (ODR-005).
 7. `reverse-proxy` — внешний HTTP/HTTPS entrypoint.
 
 Monitoring stack является отдельной capability и не обязан присутствовать на development-инсталляции.
@@ -492,6 +492,6 @@ Before production, create ADRs for:
 - storage backend;
 - backup tooling;
 - monitoring stack;
-- worker/scheduler technology;
+- worker/scheduler technology (scheduler для периодических system jobs — принят в `ADR-0044`; queue worker framework — открыт, ODR-005);
 - deployment topology;
 - secret management mechanism.
