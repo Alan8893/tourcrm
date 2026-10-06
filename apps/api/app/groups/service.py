@@ -138,6 +138,25 @@ class DuplicateActiveGroupMembershipError(GroupOwnershipError):
         self.club_membership_id = club_membership_id
 
 
+class GroupMembershipTransferSameGroupError(GroupOwnershipError):
+    """people-api.md §15.3 (Issue #286): a Transfer's target Group must
+    differ from the source membership's Group."""
+
+    def __init__(self, *, group_id: uuid.UUID) -> None:
+        super().__init__(f"Cannot transfer a GroupMembership to its own group {group_id}")
+        self.group_id = group_id
+
+
+class ClubMembershipNotActiveError(GroupOwnershipError):
+    """people-api.md §15 (`POST .../members`, reused by the §15.3
+    Transfer): a GroupMembership is only created through the Person's
+    *active* ClubMembership in the Group's Club."""
+
+    def __init__(self, *, club_membership_id: uuid.UUID) -> None:
+        super().__init__(f"ClubMembership {club_membership_id} is not active")
+        self.club_membership_id = club_membership_id
+
+
 class GroupInstructorPrimaryConflictError(GroupOwnershipError):
     """people-api.md §16.2: an `is_primary=true` GroupInstructorAssignment
     already exists for this group_id whose `[valid_from, valid_to)`
@@ -382,6 +401,122 @@ def end_group_membership(
         session.rollback()
         raise
     return membership
+
+
+def transfer_group_membership(
+    session: Session,
+    *,
+    membership: GroupMembership,
+    target_group_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    request_id: Optional[str] = None,
+) -> GroupMembership:
+    """people-api.md §15.3 (Issue #286): atomically move one participant
+    to another Group — end the active source `membership` and create an
+    active GroupMembership in `target_group_id` for the same
+    ClubMembership (so the same Person and Club), in ONE transaction:
+    either both changes and both audit records commit, or nothing does.
+    The source row is ended, never deleted. Returns the new membership.
+
+    The caller must have loaded `membership` with `SELECT ... FOR UPDATE`
+    (app.api.v1.groups does, exactly as for `POST .../end`): a second,
+    concurrent Transfer/end of the same membership waits for this
+    transaction and then sees it `ended`, so it is rejected instead of
+    creating a second target membership. The target Group and the
+    ClubMembership are share-locked and checked with the same rules as
+    create_group_membership (same Club, Group not archived, ClubMembership
+    active) — see the module docstring for the locking rationale.
+
+    Raises, persisting nothing in each case:
+    InvalidGroupMembershipStatusTransitionError (source not `active`),
+    GroupMembershipTransferSameGroupError, GroupMembershipClubMismatchError,
+    ClubMembershipNotActiveError, GroupArchivedError (target archived) and
+    DuplicateActiveGroupMembershipError (the Person already has an active
+    membership in the target Group — the §15.2 DB invariant). Other
+    active memberships of the Person are not touched (§15.2: multi-group
+    membership remains allowed).
+    """
+    validate_group_membership_status_transition(membership.membership_status, "ended")
+    if target_group_id == membership.group_id:
+        session.rollback()
+        raise GroupMembershipTransferSameGroupError(group_id=target_group_id)
+
+    club_membership_id = membership.club_membership_id
+    group_club_id = _lock_group_club_id(session, target_group_id)
+    club_membership_club_id = _lock_club_membership_club_id(session, club_membership_id)
+    if group_club_id != club_membership_club_id:
+        session.rollback()
+        raise GroupMembershipClubMismatchError(
+            group_club_id=group_club_id, club_membership_club_id=club_membership_club_id
+        )
+    club_membership_status = session.execute(
+        select(ClubMembership.status).where(ClubMembership.id == club_membership_id)
+    ).scalar_one()
+    if club_membership_status != "active":
+        session.rollback()
+        raise ClubMembershipNotActiveError(club_membership_id=club_membership_id)
+    if _group_status(session, target_group_id) == "archived":
+        session.rollback()
+        raise GroupArchivedError(group_id=target_group_id)
+
+    now = datetime.now(timezone.utc)
+    source_group_id = membership.group_id
+    old_status = membership.membership_status
+    membership.membership_status = "ended"
+    membership.valid_to = now
+    target = GroupMembership(
+        group_id=target_group_id,
+        club_membership_id=club_membership_id,
+        valid_from=now,
+        valid_to=None,
+        membership_status="active",
+    )
+    session.add(target)
+    try:
+        session.flush()
+        transfer = {
+            "source_group_membership_id": str(membership.id),
+            "target_group_membership_id": str(target.id),
+            "source_group_id": str(source_group_id),
+            "target_group_id": str(target_group_id),
+        }
+        record_audit_event(
+            session,
+            action="group_membership.ended",
+            actor_type="user",
+            actor_user_id=actor_user_id,
+            resource_type="group_membership",
+            resource_id=membership.id,
+            outcome="success",
+            request_id=request_id,
+            details={
+                "changes": {"membership_status": {"from": old_status, "to": "ended"}},
+                "transfer": transfer,
+            },
+        )
+        record_audit_event(
+            session,
+            action="group_membership.created",
+            actor_type="user",
+            actor_user_id=actor_user_id,
+            resource_type="group_membership",
+            resource_id=target.id,
+            outcome="success",
+            request_id=request_id,
+            details={"transfer": transfer},
+        )
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        if _is_duplicate_active_membership_violation(exc):
+            raise DuplicateActiveGroupMembershipError(
+                group_id=target_group_id, club_membership_id=club_membership_id
+            ) from exc
+        raise
+    except Exception:
+        session.rollback()
+        raise
+    return target
 
 
 def create_group_instructor_assignment(
