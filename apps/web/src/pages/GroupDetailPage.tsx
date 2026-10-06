@@ -24,6 +24,9 @@ import type { ApiError } from "../api/client";
 import { useMembershipPersonName, usePersons, personFullName } from "../api/people";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { groupStatusIcon, groupStatusLabel, eventStatusIcon, eventStatusLabel } from "../domain/statusMapping";
+import { formatScheduleRange } from "../domain/calendarDate";
+import { groupDetailTabIds } from "../domain/groupDetailTabs";
+import type { GroupDetailTabId } from "../domain/groupDetailTabs";
 import type { EventStatus } from "../domain/statusMapping";
 import type { GroupsShortcutState } from "./GroupsPage";
 import styles from "./GroupDetailPage.module.css";
@@ -38,14 +41,19 @@ function isAccessDenied(error: ApiError): boolean {
 export function GroupDetailPage() {
   const { groupId } = useParams<{ groupId: string }>();
   const groupQuery = useGroup(groupId);
-  const [activeTab, setActiveTab] = useState("overview");
+  const [selectedTab, setSelectedTab] = useState<string | null>(null);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const archiveGroup = useArchiveGroup();
   const notify = useNotify();
   const meQuery = useCurrentUser();
   // group.manage is admin-only in the current MVP (people-api.md §14) —
   // same UX-only convention as PeoplePage/PersonDetailPage's isAdmin.
-  const isAdmin = meQuery.data?.role_assignments.some((a) => a.role_code === "admin") ?? false;
+  const roleCodes = meQuery.data?.role_assignments.map((a) => a.role_code) ?? [];
+  const isAdmin = roleCodes.includes("admin");
+  // Issue #285: role-aware tabs (UX only — every tab's data stays
+  // authorized by the backend). The first visible tab is the default.
+  const tabIds = groupDetailTabIds(roleCodes);
+  const activeTab = selectedTab !== null && (tabIds as string[]).includes(selectedTab) ? selectedTab : tabIds[0];
   // Issue #282: reached through the Member single-group shortcut, the
   // Groups list is never shown — a "back to all groups" link would only
   // bounce back here.
@@ -53,7 +61,7 @@ export function GroupDetailPage() {
   const viaGroupsShortcut =
     (location.state as Partial<GroupsShortcutState> | null)?.groupsShortcut === true;
 
-  if (groupQuery.isLoading) {
+  if (groupQuery.isLoading || meQuery.isLoading) {
     return <Loading label="Загружаем группу…" />;
   }
 
@@ -69,6 +77,25 @@ export function GroupDetailPage() {
 
   const group = groupQuery.data;
   if (!group) return null;
+
+  const groupTab = (id: GroupDetailTabId) => {
+    switch (id) {
+      case "overview":
+        return {
+          id,
+          label: "Обзор",
+          content: <OverviewTab description={group.description} validFrom={group.valid_from} validTo={group.valid_to} />,
+        };
+      case "members":
+        return {
+          id,
+          label: "Участники",
+          content: <MembersTab groupId={group.id} clubId={group.club_id} isAdmin={isAdmin} />,
+        };
+      case "schedule":
+        return { id, label: "Расписание", content: <ScheduleTab groupId={group.id} /> };
+    }
+  };
 
   return (
     <div>
@@ -104,24 +131,8 @@ export function GroupDetailPage() {
       <Tabs
         label="Разделы группы"
         activeId={activeTab}
-        onChange={setActiveTab}
-        items={[
-          {
-            id: "overview",
-            label: "Обзор",
-            content: <OverviewTab description={group.description} validFrom={group.valid_from} validTo={group.valid_to} />,
-          },
-          {
-            id: "members",
-            label: "Участники",
-            content: <MembersTab groupId={group.id} clubId={group.club_id} isAdmin={isAdmin} />,
-          },
-          {
-            id: "schedule",
-            label: "Расписание",
-            content: <ScheduleTab groupId={group.id} />,
-          },
-        ]}
+        onChange={setSelectedTab}
+        items={tabIds.map((id) => groupTab(id))}
       />
 
       <ConfirmDialog
@@ -359,7 +370,10 @@ function ScheduleTab({ groupId }: { groupId: string }) {
     <ul className={styles.list}>
       {scheduleQuery.data.items.map((item) => (
         <li key={item.id} className={styles.memberRow}>
-          <span>{item.title}</span>
+          <span className={styles.scheduleEntry}>
+            <span className={styles.scheduleWhen}>{formatScheduleRange(item.start_at, item.end_at)}</span>
+            <span>{item.title}</span>
+          </span>
           <StatusBadge
             status={eventStatusIcon(item.status as EventStatus)}
             label={eventStatusLabel(item.status as EventStatus)}

@@ -613,27 +613,44 @@ def test_own_groups_scope_enforces_group_club_matches_event_club(
 
 
 @requires_postgres
-def test_self_scope_sees_event_with_own_participation_but_not_others(
+def test_self_scope_follows_member_event_policy_not_participation(
     client: TestClient,
 ) -> None:
+    # Issue #285 / ADR-0020 §2/§3: `event.read` + `self` is the Member Event
+    # object policy — an Event targeted to the requester's active Group is
+    # readable without participation; one targeted only to an unrelated
+    # Group is not, even with EventParticipation.
     with session_scope() as session:
         club = _make_club()
         person = _make_person()
         user = _make_user(person)
         session.add_all([club, person, user])
         session.commit()
-        participated_event = _make_event(club)
-        other_event = _make_event(club)
-        session.add_all([participated_event, other_event])
+        membership = _make_club_membership(club, person)
+        my_group = _make_group(club)
+        unrelated = _make_group(club)
+        session.add_all([membership, my_group, unrelated])
         session.commit()
-        session.add(_make_event_participation(participated_event, person))
+        session.add(_make_group_membership(my_group, membership))
+        # Published: a `draft` is never readable under `self` (ADR-0018).
+        my_event = _make_event(club, status="published")
+        other_event = _make_event(club, status="published")
+        session.add_all([my_event, other_event])
+        session.commit()
+        session.add_all(
+            [
+                _make_event_group_target(my_event, my_group),
+                _make_event_group_target(other_event, unrelated),
+                _make_event_participation(other_event, person),
+            ]
+        )
         session.commit()
         user_id = user.id
-        participated_id, other_id = participated_event.id, other_event.id
+        my_event_id, other_id = my_event.id, other_event.id
     _grant_permission(user_id, "event.read", scope_type="self")
     _authenticate_as(user_id)
 
-    ok = client.get(f"/api/v1/events/{participated_id}")
+    ok = client.get(f"/api/v1/events/{my_event_id}")
     assert ok.status_code == 200
     denied = client.get(f"/api/v1/events/{other_id}")
     assert denied.status_code == 404

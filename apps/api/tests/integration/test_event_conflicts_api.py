@@ -1342,11 +1342,16 @@ def test_own_groups_scope_denies_when_opposing_event_not_group_targeted(client: 
 
 @requires_postgres
 def test_self_scope_allows_own_participation_conflict(client: TestClient) -> None:
+    # Issue #285: `self` is the Member Event object policy, so the requester
+    # needs an active ClubMembership to see these club-wide Events (and so
+    # their conflicts); participation alone no longer authorizes.
     with session_scope() as session:
         club = _make_club()
         person = _make_person()
         user = _make_user(person)
         session.add_all([club, person, user])
+        session.commit()
+        session.add(_make_club_membership(club, person))
         session.commit()
         e1 = _make_event(session, club)
         e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
@@ -1364,6 +1369,42 @@ def test_self_scope_allows_own_participation_conflict(client: TestClient) -> Non
     body = response.json()
     assert body["pagination"]["total"] == 1
     assert body["items"][0]["domain"] == "participant"
+
+
+@requires_postgres
+def test_self_scope_participation_alone_does_not_expose_a_conflict(client: TestClient) -> None:
+    # Issue #285 / ADR-0031 §8: Events targeted only to an unrelated Group
+    # are outside the Member's Event visibility even with EventParticipation,
+    # so their conflict must not leak through this endpoint.
+    with session_scope() as session:
+        club = _make_club()
+        person = _make_person()
+        user = _make_user(person)
+        session.add_all([club, person, user])
+        session.commit()
+        unrelated = _make_group(club)
+        session.add_all([_make_club_membership(club, person), unrelated])
+        session.commit()
+        e1 = _make_event(session, club)
+        e2 = _make_event(session, club, start_at=_START + datetime.timedelta(minutes=30))
+        session.add_all([e1, e2])
+        session.commit()
+        session.add_all(
+            [
+                _make_event_group_target(e1, unrelated),
+                _make_event_group_target(e2, unrelated),
+                _make_event_participation(e1, person),
+                _make_event_participation(e2, person),
+            ]
+        )
+        session.commit()
+        club_id, user_id = club.id, user.id
+    _grant_permission(user_id, "event.read", scope_type="self", club_id=club_id)
+    _authenticate_as(user_id)
+
+    response = _conflicts(client)
+    assert response.status_code == 200
+    assert response.json()["pagination"]["total"] == 0
 
 
 @requires_postgres

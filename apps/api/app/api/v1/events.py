@@ -233,7 +233,9 @@ def _get_authorized_event_with_context_or_404(
     if event is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
 
-    context = build_event_resource_context(db, event=event, user_id=user_id)
+    context = build_event_resource_context(
+        db, event=event, user_id=user_id, permission_code=permission_code
+    )
     authorizer = Authorizer(session=db, user_id=user_id, permission_code=permission_code)
     if not authorizer.is_allowed(context):
         # Deliberately the same detail/status as "does not exist" above —
@@ -806,9 +808,13 @@ def _get_authorized_attendance_target_or_404(
     if target.event_id is not None:
         event = db.get(Event, target.event_id)
         assert event is not None  # ADR-0033 §1: the FK guarantees this.
-        context = build_event_resource_context(db, event=event, user_id=user_id)
+        context = build_event_resource_context(
+            db, event=event, user_id=user_id, permission_code=permission_code
+        )
     else:
-        context = build_occurrence_resource_context(db, occurrence=target, user_id=user_id)
+        context = build_occurrence_resource_context(
+            db, occurrence=target, user_id=user_id, permission_code=permission_code
+        )
 
     authorizer = Authorizer(session=db, user_id=user_id, permission_code=permission_code)
     if not authorizer.is_allowed(context):

@@ -189,7 +189,9 @@ def _get_authorized_occurrence_or_404(
             status.HTTP_404_NOT_FOUND, _OCCURRENCE_NOT_FOUND_CODE, _OCCURRENCE_NOT_FOUND_MESSAGE
         )
 
-    context = build_occurrence_resource_context(db, occurrence=occurrence, user_id=user_id)
+    context = build_occurrence_resource_context(
+        db, occurrence=occurrence, user_id=user_id, permission_code=permission_code
+    )
     authorizer = Authorizer(session=db, user_id=user_id, permission_code=permission_code)
     if not authorizer.is_allowed(context):
         raise APIError(

@@ -38,6 +38,16 @@ check (ADR-0022) directly into the join/where clause; `children` bakes
 in the guardian's own active ClubMembership in the Event's Club and the
 child's active ClubMembership in that same Club (ADR-0023 §3/§4) — never
 inferred, never skipped.
+
+`self` depends on the permission being checked (Issue #285, PO decision
+2026-10-06): for `event.read` it is the Member Event object policy of
+ADR-0020 §2/§3 (`_member_event_read_condition` — club-wide Events within
+the requester's active ClubMembership, Group-targeted Events through an
+active GroupMembership in a target Group; EventParticipation neither
+required nor by itself sufficient; `draft` excluded per ADR-0018). Every
+other permission that reuses these Event relationships with `self`
+(`trip.read`/`trip.manage`, `attendance.*`) keeps the participation-based
+`_self_condition`, unchanged.
 """
 
 import uuid
@@ -55,11 +65,17 @@ from app.db.identity import ClubMembership, GuardianRelationship, User
 _ACTIVE_CLUB_MEMBERSHIP_STATUS = "active"
 _ACTIVE_GUARDIAN_RELATIONSHIP_STATUS = "active"
 _ACTIVE_GROUP_MEMBERSHIP_STATUS = "active"
+_EVENT_READ_PERMISSION = "event.read"
+_DRAFT_STATUS = "draft"
 
 
 def _active_interval(valid_from: Any, valid_to: Any) -> sa.ColumnElement[bool]:
     now = sa.func.now()
     return sa.and_(valid_from <= now, sa.or_(valid_to.is_(None), now < valid_to))
+
+
+def _effective_at(valid_from: Any, valid_to: Any, instant: Any) -> sa.ColumnElement[bool]:
+    return sa.and_(valid_from <= instant, sa.or_(valid_to.is_(None), instant < valid_to))
 
 
 def _person_id_for_user(session: Session, user_id: uuid.UUID) -> uuid.UUID:
@@ -113,6 +129,102 @@ def _self_condition(event_id, person_id) -> sa.ColumnElement[bool]:
             EventParticipation.person_id == person_id,
         )
     )
+
+
+def _member_event_read_condition(
+    event_id, event_club_id, event_status, event_start_at, person_id
+) -> sa.ColumnElement[bool]:
+    """ADR-0020 §2/§3 Member Event object policy (`event.read` + `self`,
+    Issue #285): the requester's Person has an active ClubMembership in
+    the Event's Club AND either the Event has no active EventGroupTarget
+    (club-wide Event) or that Person has an active GroupMembership —
+    through that same Club's active ClubMembership — in a Group of the
+    Event's Club with an active EventGroupTarget for the Event. Never
+    EventParticipation (neither required nor sufficient), never an
+    ended/historical membership, never another Club. A `draft` Event is
+    not available before publication (ADR-0018).
+
+    Whether the Event is targeted is decided by each EventGroupTarget's
+    `[valid_from, valid_to)` at the Event's own `start_at` — the same
+    effectivity rule as the Group Schedule (app.events.group_schedule,
+    ADR-0029/ADR-0030) — so a target that starts later than "now" still
+    makes the Event targeted and never lets it fall back to club-wide
+    (fail closed). The requester's GroupMembership/ClubMembership are
+    evaluated now: only a current membership authorizes.
+
+    Every EXISTS below is one level deep and explicitly correlated to the
+    outer Event (a no-op on the single-Event path, where the Event's
+    values are literals).
+    """
+    club_membership = aliased(ClubMembership)
+    has_active_club_membership = sa.exists(
+        sa.select(club_membership.id)
+        .where(
+            club_membership.person_id == person_id,
+            club_membership.club_id == event_club_id,
+            club_membership.status == _ACTIVE_CLUB_MEMBERSHIP_STATUS,
+        )
+        .correlate(Event)
+    )
+
+    any_target = aliased(EventGroupTarget)
+    has_active_group_target = sa.exists(
+        sa.select(any_target.id)
+        .where(
+            any_target.event_id == event_id,
+            _effective_at(any_target.valid_from, any_target.valid_to, event_start_at),
+        )
+        .correlate(Event)
+    )
+
+    target = aliased(EventGroupTarget)
+    grp = aliased(Group)
+    group_membership = aliased(GroupMembership)
+    member_club_membership = aliased(ClubMembership)
+    targets_member_group = sa.exists(
+        sa.select(target.id)
+        .join(grp, grp.id == target.group_id)
+        .join(group_membership, group_membership.group_id == grp.id)
+        .join(
+            member_club_membership, member_club_membership.id == group_membership.club_membership_id
+        )
+        .where(
+            target.event_id == event_id,
+            _effective_at(target.valid_from, target.valid_to, event_start_at),
+            grp.club_id == event_club_id,
+            group_membership.membership_status == _ACTIVE_GROUP_MEMBERSHIP_STATUS,
+            _active_interval(group_membership.valid_from, group_membership.valid_to),
+            member_club_membership.person_id == person_id,
+            member_club_membership.club_id == event_club_id,
+            member_club_membership.status == _ACTIVE_CLUB_MEMBERSHIP_STATUS,
+        )
+        .correlate(Event)
+    )
+
+    # `event_status` is the outer `Event.status` column on the list path
+    # and an already-loaded Python value on the single-Event path.
+    not_draft: sa.ColumnElement[bool]
+    if isinstance(event_status, str):
+        not_draft = sa.true() if event_status != _DRAFT_STATUS else sa.false()
+    else:
+        not_draft = event_status != _DRAFT_STATUS
+
+    return sa.and_(
+        not_draft,
+        has_active_club_membership,
+        sa.or_(sa.not_(has_active_group_target), targets_member_group),
+    )
+
+
+def _self_scope_condition(
+    permission_code: str, event_id, event_club_id, event_status, event_start_at, person_id
+) -> sa.ColumnElement[bool]:
+    """`self` for `permission_code` — see module docstring."""
+    if permission_code == _EVENT_READ_PERMISSION:
+        return _member_event_read_condition(
+            event_id, event_club_id, event_status, event_start_at, person_id
+        )
+    return _self_condition(event_id, person_id)
 
 
 def _child_condition(event_id, event_club_id, guardian_person_id) -> sa.ColumnElement[bool]:
@@ -195,19 +307,33 @@ def _child_condition(event_id, event_club_id, guardian_person_id) -> sa.ColumnEl
 
 
 def build_event_resource_context(
-    session: Session, *, event: Event, user_id: uuid.UUID
+    session: Session, *, event: Event, user_id: uuid.UUID, permission_code: str
 ) -> ResourceContext:
     """Resolve the full ResourceContext for one already-loaded Event
     against the acting user, running each relationship predicate as its
     own scalar EXISTS query. Used by the detail/update/status/archive
     endpoints, each of which operates on exactly one Event.
+
+    `permission_code` is the permission the context will be checked
+    against: it selects what `self` means (see module docstring).
     """
     person_id = _person_id_for_user(session, user_id)
     is_own_event = session.execute(sa.select(_own_event_condition(event.id, user_id))).scalar()
     is_own_group = session.execute(
         sa.select(_own_group_condition(event.id, event.club_id, user_id))
     ).scalar()
-    is_self = session.execute(sa.select(_self_condition(event.id, person_id))).scalar()
+    is_self = session.execute(
+        sa.select(
+            _self_scope_condition(
+                permission_code,
+                event.id,
+                event.club_id,
+                event.status,
+                event.start_at,
+                person_id,
+            )
+        )
+    ).scalar()
     is_child = session.execute(
         sa.select(_child_condition(event.id, event.club_id, person_id))
     ).scalar()
@@ -249,7 +375,9 @@ def event_visibility_filter(
         elif grant.scope_type == "own_groups":
             scope_predicate = _own_group_condition(Event.id, Event.club_id, user_id)
         elif grant.scope_type == "self":
-            scope_predicate = _self_condition(Event.id, person_id)
+            scope_predicate = _self_scope_condition(
+                permission_code, Event.id, Event.club_id, Event.status, Event.start_at, person_id
+            )
         elif grant.scope_type == "children":
             scope_predicate = _child_condition(Event.id, Event.club_id, person_id)
         elif grant.scope_type == "none":

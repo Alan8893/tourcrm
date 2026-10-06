@@ -116,7 +116,9 @@ def _linked_event_out(
     if event is None:
         return None
     if not is_admin:
-        context = build_event_resource_context(db, event=event, user_id=user_id)
+        context = build_event_resource_context(
+            db, event=event, user_id=user_id, permission_code="event.read"
+        )
         if not Authorizer(session=db, user_id=user_id, permission_code="event.read").is_allowed(
             context
         ):

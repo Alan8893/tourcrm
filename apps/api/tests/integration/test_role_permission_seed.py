@@ -143,6 +143,7 @@ def test_non_admin_baseline_roles_receive_no_unexpected_grants() -> None:
             ("member", "trip.read"),
             ("guardian", "trip.read"),
             ("member", "group.read"),
+            ("member", "event.read"),
         }
 
 
@@ -219,9 +220,10 @@ def test_reapplying_admin_seed_after_downgrade_and_upgrade_is_idempotent(
         # (guardian, event.read) grant (migration 127da2741f20) and Issue
         # #245's four trip grants (instructor trip.read/trip.manage, member
         # trip.read, guardian trip.read; migration 3c1e9a7d5b20) and Issue
-        # #282's (member, group.read) grant (migration 5e2c8a41d7b9), all
-        # re-applied by the same upgrade-to-head above.
-        assert len(rows) == len(DOCUMENTED_PERMISSION_CODES) + 7
+        # #282's (member, group.read) grant (migration 5e2c8a41d7b9) and
+        # Issue #285's (member, event.read) grant (migration 9b4d6e2f8a10),
+        # all re-applied by the same upgrade-to-head above.
+        assert len(rows) == len(DOCUMENTED_PERMISSION_CODES) + 8
 
 
 # --- (5) downgrade removes only rows this migration introduced -------------

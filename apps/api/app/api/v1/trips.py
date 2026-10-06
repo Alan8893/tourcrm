@@ -95,7 +95,9 @@ def _get_authorized_event_or_404(
     if event is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
 
-    context = build_event_resource_context(db, event=event, user_id=user_id)
+    context = build_event_resource_context(
+        db, event=event, user_id=user_id, permission_code=permission_code
+    )
     authorizer = Authorizer(session=db, user_id=user_id, permission_code=permission_code)
     if not authorizer.is_allowed(context):
         # Deliberately identical to "does not exist" — see module docstring.

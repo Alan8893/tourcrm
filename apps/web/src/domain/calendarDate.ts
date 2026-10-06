@@ -172,3 +172,17 @@ export function formatTime(instant: string): string {
 export function formatDayMonth(instant: string): string {
   return new Date(instant).toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
 }
+
+/**
+ * Browser-timezone schedule entry date/time (Issue #285): "17 марта,
+ * 18:00–19:30", or "17 марта, 18:00 – 18 марта, 10:00" when the entry
+ * ends on another day.
+ */
+export function formatScheduleRange(startInstant: string, endInstant: string): string {
+  const start = formatDayMonth(startInstant);
+  const end = formatDayMonth(endInstant);
+  if (isSameDay(new Date(startInstant), new Date(endInstant))) {
+    return `${start}, ${formatTime(startInstant)}–${formatTime(endInstant)}`;
+  }
+  return `${start}, ${formatTime(startInstant)} – ${end}, ${formatTime(endInstant)}`;
+}

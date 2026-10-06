@@ -289,6 +289,8 @@ def test_canonical_grants_carry_exactly_the_decided_scopes() -> None:
     expected[("guardian", "trip.read")] = {"children"}
     # Issue #282, migration 5e2c8a41d7b9.
     expected[("member", "group.read")] = {"self"}
+    # Issue #285, migration 9b4d6e2f8a10.
+    expected[("member", "event.read")] = {"self"}
     assert by_grant == expected
 
 
