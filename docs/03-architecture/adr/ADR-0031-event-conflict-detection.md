@@ -108,7 +108,7 @@ Existing scope semantics remain authoritative:
 - `all` — according to existing allowed Club/object policy;
 - `own_events` / `assigned_events` — explicit event staffing/responsibility relationship;
 - `own_groups` — applicable explicit Group targeting relationship and existing Group authorization;
-- `self` — applicable participation relationship;
+- `self` — the `event.read` `self` object policy of ADR-0020 §2/§3 (Member Event visibility, PO decision 2026-10-06, Issue #285) — participation alone does not authorize;
 - `children` — applicable participation relationship plus existing GuardianRelationship/membership authorization;
 - `none` — no results.
 

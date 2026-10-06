@@ -604,7 +604,7 @@ Object-level policy is mandatory. A role name alone does not grant unrestricted 
 - `all` — all eligible club Events after permission, feature and object-policy checks;
 - `own_groups` — Events targeted to groups for which requester has an applicable responsible relationship;
 - `own_events` — Events explicitly assigned/responsible to requester;
-- `self` — requester's own participation/registration or explicitly self-visible Event data;
+- `self` — for `event.read`, the Member Event object policy (§4 "Member Event visibility", ADR-0020 §2/§3; PO decision 2026-10-06, Issue #285);
 - `children` — data for Persons linked through active GuardianRelationship and otherwise eligible under object policy;
 - `none` — no access.
 
