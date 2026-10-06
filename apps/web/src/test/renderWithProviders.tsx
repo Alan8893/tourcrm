@@ -52,7 +52,14 @@ export function renderWithProviders(
  */
 export function renderWithHistory(
   ui: ReactElement,
-  { initialEntries, client = createTestQueryClient() }: { initialEntries: string[]; client?: QueryClient },
+  {
+    initialEntries,
+    client = createTestQueryClient(),
+  }: {
+    /** Paths, or `{ pathname, state }` entries for a location carrying state. */
+    initialEntries: NonNullable<Parameters<typeof createMemoryRouter>[1]>["initialEntries"];
+    client?: QueryClient;
+  },
 ) {
   const router = createMemoryRouter([{ path: "*", element: ui }], { initialEntries });
   const result = render(

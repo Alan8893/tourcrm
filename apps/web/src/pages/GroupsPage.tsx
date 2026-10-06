@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Navigate } from "react-router-dom";
 
 import { PageHeader } from "../components/ui/PageHeader";
 import { SearchInput } from "../components/ui/SearchInput";
@@ -13,9 +14,10 @@ import { ErrorState } from "../components/ui/ErrorState";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { ObjectListItem } from "../components/ui/ObjectListItem";
 import { useNotify } from "../components/ui/notificationContext";
-import { useCurrentUser, currentClubId } from "../api/auth";
+import { useCurrentUser, currentClubId, type RoleAssignmentSummary } from "../api/auth";
 import { useArchiveGroup, useCreateGroup, useGroups, type Group } from "../api/groups";
 import { groupStatusIcon, groupStatusLabel, type GroupStatus } from "../domain/statusMapping";
+import { hasAdministratorRole } from "../shell/navigation";
 import styles from "./GroupsPage.module.css";
 
 const STATUS_OPTIONS = [
@@ -23,6 +25,20 @@ const STATUS_OPTIONS = [
   { value: "active", label: "Активные" },
   { value: "archived", label: "Архивные" },
 ];
+
+/** Location state GroupDetailPage reads to know it was reached through the
+ * Member single-group shortcut below. */
+export type GroupsShortcutState = { groupsShortcut: true };
+
+/** Issue #282 (PO decision 2026-10-06): the Member single-group shortcut
+ * applies to any user holding the `member` role — additional roles are a
+ * UNION (role-permission-scope-matrix.md §12) and do not cancel it — except
+ * an Administrator, who keeps the normal Groups list. UI navigation only:
+ * which Groups are visible is decided by the backend (`GET /groups`). */
+function usesMemberGroupsLanding(roleAssignments: readonly RoleAssignmentSummary[]): boolean {
+  const roleCodes = new Set(roleAssignments.map(({ role_code }) => role_code));
+  return roleCodes.has("member") && !roleCodes.has("admin");
+}
 
 export function GroupsPage() {
   const [search, setSearch] = useState("");
@@ -32,6 +48,11 @@ export function GroupsPage() {
 
   const meQuery = useCurrentUser();
   const clubId = currentClubId(meQuery.data);
+  const roleAssignments = meQuery.data?.role_assignments ?? [];
+  // group.manage is admin-only in the current MVP (people-api.md §14,
+  // role-permission-scope-matrix.md §6) — same UX-only convention as
+  // GroupDetailPage; the backend remains authoritative.
+  const canManageGroups = hasAdministratorRole(roleAssignments);
   const groupsQuery = useGroups(
     statusFilter ? { status: statusFilter as GroupStatus } : {},
   );
@@ -43,21 +64,50 @@ export function GroupsPage() {
     return items.filter((group) => group.name.toLowerCase().includes(needle));
   }, [groupsQuery.data, search]);
 
+  // Issue #282 single-group shortcut — decided only once both `/auth/me`
+  // and the authorized, unfiltered `/groups` collection have resolved.
+  const memberLanding = meQuery.isSuccess && usesMemberGroupsLanding(roleAssignments);
+  const onlyGroup =
+    memberLanding &&
+    !statusFilter &&
+    !search &&
+    groupsQuery.isSuccess &&
+    groupsQuery.data.pagination.total === 1 &&
+    groupsQuery.data.items.length === 1 &&
+    groupsQuery.data.items[0].status === "active"
+      ? groupsQuery.data.items[0]
+      : null;
+
+  if (onlyGroup) {
+    // `replace`: the list entry is never kept in history, so Back from the
+    // Group goes to wherever the user came from — no redirect loop.
+    const state: GroupsShortcutState = { groupsShortcut: true };
+    return <Navigate to={`/groups/${onlyGroup.id}`} replace state={state} />;
+  }
+
+  // Until the shortcut can be decided, render neither the list nor its
+  // toolbar — a single-group Member must never see the intermediate list.
+  if (meQuery.isPending || (memberLanding && groupsQuery.isPending)) {
+    return <Loading label="Загружаем группы…" />;
+  }
+
   return (
     <div>
       <PageHeader
         title="Группы"
         description="Учебные и туристские группы клуба."
         actions={
-          <Button
-            variant="primary"
-            icon="action.add"
-            disabled={!clubId}
-            title={clubId ? undefined : "Недоступно без привязки к клубу"}
-            onClick={() => setCreateOpen(true)}
-          >
-            Создать группу
-          </Button>
+          canManageGroups ? (
+            <Button
+              variant="primary"
+              icon="action.add"
+              disabled={!clubId}
+              title={clubId ? undefined : "Недоступно без привязки к клубу"}
+              onClick={() => setCreateOpen(true)}
+            >
+              Создать группу
+            </Button>
+          ) : undefined
         }
       />
 
@@ -90,7 +140,9 @@ export function GroupsPage() {
           description={
             search
               ? "Попробуйте изменить запрос или сбросить фильтр."
-              : "Создайте первую группу, чтобы начать работу."
+              : canManageGroups
+                ? "Создайте первую группу, чтобы начать работу."
+                : "Здесь появятся доступные вам группы."
           }
         />
       ) : null}
@@ -110,7 +162,7 @@ export function GroupsPage() {
                   />
                 }
                 actions={
-                  group.status === "active" ? (
+                  canManageGroups && group.status === "active" ? (
                     <Button variant="secondary" onClick={() => setArchiveTarget(group)}>
                       Архивировать
                     </Button>

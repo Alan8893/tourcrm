@@ -9,10 +9,25 @@ role), docs/03-architecture/adr/ADR-0013-scope-canonicalization.md,
 docs/05-api/people-api.md §14-16.
 
 Two canonical scopes apply to all three entities: `all` and `own_groups`.
-`self`/`children`/`own_events` are not applicable (no such relationship
-exists for Group/GroupMembership/GroupInstructorAssignment) and fail
-closed, matching app.people.guardian_authorization's treatment of
-inapplicable scopes.
+`children`/`own_events` are not applicable (no such relationship exists
+for Group/GroupMembership/GroupInstructorAssignment) and fail closed,
+matching app.people.guardian_authorization's treatment of inapplicable
+scopes.
+
+Member self visibility (Issue #282, PO decision 2026-10-05;
+role-permission-scope-matrix.md §6 "member: own membership"): under
+`group.read`, `self` resolves to the Groups in which the requester's own
+Person currently participates — authenticated User -> Person -> active
+`ClubMembership` in the Group's own Club -> active `GroupMembership`
+(`membership_status='active'` and a current `[valid_from, valid_to)`
+interval) -> Group. An ended/historical `GroupMembership`, a membership in
+another Club, and Club co-membership alone never match; an archived Group
+never matches `self` (same rule as `own_groups`). `self` is resolved ONLY
+for `GET /groups` (`group_visibility_filter`) and `GET /groups/{id}`
+(`build_group_resource_context(..., resolve_self_membership=True)`); the
+nested `members`/`instructors` reads, `group.manage` and the Group
+Schedule keep their own contracts and leave `is_self` unresolved (`None`,
+fail closed), so this rule widens none of them.
 
 `own_groups` here answers a simpler question than
 app.people.authorization's own `own_groups` resolution for Person/
@@ -58,8 +73,11 @@ from sqlalchemy.orm import Session, aliased
 from app.authorization.context import ResourceContext
 from app.authorization.service import applicable_grants
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
+from app.db.identity import ClubMembership, User
 
 ARCHIVED_GROUP_STATUS = "archived"
+_ACTIVE_CLUB_MEMBERSHIP_STATUS = "active"
+_ACTIVE_GROUP_MEMBERSHIP_STATUS = "active"
 
 
 def _active_interval(valid_from: Any, valid_to: Any) -> sa.ColumnElement[bool]:
@@ -83,22 +101,67 @@ def _own_group_condition(group_id: Any, requester_user_id: uuid.UUID) -> sa.Colu
     )
 
 
+def _self_membership_condition(
+    group_id: Any, group_club_id: Any, requester_user_id: uuid.UUID
+) -> sa.ColumnElement[bool]:
+    """`self` (Issue #282): the requesting User's own Person has an active
+    `GroupMembership` in `group_id`, held through an active
+    `ClubMembership` in the Group's own Club (`group_club_id`) — the same
+    relationship app.groups.schedule_authorization uses for its `self`
+    tier, evaluated *now*."""
+    gm = aliased(GroupMembership)
+    cm = aliased(ClubMembership)
+    requester_person_id = (
+        sa.select(User.person_id).where(User.id == requester_user_id).scalar_subquery()
+    )
+    return sa.exists(
+        sa.select(gm.id)
+        .join(cm, cm.id == gm.club_membership_id)
+        .where(
+            gm.group_id == group_id,
+            gm.membership_status == _ACTIVE_GROUP_MEMBERSHIP_STATUS,
+            _active_interval(gm.valid_from, gm.valid_to),
+            cm.person_id == requester_person_id,
+            cm.club_id == group_club_id,
+            cm.status == _ACTIVE_CLUB_MEMBERSHIP_STATUS,
+        )
+    )
+
+
 def build_group_resource_context(
     session: Session,
     *,
     group: Group,
     requester_user_id: uuid.UUID,
     archived_requires_all_scope: bool = False,
+    resolve_self_membership: bool = False,
 ) -> ResourceContext:
     """`archived_requires_all_scope=True` (the `group.read` item/nested-read
     endpoints) makes an archived Group reachable only through a
-    `scope_type='all'` assignment — see the module docstring."""
+    `scope_type='all'` assignment — see the module docstring.
+
+    `resolve_self_membership=True` (only `GET /groups/{id}`) additionally
+    resolves `is_self` from the requester's own active GroupMembership;
+    otherwise `is_self` stays `None` and `self` never matches."""
     if archived_requires_all_scope and group.status == ARCHIVED_GROUP_STATUS:
-        return ResourceContext(club_id=group.club_id, is_own_group=False)
+        return ResourceContext(
+            club_id=group.club_id,
+            is_own_group=False,
+            is_self=False if resolve_self_membership else None,
+        )
     is_own_group = session.execute(
         sa.select(_own_group_condition(group.id, requester_user_id))
     ).scalar()
-    return ResourceContext(club_id=group.club_id, is_own_group=bool(is_own_group))
+    is_self: bool | None = None
+    if resolve_self_membership:
+        is_self = bool(
+            session.execute(
+                sa.select(_self_membership_condition(group.id, group.club_id, requester_user_id))
+            ).scalar()
+        )
+    return ResourceContext(
+        club_id=group.club_id, is_own_group=bool(is_own_group), is_self=is_self
+    )
 
 
 def build_group_create_context(club_id: uuid.UUID) -> ResourceContext:
@@ -142,9 +205,9 @@ def group_visibility_filter(
     """Build the predicate for a Group list query (`.where(...)`
     referencing `Group.id`/`Group.club_id`), true only for Groups the
     acting user is authorized to see under `permission_code`. Used by
-    `GET /api/v1/groups`. An `own_groups` assignment only ever matches
-    active Groups — archived Groups are listed through `all` alone (see
-    the module docstring).
+    `GET /api/v1/groups`. An `own_groups` or `self` assignment only ever
+    matches active Groups — archived Groups are listed through `all` alone
+    (see the module docstring).
     """
     grants = applicable_grants(session, user_id, permission_code)
     if not grants:
@@ -161,10 +224,15 @@ def group_visibility_filter(
             scope_predicate = sa.and_(
                 Group.status != ARCHIVED_GROUP_STATUS, _own_group_condition(Group.id, user_id)
             )
+        elif grant.scope_type == "self":
+            scope_predicate = sa.and_(
+                Group.status != ARCHIVED_GROUP_STATUS,
+                _self_membership_condition(Group.id, Group.club_id, user_id),
+            )
         elif grant.scope_type == "none":
             scope_predicate = sa.false()
         else:
-            # self/children/own_events: not applicable to Group.
+            # children/own_events: not applicable to Group.
             continue
         clauses.append(sa.and_(club_boundary, scope_predicate))
 
