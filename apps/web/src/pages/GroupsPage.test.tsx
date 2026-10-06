@@ -345,7 +345,7 @@ describe("GroupsPage — Member landing (Issue #282)", () => {
     expect(screen.queryByRole("button", { name: "Архивировать" })).not.toBeInTheDocument();
   });
 
-  it("an Instructor who is also a Member keeps the normal list", async () => {
+  it("Member + Instructor with exactly one group is taken straight to its detail page", async () => {
     stubFetch([
       { match: "/auth/me", response: meResponse(["member", "instructor"]) },
       { match: "/groups", response: groupsResponse([group("g1", "Ориентирование")]) },
@@ -353,7 +353,48 @@ describe("GroupsPage — Member landing (Issue #282)", () => {
 
     const { router } = renderGroupsSection();
 
+    expect(await screen.findByText("detail:/groups/g1:shortcut")).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/groups/g1");
+  });
+
+  it("Member + Instructor with two or more groups sees the normal list", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse(["member", "instructor"]) },
+      {
+        match: "/groups",
+        response: groupsResponse([group("g1", "Ориентирование"), group("g2", "Скалолазание")]),
+      },
+    ]);
+
+    const { router } = renderGroupsSection();
+
+    expect(await screen.findByRole("link", { name: "Ориентирование" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Скалолазание" })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/groups");
+  });
+
+  it("Member + Instructor with zero groups sees the empty state", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse(["member", "instructor"]) },
+      { match: "/groups", response: groupsResponse([]) },
+    ]);
+
+    const { router } = renderGroupsSection();
+
+    expect(await screen.findByText("Пока нет ни одной группы")).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/groups");
+  });
+
+  it("Admin + Member with exactly one group keeps the normal Admin list", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse(["admin", "member"]) },
+      { match: "/groups", response: groupsResponse([group("g1", "Ориентирование")]) },
+    ]);
+
+    const { router } = renderGroupsSection();
+
     expect(await screen.findByRole("link", { name: "Ориентирование" })).toBeInTheDocument();
     expect(router.state.location.pathname).toBe("/groups");
+    expect(screen.getByRole("button", { name: "Создать группу" })).toBeInTheDocument();
   });
 });

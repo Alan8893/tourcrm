@@ -30,13 +30,14 @@ const STATUS_OPTIONS = [
  * Member single-group shortcut below. */
 export type GroupsShortcutState = { groupsShortcut: true };
 
-/** Issue #282: the Member single-group shortcut applies to a Member's
- * Groups landing only — a user who also holds `admin`/`instructor` keeps
- * the normal Groups list. UI navigation only: which Groups are visible is
- * decided by the backend (`GET /groups`, `group.read` + `self`). */
+/** Issue #282 (PO decision 2026-10-06): the Member single-group shortcut
+ * applies to any user holding the `member` role — additional roles are a
+ * UNION (role-permission-scope-matrix.md §12) and do not cancel it — except
+ * an Administrator, who keeps the normal Groups list. UI navigation only:
+ * which Groups are visible is decided by the backend (`GET /groups`). */
 function usesMemberGroupsLanding(roleAssignments: readonly RoleAssignmentSummary[]): boolean {
   const roleCodes = new Set(roleAssignments.map(({ role_code }) => role_code));
-  return roleCodes.has("member") && !roleCodes.has("admin") && !roleCodes.has("instructor");
+  return roleCodes.has("member") && !roleCodes.has("admin");
 }
 
 export function GroupsPage() {
