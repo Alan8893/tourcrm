@@ -192,7 +192,9 @@ def _make_event_staff_assignment(
     return EventStaffAssignment(**defaults)  # type: ignore[arg-type]
 
 
-def _make_event_group_target(event: Event, group: Group, **overrides: object) -> EventGroupTarget:
+def _make_event_group_target(
+    event: Event, group: Group, **overrides: object
+) -> EventGroupTarget:
     defaults: dict[str, object] = {
         "event_id": event.id,
         "group_id": group.id,
@@ -252,7 +254,11 @@ def _grant_permission(
                 scopes=[RolePermissionScope(scope_type=scope_type)],
             )
         )
-        session.add(UserRoleAssignment(user_id=user_id, role_id=role.id, club_id=club_id))
+        session.add(
+            UserRoleAssignment(
+                user_id=user_id, role_id=role.id, club_id=club_id
+            )
+        )
         session.commit()
 
 
@@ -722,7 +728,9 @@ def test_children_scope_denies_when_relationship_not_active(
         session.add(_make_club_membership(club, guardian_person))
         session.add(_make_club_membership(club, child_person))
         session.add(
-            _make_guardian_relationship(guardian_person, child_person, status=relationship_status)
+            _make_guardian_relationship(
+                guardian_person, child_person, status=relationship_status
+            )
         )
         session.add(_make_event_participation(event, child_person))
         session.commit()
@@ -1160,13 +1168,9 @@ def test_create_event_with_no_groups_is_club_wide(client: TestClient) -> None:
     assert body["instructor_ids"] == []
 
     with session_scope() as session:
-        targets = (
-            session.execute(
-                select(EventGroupTarget).where(EventGroupTarget.event_id == uuid.UUID(body["id"]))
-            )
-            .scalars()
-            .all()
-        )
+        targets = session.execute(
+            select(EventGroupTarget).where(EventGroupTarget.event_id == uuid.UUID(body["id"]))
+        ).scalars().all()
         assert targets == []
 
 
@@ -1197,13 +1201,9 @@ def test_create_event_with_one_group_creates_target(client: TestClient) -> None:
     assert body["group_ids"] == [str(group_id)]
 
     with session_scope() as session:
-        targets = (
-            session.execute(
-                select(EventGroupTarget).where(EventGroupTarget.event_id == uuid.UUID(body["id"]))
-            )
-            .scalars()
-            .all()
-        )
+        targets = session.execute(
+            select(EventGroupTarget).where(EventGroupTarget.event_id == uuid.UUID(body["id"]))
+        ).scalars().all()
         assert len(targets) == 1
         assert targets[0].group_id == group_id
         assert targets[0].valid_to is None
@@ -1238,13 +1238,9 @@ def test_create_event_with_multiple_groups_creates_all_targets(client: TestClien
     assert set(uuid.UUID(gid) for gid in body["group_ids"]) == group_ids
 
     with session_scope() as session:
-        targets = (
-            session.execute(
-                select(EventGroupTarget).where(EventGroupTarget.event_id == uuid.UUID(body["id"]))
-            )
-            .scalars()
-            .all()
-        )
+        targets = session.execute(
+            select(EventGroupTarget).where(EventGroupTarget.event_id == uuid.UUID(body["id"]))
+        ).scalars().all()
         assert {t.group_id for t in targets} == group_ids
 
 
@@ -1306,15 +1302,11 @@ def test_create_event_with_instructor_assignment_succeeds(client: TestClient) ->
     assert body["instructor_ids"] == [str(instructor_id)]
 
     with session_scope() as session:
-        assignments = (
-            session.execute(
-                select(EventStaffAssignment).where(
-                    EventStaffAssignment.event_id == uuid.UUID(body["id"])
-                )
+        assignments = session.execute(
+            select(EventStaffAssignment).where(
+                EventStaffAssignment.event_id == uuid.UUID(body["id"])
             )
-            .scalars()
-            .all()
-        )
+        ).scalars().all()
         assert len(assignments) == 1
         assert assignments[0].user_id == instructor_id
         assert assignments[0].role_in_event == "instructor"
@@ -1359,7 +1351,9 @@ def test_create_event_with_instructor_from_another_club_is_rejected(client: Test
         creator = _make_user(creator_person)
         instructor_person = _make_person()
         instructor = _make_user(instructor_person)
-        session.add_all([club, other_club, creator_person, creator, instructor_person, instructor])
+        session.add_all(
+            [club, other_club, creator_person, creator, instructor_person, instructor]
+        )
         session.commit()
         session.add(_make_club_membership(other_club, instructor_person))
         session.commit()
@@ -1407,15 +1401,11 @@ def test_group_targeting_does_not_create_participation(client: TestClient) -> No
     assert response.status_code == 201, response.text
 
     with session_scope() as session:
-        participations = (
-            session.execute(
-                select(EventParticipation).where(
-                    EventParticipation.event_id == uuid.UUID(response.json()["id"])
-                )
+        participations = session.execute(
+            select(EventParticipation).where(
+                EventParticipation.event_id == uuid.UUID(response.json()["id"])
             )
-            .scalars()
-            .all()
-        )
+        ).scalars().all()
         assert participations == []
 
 
@@ -1446,15 +1436,11 @@ def test_instructor_assignment_does_not_create_group_membership(client: TestClie
     assert response.status_code == 201, response.text
 
     with session_scope() as session:
-        instructor_assignments = (
-            session.execute(
-                select(GroupInstructorAssignment).where(
-                    GroupInstructorAssignment.user_id == instructor_id
-                )
+        instructor_assignments = session.execute(
+            select(GroupInstructorAssignment).where(
+                GroupInstructorAssignment.user_id == instructor_id
             )
-            .scalars()
-            .all()
-        )
+        ).scalars().all()
         assert instructor_assignments == []
         group_memberships = session.execute(select(GroupMembership)).scalars().all()
         assert group_memberships == []
@@ -1488,27 +1474,25 @@ def test_repeated_identical_update_does_not_duplicate_targeting(client: TestClie
     _authenticate_as(user_id)
 
     payload = {"group_ids": [str(group_id)], "instructor_ids": [str(instructor_id)]}
-    first = client.patch(f"/api/v1/events/{event_id}", json=payload, headers=_csrf_headers(client))
+    first = client.patch(
+        f"/api/v1/events/{event_id}", json=payload, headers=_csrf_headers(client)
+    )
     assert first.status_code == 200, first.text
-    second = client.patch(f"/api/v1/events/{event_id}", json=payload, headers=_csrf_headers(client))
+    second = client.patch(
+        f"/api/v1/events/{event_id}", json=payload, headers=_csrf_headers(client)
+    )
     assert second.status_code == 200, second.text
     assert second.json()["group_ids"] == [str(group_id)]
     assert second.json()["instructor_ids"] == [str(instructor_id)]
 
     with session_scope() as session:
-        targets = (
-            session.execute(select(EventGroupTarget).where(EventGroupTarget.event_id == event_id))
-            .scalars()
-            .all()
-        )
+        targets = session.execute(
+            select(EventGroupTarget).where(EventGroupTarget.event_id == event_id)
+        ).scalars().all()
         assert len(targets) == 1
-        assignments = (
-            session.execute(
-                select(EventStaffAssignment).where(EventStaffAssignment.event_id == event_id)
-            )
-            .scalars()
-            .all()
-        )
+        assignments = session.execute(
+            select(EventStaffAssignment).where(EventStaffAssignment.event_id == event_id)
+        ).scalars().all()
         assert len(assignments) == 1
 
 
@@ -1637,13 +1621,17 @@ def test_create_event_rolls_back_entirely_on_group_target_failure(client: TestCl
     unique_title = f"Atomicity check {uuid.uuid4().hex[:8]}"
     response = client.post(
         "/api/v1/events",
-        json=_create_event_payload(club_id, title=unique_title, group_ids=[str(foreign_group_id)]),
+        json=_create_event_payload(
+            club_id, title=unique_title, group_ids=[str(foreign_group_id)]
+        ),
         headers=_csrf_headers(client),
     )
     assert response.status_code == 422, response.text
 
     with session_scope() as session:
-        orphaned = session.execute(select(Event).where(Event.title == unique_title)).scalars().all()
+        orphaned = session.execute(
+            select(Event).where(Event.title == unique_title)
+        ).scalars().all()
         assert orphaned == []
 
 

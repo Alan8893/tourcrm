@@ -696,7 +696,9 @@ def test_concurrent_successor_creation_yields_exactly_one_winner() -> None:
 
         with session_scope() as check:
             successor_count = (
-                check.execute(select(EventSeries).where(EventSeries.supersedes_series_id == v1_id))
+                check.execute(
+                    select(EventSeries).where(EventSeries.supersedes_series_id == v1_id)
+                )
                 .scalars()
                 .all()
             )
@@ -1097,7 +1099,9 @@ def test_occurrence_with_existing_cancelled_exception_cannot_be_rescheduled() ->
         assert fresh is not None
         assert fresh.status == "cancelled"
         exception = verify.execute(
-            select(EventOccurrenceException).where(EventOccurrenceException.occurrence_id == occ.id)
+            select(EventOccurrenceException).where(
+                EventOccurrenceException.occurrence_id == occ.id
+            )
         ).scalar_one()
         assert exception.exception_type == "cancelled"
 

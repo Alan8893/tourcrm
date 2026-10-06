@@ -1326,7 +1326,9 @@ def update_event_document_requirement_endpoint(
     _require_document_permission_for_event_or_404(
         db, event=event, user_id=principal.user_id, permission_code="document.manage"
     )
-    requirement = _get_authorized_requirement_or_404(db, event=event, requirement_id=requirement_id)
+    requirement = _get_authorized_requirement_or_404(
+        db, event=event, requirement_id=requirement_id
+    )
 
     requirement = update_event_document_requirement(
         db, requirement=requirement, required=payload.required
@@ -1352,7 +1354,9 @@ def delete_event_document_requirement_endpoint(
     _require_document_permission_for_event_or_404(
         db, event=event, user_id=principal.user_id, permission_code="document.manage"
     )
-    requirement = _get_authorized_requirement_or_404(db, event=event, requirement_id=requirement_id)
+    requirement = _get_authorized_requirement_or_404(
+        db, event=event, requirement_id=requirement_id
+    )
 
     delete_event_document_requirement(db, requirement=requirement)
 
@@ -1383,7 +1387,7 @@ def _package_content_disposition(event_title: str) -> str:
     base_name = f"competition-documents-{sanitized}.zip"
     ascii_fallback = base_name.encode("ascii", errors="replace").decode("ascii").replace("?", "_")
     encoded = quote(base_name, safe="")
-    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
+    return f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{encoded}'
 
 
 @router.post("/{event_id}/document-package")

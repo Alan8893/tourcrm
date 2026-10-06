@@ -154,7 +154,9 @@ def _grant_permission(
             scopes=[RolePermissionScope(scope_type=scope_type)],
         )
     )
-    session.add(UserRoleAssignment(user_id=user_id, role_id=role.id, club_id=club_id))
+    session.add(
+        UserRoleAssignment(user_id=user_id, role_id=role.id, club_id=club_id)
+    )
     session.commit()
 
 

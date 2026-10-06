@@ -110,6 +110,10 @@ def _active_interval(valid_from: Any, valid_to: Any) -> sa.ColumnElement[bool]:
     return sa.and_(valid_from <= now, sa.or_(valid_to.is_(None), now < valid_to))
 
 
+def _effective_at(valid_from: Any, valid_to: Any, instant: Any) -> sa.ColumnElement[bool]:
+    return sa.and_(valid_from <= instant, sa.or_(valid_to.is_(None), instant < valid_to))
+
+
 def _person_id_for_user(session: Session, user_id: uuid.UUID) -> uuid.UUID:
     return session.execute(sa.select(User.person_id).where(User.id == user_id)).scalar_one()
 
@@ -168,7 +172,11 @@ def _self_condition(occurrence_id: Any, person_id: Any) -> sa.ColumnElement[bool
 
 
 def _member_occurrence_read_condition(
-    occurrence_id: Any, occurrence_club_id: Any, occurrence_series_id: Any, person_id: Any
+    occurrence_id: Any,
+    occurrence_club_id: Any,
+    occurrence_series_id: Any,
+    occurrence_starts_at: Any,
+    person_id: Any,
 ) -> sa.ColumnElement[bool]:
     """ADR-0029 `self` for `event.read` (Issue #285): the Member Event
     object policy of ADR-0020 §2/§3 at occurrence level — a recurring
@@ -178,7 +186,14 @@ def _member_occurrence_read_condition(
     active ClubMembership — in a Group of that Club with an active
     `EventOccurrenceGroupTarget` for the occurrence. See module docstring
     for the recurring-only restriction. Each EXISTS is one level deep and
-    explicitly correlated to the outer occurrence."""
+    explicitly correlated to the outer occurrence.
+
+    Targeting is decided by each `EventOccurrenceGroupTarget`'s
+    `[valid_from, valid_to)` at the occurrence's own `starts_at` (ADR-0030;
+    same rule as app.events.group_schedule), so a target whose validity
+    starts later than "now" still makes the occurrence targeted and never
+    lets it fall back to club-wide (fail closed). Memberships are
+    evaluated now."""
     if occurrence_series_id is None:
         return sa.false()
     is_recurring: sa.ColumnElement[bool] = (
@@ -203,7 +218,7 @@ def _member_occurrence_read_condition(
         sa.select(any_target.id)
         .where(
             any_target.occurrence_id == occurrence_id,
-            _active_interval(any_target.valid_from, any_target.valid_to),
+            _effective_at(any_target.valid_from, any_target.valid_to, occurrence_starts_at),
         )
         .correlate(EventOccurrence)
     )
@@ -221,7 +236,7 @@ def _member_occurrence_read_condition(
         )
         .where(
             target.occurrence_id == occurrence_id,
-            _active_interval(target.valid_from, target.valid_to),
+            _effective_at(target.valid_from, target.valid_to, occurrence_starts_at),
             grp.club_id == occurrence_club_id,
             group_membership.membership_status == _ACTIVE_GROUP_MEMBERSHIP_STATUS,
             _active_interval(group_membership.valid_from, group_membership.valid_to),
@@ -244,12 +259,13 @@ def _self_scope_condition(
     occurrence_id: Any,
     occurrence_club_id: Any,
     occurrence_series_id: Any,
+    occurrence_starts_at: Any,
     person_id: Any,
 ) -> sa.ColumnElement[bool]:
     """`self` for `permission_code` — see module docstring."""
     if permission_code == _EVENT_READ_PERMISSION:
         return _member_occurrence_read_condition(
-            occurrence_id, occurrence_club_id, occurrence_series_id, person_id
+            occurrence_id, occurrence_club_id, occurrence_series_id, occurrence_starts_at, person_id
         )
     return _self_condition(occurrence_id, person_id)
 
@@ -356,6 +372,7 @@ def build_occurrence_resource_context(
                 occurrence.id,
                 occurrence.club_id,
                 occurrence.series_id,
+                occurrence.starts_at,
                 person_id,
             )
         )
@@ -418,7 +435,9 @@ def occurrence_visibility_filter(
     clauses: list[sa.ColumnElement[bool]] = []
     for grant in grants:
         club_boundary: sa.ColumnElement[bool] = (
-            sa.true() if grant.club_id is None else EventOccurrence.club_id == grant.club_id
+            sa.true()
+            if grant.club_id is None
+            else EventOccurrence.club_id == grant.club_id
         )
         if grant.scope_type == "all":
             scope_predicate: sa.ColumnElement[bool] = sa.true()
@@ -434,6 +453,7 @@ def occurrence_visibility_filter(
                 EventOccurrence.id,
                 EventOccurrence.club_id,
                 EventOccurrence.series_id,
+                EventOccurrence.starts_at,
                 person_id,
             )
         elif grant.scope_type == "children":

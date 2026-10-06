@@ -227,7 +227,9 @@ def _build_recurrence(
             series_end_at=series_end_at,
         )
     except RecurrenceError as exc:
-        raise APIError(status.HTTP_400_BAD_REQUEST, "invalid_recurrence_rule", str(exc)) from exc
+        raise APIError(
+            status.HTTP_400_BAD_REQUEST, "invalid_recurrence_rule", str(exc)
+        ) from exc
 
 
 def _raise_for_domain_error(exc: Exception) -> NoReturn:
@@ -534,7 +536,11 @@ def list_series_occurrences(
     if to is not None:
         stmt = stmt.where(EventOccurrence.starts_at <= to)
     total = len(db.execute(stmt).scalars().all())
-    stmt = stmt.order_by(EventOccurrence.starts_at).offset((page - 1) * page_size).limit(page_size)
+    stmt = (
+        stmt.order_by(EventOccurrence.starts_at)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     rows = db.execute(stmt).scalars().all()
 
     items = []

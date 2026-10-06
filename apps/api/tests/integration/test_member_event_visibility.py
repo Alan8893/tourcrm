@@ -53,6 +53,8 @@ from app.db.events import Event, EventGroupTarget, EventParticipation
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
 from app.db.identity import Club, ClubMembership, Person, User
 from app.db.session import session_scope
+from app.events.materialization import materialize_occurrences
+from app.events.series_relationships import create_series_group_target
 from app.main import app
 
 from .conftest import requires_postgres
@@ -60,6 +62,7 @@ from .conftest import requires_postgres
 _NOW = datetime.datetime.now(datetime.timezone.utc)
 _LONG_AGO = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
 _YESTERDAY = _NOW - datetime.timedelta(days=1)
+_TOMORROW = _NOW + datetime.timedelta(days=1)
 # Future items: ODR-0002 `self` Group Schedule access is future-only.
 _START = (_NOW + datetime.timedelta(days=2)).replace(microsecond=0)
 _SCHEDULE_RANGE = {
@@ -717,6 +720,134 @@ def test_occurrence_backing_an_ordinary_event_is_not_treated_as_club_wide(
     _authenticate_as(user_id)
 
     assert client.get(f"/api/v1/events/occurrences/{linked_occurrence_id}").status_code == 404
+
+
+def _materialized_series_occurrence(
+    session: Session, club: Club, *, target: Group | None, target_valid_from: datetime.datetime
+) -> EventOccurrence:
+    """The real recurring path: an EventSeries (optionally targeted to
+    `target` through a SeriesGroupTarget) materialized by
+    app.events.materialization, which copies the target into an
+    occurrence-level EventOccurrenceGroupTarget (ADR-0030)."""
+    actor = _user(session, _person(session))
+    series = _series(session, club)
+    if target is not None:
+        create_series_group_target(
+            session,
+            event_series_id=series.id,
+            group_id=target.id,
+            valid_from=target_valid_from,
+            actor_user_id=actor.id,
+        )
+    created = materialize_occurrences(
+        session, series=series, horizon_end=_START + datetime.timedelta(hours=1)
+    )
+    assert len(created) == 1
+    return created[0]
+
+
+@requires_postgres
+@pytest.mark.parametrize(
+    "target_valid_from", [_LONG_AGO, _TOMORROW], ids=["target-in-force", "target-starts-later"]
+)
+def test_series_targeted_to_group_a_is_invisible_to_a_member_of_group_b(
+    client: TestClient, target_valid_from: datetime.datetime
+) -> None:
+    # Review scenario: recurring series targeted to Group A; a Member whose
+    # only active GroupMembership is in Group B must not see its occurrence
+    # — also when the target's validity starts after "now" (it is still in
+    # force at the occurrence's own start, so the occurrence is targeted and
+    # never falls back to club-wide).
+    with session_scope() as session:
+        club = _club(session)
+        group_a = _group(session, club)
+        group_b = _group(session, club)
+        member_b, _person_b, membership_b = _member(session, club)
+        _group_membership(session, group_b, membership_b)
+        member_a, _person_a, membership_a = _member(session, club)
+        _group_membership(session, group_a, membership_a)
+        occurrence = _materialized_series_occurrence(
+            session, club, target=group_a, target_valid_from=target_valid_from
+        )
+        target_groups = (
+            session.execute(
+                select(EventOccurrenceGroupTarget.group_id).where(
+                    EventOccurrenceGroupTarget.occurrence_id == occurrence.id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        session.commit()
+        occurrence_id, member_b_id, member_a_id = occurrence.id, member_b.id, member_a.id
+    assert target_groups == [group_a.id]  # the occurrence-level target exists
+
+    _authenticate_as(member_b_id)
+    assert str(occurrence_id) not in _calendar_ids(client)
+    assert client.get(f"/api/v1/events/occurrences/{occurrence_id}").status_code == 404
+
+    _authenticate_as(member_a_id)
+    assert str(occurrence_id) in _calendar_ids(client)
+    assert client.get(f"/api/v1/events/occurrences/{occurrence_id}").status_code == 200
+
+
+@requires_postgres
+def test_event_targeted_to_group_a_with_later_starting_target_is_invisible_to_group_b(
+    client: TestClient,
+) -> None:
+    # Ordinary-Event counterpart: an EventGroupTarget whose validity starts
+    # after "now" (but before the Event) still makes the Event targeted. Its
+    # ADR-0033 linked occurrence (no occurrence-level targets) is not
+    # readable as a recurring occurrence either.
+    with session_scope() as session:
+        club = _club(session)
+        group_a = _group(session, club)
+        group_b = _group(session, club)
+        member_b, _person_b, membership_b = _member(session, club)
+        _group_membership(session, group_b, membership_b)
+        member_a, _person_a, membership_a = _member(session, club)
+        _group_membership(session, group_a, membership_a)
+        event = _event(session, club)
+        session.add(EventGroupTarget(event_id=event.id, group_id=group_a.id, valid_from=_TOMORROW))
+        linked_occurrence_id = session.execute(
+            select(EventOccurrence.id).where(EventOccurrence.event_id == event.id)
+        ).scalar_one()
+        session.commit()
+        event_id, member_b_id, member_a_id = event.id, member_b.id, member_a.id
+
+    _authenticate_as(member_b_id)
+    assert str(event_id) not in _list_ids(client)
+    assert str(event_id) not in _calendar_ids(client)
+    assert _detail_status(client, event_id) == 404
+    assert client.get(f"/api/v1/events/occurrences/{linked_occurrence_id}").status_code == 404
+
+    _authenticate_as(member_a_id)
+    assert str(event_id) in _list_ids(client)
+    assert _detail_status(client, event_id) == 200
+
+
+@requires_postgres
+def test_untargeted_materialized_series_occurrence_is_club_wide(client: TestClient) -> None:
+    # Review scenario: a recurring occurrence with no GroupTarget is
+    # club-wide — readable with an active ClubMembership in its Club, never
+    # from another Club.
+    with session_scope() as session:
+        club = _club(session)
+        member, _person_row, _membership = _member(session, club)
+        outsider, _outsider_person, _outsider_membership = _member(session, _club(session))
+        occurrence = _materialized_series_occurrence(
+            session, club, target=None, target_valid_from=_LONG_AGO
+        )
+        session.commit()
+        occurrence_id, member_id, outsider_id = occurrence.id, member.id, outsider.id
+
+    _authenticate_as(member_id)
+    assert str(occurrence_id) in _calendar_ids(client)
+    assert client.get(f"/api/v1/events/occurrences/{occurrence_id}").status_code == 200
+
+    _authenticate_as(outsider_id)
+    assert str(occurrence_id) not in _calendar_ids(client)
+    assert client.get(f"/api/v1/events/occurrences/{occurrence_id}").status_code == 404
 
 
 # --- Group Schedule (ODR-0002 `self`, unchanged) ------------------------------
