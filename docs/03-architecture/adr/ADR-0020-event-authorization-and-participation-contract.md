@@ -54,8 +54,12 @@ The existing ADR-0013 vocabulary remains canonical:
   applicable responsible/ownership relationship;
 - `own_events` — Events for which the requester is explicitly assigned or
   responsible;
-- `self` — only the requester's own participation/registration or explicitly
-  self-visible Event data;
+- `self` — Member Event visibility follows the canonical Member object policy:
+  an active GroupMembership authorizes Events explicitly targeted to that Group,
+  while an Event with no active GroupTarget (club-wide Event) is readable within
+  the Member's active ClubMembership. EventParticipation is not required for
+  this visibility. This does not grant access to Events targeted only to unrelated
+  Groups or to Events in another Club;
 - `children` — only Event data related to persons connected to the requester
   through an active GuardianRelationship and otherwise allowed by policy;
 - `none` — no access.
