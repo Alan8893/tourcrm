@@ -56,6 +56,8 @@ Backend обязан ограничивать результаты по canonica
 - ended/historical GroupMembership не авторизует текущий доступ;
 - Event другого Club и Event, targeted only to unrelated Groups, недоступны;
 - `draft` Event недоступен до публикации (ADR-0018);
+- **активность GroupTarget** (PO decision 2026-10-06, Issue #285): для этой policy `EventGroupTarget` считается активным, если он действует на момент начала самого Event — `valid_from <= Event.start_at` и (`valid_to IS NULL` или `Event.start_at < valid_to`); для recurring EventOccurrence occurrence-level GroupTarget считается активным при `valid_from <= occurrence.starts_at` и (`valid_to IS NULL` или `occurrence.starts_at < valid_to`). Текущее время (`now()`) для определения активности GroupTarget не используется; GroupMembership и ClubMembership Member проверяются на текущий момент;
+- авторизация recurring EventOccurrence использует только occurrence-level GroupTargets; series-level GroupTargets при авторизации occurrence самостоятельно не учитываются;
 - та же policy применяется к recurring EventOccurrences в calendar projection через occurrence-level GroupTarget (ADR-0029);
 - authorization filtering выполняется backend до count, pagination и serialization.
 

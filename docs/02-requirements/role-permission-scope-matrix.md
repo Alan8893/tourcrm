@@ -156,7 +156,7 @@ For Member, `event.read(self)` is defined by the Member Event object policy in A
 1. the Event has no active GroupTarget (club-wide Event); or
 2. the Member has an active GroupMembership in at least one Group actively targeted by the Event.
 
-EventParticipation is not required and does not by itself authorize: an Event targeted only to unrelated Groups is not readable even if the Member has an EventParticipation for it. Historical/ended GroupMembership and Events of another Club never authorize. The same policy applies to recurring EventOccurrences in the calendar (ADR-0029). A `draft` Event is not available before publication (ADR-0018). Member receives read access only.
+EventParticipation is not required and does not by itself authorize: an Event targeted only to unrelated Groups is not readable even if the Member has an EventParticipation for it. Historical/ended GroupMembership and Events of another Club never authorize. The same policy applies to recurring EventOccurrences in the calendar (ADR-0029), using occurrence-level GroupTargets only. A GroupTarget is active for this policy when it is in force at the start of the Event/occurrence being authorized (`events-api.md` §4); the Member's memberships are checked at the current time. A `draft` Event is not available before publication (ADR-0018). Member receives read access only.
 
 ## 8. Attendance
 
