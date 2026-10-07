@@ -598,6 +598,9 @@ Canonical stored-значения `status`: `active`, `inactive`, `revoked`. Д�
 
 ### GET `/api/v1/me/children`
 
+Permission: `guardian_relationship.read` with scope `children` for the standard `guardian` role. The endpoint resolves the authenticated Guardian's own active, interval-valid `GuardianRelationship` records; no client-supplied guardian/person/child ID is accepted as authorization input. A global role grant (`club_id IS NULL`) is used because `GuardianRelationship` is Club-neutral.
+
+
 Возвращает детей текущего authenticated guardian только по active, interval-valid `GuardianRelationship` и при выполнении authorization policy (`guardian_relationship.read`).
 
 Endpoint не принимает `guardian_id`, `person_id` или любой другой client-supplied UUID, который мог бы подменить собой authenticated principal — единственный источник идентичности requester это сессия. Наличие такого параметра в query не является и не может являться доказательством права доступа.
