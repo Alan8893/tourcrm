@@ -5,11 +5,13 @@ recorded on Issue #218).
     GET  /memberships/exports/fields   canonical export-field allowlist
     GET  /memberships/exports/filters  canonical filter values (participation_status)
     POST /memberships/exports          synchronous export (xlsx | pdf | print)
+    POST /memberships/exports/preview  one page of the same dataset (Issue #299)
 
-Administrator-only. Every format goes through the same single
-`app.exports.service.build_participant_export` call — one authorization
-policy and one canonical dataset; the format only selects the renderer
-(§7, §9). Status codes: 401 unauthenticated, 403 not an Administrator of
+Administrator-only. Every format and the report preview go through the
+same single `app.exports.service.build_participant_export` call — one
+authorization policy and one canonical dataset; the format only selects the
+renderer and the preview only a page of the rows (§7, §9). Status
+codes: 401 unauthenticated, 403 not an Administrator of
 the current Club or missing an existing `all`-scope read grant for the
 exported data, 422 invalid context/filter combination or unknown/
 unavailable/empty fields, 404 Group/Event nonexistent or of another Club
@@ -21,6 +23,7 @@ personal data. The export performs reads only.
 """
 
 import logging
+import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -33,12 +36,17 @@ from app.api.deps import (
     require_csrf_token,
 )
 from app.api.errors import APIError
+from app.api.schemas import Pagination
 from app.api.v1.membership_exports_schemas import (
+    ExportColumnOut,
     ExportFieldOut,
     ExportFieldsOut,
     ExportFilterOptionOut,
     ExportFiltersOut,
+    ParticipantExportPreviewOut,
+    ParticipantExportPreviewRequest,
     ParticipantExportRequest,
+    ParticipantExportSelection,
 )
 from app.db.session import get_db
 from app.exports import rendering
@@ -109,6 +117,71 @@ def list_export_filters(
     )
 
 
+def _build_dataset(
+    db: Session,
+    *,
+    user_id: uuid.UUID,
+    selection: ParticipantExportSelection,
+    window: export_service.ExportWindow | None = None,
+) -> export_service.ParticipantExportDataset:
+    """The one call into the canonical export service, with its errors
+    mapped to the documented status codes — shared by the export and the
+    preview so neither can authorize, validate or select differently."""
+    try:
+        return export_service.build_participant_export(
+            db,
+            user_id=user_id,
+            request=export_service.ParticipantExportRequest(
+                context=selection.context,
+                fields=tuple(selection.fields),
+                group_id=selection.group_id,
+                event_id=selection.event_id,
+                membership_status=selection.membership_status,
+                participation_status=selection.participation_status,
+            ),
+            window=window,
+        )
+    except export_service.ExportRequestError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, exc.code, exc.message, details=exc.details
+        ) from exc
+    except export_service.ExportTargetNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL[exc.target]
+        ) from exc
+
+
+@router.post("/preview", response_model=ParticipantExportPreviewOut)
+def preview_participant_export(
+    payload: ParticipantExportPreviewRequest,
+    principal: CurrentPrincipal = Depends(require_authenticated_principal),
+    db: Session = Depends(get_db),
+    _csrf: None = Depends(require_csrf_token),
+) -> ParticipantExportPreviewOut:
+    """One page of the canonical export dataset for the interactive report
+    «Участники мероприятий» (Issue #299). Same request selection, same
+    authorization and validation as `POST /memberships/exports`; cells are
+    the text the PDF/print representations render."""
+    dataset = _build_dataset(
+        db,
+        user_id=principal.user_id,
+        selection=payload,
+        window=export_service.ExportWindow(page=payload.page, page_size=payload.page_size),
+    )
+    pages = (dataset.total + payload.page_size - 1) // payload.page_size if dataset.total else 0
+    return ParticipantExportPreviewOut(
+        title=dataset.title,
+        columns=[
+            ExportColumnOut(field_code=column.code, label=column.label)
+            for column in dataset.columns
+        ],
+        items=[[rendering.format_cell(value) for value in row] for row in dataset.rows],
+        pagination=Pagination(
+            page=payload.page, page_size=payload.page_size, total=dataset.total, pages=pages
+        ),
+    )
+
+
 @router.post(
     "",
     response_class=Response,
@@ -129,27 +202,7 @@ def export_participants(
     db: Session = Depends(get_db),
     _csrf: None = Depends(require_csrf_token),
 ) -> Response:
-    try:
-        dataset = export_service.build_participant_export(
-            db,
-            user_id=principal.user_id,
-            request=export_service.ParticipantExportRequest(
-                context=payload.context,
-                fields=tuple(payload.fields),
-                group_id=payload.group_id,
-                event_id=payload.event_id,
-                membership_status=payload.membership_status,
-                participation_status=payload.participation_status,
-            ),
-        )
-    except export_service.ExportRequestError as exc:
-        raise APIError(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, exc.code, exc.message, details=exc.details
-        ) from exc
-    except export_service.ExportTargetNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL[exc.target]
-        ) from exc
+    dataset = _build_dataset(db, user_id=principal.user_id, selection=payload)
 
     logger.info(
         "memberships.export.generated user_id=%s context=%s format=%s fields=%d rows=%d",

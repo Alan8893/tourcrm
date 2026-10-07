@@ -95,6 +95,21 @@ describe("Import / Export — Administrator visibility", () => {
     );
   });
 
+  it("Administrator sees «Участники мероприятий» in Отчёты (Issue #299)", async () => {
+    await renderAppAt("/reports", ["admin"]);
+
+    expect(await screen.findByRole("link", { name: /Участники мероприятий/ })).toHaveAttribute(
+      "href",
+      "/reports/event-participants",
+    );
+  });
+
+  it("Administrator can open the «Участники мероприятий» report directly", async () => {
+    await renderAppAt("/reports/event-participants", ["admin"]);
+    expect(await screen.findByRole("heading", { name: "Участники мероприятий" })).toBeInTheDocument();
+    expect(screen.queryByText("Раздел недоступен")).not.toBeInTheDocument();
+  });
+
   it("Administrator can open Import directly", async () => {
     await renderAppAt("/people/import", ["admin"]);
     expect(await screen.findByRole("heading", { name: "Импорт участников" })).toBeInTheDocument();
@@ -122,12 +137,16 @@ describe("Import / Export — direct URLs for non-administrators render 403", ()
     { role: "member", path: "/reports/export" },
     { role: "guardian", path: "/people/import" },
     { role: "guardian", path: "/reports/export" },
+    { role: "instructor", path: "/reports/event-participants" },
+    { role: "member", path: "/reports/event-participants" },
+    { role: "guardian", path: "/reports/event-participants" },
   ])("$role → $path", async ({ role, path }) => {
     const fetchMock = await renderAppAt(path, [role]);
 
     expect(await screen.findByText("Раздел недоступен")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Импорт участников" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Экспорт участников" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Участники мероприятий" })).not.toBeInTheDocument();
     expect(requested(fetchMock, "/memberships/imports")).toBe(false);
     expect(requested(fetchMock, "/memberships/exports")).toBe(false);
   });

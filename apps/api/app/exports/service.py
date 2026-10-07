@@ -13,10 +13,13 @@ in order and exactly once per export, whatever the output format:
    and one of another Club are indistinguishable (404);
 5. canonical dataset construction (app.exports.queries).
 
-The output formats (app.exports.rendering) only present the returned
-dataset; they never query or authorize anything themselves (§7). The export
-never changes Person, Membership, GroupMembership or EventParticipation
-(§8) — this module performs reads only.
+The output formats (app.exports.rendering) and the interactive report
+preview (Issue #299, «Отчёты → Участники мероприятий») only present the
+returned dataset; they never query or authorize anything themselves (§7).
+The preview differs only in asking for one `ExportWindow` (page) of the
+same ordered rows, with the total row count taken from the same statement.
+The export never changes Person, Membership, GroupMembership or
+EventParticipation (§8) — this module performs reads only.
 """
 
 import uuid
@@ -85,13 +88,30 @@ class ParticipantExportRequest:
 
 
 @dataclass(frozen=True)
+class ExportWindow:
+    """One page of the canonical row order (the report preview); `page`
+    is 1-based."""
+
+    page: int
+    page_size: int
+
+    @property
+    def offset(self) -> int:
+        return (self.page - 1) * self.page_size
+
+
+@dataclass(frozen=True)
 class ParticipantExportDataset:
-    """The one canonical dataset every output format renders."""
+    """The one canonical dataset every output format renders.
+
+    `rows` holds every row, or only the requested `ExportWindow`; `total`
+    is always the row count of the whole dataset."""
 
     title: str
     generated_at: datetime
     columns: tuple[ExportField, ...]
     rows: tuple[tuple[CellValue, ...], ...]
+    total: int
 
 
 def guardian_cells(
@@ -246,6 +266,7 @@ def build_participant_export(
     *,
     user_id: uuid.UUID,
     request: ParticipantExportRequest,
+    window: ExportWindow | None = None,
     now: datetime | None = None,
 ) -> ParticipantExportDataset:
     club_id = resolve_sole_club_id(session)
@@ -270,14 +291,31 @@ def build_participant_export(
         else None
     )
 
+    group_id = group.id if group is not None else None
+    event_id = event.id if event is not None else None
     persons = queries.list_export_persons(
         session,
         context=request.context,
         club_id=club_id,
-        group_id=group.id if group is not None else None,
-        event_id=event.id if event is not None else None,
+        group_id=group_id,
+        event_id=event_id,
         membership_status=membership_status,
         participation_status=request.participation_status,
+        offset=window.offset if window is not None else None,
+        limit=window.page_size if window is not None else None,
+    )
+    total = (
+        len(persons)
+        if window is None
+        else queries.count_export_persons(
+            session,
+            context=request.context,
+            club_id=club_id,
+            group_id=group_id,
+            event_id=event_id,
+            membership_status=membership_status,
+            participation_status=request.participation_status,
+        )
     )
     selected = {f.code for f in columns}
     guardians = (
@@ -328,6 +366,7 @@ def build_participant_export(
         generated_at=now if now is not None else datetime.now(timezone.utc),
         columns=columns,
         rows=rows,
+        total=total,
     )
 
 
@@ -337,6 +376,7 @@ __all__ = [
     "CellValue",
     "ExportRequestError",
     "ExportTargetNotFoundError",
+    "ExportWindow",
     "ParticipantExportDataset",
     "ParticipantExportRequest",
     "build_participant_export",

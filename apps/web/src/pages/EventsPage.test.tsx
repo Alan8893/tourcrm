@@ -2599,3 +2599,361 @@ describe("EventsPage — manual status control (Issue #281)", () => {
     expect(within(dialog).queryByRole("group", { name: "Статус события" })).not.toBeInTheDocument();
   });
 });
+
+// --- Issue #299: «Участники» tab and role-aware Event UI ---------------------
+
+function participantsResponse(
+  items: Array<{ person_id: string; last_name: string; first_name: string; middle_name?: string | null }>,
+  pagination: { page?: number; page_size?: number; total?: number; pages?: number } = {},
+) {
+  const total = pagination.total ?? items.length;
+  return {
+    items: items.map((item) => ({ middle_name: null, ...item })),
+    pagination: {
+      page: pagination.page ?? 1,
+      page_size: pagination.page_size ?? 50,
+      total,
+      pages: pagination.pages ?? (total ? 1 : 0),
+    },
+  };
+}
+
+function eventCalendarHandlers(roleCode: string, kind: "event" | "occurrence" = "event") {
+  const range = fixedRange();
+  return [
+    { match: "/auth/me", response: meResponse({ roleCode }) },
+    { match: "/groups?status=active", response: groupsResponse() },
+    {
+      match: encodeURIComponent(range.from),
+      response: calendarResponse([
+        calendarItem({
+          id: kind === "event" ? "ev-1" : "occ-1",
+          kind,
+          title: "Ориентирование",
+          start_at: "2026-03-15T17:00:00+03:00",
+          end_at: "2026-03-15T19:00:00+03:00",
+          series_id: kind === "occurrence" ? "series-1" : null,
+        }),
+      ]),
+    },
+    {
+      match: "/events/occurrences/occ-1",
+      response: {
+        id: "occ-1",
+        series_id: "series-1",
+        club_id: "club-1",
+        name: "Ориентирование",
+        description: null,
+        event_type: "lesson",
+        starts_at: "2026-03-15T17:00:00+03:00",
+        ends_at: "2026-03-15T19:00:00+03:00",
+        timezone: "Europe/Moscow",
+        status: "published",
+        cancellation_reason: null,
+      },
+    },
+  ];
+}
+
+async function openEvent() {
+  const user = userEvent.setup();
+  await user.click(await screen.findByText("Ориентирование"));
+  const dialog = await screen.findByRole("dialog", { name: "Ориентирование" });
+  return { user, dialog };
+}
+
+function participantsRequests(fetchMock: ReturnType<typeof stubFetch>): string[] {
+  return fetchMock.mock.calls
+    .map(([input]) => String(input))
+    .filter((url) => url.includes("/participants"));
+}
+
+describe("EventsPage — «Участники» tab (Issue #299)", () => {
+  it.each([["admin"], ["instructor"]])(
+    "%s sees the backend roster of registered participants with its backend count",
+    async (role) => {
+      const fetchMock = stubFetch([
+        ...eventCalendarHandlers(role),
+        {
+          match: "/events/ev-1/participants",
+          response: participantsResponse([
+            { person_id: "p-1", last_name: "Алексеев", first_name: "Иван", middle_name: "Петрович" },
+            { person_id: "p-2", last_name: "Борисова", first_name: "Анна" },
+          ]),
+        },
+        { match: "/events/ev-1", response: eventDetailResponse() },
+      ]);
+      renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+      const { user, dialog } = await openEvent();
+
+      // The roster is not fetched until the tab is opened.
+      expect(participantsRequests(fetchMock)).toEqual([]);
+      await user.click(within(dialog).getByRole("tab", { name: "Участники" }));
+
+      expect(await within(dialog).findByText("Зарегистрировано: 2")).toBeInTheDocument();
+      const rows = within(dialog).getAllByRole("listitem").map((item) => item.textContent);
+      expect(rows).toEqual(["Алексеев Иван Петрович", "Борисова Анна"]);
+      // One backend page, never a wider set: the canonical endpoint with
+      // backend pagination and no client-side status filter.
+      expect(participantsRequests(fetchMock)).toEqual([
+        "/api/v1/events/ev-1/participants?page=1&page_size=50",
+      ]);
+    },
+  );
+
+  it("shows only the minimal Person projection — no contacts or documents", async () => {
+    stubFetch([
+      ...eventCalendarHandlers("admin"),
+      {
+        match: "/events/ev-1/participants",
+        response: participantsResponse([{ person_id: "p-1", last_name: "Алексеев", first_name: "Иван" }]),
+      },
+      { match: "/events/ev-1", response: eventDetailResponse() },
+    ]);
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const { user, dialog } = await openEvent();
+    await user.click(within(dialog).getByRole("tab", { name: "Участники" }));
+
+    const panel = await within(dialog).findByRole("tabpanel");
+    await within(panel).findByText("Алексеев Иван");
+    expect(within(panel).queryByRole("link")).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/телефон|email|документ/i)).not.toBeInTheDocument();
+  });
+
+  it("pages through the roster with the backend pagination", async () => {
+    const fetchMock = stubFetch([
+      ...eventCalendarHandlers("admin"),
+      {
+        match: "/events/ev-1/participants?page=2",
+        response: participantsResponse([{ person_id: "p-51", last_name: "Юдин", first_name: "Юрий" }], {
+          page: 2,
+          total: 51,
+          pages: 2,
+        }),
+      },
+      {
+        match: "/events/ev-1/participants?page=1",
+        response: participantsResponse(
+          Array.from({ length: 50 }, (_, index) => ({
+            person_id: `p-${index + 1}`,
+            last_name: `Участник${String(index + 1).padStart(2, "0")}`,
+            first_name: "Тест",
+          })),
+          { total: 51, pages: 2 },
+        ),
+      },
+      { match: "/events/ev-1", response: eventDetailResponse() },
+    ]);
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const { user, dialog } = await openEvent();
+    await user.click(within(dialog).getByRole("tab", { name: "Участники" }));
+
+    expect(await within(dialog).findByText("Зарегистрировано: 51")).toBeInTheDocument();
+    expect(within(dialog).getByText("Страница 1 из 2 · всего 51")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Далее" }));
+
+    expect(await within(dialog).findByText("Юдин Юрий")).toBeInTheDocument();
+    expect(within(dialog).getByText("Страница 2 из 2 · всего 51")).toBeInTheDocument();
+    expect(participantsRequests(fetchMock)).toEqual([
+      "/api/v1/events/ev-1/participants?page=1&page_size=50",
+      "/api/v1/events/ev-1/participants?page=2&page_size=50",
+    ]);
+  });
+
+  it("shows an empty state when nobody is registered", async () => {
+    stubFetch([
+      ...eventCalendarHandlers("instructor"),
+      { match: "/events/ev-1/participants", response: participantsResponse([]) },
+      { match: "/events/ev-1", response: eventDetailResponse() },
+    ]);
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const { user, dialog } = await openEvent();
+    await user.click(within(dialog).getByRole("tab", { name: "Участники" }));
+
+    expect(await within(dialog).findByText("Нет зарегистрированных участников")).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Зарегистрировано:/)).not.toBeInTheDocument();
+  });
+
+  it("shows the backend's existence-hiding 404 as an unavailable roster, without retry", async () => {
+    stubFetch([
+      ...eventCalendarHandlers("instructor"),
+      {
+        match: "/events/ev-1/participants",
+        status: 404,
+        response: { error: { code: "not_found", message: "Event not found", details: {}, request_id: "r" } },
+      },
+      { match: "/events/ev-1", response: eventDetailResponse() },
+    ]);
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const { user, dialog } = await openEvent();
+    await user.click(within(dialog).getByRole("tab", { name: "Участники" }));
+
+    expect(await within(dialog).findByText("Список участников недоступен")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Повторить" })).not.toBeInTheDocument();
+  });
+
+  it("offers a retry after a server failure", async () => {
+    let failing = true;
+    const range = fixedRange();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/auth/me")) return jsonResponse(meResponse());
+        if (url.includes("/groups?status=active")) return jsonResponse(groupsResponse());
+        if (url.includes(encodeURIComponent(range.from))) {
+          return jsonResponse(
+            calendarResponse([
+              calendarItem({
+                id: "ev-1",
+                title: "Ориентирование",
+                start_at: "2026-03-15T17:00:00+03:00",
+                end_at: "2026-03-15T19:00:00+03:00",
+              }),
+            ]),
+          );
+        }
+        if (url.includes("/events/ev-1/participants")) {
+          return failing
+            ? jsonResponse({ error: { code: "internal_error", message: "Сбой", details: {}, request_id: "r" } }, 500)
+            : jsonResponse(participantsResponse([{ person_id: "p-1", last_name: "Алексеев", first_name: "Иван" }]));
+        }
+        if (url.includes("/events/ev-1")) return jsonResponse(eventDetailResponse());
+        throw new Error(`Unexpected fetch: ${url}`);
+      }),
+    );
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const { user, dialog } = await openEvent();
+    await user.click(within(dialog).getByRole("tab", { name: "Участники" }));
+
+    expect(await within(dialog).findByText("Не удалось загрузить участников")).toBeInTheDocument();
+    failing = false;
+    await user.click(within(dialog).getByRole("button", { name: "Повторить" }));
+    expect(await within(dialog).findByText("Алексеев Иван")).toBeInTheDocument();
+  });
+
+  it.each([["member"], ["guardian"]])(
+    "%s gets no «Участники» tab and the roster is never requested",
+    async (role) => {
+      const fetchMock = stubFetch([
+        ...eventCalendarHandlers(role),
+        { match: "/events/ev-1", response: eventDetailResponse() },
+      ]);
+      renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+      const { dialog } = await openEvent();
+
+      expect(await within(dialog).findByRole("button", { name: "Записаться" })).toBeInTheDocument();
+      expect(within(dialog).queryByRole("tab", { name: "Участники" })).not.toBeInTheDocument();
+      expect(within(dialog).queryByRole("tablist")).not.toBeInTheDocument();
+      expect(participantsRequests(fetchMock)).toEqual([]);
+    },
+  );
+
+  it("offers no roster for a recurring occurrence (not an event_id of the participants API)", async () => {
+    const fetchMock = stubFetch(eventCalendarHandlers("admin", "occurrence"));
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const { dialog } = await openEvent();
+
+    expect(within(dialog).queryByRole("tab", { name: "Участники" })).not.toBeInTheDocument();
+    expect(participantsRequests(fetchMock)).toEqual([]);
+  });
+
+  it("refreshes the roster from the backend after the user's own self-registration", async () => {
+    const range = fixedRange();
+    let registered = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.includes("/auth/me")) return jsonResponse(meResponse({ roleCode: "instructor" }));
+      if (url.includes("/groups?status=active")) return jsonResponse(groupsResponse());
+      if (url.includes(encodeURIComponent(range.from))) {
+        return jsonResponse(
+          calendarResponse([
+            calendarItem({
+              id: "ev-1",
+              title: "Ориентирование",
+              start_at: "2026-03-15T17:00:00+03:00",
+              end_at: "2026-03-15T19:00:00+03:00",
+            }),
+          ]),
+        );
+      }
+      if (url.includes("/events/ev-1/participation") && method === "POST") {
+        registered = true;
+        return jsonResponse({
+          id: "part-1",
+          event_id: "ev-1",
+          person_id: "person-1",
+          registration_status: "registered",
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        });
+      }
+      if (url.includes("/events/ev-1/participants")) {
+        return jsonResponse(
+          participantsResponse(
+            registered ? [{ person_id: "person-1", last_name: "Иванова", first_name: "Анна" }] : [],
+          ),
+        );
+      }
+      if (url.includes("/events/ev-1")) {
+        return jsonResponse(eventDetailResponse({ my_registration_status: registered ? "registered" : null }));
+      }
+      throw new Error(`Unexpected fetch: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const { user, dialog } = await openEvent();
+
+    await user.click(within(dialog).getByRole("tab", { name: "Участники" }));
+    expect(await within(dialog).findByText("Нет зарегистрированных участников")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("tab", { name: "Обзор" }));
+    await user.click(await within(dialog).findByRole("button", { name: "Записаться" }));
+    await within(dialog).findByText("Вы записаны");
+    await user.click(within(dialog).getByRole("tab", { name: "Участники" }));
+
+    expect(await within(dialog).findByText("Иванова Анна")).toBeInTheDocument();
+  });
+});
+
+describe("EventsPage — role-aware management controls (Issue #299)", () => {
+  it.each([["admin"], ["instructor"]])("%s keeps Event management and instructor filters", async (role) => {
+    stubFetch([
+      ...eventCalendarHandlers(role),
+      { match: "/events/ev-1", response: eventDetailResponse() },
+    ]);
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+
+    expect(await screen.findByRole("button", { name: "Создать событие" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Выбрать инструктора" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Только мои события" })).toBeInTheDocument();
+
+    const { dialog } = await openEvent();
+    expect(within(dialog).getByRole("button", { name: "Редактировать" })).toBeInTheDocument();
+    expect(await within(dialog).findByRole("group", { name: "Статус события" })).toBeInTheDocument();
+  });
+
+  it.each([["member"], ["guardian"]])(
+    "%s sees no management actions or instructor-management filters, but can still self-register",
+    async (role) => {
+      stubFetch([
+        ...eventCalendarHandlers(role),
+        { match: "/events/ev-1", response: eventDetailResponse() },
+      ]);
+      renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+
+      await screen.findByText("Ориентирование");
+      expect(screen.queryByRole("button", { name: "Создать событие" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Выбрать инструктора" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("checkbox", { name: "Только мои события" })).not.toBeInTheDocument();
+      // Ordinary calendar filters stay available.
+      expect(screen.getByRole("combobox", { name: "Тип" })).toBeInTheDocument();
+
+      const { dialog } = await openEvent();
+      expect(await within(dialog).findByRole("button", { name: "Записаться" })).toBeInTheDocument();
+      expect(within(dialog).queryByRole("button", { name: "Редактировать" })).not.toBeInTheDocument();
+      expect(within(dialog).queryByRole("group", { name: "Статус события" })).not.toBeInTheDocument();
+      expect(within(dialog).queryByRole("button", { name: /Начать|Завершить|Отменить событие|Архивировать/ })).not.toBeInTheDocument();
+    },
+  );
+});

@@ -7,8 +7,6 @@ import { Button } from "../components/ui/Button";
 import { Stepper } from "../components/ui/Stepper";
 import { Loading } from "../components/ui/Loading";
 import { ErrorState } from "../components/ui/ErrorState";
-import { FilterSelect, type FilterOption } from "../components/ui/FilterSelect";
-import { SearchInput } from "../components/ui/SearchInput";
 import { useNotify } from "../components/ui/notificationContext";
 import { printHtmlBlob, saveBlob, type ApiError } from "../api/client";
 import {
@@ -22,9 +20,20 @@ import {
   type ParticipantExportRequest,
 } from "../api/exports";
 import { useGroups } from "../api/groups";
-import { useEvent, useEventSearch } from "../api/events";
-import { useDebouncedValue } from "../hooks/useDebouncedValue";
-import { membershipStatusLabel, type MembershipStatus } from "../domain/statusMapping";
+import { useEvent } from "../api/events";
+import {
+  ANY_PARTICIPATION_STATUS,
+  CONTEXT_OPTIONS,
+  EVENT_CONTEXTS,
+  FORMAT_OPTIONS,
+  GROUP_CONTEXTS,
+  exportErrorMessage,
+  isExportContext,
+  membershipStatusOptions,
+  orderedFieldCodes,
+  selectionRequest,
+} from "../domain/participantExport";
+import { ContextStep, FiltersStep, FormatStep, type SelectedEvent } from "./ParticipantExportSteps";
 import styles from "./ImportExport.module.css";
 
 /**
@@ -42,81 +51,12 @@ import styles from "./ImportExport.module.css";
  * `format`.
  *
  * Contextual entry points (Group / Event) open this same wizard with the
- * context pre-selected via `?context=…&group_id=…&event_id=…`.
+ * context pre-selected via `?context=…&group_id=…&event_id=…`. The
+ * context/filter/format steps are shared with the «Участники мероприятий»
+ * report (ParticipantExportSteps), which previews the same dataset.
  */
 
 const EXPORT_STEPS = ["Что выгружаем?", "Поля", "Фильтры", "Формат", "Экспорт"] as const;
-
-const CONTEXT_OPTIONS: readonly { value: ExportContext; title: string; description: string }[] = [
-  {
-    value: "club",
-    title: "Все участники",
-    description: "Участники клуба с выбранным статусом членства.",
-  },
-  { value: "group", title: "Участники группы", description: "Состав выбранной группы." },
-  { value: "event", title: "Участники события", description: "Участники выбранного события." },
-  {
-    value: "group_event",
-    title: "Группа на событии",
-    description: "Участники выбранной группы, относящиеся к выбранному событию.",
-  },
-];
-
-const FORMAT_OPTIONS: readonly { value: ExportFormat; title: string; description: string }[] = [
-  { value: "xlsx", title: "XLSX", description: "Редактируемая таблица Excel." },
-  { value: "pdf", title: "PDF", description: "Готовый к рассылке и печати документ." },
-  { value: "print", title: "Печать", description: "Открыть системный диалог печати." },
-];
-
-/** Contexts carrying a Group / an Event target (export API §3). Used only
- * to show the matching filter controls and to send only applicable keys —
- * the backend re-validates every combination. */
-const GROUP_CONTEXTS: ReadonlySet<ExportContext> = new Set(["group", "group_event"]);
-const EVENT_CONTEXTS: ReadonlySet<ExportContext> = new Set(["event", "group_event"]);
-
-const CLUB_MEMBERSHIP_STATUSES: readonly MembershipStatus[] = [
-  "active",
-  "pending",
-  "suspended",
-  "inactive",
-  "archived",
-];
-
-const GROUP_MEMBERSHIP_STATUS_OPTIONS: FilterOption[] = [
-  { value: "active", label: "Активные" },
-  { value: "ended", label: "Завершённые" },
-];
-
-/** "No participation filter" — the request then omits
- * `participation_status` and the backend returns every status. Not a
- * business value; every real status comes from
- * `GET /memberships/exports/filters`. */
-const ANY_PARTICIPATION_STATUS: FilterOption = { value: "", label: "Любой статус" };
-
-function membershipStatusOptions(context: ExportContext): FilterOption[] {
-  return GROUP_CONTEXTS.has(context)
-    ? GROUP_MEMBERSHIP_STATUS_OPTIONS
-    : CLUB_MEMBERSHIP_STATUSES.map((status) => ({
-        value: status,
-        label: membershipStatusLabel(status),
-      }));
-}
-
-function isExportContext(value: string | null): value is ExportContext {
-  return CONTEXT_OPTIONS.some((option) => option.value === value);
-}
-
-function exportErrorMessage(error: ApiError): string {
-  if (error.status === 403) return "У вас нет прав на этот экспорт.";
-  if (error.status === 404) return "Выбранная группа или событие не найдены.";
-  return error.message;
-}
-
-type SelectedEvent = { id: string; title: string; start_at: string };
-
-function formatEventDate(value: string): string {
-  return new Date(value).toLocaleDateString("ru-RU");
-}
 
 export function ExportPage() {
   const [searchParams] = useSearchParams();
@@ -180,17 +120,12 @@ export function ExportPage() {
   const buildRequest = (): ParticipantExportRequest | null => {
     if (!context) return null;
     // Preserve the backend's own field order for the selected columns.
-    const orderedFields = availableFields
-      .map((field) => field.field_code)
-      .filter((code) => selectedFields.includes(code));
     return {
-      context,
-      fields: orderedFields,
+      ...selectionRequest(
+        { context, groupId, eventId, membershipStatus, participationStatus },
+        orderedFieldCodes(availableFields, selectedFields),
+      ),
       format,
-      membership_status: membershipStatus,
-      ...(needsGroup ? { group_id: groupId } : {}),
-      ...(needsEvent ? { event_id: eventId } : {}),
-      ...(needsEvent && participationStatus ? { participation_status: participationStatus } : {}),
     };
   };
 
@@ -333,37 +268,6 @@ export function ExportPage() {
   );
 }
 
-// --- Step 1: dataset ---------------------------------------------------------
-
-function ContextStep({
-  context,
-  onChange,
-}: {
-  context: ExportContext | null;
-  onChange: (context: ExportContext) => void;
-}) {
-  return (
-    <fieldset className={styles.optionList}>
-      <legend className={styles.legend}>Что выгружаем?</legend>
-      {CONTEXT_OPTIONS.map((option) => (
-        <label key={option.value} className={styles.option}>
-          <input
-            type="radio"
-            name="export-context"
-            value={option.value}
-            checked={context === option.value}
-            onChange={() => onChange(option.value)}
-          />
-          <span className={styles.optionText}>
-            <span className={styles.optionTitle}>{option.title}</span>
-            <span className={styles.optionDescription}>{option.description}</span>
-          </span>
-        </label>
-      ))}
-    </fieldset>
-  );
-}
-
 // --- Step 2: fields ------------------------------------------------------------
 
 function FieldsStep({
@@ -431,219 +335,6 @@ function FieldsStep({
           </label>
         ))}
       </div>
-    </fieldset>
-  );
-}
-
-// --- Step 3: filters -----------------------------------------------------------
-
-function FiltersStep({
-  context,
-  groupId,
-  onGroupChange,
-  event,
-  eventId,
-  onEventChange,
-  membershipStatus,
-  onMembershipStatusChange,
-  participationStatus,
-  onParticipationStatusChange,
-  filtersQuery,
-}: {
-  context: ExportContext;
-  groupId: string;
-  onGroupChange: (groupId: string) => void;
-  event: SelectedEvent | null;
-  eventId: string;
-  onEventChange: (event: SelectedEvent | null) => void;
-  membershipStatus: string;
-  onMembershipStatusChange: (value: string) => void;
-  participationStatus: string;
-  onParticipationStatusChange: (value: string) => void;
-  filtersQuery: ReturnType<typeof useExportFilters>;
-}) {
-  const inGroupContext = GROUP_CONTEXTS.has(context);
-  const inEventContext = EVENT_CONTEXTS.has(context);
-
-  return (
-    <div className={styles.panel}>
-      <h2 className={styles.sectionTitle}>Фильтры</h2>
-      <div className={styles.filters}>
-        {inGroupContext ? <GroupFilter groupId={groupId} onChange={onGroupChange} /> : null}
-        <FilterSelect
-          label={inGroupContext ? "Статус в группе" : "Статус членства в клубе"}
-          value={membershipStatus}
-          options={membershipStatusOptions(context)}
-          onChange={onMembershipStatusChange}
-        />
-        {inEventContext ? (
-          <ParticipationStatusFilter
-            filtersQuery={filtersQuery}
-            value={participationStatus}
-            onChange={onParticipationStatusChange}
-          />
-        ) : null}
-      </div>
-      {inEventContext ? (
-        <EventFilter event={event} eventId={eventId} onChange={onEventChange} />
-      ) : null}
-    </div>
-  );
-}
-
-function ParticipationStatusFilter({
-  filtersQuery,
-  value,
-  onChange,
-}: {
-  filtersQuery: ReturnType<typeof useExportFilters>;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  if (filtersQuery.isLoading) return <Loading label="Загружаем статусы участия…" />;
-  if (filtersQuery.isError) {
-    return (
-      <div className={`${styles.notice} ${styles.noticeError}`} role="alert">
-        <p className={styles.muted}>
-          Не удалось загрузить статусы участия: {filtersQuery.error.message}. Продолжить экспорт
-          по событию можно после повторной загрузки.
-        </p>
-        <Button variant="secondary" onClick={() => void filtersQuery.refetch()}>
-          Повторить
-        </Button>
-      </div>
-    );
-  }
-  if (!filtersQuery.data) return null;
-  return (
-    <FilterSelect
-      label="Статус участия в событии"
-      value={value}
-      options={[ANY_PARTICIPATION_STATUS, ...filtersQuery.data.participation_status]}
-      onChange={onChange}
-    />
-  );
-}
-
-function GroupFilter({ groupId, onChange }: { groupId: string; onChange: (id: string) => void }) {
-  const groupsQuery = useGroups();
-
-  if (groupsQuery.isLoading) return <Loading label="Загружаем группы…" />;
-  if (groupsQuery.isError) {
-    return (
-      <p className={`${styles.notice} ${styles.noticeError}`} role="alert">
-        Не удалось загрузить группы: {groupsQuery.error.message}
-      </p>
-    );
-  }
-  const groups = groupsQuery.data?.items ?? [];
-  if (groups.length === 0) {
-    return <p className={styles.muted}>В клубе пока нет групп.</p>;
-  }
-  return (
-    <FilterSelect
-      label="Группа"
-      value={groupId}
-      options={[
-        { value: "", label: "Выберите группу" },
-        ...groups.map((group) => ({
-          value: group.id,
-          label: group.status === "archived" ? `${group.name} (архив)` : group.name,
-        })),
-      ]}
-      onChange={onChange}
-    />
-  );
-}
-
-function EventFilter({
-  event,
-  eventId,
-  onChange,
-}: {
-  event: SelectedEvent | null;
-  eventId: string;
-  onChange: (event: SelectedEvent | null) => void;
-}) {
-  const [search, setSearch] = useState("");
-  const debouncedSearch = useDebouncedValue(search, 300);
-  const eventsQuery = useEventSearch(debouncedSearch);
-  // A contextual entry point passes only `event_id`; its title is read
-  // from the existing Event detail endpoint for display.
-  const preselectedQuery = useEvent(eventId && !event ? eventId : undefined);
-  const selectedTitle = event?.title ?? preselectedQuery.data?.title;
-
-  return (
-    <div className={styles.panel}>
-      <p className={styles.muted} aria-live="polite">
-        Событие:{" "}
-        <strong>
-          {eventId ? (selectedTitle ?? "загружаем…") : "не выбрано"}
-        </strong>
-      </p>
-      <SearchInput
-        label="Найти событие"
-        value={search}
-        onChange={setSearch}
-        placeholder="Название события"
-      />
-      {eventsQuery.isLoading ? <Loading label="Ищем события…" /> : null}
-      {eventsQuery.isError ? (
-        <p className={`${styles.notice} ${styles.noticeError}`} role="alert">
-          Не удалось загрузить события: {eventsQuery.error.message}
-        </p>
-      ) : null}
-      {eventsQuery.data ? (
-        <ul className={styles.pickerList} aria-label="События">
-          {eventsQuery.data.items.length === 0 ? (
-            <li className={styles.pickerEmpty}>Событий не найдено.</li>
-          ) : (
-            eventsQuery.data.items.map((item) => (
-              <li key={item.id}>
-                <button
-                  type="button"
-                  className={`${styles.pickerItem} ${item.id === eventId ? styles.pickerItemSelected : ""}`}
-                  aria-pressed={item.id === eventId}
-                  onClick={() => onChange({ id: item.id, title: item.title, start_at: item.start_at })}
-                >
-                  {item.title} · {formatEventDate(item.start_at)}
-                </button>
-              </li>
-            ))
-          )}
-        </ul>
-      ) : null}
-    </div>
-  );
-}
-
-// --- Step 4: format ------------------------------------------------------------
-
-function FormatStep({
-  format,
-  onChange,
-}: {
-  format: ExportFormat;
-  onChange: (format: ExportFormat) => void;
-}) {
-  return (
-    <fieldset className={styles.optionList}>
-      <legend className={styles.legend}>Формат</legend>
-      {FORMAT_OPTIONS.map((option) => (
-        <label key={option.value} className={styles.option}>
-          <input
-            type="radio"
-            name="export-format"
-            value={option.value}
-            checked={format === option.value}
-            onChange={() => onChange(option.value)}
-          />
-          <span className={styles.optionText}>
-            <span className={styles.optionTitle}>{option.title}</span>
-            <span className={styles.optionDescription}>{option.description}</span>
-          </span>
-        </label>
-      ))}
     </fieldset>
   );
 }

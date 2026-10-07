@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 
-import { apiFetch, apiFetchBlob, ApiError } from "./client";
+import { apiFetch, apiFetchBlob, ApiError, type Pagination } from "./client";
 
 /**
  * Participant Export (TH-0118.4, docs/05-api/participant-export-api.md) —
@@ -9,6 +9,7 @@ import { apiFetch, apiFetchBlob, ApiError } from "./client";
  *   GET  /api/v1/memberships/exports/fields   backend field allowlist
  *   GET  /api/v1/memberships/exports/filters  backend filter vocabularies
  *   POST /api/v1/memberships/exports          one dataset, xlsx|pdf|print
+ *   POST /api/v1/memberships/exports/preview  one page of the same dataset
  *
  * The backend resolves the dataset from the context (never from a list of
  * person ids), re-validates every field and filter, and authorizes every
@@ -42,14 +43,27 @@ export type ExportFiltersResponse = {
   participation_status: ExportFilterOption[];
 };
 
-export type ParticipantExportRequest = {
+/** The dataset selection — identical for the export and its preview. */
+export type ParticipantExportSelection = {
   context: ExportContext;
   group_id?: string;
   event_id?: string;
   membership_status?: string;
   participation_status?: string;
   fields: string[];
+};
+
+export type ParticipantExportRequest = ParticipantExportSelection & {
   format: ExportFormat;
+};
+
+export type ParticipantExportPreview = {
+  title: string;
+  /** The requested allowlisted fields, in request order. */
+  columns: { field_code: string; label: string }[];
+  /** One text cell per column, exactly as the PDF/print formats show it. */
+  items: string[][];
+  pagination: Pagination;
 };
 
 export function useExportFields() {
@@ -75,5 +89,25 @@ export function useRunParticipantExport() {
   return useMutation<{ blob: Blob; filename: string | null }, ApiError, ParticipantExportRequest>({
     mutationFn: (request) =>
       apiFetchBlob("/memberships/exports", { method: "POST", body: JSON.stringify(request) }),
+  });
+}
+
+/** Issue #299 «Участники мероприятий»: one backend page of the canonical
+ * export dataset for the selection — the same selection the XLSX/PDF/Print
+ * export sends. A read, though carried by POST (the selection is a JSON
+ * body); `null` disables the query until the selection is complete. */
+export function useParticipantExportPreview(
+  selection: ParticipantExportSelection | null,
+  page: number,
+  pageSize = 50,
+) {
+  return useQuery<ParticipantExportPreview, ApiError>({
+    queryKey: ["exports", "preview", selection, page, pageSize],
+    queryFn: () =>
+      apiFetch<ParticipantExportPreview>("/memberships/exports/preview", {
+        method: "POST",
+        body: JSON.stringify({ ...selection, page, page_size: pageSize }),
+      }),
+    enabled: selection !== null,
   });
 }

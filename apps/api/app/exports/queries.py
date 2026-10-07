@@ -88,8 +88,7 @@ def _group_membership_exists(
     )
 
 
-def list_export_persons(
-    session: Session,
+def _export_persons_statement(
     *,
     context: str,
     club_id: uuid.UUID,
@@ -97,9 +96,9 @@ def list_export_persons(
     event_id: uuid.UUID | None,
     membership_status: str,
     participation_status: str | None,
-) -> list[PersonRow]:
-    """Ordered by last name, first name, middle name (then id, for a
-    stable order between namesakes)."""
+) -> sa.Select:
+    """The one canonical dataset statement — rows, count and pages are all
+    derived from it, never from a second query."""
     participation_column = (
         EventParticipation.registration_status.label("participation_status")
         if event_id is not None
@@ -142,13 +141,63 @@ def list_export_persons(
         )
     else:
         raise ValueError(f"Unsupported export context: {context!r}")
+    return stmt
 
-    stmt = stmt.order_by(
+
+def count_export_persons(
+    session: Session,
+    *,
+    context: str,
+    club_id: uuid.UUID,
+    group_id: uuid.UUID | None,
+    event_id: uuid.UUID | None,
+    membership_status: str,
+    participation_status: str | None,
+) -> int:
+    """Number of rows `list_export_persons` returns for the same filters."""
+    stmt = _export_persons_statement(
+        context=context,
+        club_id=club_id,
+        group_id=group_id,
+        event_id=event_id,
+        membership_status=membership_status,
+        participation_status=participation_status,
+    )
+    return session.execute(sa.select(sa.func.count()).select_from(stmt.subquery())).scalar_one()
+
+
+def list_export_persons(
+    session: Session,
+    *,
+    context: str,
+    club_id: uuid.UUID,
+    group_id: uuid.UUID | None,
+    event_id: uuid.UUID | None,
+    membership_status: str,
+    participation_status: str | None,
+    offset: int | None = None,
+    limit: int | None = None,
+) -> list[PersonRow]:
+    """Ordered by last name, first name, middle name (then id, for a
+    stable order between namesakes). `offset`/`limit` select one window of
+    that order (the report preview page); omitted → every row."""
+    stmt = _export_persons_statement(
+        context=context,
+        club_id=club_id,
+        group_id=group_id,
+        event_id=event_id,
+        membership_status=membership_status,
+        participation_status=participation_status,
+    ).order_by(
         Person.last_name,
         Person.first_name,
         sa.nulls_first(Person.middle_name),
         Person.id,
     )
+    if offset is not None:
+        stmt = stmt.offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
     return [
         PersonRow(
             person_id=row.id,
@@ -227,6 +276,7 @@ def list_active_guardians(
 __all__ = [
     "GuardianContact",
     "PersonRow",
+    "count_export_persons",
     "guardian_display_name",
     "list_active_guardians",
     "list_export_persons",

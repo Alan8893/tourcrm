@@ -18,6 +18,7 @@ import { AchievementDefinitionPage } from "./pages/AchievementDefinitionPage";
 import { NormativeSetPage } from "./pages/NormativeSetPage";
 import { ReportsPage } from "./pages/ReportsPage";
 import { ExportPage } from "./pages/ExportPage";
+import { EventParticipantsReportPage } from "./pages/EventParticipantsReportPage";
 import { ImportPage } from "./pages/ImportPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { InventoryPage } from "./pages/InventoryPage";
@@ -83,9 +84,11 @@ export function App() {
               </Route>
               <Route element={<SectionGuard section="reports" />}>
                 <Route path="reports" element={<ReportsPage />} />
-                {/* TH-0118.5: «Отчёты → Экспорт» (Administrator-only section). */}
+                {/* TH-0118.5: «Отчёты → Экспорт»; Issue #299: «Отчёты →
+                    Участники мероприятий» (Administrator-only section). */}
                 <Route element={<AdministratorGuard />}>
                   <Route path="reports/export" element={<ExportPage />} />
+                  <Route path="reports/event-participants" element={<EventParticipantsReportPage />} />
                 </Route>
               </Route>
               {/* TH-0120 / Issue #227: News is reachable from Home («Все

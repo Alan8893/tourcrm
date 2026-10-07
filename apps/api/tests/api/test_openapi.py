@@ -174,6 +174,9 @@ _MEMBERSHIP_EXPORT_PATHS = {
     # PR #226 PO decision: backend-authoritative filter vocabularies
     # (participation_status values + labels) for the export wizard.
     "/api/v1/memberships/exports/filters",
+    # Issue #299 (import-export-ui.md §3.3): one page of the same canonical
+    # export dataset for the «Участники мероприятий» report preview.
+    "/api/v1/memberships/exports/preview",
 }
 
 # TH-0120 / Issue #227 (docs/04-ux/news.md): News / Announcements. No
@@ -764,6 +767,36 @@ def test_membership_export_endpoints_and_request_schema_are_exact(real_client) -
         "group_event",
     ]
     assert request_schema["properties"]["format"]["enum"] == ["xlsx", "pdf", "print"]
+
+
+def test_membership_export_preview_endpoint_and_schemas_are_exact(real_client) -> None:
+    """Issue #299: the report preview is one POST on the export resource
+    taking the export's own dataset selection (no `format`, no dataset
+    source such as `person_ids`) plus page bounds, and returning one page
+    of the same columns/rows with the standard pagination envelope."""
+    schema = real_client.get("/openapi.json").json()
+    paths = schema["paths"]
+    components = schema["components"]["schemas"]
+
+    assert set(paths["/api/v1/memberships/exports/preview"]) == {"post"}
+    request_schema = components["ParticipantExportPreviewRequest"]
+    assert set(request_schema["properties"]) == {
+        "context",
+        "group_id",
+        "event_id",
+        "membership_status",
+        "participation_status",
+        "fields",
+        "page",
+        "page_size",
+    }
+    assert request_schema["additionalProperties"] is False
+    assert set(request_schema["required"]) == {"context", "fields"}
+    assert request_schema["properties"]["page_size"]["maximum"] == 100
+
+    response_schema = components["ParticipantExportPreviewOut"]
+    assert set(response_schema["properties"]) == {"title", "columns", "items", "pagination"}
+    assert set(components["ExportColumnOut"]["properties"]) == {"field_code", "label"}
 
 
 def test_document_metadata_patch_endpoint_and_schemas_are_exact(real_client) -> None:
