@@ -183,7 +183,7 @@ Event может быть адресован 0, 1 или нескольким Gr
 - 0 групп — Event является club-wide (адресован всем участникам текущего Club);
 - 1+ групп — Event является targeted (адресован участникам указанных Group).
 
-Group targeting — это только выбор аудитории; он не означает, что каждый участник Group зарегистрирован, не создаёт `EventParticipation` и не создаёт `GroupMembership`.
+Group targeting — это только выбор аудитории для большинства Event. Исключение: для `Event.event_type = lesson` с одной или несколькими target Group при создании Event автоматически создаётся `EventParticipation(status=registered)` для всех лиц с active `GroupMembership` хотя бы в одной target Group; это определено ADR-0047. Автоматическая регистрация не создаёт Attendance.
 
 Event может иметь одного или нескольких ответственных Users через `EventStaffAssignment`. Назначенный User обязан иметь active ClubMembership в Club события; cross-Club назначение запрещено. Ответственность за Event не требует, чтобы User был инструктором соответствующей Group (`GroupInstructorAssignment`) — это независимые отношения, и назначение ответственного не создаёт `GroupInstructorAssignment`.
 
@@ -216,15 +216,17 @@ Person определяется только из аутентифицирова
 
 Регистрация — `registered`; отмена собственной регистрации участником — `cancelled`. Обе операции идемпотентны: повторная регистрация не создаёт дубликат `EventParticipation`, повторная отмена не требует существования записи. Self-registration не создаёт Attendance, GroupMembership, ClubMembership, GuardianRelationship и не подразумевает оплату — эти факты остаются полностью независимыми.
 
-Self-registration не требует отдельного Event permission — это self-service операция, определяемая identity + membership + lifecycle, а не ролью пользователя.
+Self-registration не требует отдельного Event permission — это self-service операция, определяемая identity + membership + lifecycle, а не ролью пользователя. Для `lesson` с target Group автоматическая регистрация участников при создании Event является отдельной canonical policy по ADR-0047.
 
 Нельзя считать человека посетившим мероприятие только потому, что он был зарегистрирован.
 
 ## 12. Посещаемость
 
-Посещаемость отмечает инструктор или руководитель с соответствующим permission.
+Посещаемость отмечает Administrator или Instructor с соответствующим `attendance.update` permission. Для `lesson` участники уже имеют `EventParticipation` после автоматической регистрации по ADR-0047; Attendance при этом остаётся отдельным фактом.
 
-При указании статуса `absent` рекомендуется требовать причину, если это предусмотрено настройками клуба.
+MVP использует `present`, `absent` и состояние unmarked (Attendance ещё не создана). Unmarked не означает absent.
+
+Для календаря Member: present → зелёный, absent → красный, unmarked → нейтральный. Для Guardian действует агрегирование по доступным детям: `present > absent > unmarked`; если хотя бы один доступный ребёнок присутствовал, событие зелёное; если присутствующих нет, но хотя бы один отсутствовал — красное; если все не отмечены — нейтральное. Детали чужих участников Guardian не раскрываются.
 
 Изменение посещаемости после закрытия периода должно аудироваться.
 
