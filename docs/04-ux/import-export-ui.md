@@ -44,6 +44,38 @@ Import и Export не являются самостоятельными глоб
 
 **Основной entry point для Participant Export — раздел `Отчёты`.**
 
+Participant Export и отчёт «Участники мероприятий» используют один canonical dataset и одну authorization policy. Отчёт не является вторым независимым механизмом выборки участников.
+
+### 3.3 Отчёт «Участники мероприятий»
+
+Это Administrator-only read/report workflow для проверки фактической регистрации участников на Event.
+
+Целевой сценарий:
+
+`Отчёты → Участники мероприятий → выбор контекста → фильтры → preview → XLSX/PDF/Print`
+
+Контексты:
+- club;
+- group;
+- event;
+- group + event.
+
+Для Event/group+event доступны canonical `participation_status`:
+- registered;
+- cancelled.
+
+Отчёт использует canonical `EventParticipation` и существующий Participant Export field allowlist. Frontend не создаёт собственный список статусов/полей и не выполняет локальную фильтрацию более широкого dataset.
+
+Минимальный preview:
+- ФИО;
+- группа;
+- мероприятие;
+- дата/время;
+- статус регистрации.
+
+`XLSX`, `PDF` и `Print` являются разными представлениями одного dataset. Новая permission для отчёта не вводится: доступ наследуется от административного раздела `Отчёты`, а backend остаётся authoritative.
+
+
 Export рассматривается как **master-модуль формирования выгрузки**, а не как одна фиксированная операция «скачать участников».
 
 Целевой сценарий:
