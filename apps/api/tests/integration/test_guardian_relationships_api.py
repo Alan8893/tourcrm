@@ -554,11 +554,12 @@ def test_get_guardian_relationships_expired_relationship_shown_as_inactive(
 
 
 @requires_postgres
-def test_get_guardian_relationships_club_scoped_grant_never_matches(client: TestClient) -> None:
-    """GuardianRelationship is Club-neutral: a club-scoped assignment of
-    any scope_type never authorizes access to it, unlike Person's
-    explicit club-scoped-`all` override (Issue #64 defines no analogous
-    override for GuardianRelationship).
+def test_get_guardian_relationships_club_scoped_all_grant_matches(client: TestClient) -> None:
+    """Issue #307 (ADR-0025 §2): GuardianRelationship is Club-neutral, so
+    the Club boundary is not applied to an `all`-scope
+    `guardian_relationship.read` grant — a club-scoped one sees the
+    relationship (supersedes the earlier fail-closed expectation; the
+    relationship-based scopes keep it, see the `own_groups` test above).
     """
     with session_scope() as session:
         club = _make_club()
@@ -568,9 +569,11 @@ def test_get_guardian_relationships_club_scoped_grant_never_matches(client: Test
         session.add(_make_club_membership(club, child))
         session.add(_make_club_membership(club, guardian))
         session.commit()
-        session.add(_make_guardian_relationship(guardian, child))
+        relationship = _make_guardian_relationship(guardian, child)
+        session.add(relationship)
         session.commit()
         child_id, requester_user_id, club_id = child.id, requester_user.id, club.id
+        relationship_id = relationship.id
     _grant_permission(
         requester_user_id, "guardian_relationship.read", scope_type="all", club_id=club_id
     )
@@ -578,7 +581,7 @@ def test_get_guardian_relationships_club_scoped_grant_never_matches(client: Test
 
     response = client.get(f"/api/v1/persons/{child_id}/guardian-relationships")
     assert response.status_code == 200, response.text
-    assert response.json()["items"] == []
+    assert [item["id"] for item in response.json()["items"]] == [str(relationship_id)]
 
 
 @requires_postgres
@@ -1384,6 +1387,190 @@ def test_club_scoped_admin_keeps_club_boundary_for_club_scoped_resources(
         outsider_id, membership_id = outsider.id, membership.id
     _club_scoped_role_setup("admin")
 
+    assert client.get(f"/api/v1/persons/{outsider_id}").status_code == 404
+    assert client.get(f"/api/v1/memberships/{membership_id}").status_code == 404
+
+
+# --- Issue #307: Club-scoped canonical roles and guardian_relationship.read --
+#
+# Same baseline-role setup as the TH-0288 section above. Only `admin`
+# holds `guardian_relationship.read` at scope `all`; for that grant the
+# Club boundary is not applied to the Club-neutral relationship
+# (ADR-0025 §2). Relationship-based read scopes are unchanged.
+
+
+def _list_for_child(client: TestClient, child_id: uuid.UUID):  # type: ignore[no-untyped-def]
+    return client.get(f"/api/v1/persons/{child_id}/guardian-relationships")
+
+
+def _add_role_permission(role_code: str, permission_code: str, scope_type: str) -> None:
+    """Grant `permission_code` at `scope_type` to the baseline `role_code`
+    for this test only (every integration test starts from the migrated
+    baseline snapshot)."""
+    with session_scope() as session:
+        role_id = session.execute(select(Role.id).where(Role.code == role_code)).scalar_one()
+        permission_id = session.execute(
+            select(Permission.id).where(Permission.code == permission_code)
+        ).scalar_one()
+        session.add(
+            RolePermission(
+                role_id=role_id,
+                permission_id=permission_id,
+                scopes=[RolePermissionScope(scope_type=scope_type)],
+            )
+        )
+        session.commit()
+
+
+def _unrelated_relationship() -> tuple[uuid.UUID, uuid.UUID]:
+    """Commit a relationship between two Persons unrelated to any
+    requester (no ClubMembership, no Group). Returns (child_id,
+    relationship_id)."""
+    with session_scope() as session:
+        guardian = _make_person(first_name="OtherGuardian")
+        child = _make_person(first_name="OtherChild")
+        session.add_all([guardian, child])
+        session.commit()
+        relationship = _make_guardian_relationship(guardian, child)
+        session.add(relationship)
+        session.commit()
+        return child.id, relationship.id
+
+
+@requires_postgres
+def test_club_scoped_admin_can_list_guardian_relationships(client: TestClient) -> None:
+    """GuardianRelationship has no `club_id`; the Club-scoped Administrator
+    still sees it, including a relationship whose parties have no
+    ClubMembership at all."""
+    child_id, guardian_id, relationship_id, _ = _club_scoped_role_setup("admin")
+    other_child_id, other_relationship_id = _unrelated_relationship()
+
+    response = _list_for_child(client, child_id)
+    assert response.status_code == 200, response.text
+    items = response.json()["items"]
+    assert [item["id"] for item in items] == [str(relationship_id)]
+    assert items[0]["guardian_person_id"] == str(guardian_id)
+    assert items[0]["child_person_id"] == str(child_id)
+    assert response.json()["pagination"]["total"] == 1
+
+    response = _list_for_child(client, other_child_id)
+    assert response.status_code == 200, response.text
+    assert [item["id"] for item in response.json()["items"]] == [str(other_relationship_id)]
+
+
+@requires_postgres
+def test_club_scoped_admin_sees_terminated_relationship_as_history(client: TestClient) -> None:
+    """Terminate stays `active -> revoked` and keeps the row: the list (a
+    history view) still shows it as `revoked`, while `/me/children`'s
+    active-only policy keeps excluding it (covered by the
+    `test_me_children_revoked_relationship_excluded` test)."""
+    child_id, _, relationship_id, _ = _club_scoped_role_setup("admin")
+    assert _post_terminate(client, relationship_id).status_code == 200
+
+    response = _list_for_child(client, child_id)
+    assert response.status_code == 200, response.text
+    items = response.json()["items"]
+    assert [item["id"] for item in items] == [str(relationship_id)]
+    assert items[0]["status"] == "revoked"
+
+
+@requires_postgres
+def test_club_scoped_admin_list_preserves_existence_semantics(client: TestClient) -> None:
+    _club_scoped_role_setup("admin")
+
+    assert _list_for_child(client, uuid.uuid4()).status_code == 404
+
+
+@requires_postgres
+def test_club_scoped_admin_without_read_permission_is_denied(client: TestClient) -> None:
+    """No role-name shortcut: without `guardian_relationship.read` the
+    admin is refused before `person_id` is looked up (403, not 404)."""
+    _revoke_role_permission("admin", "guardian_relationship.read")
+    child_id, _, _, _ = _club_scoped_role_setup("admin")
+
+    response = _list_for_child(client, child_id)
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
+    assert _list_for_child(client, uuid.uuid4()).status_code == 403
+
+
+@requires_postgres
+def test_club_scoped_instructor_own_groups_read_is_not_broadened(client: TestClient) -> None:
+    """Instructor's read stays `own_groups`: a club-scoped grant does not
+    turn into Club-neutral `all` — an unrelated relationship stays
+    hidden."""
+    _add_role_permission("instructor", "guardian_relationship.read", "own_groups")
+    _club_scoped_role_setup("instructor")
+    other_child_id, _ = _unrelated_relationship()
+
+    response = _list_for_child(client, other_child_id)
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == []
+
+
+@requires_postgres
+def test_club_scoped_member_self_read_is_not_broadened(client: TestClient) -> None:
+    _add_role_permission("member", "guardian_relationship.read", "self")
+    _club_scoped_role_setup("member")
+    other_child_id, _ = _unrelated_relationship()
+
+    response = _list_for_child(client, other_child_id)
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == []
+
+
+@requires_postgres
+def test_club_scoped_guardian_read_is_not_broadened(client: TestClient) -> None:
+    """The canonical `guardian` role (`children` read) sees neither an
+    unrelated relationship nor another guardian's record for its own
+    child."""
+    with session_scope() as session:
+        club = _make_club()
+        guardian, guardian_user, child, _ = _make_guardian_child_requester(session)
+        co_guardian = _make_person(first_name="CoGuardian")
+        session.add_all([club, co_guardian])
+        session.commit()
+        session.add(_make_guardian_relationship(guardian, child))
+        session.add(_make_guardian_relationship(co_guardian, child))
+        session.commit()
+        child_id, guardian_user_id, club_id = child.id, guardian_user.id, club.id
+    _assign_canonical_role(guardian_user_id, "guardian", club_id)
+    _authenticate_as(guardian_user_id)
+    other_child_id, _ = _unrelated_relationship()
+
+    response = _list_for_child(client, other_child_id)
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == []
+    response = _list_for_child(client, child_id)
+    assert response.status_code == 200, response.text
+    guardian_ids = {item["guardian_person_id"] for item in response.json()["items"]}
+    assert guardian_ids <= {str(guardian.id)}
+
+
+@requires_postgres
+def test_club_scoped_admin_read_keeps_club_boundary_for_club_scoped_resources(
+    client: TestClient,
+) -> None:
+    """The read exception is GuardianRelationship-only: the same admin
+    lists the Club-neutral relationship of a Person outside its Club,
+    but that Person and their ClubMembership stay hidden (404)."""
+    with session_scope() as session:
+        other_club = _make_club()
+        guardian = _make_person(first_name="OutsiderGuardian")
+        outsider = _make_person(first_name="Outsider")
+        session.add_all([other_club, guardian, outsider])
+        session.commit()
+        membership = _make_club_membership(other_club, outsider)
+        relationship = _make_guardian_relationship(guardian, outsider)
+        session.add_all([membership, relationship])
+        session.commit()
+        outsider_id, membership_id = outsider.id, membership.id
+        relationship_id = relationship.id
+    _club_scoped_role_setup("admin")
+
+    response = _list_for_child(client, outsider_id)
+    assert response.status_code == 200, response.text
+    assert [item["id"] for item in response.json()["items"]] == [str(relationship_id)]
     assert client.get(f"/api/v1/persons/{outsider_id}").status_code == 404
     assert client.get(f"/api/v1/memberships/{membership_id}").status_code == 404
 

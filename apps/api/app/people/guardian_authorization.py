@@ -16,7 +16,7 @@ club_boundary_matches` rule, a club-scoped assignment of any scope_type
 never matches a GuardianRelationship — only a global (`club_id IS NULL`)
 assignment can. This is the plain, existing fail-closed default already
 documented for an unresolved-club resource, applied here without any
-GuardianRelationship-specific carve-out. Two explicit exceptions exist:
+GuardianRelationship-specific carve-out. Three explicit exceptions exist:
 
 - the `GET /me/children` projection's `children` scope (PO decision,
   Issue #301): it resolves Club-neutrally — see
@@ -28,8 +28,13 @@ GuardianRelationship-specific carve-out. Two explicit exceptions exist:
   pair and a normal Club-scoped Administrator assignment is not rejected
   merely because the relationship has no `club_id` — see
   `can_manage_guardian_relationship`. Permission and scope are still
-  checked; Club-scoped resources and `guardian_relationship.read` keep
-  the generic boundary.
+  checked; Club-scoped resources keep the generic boundary.
+- `guardian_relationship.read` at scope `all` (Issue #307; ADR-0025 §2):
+  for the same reason, the Club boundary is not applicable to an
+  `all`-scope read grant, so the normal Club-scoped Administrator sees
+  every relationship — see `guardian_relationship_visibility_filter`.
+  The relationship-based read scopes (`self`/`children`/`own_groups`)
+  keep the rule above unchanged.
 
 Two canonical scopes apply, resolved via ADR-0023 §5's relationship
 sources:
@@ -75,8 +80,9 @@ TH-0103 (ADR-0035 §8.4 / roles-and-permissions.md §7.1) adds a third:
   than re-deriving it. Only a *global* (`club_id IS NULL`) `own_groups`
   assignment matches, consistent with `self`/`children` above and this
   module's Club-neutral treatment of the entity (see below): a
-  club-scoped assignment of any scope_type never matches a
-  GuardianRelationship.
+  club-scoped relationship-based grant never matches a
+  GuardianRelationship (the `all`-scope read and the `manage` exceptions
+  above are the only club-scoped grants that do).
 
 `own_events` is not applicable (no Event relationship exists for this
 entity) and fails closed, matching Person's treatment of inapplicable
@@ -234,12 +240,18 @@ def guardian_relationship_visibility_filter(
 
     clauses: list[sa.ColumnElement[bool]] = []
     for grant in grants:
-        if grant.club_id is not None:
-            # GuardianRelationship is Club-neutral: no club-scoped
-            # override is defined for it (see module docstring) — a
-            # club-scoped assignment never matches, of any scope_type.
+        if grant.club_id is not None and grant.scope_type != "all":
+            # Relationship-based scopes: no club-scoped override is
+            # defined for them (see module docstring) — a club-scoped
+            # `self`/`children`/`own_groups`/`none` grant never matches.
             continue
         if grant.scope_type == "all":
+            # Issue #307 / ADR-0025 §2: GuardianRelationship is
+            # Club-neutral, so in the single-club MVP the Club boundary is
+            # not applicable to `guardian_relationship.read` — an
+            # `all`-scope grant matches whatever its assignment's
+            # `club_id` (the normal Club-scoped Administrator). Scope is
+            # still checked; `club_boundary_matches` is unchanged.
             scope_predicate: sa.ColumnElement[bool] = sa.true()
         elif grant.scope_type == "self":
             scope_predicate = GuardianRelationship.child_person_id == requester_person_id
