@@ -116,6 +116,8 @@ Membership lifecycle and membership type changes remain administrative operation
 | `group.read` | `all` | `own_groups` | own membership | `children` |
 | `group.manage` | `all` | — | — | — |
 
+`guardian_relationship.read` for the canonical `guardian` role uses scope `children`. This is the prerequisite read grant for the Guardian `Мои дети` projection (`GET /api/v1/me/children`) and does not grant access to other guardians' relationship records. The scope resolves from the authenticated Guardian's own active, interval-valid `GuardianRelationship` rows; client-supplied child IDs are never authorization input. `GuardianRelationship` is Club-neutral, so this role grant is global (`club_id IS NULL`).
+
 For Guardian, `group.read(children)` resolves to active Groups in which at least one currently accessible child has an active `GroupMembership`. The Group must be active and belong to the same Club context. Guardian does not receive a standalone Groups navigation section; this scope exists to support the `Guardian → Child → Group` contextual flow. Archived Groups are excluded from the current Guardian group set.
 
 Instructor works only with groups to which the instructor is actually assigned.
