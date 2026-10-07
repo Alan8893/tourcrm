@@ -250,7 +250,11 @@ Feature setting не может расширить permissions.
 
 **GuardianRelationship**
 
-- Create/update/terminate — только `admin`.
+- `GuardianRelationship` — Club-neutral resource: entity has no `club_id`.
+- Create/update/terminate — только `admin` через `guardian_relationship.manage`.
+- В MVP TourCRM всегда существует ровно один Club. Поэтому обычное Club-scoped назначение роли `admin` не теряет право `guardian_relationship.manage` из-за отсутствия `club_id` у relationship: Club boundary для этой Club-neutral пары resource/permission неприменим.
+- Это не делает `admin` глобальной ролью и не распространяет исключение на Club-scoped ресурсы; cross-Club access для ресурсов с Club boundary по-прежнему проверяется обычным authorization engine.
+
 - `instructor` может читать relationships в пределах Persons, достижимых через `own_groups`, но не изменяет их.
 - `member` читает собственные relationship records.
 - `guardian` читает собственные relationship records; доступ к другим представителям того же ребёнка не предоставляется.
