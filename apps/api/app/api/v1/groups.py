@@ -146,6 +146,7 @@ def _get_authorized_group_or_404(
     lock: bool = False,
     archived_requires_all_scope: bool = False,
     resolve_self_membership: bool = False,
+    resolve_child_membership: bool = False,
 ) -> Group:
     stmt = select(Group).where(Group.id == group_id)
     if lock:
@@ -160,6 +161,7 @@ def _get_authorized_group_or_404(
         requester_user_id=user_id,
         archived_requires_all_scope=archived_requires_all_scope,
         resolve_self_membership=resolve_self_membership,
+        resolve_child_membership=resolve_child_membership,
     )
     authorizer = Authorizer(session=db, user_id=user_id, permission_code=permission_code)
     if not authorizer.is_allowed(context):
@@ -286,9 +288,11 @@ def get_group(
         user_id=principal.user_id,
         permission_code="group.read",
         archived_requires_all_scope=True,
-        # Issue #282: the same Member `self` rule as `GET /groups`. Nested
-        # `members`/`instructors` reads deliberately do not pass this.
+        # Issue #282: the same Member `self` rule as `GET /groups`; ADR-0046 /
+        # Issue #301: the same Guardian `children` rule. Nested
+        # `members`/`instructors` reads deliberately pass neither.
         resolve_self_membership=True,
+        resolve_child_membership=True,
     )
     return _group_out(group)
 

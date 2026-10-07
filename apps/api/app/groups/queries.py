@@ -17,8 +17,8 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
-from app.db.identity import ClubMembership
-from app.groups.authorization import group_visibility_filter
+from app.db.identity import ClubMembership, Person
+from app.groups.authorization import child_membership_condition, group_visibility_filter
 
 _GROUP_SORT_COLUMNS: dict[str, sa.UnaryExpression] = {
     "name": Group.name.asc(),
@@ -208,11 +208,44 @@ def list_group_instructor_assignments_page(
     return list(rows), total
 
 
+def list_child_groups(
+    session: Session, *, user_id: uuid.UUID, child_person_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[Group]]:
+    """The compact per-child Group context of `GET /me/children`
+    (ADR-0046 §3.3): for each of `child_person_ids` — the requester's
+    already-authorized children — the active Groups in which that child
+    currently has an active GroupMembership (app.groups.authorization.
+    child_membership_condition, narrowed to the one child), intersected
+    with the requester's own `group.read` visibility, so the projection
+    can never list a Group that `GET /groups/{id}` would hide. One query,
+    in SQL, ordered by Group name; a child without Groups is absent from
+    the result."""
+    if not child_person_ids:
+        return {}
+    stmt = (
+        sa.select(Person.id.label("child_person_id"), Group)
+        .where(
+            Person.id.in_(child_person_ids),
+            Group.status == "active",
+            child_membership_condition(
+                Group.id, Group.club_id, user_id, child_person_id=Person.id
+            ),
+            group_visibility_filter(session, user_id=user_id, permission_code="group.read"),
+        )
+        .order_by(Person.id, Group.name.asc(), Group.id)
+    )
+    result: dict[uuid.UUID, list[Group]] = {}
+    for child_person_id, group in session.execute(stmt).all():
+        result.setdefault(child_person_id, []).append(group)
+    return result
+
+
 __all__ = [
     "InvalidSortError",
     "GROUP_DEFAULT_SORT",
     "GROUP_MEMBERSHIP_DEFAULT_SORT",
     "GROUP_INSTRUCTOR_ASSIGNMENT_DEFAULT_SORT",
+    "list_child_groups",
     "list_groups_page",
     "list_group_memberships_page",
     "list_person_group_memberships_page",

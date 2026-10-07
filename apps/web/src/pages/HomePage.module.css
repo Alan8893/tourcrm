@@ -46,3 +46,33 @@
   align-items: center;
   gap: var(--space-3);
 }
+
+/* ADR-0046: a child's current Groups as compact links into Group Detail. */
+.childGroups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.childGroupLink {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-accent-soft-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-hover);
+  font-size: var(--font-size-sm);
+  text-decoration: none;
+}
+
+.childGroupLink:hover {
+  border-color: var(--color-accent);
+}
+
+.childGroupLink:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}

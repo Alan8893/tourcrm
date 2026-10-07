@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { HomePage } from "./HomePage";
@@ -94,6 +94,7 @@ describe("HomePage — guardian «Мои дети» section", () => {
               middle_name: null,
               birth_date: "2016-03-02",
               photo_file_id: null,
+              groups: [],
             },
           ],
           pagination: { page: 1, page_size: 1, total: 1, pages: 1 },
@@ -145,5 +146,67 @@ describe("HomePage — guardian «Мои дети» section", () => {
     await waitFor(() => {
       expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBeforeRetry);
     });
+  });
+});
+
+describe("HomePage — «Мои дети» → Group context (ADR-0046, Issue #301)", () => {
+  function childrenResponse(items: Array<Record<string, unknown>>) {
+    return { items, pagination: { page: 1, page_size: items.length || 1, total: items.length, pages: items.length ? 1 : 0 } };
+  }
+
+  function child(id: string, lastName: string, groups: Array<{ id: string; name: string }>) {
+    return {
+      id,
+      last_name: lastName,
+      first_name: "Иван",
+      middle_name: null,
+      birth_date: null,
+      photo_file_id: null,
+      groups,
+    };
+  }
+
+  it("shows each child's current Groups as links to the existing Group Detail", async () => {
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse("guardian") },
+      { match: "/news", response: emptyEvents() },
+      { match: "/events", response: emptyEvents() },
+      {
+        match: "/me/children",
+        response: childrenResponse([
+          child("c1", "Иванов", [
+            { id: "g1", name: "Туристы-5" },
+            { id: "g2", name: "Ориентирование" },
+          ]),
+          child("c2", "Петров", [{ id: "g2", name: "Ориентирование" }]),
+        ]),
+      },
+    ]);
+
+    renderWithProviders(<HomePage />);
+
+    const ivan = await screen.findByRole("list", { name: "Группы: Иванов Иван" });
+    expect(within(ivan).getAllByRole("link").map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
+      ["Туристы-5", "/groups/g1"],
+      ["Ориентирование", "/groups/g2"],
+    ]);
+    const petrov = screen.getByRole("list", { name: "Группы: Петров Иван" });
+    expect(within(petrov).getByRole("link", { name: "Ориентирование" })).toHaveAttribute("href", "/groups/g2");
+    // The backend projection is the only source: no Groups list is fetched.
+    expect(fetchMock.mock.calls.some(([input]) => /\/groups(\?|$)/.test(String(input)))).toBe(false);
+  });
+
+  it("shows no Group links for a child without current Groups", async () => {
+    stubFetch([
+      { match: "/auth/me", response: meResponse("guardian") },
+      { match: "/news", response: emptyEvents() },
+      { match: "/events", response: emptyEvents() },
+      { match: "/me/children", response: childrenResponse([child("c1", "Иванов", [])]) },
+    ]);
+
+    renderWithProviders(<HomePage />);
+
+    expect(await screen.findByText("Иванов Иван")).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: /Группы:/ })).not.toBeInTheDocument();
   });
 });

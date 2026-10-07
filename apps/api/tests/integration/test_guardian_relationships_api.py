@@ -1220,6 +1220,8 @@ def test_me_children_authenticated_guardian_sees_own_children(client: TestClient
             "middle_name",
             "birth_date",
             "photo_file_id",
+            # ADR-0046 §3.3: the child's compact active-Group context.
+            "groups",
         }
 
 
@@ -1265,6 +1267,8 @@ def test_me_children_projection_matches_exactly_and_excludes_contacts(
         "middle_name": "Ivanovich",
         "birth_date": "2015-06-01",
         "photo_file_id": str(photo_file_id),
+        # No GroupMembership: an empty ADR-0046 §3.3 Group context.
+        "groups": [],
     }
     raw_body = response.text
     assert "phone" not in raw_body

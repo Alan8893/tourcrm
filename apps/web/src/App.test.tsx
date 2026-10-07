@@ -136,7 +136,6 @@ describe("App — direct navigation to role-hidden sections (Issue #212)", () =>
     { name: "Member → /people/:id", roles: ["member"], path: "/people/p9", fragment: "/persons" },
     { name: "Guardian → /people", roles: ["guardian"], path: "/people", fragment: "/persons" },
     { name: "Guardian → /groups", roles: ["guardian"], path: "/groups", fragment: "/groups" },
-    { name: "Guardian → /groups/:id", roles: ["guardian"], path: "/groups/g1", fragment: "/groups" },
     { name: "Instructor → /reports", roles: ["instructor"], path: "/reports", fragment: "/reports" },
     { name: "Member → /reports", roles: ["member"], path: "/reports", fragment: "/reports" },
     { name: "Guardian → /reports", roles: ["guardian"], path: "/reports", fragment: "/reports" },
@@ -150,6 +149,15 @@ describe("App — direct navigation to role-hidden sections (Issue #212)", () =>
     expect(screen.queryByRole("button", { name: /Создать группу/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/появится в одном из следующих этапов/)).not.toBeInTheDocument();
     expect(requested(fetchMock, fragment)).toBe(false);
+  });
+
+  it("Guardian → /groups stays forbidden: there is no Guardian Groups section (ADR-0046)", async () => {
+    const fetchMock = await renderAt("/groups", ["guardian"]);
+
+    expect(await screen.findByText("Раздел недоступен")).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Основная навигация" });
+    expect(within(nav).queryByRole("link", { name: "Группы" })).not.toBeInTheDocument();
+    expect(requested(fetchMock, "/groups")).toBe(false);
   });
 
   it("Administrator can open Reports directly", async () => {
@@ -188,5 +196,109 @@ describe("App — direct navigation to role-hidden sections (Issue #212)", () =>
     await renderAt("/reports", ["guardian", "admin"]);
 
     expect(await screen.findByRole("heading", { name: "Отчёты" })).toBeInTheDocument();
+  });
+});
+
+describe("App — Guardian child-to-group context (ADR-0046, Issue #301)", () => {
+  const group = {
+    id: "g1",
+    club_id: "club-1",
+    name: "Туристы-5",
+    description: "Описание группы",
+    status: "active",
+    valid_from: "2026-01-01T00:00:00Z",
+    valid_to: null,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const emptyCollection = { items: [], pagination: { page: 1, page_size: 50, total: 0, pages: 0 } };
+
+  async function renderAt(path: string, roleCodes: string[]) {
+    window.history.pushState({}, "", path);
+    const fetchMock = stubFetch([
+      { match: "/auth/me", response: meResponse(roleCodes) },
+      { match: "/groups/g1/schedule", response: emptyCollection },
+      { match: "/groups/g1/members", response: emptyCollection },
+      { match: "/groups/g1", response: group },
+      {
+        match: "/me/children",
+        response: {
+          items: [
+            {
+              id: "c1",
+              last_name: "Иванов",
+              first_name: "Иван",
+              middle_name: null,
+              birth_date: null,
+              photo_file_id: null,
+              groups: [{ id: "g1", name: "Туристы-5" }],
+            },
+          ],
+          pagination: { page: 1, page_size: 1, total: 1, pages: 1 },
+        },
+      },
+      { match: "/news", response: emptyCollection },
+      { match: "/events", response: emptyCollection },
+    ]);
+    vi.resetModules();
+    const { App: FreshApp } = await import("./App");
+    render(<FreshApp />);
+    return fetchMock;
+  }
+
+  function urls(fetchMock: ReturnType<typeof stubFetch>) {
+    return fetchMock.mock.calls.map(([input]) => String(input));
+  }
+
+  it("Guardian opens a child's Group from «Мои дети» and sees only its schedule", async () => {
+    const fetchMock = await renderAt("/", ["guardian"]);
+
+    const groups = await screen.findByRole("list", { name: "Группы: Иванов Иван" });
+    within(groups).getByRole("link", { name: "Туристы-5" }).click();
+
+    expect(await screen.findByRole("heading", { name: "Туристы-5" })).toBeInTheDocument();
+    expect(screen.queryByText("Раздел недоступен")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Расписание"]);
+    expect(screen.queryByRole("button", { name: "Архивировать" })).not.toBeInTheDocument();
+    // Back goes Home (where «Мои дети» lives), not to a Groups list.
+    const main = screen.getByRole("main");
+    expect(within(main).getByRole("link", { name: /Главная/ })).toHaveAttribute("href", "/");
+    expect(within(main).queryByRole("link", { name: /Все группы/ })).not.toBeInTheDocument();
+    // The Group Detail is authorized by the backend item endpoint; no
+    // Groups list or roster is ever requested for Guardian.
+    await waitFor(() => expect(urls(fetchMock)).toContain("/api/v1/groups/g1"));
+    expect(urls(fetchMock).some((url) => /\/groups(\?|$)/.test(url))).toBe(false);
+    expect(urls(fetchMock).some((url) => url.includes("/members"))).toBe(false);
+    const nav = screen.getByRole("navigation", { name: "Основная навигация" });
+    expect(within(nav).queryByRole("link", { name: "Группы" })).not.toBeInTheDocument();
+  });
+
+  it("shows the backend's existence-hiding 404 for a Group the Guardian may not read", async () => {
+    window.history.pushState({}, "", "/groups/foreign");
+    stubFetch([
+      { match: "/auth/me", response: meResponse(["guardian"]) },
+      {
+        match: "/groups/foreign",
+        status: 404,
+        response: { error: { code: "group_not_found", message: "Group not found", details: {}, request_id: "r" } },
+      },
+    ]);
+    vi.resetModules();
+    const { App: FreshApp } = await import("./App");
+    render(<FreshApp />);
+
+    // App's QueryClient retries a failed query once before the error state.
+    expect(await screen.findByText("Группа не найдена", {}, { timeout: 5000 })).toBeInTheDocument();
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+  });
+
+  it("Member keeps the «Все группы» back link to the Groups section", async () => {
+    await renderAt("/groups/g1", ["member"]);
+
+    expect(await screen.findByRole("heading", { name: "Туристы-5" })).toBeInTheDocument();
+    expect(within(screen.getByRole("main")).getByRole("link", { name: /Все группы/ })).toHaveAttribute(
+      "href",
+      "/groups",
+    );
   });
 });

@@ -4,7 +4,9 @@
 `GET /me/children` never accepts any client-supplied guardian/person id
 as a substitute for the authenticated principal (Issue #64 §13) — it
 takes no path or query parameters that could name a different user; the
-only identity input is the session-derived `CurrentPrincipal`.
+only identity input is the session-derived `CurrentPrincipal`. Each child
+carries its compact `groups[]` context (ADR-0046 §3.3), resolved for the
+already-authorized children only.
 
 `GET /me/instructor-schedule` (`docs/05-api/group-and-instructor-
 schedule-api.md` §3): `me` means the authenticated **User** — never
@@ -21,18 +23,20 @@ from sqlalchemy.orm import Session
 from app.api.deps import CurrentPrincipal, require_authenticated_principal
 from app.api.schemas import CollectionResponse, Pagination
 from app.api.v1.events_schemas import CalendarItemOut
-from app.api.v1.guardian_relationships_schemas import ChildOut
+from app.api.v1.guardian_relationships_schemas import ChildGroupOut, ChildOut
 from app.api.v1.schedule_params import parse_schedule_range
+from app.db.groups import Group
 from app.db.identity import Person
 from app.db.session import get_db
 from app.events.calendar import CalendarItem
 from app.events.instructor_schedule import list_instructor_schedule_items_page
+from app.groups.queries import list_child_groups
 from app.people.guardian_queries import list_children_for_guardian
 
 router = APIRouter(prefix="/me", tags=["me"])
 
 
-def _child_out(person: Person) -> ChildOut:
+def _child_out(person: Person, groups: list[Group]) -> ChildOut:
     return ChildOut(
         id=person.id,
         last_name=person.last_name,
@@ -40,6 +44,7 @@ def _child_out(person: Person) -> ChildOut:
         middle_name=person.middle_name,
         birth_date=person.birth_date,
         photo_file_id=person.photo_file_id,
+        groups=[ChildGroupOut(id=group.id, name=group.name) for group in groups],
     )
 
 
@@ -51,9 +56,12 @@ def list_my_children(
     rows = list_children_for_guardian(
         db, user_id=principal.user_id, permission_code="guardian_relationship.read"
     )
+    groups_by_child = list_child_groups(
+        db, user_id=principal.user_id, child_person_ids=[person.id for person in rows]
+    )
     total = len(rows)
     return CollectionResponse(
-        items=[_child_out(person) for person in rows],
+        items=[_child_out(person, groups_by_child.get(person.id, [])) for person in rows],
         pagination=Pagination(page=1, page_size=total or 1, total=total, pages=1 if total else 0),
     )
 

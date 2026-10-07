@@ -173,9 +173,15 @@ function NewsSection({ isAdmin }: { isAdmin: boolean }) {
  * mirrors "Ближайшие события" above exactly (own heading, loading/error/
  * empty/success states, `Card` rows). Data comes exclusively from
  * `GET /me/children` — the canonical safe projection (id, last_name,
- * first_name, middle_name, birth_date, photo_file_id) — and nothing here
- * enriches it with a further `usePerson(child.id)` call; no contacts, no
- * other GuardianRelationship data ever appear.
+ * first_name, middle_name, birth_date, photo_file_id, groups) — and
+ * nothing here enriches it with a further `usePerson(child.id)` call; no
+ * contacts, no other GuardianRelationship data ever appear.
+ *
+ * ADR-0046 (Issue #301): this section is Guardian's entry point into the
+ * Group context — each child's current active Groups (`groups[]`, as the
+ * backend resolved them) are compact links to the existing Group Detail.
+ * No Groups list is fetched or filtered here, and no navigation item is
+ * added.
  */
 function MyChildrenSection() {
   const childrenQuery = useMyChildren();
@@ -234,6 +240,17 @@ function ChildCard({ child }: { child: Child }) {
                 ? new Date(child.birth_date).toLocaleDateString("ru-RU")
                 : "Дата рождения не указана"}
             </div>
+            {child.groups.length > 0 ? (
+              <ul className={styles.childGroups} aria-label={`Группы: ${name}`}>
+                {child.groups.map((group) => (
+                  <li key={group.id}>
+                    <Link to={`/groups/${group.id}`} className={styles.childGroupLink}>
+                      {group.name}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </div>
         </div>
       </div>
