@@ -84,9 +84,18 @@ export type GuardianRelationship = {
   updated_at: string;
 };
 
-/** `GET /me/children` projection (ADR-0035 §9) — exactly these 6 fields,
- * never enriched with a `usePerson(child.id)` call: no contacts, no other
- * GuardianRelationship data. */
+/** One entry of a child's compact Group context (ADR-0046 §3.3) — only
+ * `id` and `name`, for contextual navigation; opening the Group re-runs
+ * the backend Group authorization. */
+export type ChildGroup = {
+  id: string;
+  name: string;
+};
+
+/** `GET /me/children` projection (ADR-0035 §9, ADR-0046 §3.3) — exactly
+ * these fields, never enriched with a `usePerson(child.id)` call: no
+ * contacts, no other GuardianRelationship data. `groups` are the child's
+ * current active Groups as resolved by the backend. */
 export type Child = {
   id: string;
   last_name: string;
@@ -94,6 +103,7 @@ export type Child = {
   middle_name: string | null;
   birth_date: string | null;
   photo_file_id: string | null;
+  groups: ChildGroup[];
 };
 
 export function personFullName(person: {

@@ -51,6 +51,16 @@ class GuardianRelationshipOut(BaseModel):
     updated_at: datetime
 
 
+class ChildGroupOut(BaseModel):
+    """ADR-0046 §3.3: the compact read-only Group summary of a child —
+    exactly `id` and `name`, for contextual navigation only. Not a second
+    Group resource: opening the Group re-runs `GET /groups/{id}`
+    authorization."""
+
+    id: UUID
+    name: str
+
+
 class ChildOut(BaseModel):
     """`GET /me/children` projection — ADR-0035 §9 / TH-0103's exact
     canonical field list. `last_name`/`first_name`/`middle_name` are
@@ -66,3 +76,6 @@ class ChildOut(BaseModel):
     middle_name: Optional[str]
     birth_date: Optional[date]
     photo_file_id: Optional[UUID]
+    # ADR-0046 §3.3: the child's current active Groups (active
+    # GroupMembership, active ClubMembership, active Group), ordered by name.
+    groups: list[ChildGroupOut]

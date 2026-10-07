@@ -4,6 +4,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { NotificationProvider } from "./components/ui/Notification";
 import { AppShell } from "./shell/AppShell";
 import { SectionGuard } from "./shell/SectionGuard";
+import { GroupDetailGuard } from "./shell/GroupDetailGuard";
 import { AdministratorGuard } from "./shell/AdministratorGuard";
 import { LoginPage } from "./pages/LoginPage";
 import { PasswordResetRequestPage } from "./pages/PasswordResetRequestPage";
@@ -66,6 +67,11 @@ export function App() {
               </Route>
               <Route element={<SectionGuard section="groups" />}>
                 <Route path="groups" element={<GroupsPage />} />
+              </Route>
+              {/* ADR-0046 / Issue #301: Group Detail is also reached
+                  contextually by Guardian (Home → «Мои дети» → Group),
+                  without a Groups navigation section. */}
+              <Route element={<GroupDetailGuard />}>
                 <Route path="groups/:groupId" element={<GroupDetailPage />} />
               </Route>
               <Route element={<SectionGuard section="events" />}>

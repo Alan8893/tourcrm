@@ -15,6 +15,11 @@ describe("groupDetailTabIds (Issue #285)", () => {
     expect(groupDetailTabIds(["member"])).toEqual(["schedule"]);
   });
 
+  it("gives a guardian only the schedule (ADR-0046)", () => {
+    expect(groupDetailTabIds(["guardian"])).toEqual(["schedule"]);
+    expect(groupDetailTabIds(["guardian", "member"])).toEqual(["schedule"]);
+  });
+
   it("gives the union to a user holding several roles", () => {
     expect(groupDetailTabIds(["member", "instructor"])).toEqual(["members", "schedule"]);
     expect(groupDetailTabIds(["member", "admin"])).toEqual(["overview", "members", "schedule"]);

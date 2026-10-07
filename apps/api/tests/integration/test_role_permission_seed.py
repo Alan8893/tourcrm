@@ -119,8 +119,9 @@ def test_admin_role_permission_count_matches_canonical_catalog_exactly() -> None
 # (scope `children`), and Issue #245 (migration 3c1e9a7d5b20) grants
 # `instructor` `trip.read`/`trip.manage`, `member` `trip.read` and
 # `guardian` `trip.read`, and Issue #282 (migration 5e2c8a41d7b9) grants
-# `member` `group.read` (scope `self`). No role receives anything beyond
-# those at head.
+# `member` `group.read` (scope `self`), and ADR-0046 / Issue #301
+# (migration c4f7a2e91b36) grants `guardian` `group.read` (scope
+# `children`). No role receives anything beyond those at head.
 
 
 @requires_postgres
@@ -144,6 +145,7 @@ def test_non_admin_baseline_roles_receive_no_unexpected_grants() -> None:
             ("guardian", "trip.read"),
             ("member", "group.read"),
             ("member", "event.read"),
+            ("guardian", "group.read"),
         }
 
 
@@ -221,9 +223,10 @@ def test_reapplying_admin_seed_after_downgrade_and_upgrade_is_idempotent(
         # #245's four trip grants (instructor trip.read/trip.manage, member
         # trip.read, guardian trip.read; migration 3c1e9a7d5b20) and Issue
         # #282's (member, group.read) grant (migration 5e2c8a41d7b9) and
-        # Issue #285's (member, event.read) grant (migration 9b4d6e2f8a10),
-        # all re-applied by the same upgrade-to-head above.
-        assert len(rows) == len(DOCUMENTED_PERMISSION_CODES) + 8
+        # Issue #285's (member, event.read) grant (migration 9b4d6e2f8a10)
+        # and Issue #301's (guardian, group.read) grant (migration
+        # c4f7a2e91b36), all re-applied by the same upgrade-to-head above.
+        assert len(rows) == len(DOCUMENTED_PERMISSION_CODES) + 9
 
 
 # --- (5) downgrade removes only rows this migration introduced -------------

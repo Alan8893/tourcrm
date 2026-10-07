@@ -31,6 +31,7 @@ import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { groupStatusIcon, groupStatusLabel, eventStatusIcon, eventStatusLabel } from "../domain/statusMapping";
 import { formatScheduleRange } from "../domain/calendarDate";
 import { groupDetailTabIds } from "../domain/groupDetailTabs";
+import { isNavigationItemVisible } from "../shell/navigation";
 import type { GroupDetailTabId } from "../domain/groupDetailTabs";
 import type { EventStatus } from "../domain/statusMapping";
 import type { GroupsShortcutState } from "./GroupsPage";
@@ -65,6 +66,7 @@ export function GroupDetailPage() {
   const location = useLocation();
   const viaGroupsShortcut =
     (location.state as Partial<GroupsShortcutState> | null)?.groupsShortcut === true;
+  const canOpenGroupsList = isNavigationItemVisible(meQuery.data?.role_assignments ?? [], "groups");
 
   if (groupQuery.isLoading || meQuery.isLoading) {
     return <Loading label="Загружаем группу…" />;
@@ -106,7 +108,15 @@ export function GroupDetailPage() {
     <div>
       <PageHeader
         title={group.name}
-        back={viaGroupsShortcut ? undefined : { to: "/groups", label: "Все группы" }}
+        back={
+          viaGroupsShortcut
+            ? undefined
+            : canOpenGroupsList
+              ? { to: "/groups", label: "Все группы" }
+              : // ADR-0046: Guardian came from Home → «Мои дети»; the Groups
+                // list is not a Guardian section.
+                { to: "/", label: "Главная" }
+        }
         titleExtra={
           <StatusBadge status={groupStatusIcon(group.status)} label={groupStatusLabel(group.status)} />
         }

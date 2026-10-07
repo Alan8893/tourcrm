@@ -9,10 +9,11 @@ role), docs/03-architecture/adr/ADR-0013-scope-canonicalization.md,
 docs/05-api/people-api.md §14-16.
 
 Two canonical scopes apply to all three entities: `all` and `own_groups`.
-`children`/`own_events` are not applicable (no such relationship exists
-for Group/GroupMembership/GroupInstructorAssignment) and fail closed,
+`own_events` is not applicable (no such relationship exists for
+Group/GroupMembership/GroupInstructorAssignment) and fails closed,
 matching app.people.guardian_authorization's treatment of inapplicable
-scopes.
+scopes; `self` and `children` apply to the Group list/item reads only
+(below).
 
 Member self visibility (Issue #282, PO decision 2026-10-05;
 role-permission-scope-matrix.md §6 "member: own membership"): under
@@ -28,6 +29,24 @@ for `GET /groups` (`group_visibility_filter`) and `GET /groups/{id}`
 nested `members`/`instructors` reads, `group.manage` and the Group
 Schedule keep their own contracts and leave `is_self` unresolved (`None`,
 fail closed), so this rule widens none of them.
+
+Guardian child-to-group context (ADR-0046, Issue #301;
+role-permission-scope-matrix.md §6, people-api.md §14): under
+`group.read`, `children` resolves to the active Groups reachable through
+the requester's children — authenticated User -> Person (guardian) ->
+active, interval-valid `GuardianRelationship` -> child Person -> active
+`ClubMembership` in the Group's own Club -> active `GroupMembership`
+(`membership_status='active'` and a current interval) -> Group with
+`status='active'`. Several children give the UNION; a revoked/expired
+relationship, an inactive child ClubMembership, an ended GroupMembership,
+another Club and an archived Group never match, and no client-supplied
+child id takes part. Like `self`, `children` is resolved ONLY for
+`GET /groups` (`group_visibility_filter`) and `GET /groups/{id}`
+(`build_group_resource_context(..., resolve_child_membership=True)`);
+every other `group.read`/`group.manage` check leaves `is_child`
+unresolved (`None`, fail closed), so the nested `members`/`instructors`
+reads stay closed to Guardian. The Group Schedule keeps its own ODR-0002
+policy (app.groups.schedule_authorization).
 
 `own_groups` here answers a simpler question than
 app.people.authorization's own `own_groups` resolution for Person/
@@ -73,9 +92,11 @@ from sqlalchemy.orm import Session, aliased
 from app.authorization.context import ResourceContext
 from app.authorization.service import applicable_grants
 from app.db.groups import Group, GroupInstructorAssignment, GroupMembership
-from app.db.identity import ClubMembership, User
+from app.db.identity import ClubMembership, GuardianRelationship, User
 
 ARCHIVED_GROUP_STATUS = "archived"
+_ACTIVE_GROUP_STATUS = "active"
+_ACTIVE_GUARDIAN_RELATIONSHIP_STATUS = "active"
 _ACTIVE_CLUB_MEMBERSHIP_STATUS = "active"
 _ACTIVE_GROUP_MEMBERSHIP_STATUS = "active"
 
@@ -128,6 +149,47 @@ def _self_membership_condition(
     )
 
 
+def child_membership_condition(
+    group_id: Any,
+    group_club_id: Any,
+    requester_user_id: uuid.UUID,
+    *,
+    child_person_id: Any = None,
+) -> sa.ColumnElement[bool]:
+    """`children` (ADR-0046 §2): some child of the requesting User's own
+    Person — through an active, interval-valid `GuardianRelationship` —
+    has an active `GroupMembership` in `group_id`, held through an active
+    `ClubMembership` in the Group's own Club (`group_club_id`), evaluated
+    *now*. Group status is not part of this condition: callers combine it
+    with `status='active'`. `child_person_id` narrows the condition to
+    one child (the `/me/children` per-child projection); it never widens
+    it, since the relationship to the requester is always required."""
+    gm = aliased(GroupMembership)
+    cm = aliased(ClubMembership)
+    gr = aliased(GuardianRelationship)
+    requester_person_id = (
+        sa.select(User.person_id).where(User.id == requester_user_id).scalar_subquery()
+    )
+    conditions = [
+        gm.group_id == group_id,
+        gm.membership_status == _ACTIVE_GROUP_MEMBERSHIP_STATUS,
+        _active_interval(gm.valid_from, gm.valid_to),
+        cm.club_id == group_club_id,
+        cm.status == _ACTIVE_CLUB_MEMBERSHIP_STATUS,
+        gr.guardian_person_id == requester_person_id,
+        gr.status == _ACTIVE_GUARDIAN_RELATIONSHIP_STATUS,
+        _active_interval(gr.valid_from, gr.valid_to),
+    ]
+    if child_person_id is not None:
+        conditions.append(cm.person_id == child_person_id)
+    return sa.exists(
+        sa.select(gm.id)
+        .join(cm, cm.id == gm.club_membership_id)
+        .join(gr, gr.child_person_id == cm.person_id)
+        .where(*conditions)
+    )
+
+
 def build_group_resource_context(
     session: Session,
     *,
@@ -135,6 +197,7 @@ def build_group_resource_context(
     requester_user_id: uuid.UUID,
     archived_requires_all_scope: bool = False,
     resolve_self_membership: bool = False,
+    resolve_child_membership: bool = False,
 ) -> ResourceContext:
     """`archived_requires_all_scope=True` (the `group.read` item/nested-read
     endpoints) makes an archived Group reachable only through a
@@ -142,12 +205,18 @@ def build_group_resource_context(
 
     `resolve_self_membership=True` (only `GET /groups/{id}`) additionally
     resolves `is_self` from the requester's own active GroupMembership;
-    otherwise `is_self` stays `None` and `self` never matches."""
+    otherwise `is_self` stays `None` and `self` never matches.
+
+    `resolve_child_membership=True` (only `GET /groups/{id}`) resolves
+    `is_child` from the requester's children's active GroupMembership in
+    an active Group (ADR-0046); otherwise `is_child` stays `None` and
+    `children` never matches."""
     if archived_requires_all_scope and group.status == ARCHIVED_GROUP_STATUS:
         return ResourceContext(
             club_id=group.club_id,
             is_own_group=False,
             is_self=False if resolve_self_membership else None,
+            is_child=False if resolve_child_membership else None,
         )
     is_own_group = session.execute(
         sa.select(_own_group_condition(group.id, requester_user_id))
@@ -159,8 +228,18 @@ def build_group_resource_context(
                 sa.select(_self_membership_condition(group.id, group.club_id, requester_user_id))
             ).scalar()
         )
+    is_child: bool | None = None
+    if resolve_child_membership:
+        is_child = group.status == _ACTIVE_GROUP_STATUS and bool(
+            session.execute(
+                sa.select(child_membership_condition(group.id, group.club_id, requester_user_id))
+            ).scalar()
+        )
     return ResourceContext(
-        club_id=group.club_id, is_own_group=bool(is_own_group), is_self=is_self
+        club_id=group.club_id,
+        is_own_group=bool(is_own_group),
+        is_self=is_self,
+        is_child=is_child,
     )
 
 
@@ -205,9 +284,9 @@ def group_visibility_filter(
     """Build the predicate for a Group list query (`.where(...)`
     referencing `Group.id`/`Group.club_id`), true only for Groups the
     acting user is authorized to see under `permission_code`. Used by
-    `GET /api/v1/groups`. An `own_groups` or `self` assignment only ever
-    matches active Groups — archived Groups are listed through `all` alone
-    (see the module docstring).
+    `GET /api/v1/groups`. An `own_groups`, `self` or `children` assignment
+    only ever matches active Groups — archived Groups are listed through
+    `all` alone (see the module docstring).
     """
     grants = applicable_grants(session, user_id, permission_code)
     if not grants:
@@ -229,10 +308,15 @@ def group_visibility_filter(
                 Group.status != ARCHIVED_GROUP_STATUS,
                 _self_membership_condition(Group.id, Group.club_id, user_id),
             )
+        elif grant.scope_type == "children":
+            scope_predicate = sa.and_(
+                Group.status == _ACTIVE_GROUP_STATUS,
+                child_membership_condition(Group.id, Group.club_id, user_id),
+            )
         elif grant.scope_type == "none":
             scope_predicate = sa.false()
         else:
-            # children/own_events: not applicable to Group.
+            # own_events: not applicable to Group.
             continue
         clauses.append(sa.and_(club_boundary, scope_predicate))
 
@@ -244,5 +328,6 @@ __all__ = [
     "build_group_create_context",
     "build_group_membership_resource_context",
     "build_group_instructor_assignment_resource_context",
+    "child_membership_condition",
     "group_visibility_filter",
 ]
