@@ -376,6 +376,14 @@ Group может быть архивирована Administrator.
 
 Создание и редактирование используют существующие canonical Event API/domain semantics. Frontend не создаёт собственную доменную модель события.
 
+**Карточка Event: вкладка «Участники»**
+- Для Administrator и Instructor, которым backend разрешает `event.read` для данного Event, карточка Event содержит вкладку «Участники».
+- Вкладка показывает canonical roster зарегистрированных участников из `EventParticipation`; frontend не строит отдельный dataset и не фильтрует более широкий ответ локально.
+- Для Member и Guardian общий roster участников не показывается; self-registration остаётся доступной через существующий self-service workflow.
+- Состав и пагинация списка определяются canonical Event participants API и backend authorization.
+- Отдельный permission для просмотра участников не вводится.
+- Проверка self-registration должна быть сквозным сценарием: «Записаться» → участник появляется в roster → «Отменить запись» → статус/отображение отражают отмену согласно canonical participation contract.
+
 Не входят в MVP:
 - drag-and-drop scheduling;
 - resize события мышью;
@@ -575,6 +583,26 @@ Backend отвечает за authorization, recurrence, occurrence materializat
 ## 16. Отчёты и аналитика
 
 Для администратора:
+- мастер отчёта «Участники мероприятий» для проверки регистраций;
+- численность участников;
+- активность;
+- посещаемость;
+- динамика групп;
+- мероприятия;
+- походная активность;
+- достижения;
+- финансы;
+- оборудование.
+
+**Отчёт «Участники мероприятий»**
+- контексты: `club`, `group`, `event`, `group + event`;
+- для `event` и `group + event`: canonical `EventParticipation` statuses `registered` / `cancelled`;
+- preview и XLSX/PDF/Print используют один canonical dataset;
+- минимально показываются ФИО, группа, мероприятие, дата/время и статус регистрации;
+- дополнительные поля берутся только из Participant Export field allowlist;
+- доступ Administrator-only, как и раздел `Отчёты` в текущей navigation architecture;
+- backend authoritative для authorization, dataset, фильтров и статусов; frontend не фильтрует более широкий dataset локально.
+
 - численность участников;
 - активность;
 - посещаемость;
