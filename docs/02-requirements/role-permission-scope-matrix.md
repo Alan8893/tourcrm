@@ -234,6 +234,8 @@ A direct request with a known URL or object ID must not bypass authorization.
 
 TourCRM MVP operates with exactly one Club. `ClubMembership` remains the domain membership record for that single Club; it is not a tenant selector and must not be used to introduce multi-club behavior.
 
+For Club-neutral resources that intentionally have no `club_id`, a Club-scoped Administrator assignment is not rejected solely because the resource has no Club boundary. In particular, `guardian_relationship.manage` is valid for an authorized Administrator with the normal Club-scoped role assignment. This is an explicit applicability rule for the single-club MVP and does not generalize to Club-scoped resources or create multi-Club access.
+
 ---
 
 **PO decision status:** approved 2026-09-29.
