@@ -120,7 +120,11 @@ from app.people.authorization import (
     is_system_admin_person_update_grant,
     resolve_current_club_id_for_person_create,
 )
-from app.people.guardian_authorization import build_guardian_relationship_create_context
+from app.people.guardian_authorization import (
+    GUARDIAN_RELATIONSHIP_MANAGE_PERMISSION,
+    build_guardian_relationship_create_context,
+    can_manage_guardian_relationship,
+)
 from app.people.guardian_lifecycle import (
     DuplicateActiveGuardianRelationshipError,
     SelfLinkNotAllowedError,
@@ -771,14 +775,14 @@ def create_person_guardian_relationship(
     resolved from the path/payload ids alone (it never needs the Person
     row), so `guardian_relationship.manage` is checked first — neither
     the child's nor the guardian's existence is disclosed to a caller who
-    may not create the relationship."""
-    authorizer = Authorizer(
-        session=db, user_id=principal.user_id, permission_code="guardian_relationship.manage"
-    )
+    may not create the relationship. GuardianRelationship is Club-neutral:
+    `can_manage_guardian_relationship` does not apply the Club boundary
+    for `guardian_relationship.manage` (TH-0288, ADR-0025 §2)."""
     context = build_guardian_relationship_create_context(
         db, child_person_id=person_id, requester_user_id=principal.user_id
     )
-    authorizer.check(context)
+    if not can_manage_guardian_relationship(db, user_id=principal.user_id, context=context):
+        raise AuthorizationDenied(GUARDIAN_RELATIONSHIP_MANAGE_PERMISSION)
 
     if db.get(Person, person_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND_DETAIL)
