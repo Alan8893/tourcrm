@@ -113,8 +113,10 @@ Membership lifecycle and membership type changes remain administrative operation
 
 | Permission | admin | instructor | member | guardian |
 |---|---|---|---|---|
-| `group.read` | `all` | `own_groups` | own membership | children's groups |
+| `group.read` | `all` | `own_groups` | own membership | `children` |
 | `group.manage` | `all` | — | — | — |
+
+For Guardian, `group.read(children)` resolves to active Groups in which at least one currently accessible child has an active `GroupMembership`. The Group must be active and belong to the same Club context. Guardian does not receive a standalone Groups navigation section; this scope exists to support the `Guardian → Child → Group` contextual flow. Archived Groups are excluded from the current Guardian group set.
 
 Instructor works only with groups to which the instructor is actually assigned.
 
