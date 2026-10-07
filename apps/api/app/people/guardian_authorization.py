@@ -16,7 +16,9 @@ club_boundary_matches` rule, a club-scoped assignment of any scope_type
 never matches a GuardianRelationship — only a global (`club_id IS NULL`)
 assignment can. This is the plain, existing fail-closed default already
 documented for an unresolved-club resource, applied here without any
-GuardianRelationship-specific carve-out.
+GuardianRelationship-specific carve-out. The one exception is the
+`GET /me/children` projection's `children` scope (PO decision, Issue
+#301): it resolves Club-neutrally — see `children_visibility_filter`.
 
 Two canonical scopes apply, resolved via ADR-0023 §5's relationship
 sources:
@@ -223,10 +225,24 @@ def children_visibility_filter(
     *active* GuardianRelationship to, gated by the same
     `guardian_relationship.read` permission + scope as the other guardian
     endpoints (Issue #64 §11 lists `/me/children` among the read
-    endpoints). `self`/`children`/`all` (global only) all resolve to the
-    same underlying relationship source here — "my own children" — since
-    this endpoint is inherently about the requester's own guardian
-    relationships; a club-scoped assignment never matches, same as
+    endpoints). `self`/`children`/`all` all resolve to the same
+    underlying relationship source here — "my own children" — since this
+    endpoint is inherently about the requester's own guardian
+    relationships.
+
+    Club-neutral `children` resolution (PO decision, Issue #301;
+    role-permission-scope-matrix.md §6, people-api.md `GET /me/children`):
+    a `children` grant counts through *any* currently-effective
+    assignment, whatever its `club_id`. AUTH-2A requires every `guardian`
+    RoleAssignment to name a Club, while GuardianRelationship carries no
+    Club at all, so the assignment's Club has nothing to bound here — and
+    nothing is widened by ignoring it: the predicate is still only the
+    requester's OWN active, interval-valid relationships (resolved from
+    the authenticated User, never from a client-supplied id). This is
+    Club-neutral permission resolution, not a global Guardian role: it
+    applies to this projection only, and Group/Event authorization keep
+    their own Club boundaries. `self`/`all` keep the previous rule — only
+    a global (`club_id IS NULL`) assignment matches, same as
     `guardian_relationship_visibility_filter`.
     """
     grants = applicable_grants(session, user_id, permission_code)
@@ -237,11 +253,10 @@ def children_visibility_filter(
 
     clauses: list[sa.ColumnElement[bool]] = []
     for grant in grants:
-        if grant.club_id is not None:
-            continue
-        if grant.scope_type == "none":
-            continue
-        if grant.scope_type not in ("all", "self", "children"):
+        if grant.scope_type == "children":
+            # Club-neutral: the assignment's club_id is not consulted.
+            pass
+        elif grant.club_id is not None or grant.scope_type not in ("all", "self"):
             continue
         clauses.append(
             _active_guardian_condition(

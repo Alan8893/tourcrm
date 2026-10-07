@@ -9,10 +9,10 @@ through the REAL, migration-seeded `guardian -> group.read -> children`
 grant (migration c4f7a2e91b36) on the canonical `guardian` role — no ad
 hoc Group grant — so a missing seed can never hide behind a test role.
 
-`GET /me/children` is additionally gated by `guardian_relationship.read`,
-which the canonical `guardian` role does not carry at head; those tests
-grant it ad hoc, globally, exactly as
-tests/integration/test_guardian_relationships_api.py already does.
+`GET /me/children` is additionally gated by `guardian_relationship.read`
+— also served by the real, migration-seeded `guardian ->
+guardian_relationship.read -> children` grant (migration d8e3b5f02a47),
+resolved Club-neutrally through the same `club`-scoped assignment.
 
 Covers: one child / several children (UNION, no duplicates), list and
 item, `GET /me/children` `groups[]`, revoked and expired
@@ -181,13 +181,11 @@ def _grant_ad_hoc(
 
 
 def _guardian(session: Session, club: Club) -> tuple[User, Person]:
-    """A real Guardian: a `club`-scoped assignment of the canonical,
-    migration-seeded `guardian` role, plus the global ad hoc
-    `guardian_relationship.read` that `GET /me/children` requires."""
+    """A real Guardian: one `club`-scoped assignment of the canonical,
+    migration-seeded `guardian` role (AUTH-2A) — no ad hoc grant."""
     person = _person(session, "Родитель")
     user = _user(session, person)
     _assign_role(session, user, "guardian", club)
-    _grant_ad_hoc(session, user, "guardian_relationship.read", "children", None)
     return user, person
 
 
