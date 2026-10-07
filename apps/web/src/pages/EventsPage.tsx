@@ -12,6 +12,8 @@ import { Loading } from "../components/ui/Loading";
 import { EmptyState } from "../components/ui/EmptyState";
 import { ErrorState } from "../components/ui/ErrorState";
 import { StatusBadge } from "../components/ui/StatusBadge";
+import { Tabs } from "../components/ui/Tabs";
+import { Pagination } from "../components/ui/Pagination";
 import { useNotify } from "../components/ui/notificationContext";
 import { useCurrentUser, currentClubId, displayName } from "../api/auth";
 import { saveBlob } from "../api/client";
@@ -33,6 +35,7 @@ import {
   useCalendarRange,
   useCreateEvent,
   useEvent,
+  useEventParticipants,
   useOccurrence,
   useRegisterForEvent,
   useRescheduleOccurrence,
@@ -72,6 +75,7 @@ import {
 } from "../domain/calendarDate";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { hasAdministratorRole } from "../shell/navigation";
+import { canManageEvents, eventDetailTabIds, type EventDetailTabId } from "../domain/eventAccess";
 import type { IconId } from "../assets/icons";
 import { FormDialog, TextAreaField } from "./InventoryForms";
 import styles from "./EventsPage.module.css";
@@ -177,6 +181,12 @@ export function EventsPage() {
   const meQuery = useCurrentUser();
   const clubId = currentClubId(meQuery.data);
   const currentUserId = meQuery.data?.user.id;
+  // Issue #299: Event management actions and the instructor-management
+  // filters are staff-only (domain/eventAccess) — UX only, the backend
+  // authorizes every operation.
+  const canManage = canManageEvents(
+    (meQuery.data?.role_assignments ?? []).map(({ role_code }) => role_code),
+  );
 
   const groupsQuery = useGroups({ status: "active" });
 
@@ -269,15 +279,17 @@ export function EventsPage() {
         title="Календарь"
         description="События и расписание клуба."
         actions={
-          <Button
-            variant="primary"
-            icon="action.add"
-            disabled={!clubId}
-            title={clubId ? undefined : "Недоступно без привязки к клубу"}
-            onClick={() => setCreateOpen(true)}
-          >
-            Создать событие
-          </Button>
+          canManage ? (
+            <Button
+              variant="primary"
+              icon="action.add"
+              disabled={!clubId}
+              title={clubId ? undefined : "Недоступно без привязки к клубу"}
+              onClick={() => setCreateOpen(true)}
+            >
+              Создать событие
+            </Button>
+          ) : undefined
         }
       />
 
@@ -287,6 +299,7 @@ export function EventsPage() {
         onChange={setFilter}
         onReset={resetFilters}
         filtersActive={filtersActive}
+        showInstructorFilters={canManage}
         clubId={clubId}
         selectedInstructorLabel={selectedInstructorLabel}
         isMineSelected={isMineSelected}
@@ -295,16 +308,18 @@ export function EventsPage() {
         onClearInstructor={() => setFilter("user_id", "")}
       />
 
-      <InstructorPickerDialog
-        open={pickerOpen}
-        clubId={clubId}
-        onClose={() => setPickerOpen(false)}
-        onSelect={(user) => {
-          setPickedInstructor(user);
-          setFilter("user_id", user.id);
-          setPickerOpen(false);
-        }}
-      />
+      {canManage ? (
+        <InstructorPickerDialog
+          open={pickerOpen}
+          clubId={clubId}
+          onClose={() => setPickerOpen(false)}
+          onSelect={(user) => {
+            setPickedInstructor(user);
+            setFilter("user_id", user.id);
+            setPickerOpen(false);
+          }}
+        />
+      ) : null}
 
       {calendarQuery.isError ? (
         <ErrorState
@@ -346,15 +361,17 @@ export function EventsPage() {
         />
       )}
 
-      <EventFormDialog
-        open={createOpen}
-        mode={{ kind: "create", clubId: clubId ?? "", defaultDate: selectedDate }}
-        onClose={() => setCreateOpen(false)}
-        onSaved={() => {
-          notify("success", "Событие создано");
-          setCreateOpen(false);
-        }}
-      />
+      {canManage ? (
+        <EventFormDialog
+          open={createOpen}
+          mode={{ kind: "create", clubId: clubId ?? "", defaultDate: selectedDate }}
+          onClose={() => setCreateOpen(false)}
+          onSaved={() => {
+            notify("success", "Событие создано");
+            setCreateOpen(false);
+          }}
+        />
+      ) : null}
 
       {detailItem ? (
         <EventDetailDialog
@@ -398,6 +415,7 @@ function FiltersToolbar({
   onChange,
   onReset,
   filtersActive,
+  showInstructorFilters,
   clubId,
   selectedInstructorLabel,
   isMineSelected,
@@ -410,6 +428,9 @@ function FiltersToolbar({
   onChange: (key: keyof CalendarFiltersState, value: string) => void;
   onReset: () => void;
   filtersActive: boolean;
+  /** Issue #299: the instructor/user filter and «Только мои события» are
+   * instructor-management filters — staff only. */
+  showInstructorFilters: boolean;
   clubId: string | null;
   selectedInstructorLabel: string | null;
   isMineSelected: boolean;
@@ -442,40 +463,44 @@ function FiltersToolbar({
         options={STATUS_FILTER_OPTIONS}
         onChange={(value) => onChange("status", value)}
       />
-      <div className={styles.instructorControl}>
-        {selectedInstructorLabel ? (
-          <div className={styles.selectedInstructor}>
-            <span>{selectedInstructorLabel}</span>
-            <Button variant="secondary" onClick={onOpenPicker}>
-              Изменить
-            </Button>
-            <Button variant="secondary" onClick={onClearInstructor}>
-              Очистить
-            </Button>
+      {showInstructorFilters ? (
+        <>
+          <div className={styles.instructorControl}>
+            {selectedInstructorLabel ? (
+              <div className={styles.selectedInstructor}>
+                <span>{selectedInstructorLabel}</span>
+                <Button variant="secondary" onClick={onOpenPicker}>
+                  Изменить
+                </Button>
+                <Button variant="secondary" onClick={onClearInstructor}>
+                  Очистить
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="secondary"
+                disabled={!clubId}
+                title={clubId ? undefined : "Недоступно без привязки к клубу"}
+                onClick={onOpenPicker}
+              >
+                Выбрать инструктора
+              </Button>
+            )}
           </div>
-        ) : (
-          <Button
-            variant="secondary"
-            disabled={!clubId}
-            title={clubId ? undefined : "Недоступно без привязки к клубу"}
-            onClick={onOpenPicker}
-          >
-            Выбрать инструктора
-          </Button>
-        )}
-      </div>
-      {/* A convenience shortcut over the same `user_id` filter (self's own
-       * id) — not a separate/alternative filter and not itself "the"
-       * Instructor/user filter (that is the picker above, backed by the
-       * real `GET /users` directory, TH-0107). */}
-      <label className={styles.mineToggle}>
-        <input
-          type="checkbox"
-          checked={isMineSelected}
-          onChange={(event) => onToggleMine(event.target.checked)}
-        />
-        Только мои события
-      </label>
+          {/* A convenience shortcut over the same `user_id` filter (self's own
+           * id) — not a separate/alternative filter and not itself "the"
+           * Instructor/user filter (that is the picker above, backed by the
+           * real `GET /users` directory, TH-0107). */}
+          <label className={styles.mineToggle}>
+            <input
+              type="checkbox"
+              checked={isMineSelected}
+              onChange={(event) => onToggleMine(event.target.checked)}
+            />
+            Только мои события
+          </label>
+        </>
+      ) : null}
       <Button variant="secondary" onClick={onReset} disabled={!filtersActive}>
         Сбросить
       </Button>
@@ -888,51 +913,84 @@ function EventDetailDialog({
   // is the documented visibility rule. Backend authorization stays
   // authoritative.
   const meQuery = useCurrentUser();
-  const isAdmin = hasAdministratorRole(meQuery.data?.role_assignments ?? []);
+  const roleAssignments = meQuery.data?.role_assignments ?? [];
+  const isAdmin = hasAdministratorRole(roleAssignments);
+  // Issue #299: Member/Guardian get no management actions and no general
+  // roster (domain/eventAccess); UX only — backend stays authoritative.
+  const roleCodes = roleAssignments.map(({ role_code }) => role_code);
+  const canManage = canManageEvents(roleCodes);
+  const tabIds = eventDetailTabIds(roleCodes, item.kind);
+  const [selectedTab, setSelectedTab] = useState<EventDetailTabId>("overview");
+  const activeTab = tabIds.includes(selectedTab) ? selectedTab : "overview";
+
+  const overview = (
+    <div className={styles.detailBody}>
+      <StatusBadge status={eventStatusIcon(status)} label={eventStatusLabel(status)} />
+      {item.kind === "event" && eventQuery.data && canManage ? (
+        <EventStatusActions event={eventQuery.data} />
+      ) : null}
+      {item.kind === "occurrence" ? (
+        <p className={styles.detailRecurring}>
+          <RecurringBadge /> Повторяющееся событие
+        </p>
+      ) : null}
+      <dl className={styles.detailList}>
+        <div>
+          <dt>Начало</dt>
+          <dd>
+            {formatDayMonth(item.start_at)}, {formatTime(item.start_at)}
+          </dd>
+        </div>
+        <div>
+          <dt>Окончание</dt>
+          <dd>
+            {formatDayMonth(item.end_at)}, {formatTime(item.end_at)}
+          </dd>
+        </div>
+      </dl>
+      {item.description ? <p>{item.description}</p> : null}
+      {cancelled && cancellationReason ? (
+        <p className={styles.cancellationReason}>Причина отмены: {cancellationReason}</p>
+      ) : null}
+      {query.isLoading ? <Loading label="Загружаем подробности…" /> : null}
+      {query.isError ? (
+        <ErrorState illustration="error" title="Не удалось загрузить подробности" description={query.error.message} />
+      ) : null}
+      {query.isSuccess && item.kind === "event" && eventQuery.data ? (
+        <EventLocation event={eventQuery.data} />
+      ) : null}
+      {query.isSuccess && item.kind === "event" && eventQuery.data ? (
+        <EventSelfRegistration event={eventQuery.data} />
+      ) : null}
+    </div>
+  );
 
   return (
     <Dialog open title={item.title} description={eventTypeLabel(item.event_type)} onClose={onClose}>
-      <div className={styles.detailBody}>
-        <StatusBadge status={eventStatusIcon(status)} label={eventStatusLabel(status)} />
-        {item.kind === "event" && eventQuery.data ? <EventStatusActions event={eventQuery.data} /> : null}
-        {item.kind === "occurrence" ? (
-          <p className={styles.detailRecurring}>
-            <RecurringBadge /> Повторяющееся событие
-          </p>
-        ) : null}
-        <dl className={styles.detailList}>
-          <div>
-            <dt>Начало</dt>
-            <dd>
-              {formatDayMonth(item.start_at)}, {formatTime(item.start_at)}
-            </dd>
-          </div>
-          <div>
-            <dt>Окончание</dt>
-            <dd>
-              {formatDayMonth(item.end_at)}, {formatTime(item.end_at)}
-            </dd>
-          </div>
-        </dl>
-        {item.description ? <p>{item.description}</p> : null}
-        {cancelled && cancellationReason ? (
-          <p className={styles.cancellationReason}>Причина отмены: {cancellationReason}</p>
-        ) : null}
-        {query.isLoading ? <Loading label="Загружаем подробности…" /> : null}
-        {query.isError ? (
-          <ErrorState illustration="error" title="Не удалось загрузить подробности" description={query.error.message} />
-        ) : null}
-        {query.isSuccess && item.kind === "event" && eventQuery.data ? (
-          <EventLocation event={eventQuery.data} />
-        ) : null}
-        {query.isSuccess && item.kind === "event" && eventQuery.data ? (
-          <EventSelfRegistration event={eventQuery.data} />
-        ) : null}
-      </div>
+      {tabIds.length > 1 ? (
+        <Tabs
+          label="Разделы события"
+          activeId={activeTab}
+          onChange={(id) => setSelectedTab(id as EventDetailTabId)}
+          items={tabIds.map((id) =>
+            id === "participants"
+              ? {
+                  id,
+                  label: "Участники",
+                  content: <EventParticipantsTab key={item.id} eventId={item.id} />,
+                }
+              : { id, label: "Обзор", content: overview },
+          )}
+        />
+      ) : (
+        overview
+      )}
       <div className={styles.detailActions}>
-        <Button variant="primary" icon="action.edit" onClick={onEdit}>
-          Редактировать
-        </Button>
+        {canManage ? (
+          <Button variant="primary" icon="action.edit" onClick={onEdit}>
+            Редактировать
+          </Button>
+        ) : null}
         {/* Issue #175: documents are maintained by the Administrator only
             (document.read/manage/export are granted to `admin` alone);
             same visibility convention as «Экспорт участников» below.
@@ -964,6 +1022,80 @@ function EventDetailDialog({
         />
       ) : null}
     </Dialog>
+  );
+}
+
+// --- Event participants tab (Issue #299) -----------------------------------
+//
+// The canonical roster of `GET /events/{event_id}/participants`
+// (events-api.md §18): Persons whose EventParticipation is `registered`,
+// after `event.read` and per-scope row visibility. Order, page, count and
+// the minimal Person projection all come from the backend; this tab never
+// fetches a wider set, filters or re-pages it.
+
+const PARTICIPANTS_PAGE_SIZE = 50;
+
+function EventParticipantsTab({ eventId }: { eventId: string }) {
+  const [page, setPage] = useState(1);
+  const participantsQuery = useEventParticipants(eventId, page, PARTICIPANTS_PAGE_SIZE);
+  const headingId = useId();
+
+  if (participantsQuery.isLoading) return <Loading label="Загружаем участников…" />;
+  if (participantsQuery.isError) {
+    const { status } = participantsQuery.error;
+    return (
+      <ErrorState
+        illustration={status === 403 ? "403" : status === 404 ? "404" : "error"}
+        title={
+          status === 403 || status === 404
+            ? "Список участников недоступен"
+            : "Не удалось загрузить участников"
+        }
+        description={participantsQuery.error.message}
+        action={
+          status !== 403 && status !== 404 ? (
+            <Button variant="secondary" onClick={() => void participantsQuery.refetch()}>
+              Повторить
+            </Button>
+          ) : undefined
+        }
+      />
+    );
+  }
+  if (!participantsQuery.data) return null;
+
+  const { items, pagination } = participantsQuery.data;
+  if (pagination.total === 0) {
+    return (
+      <EmptyState
+        illustration="no-results"
+        title="Нет зарегистрированных участников"
+        description="Здесь появятся участники, записавшиеся на мероприятие."
+      />
+    );
+  }
+
+  return (
+    <section aria-labelledby={headingId}>
+      <h3 id={headingId} className={styles.participantsHeading}>
+        Зарегистрировано: {pagination.total}
+      </h3>
+      <ol className={styles.participantList} start={(pagination.page - 1) * pagination.page_size + 1}>
+        {items.map((participant) => (
+          <li key={participant.person_id}>
+            {[participant.last_name, participant.first_name, participant.middle_name]
+              .filter(Boolean)
+              .join(" ")}
+          </li>
+        ))}
+      </ol>
+      <Pagination
+        page={pagination.page}
+        pages={pagination.pages}
+        total={pagination.total}
+        onPageChange={setPage}
+      />
+    </section>
   );
 }
 

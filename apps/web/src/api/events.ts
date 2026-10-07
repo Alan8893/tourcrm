@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch, ApiError, type CollectionResponse } from "./client";
 import type { EventStatus } from "../domain/statusMapping";
@@ -388,6 +388,7 @@ export function useRegisterForEvent() {
       apiFetch<EventParticipation>(`/events/${eventId}/participation`, { method: "POST" }),
     onSuccess: (_participation, eventId) => {
       void queryClient.invalidateQueries({ queryKey: ["events", "detail", eventId] });
+      void queryClient.invalidateQueries({ queryKey: ["events", "participants", eventId] });
     },
   });
 }
@@ -403,6 +404,32 @@ export function useWithdrawFromEvent() {
       apiFetch<void>(`/events/${eventId}/participation`, { method: "DELETE" }),
     onSuccess: (_result, eventId) => {
       void queryClient.invalidateQueries({ queryKey: ["events", "detail", eventId] });
+      void queryClient.invalidateQueries({ queryKey: ["events", "participants", eventId] });
     },
+  });
+}
+
+/** Minimal Person projection of `GET /events/{event_id}/participants`
+ * (events-api.md §18) — no contacts, photo or document data exist in it. */
+export type EventParticipant = {
+  person_id: string;
+  first_name: string;
+  last_name: string;
+  middle_name: string | null;
+};
+
+/** The canonical Event roster: Persons whose EventParticipation is
+ * `registered`, after `event.read` and per-scope row visibility — all
+ * resolved by the backend, one backend page at a time (order, count and
+ * pages included). Never filtered or re-paged here. */
+export function useEventParticipants(eventId: string | undefined, page: number, pageSize = 50) {
+  return useQuery<CollectionResponse<EventParticipant>, ApiError>({
+    queryKey: ["events", "participants", eventId, page, pageSize],
+    queryFn: () =>
+      apiFetch<CollectionResponse<EventParticipant>>(
+        `/events/${eventId}/participants?page=${page}&page_size=${pageSize}`,
+      ),
+    enabled: Boolean(eventId),
+    placeholderData: keepPreviousData,
   });
 }

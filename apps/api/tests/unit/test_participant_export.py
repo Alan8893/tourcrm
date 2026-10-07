@@ -30,6 +30,7 @@ from app.exports.rendering import (
 )
 from app.exports.service import (
     ExportRequestError,
+    ExportWindow,
     ParticipantExportDataset,
     ParticipantExportRequest,
     guardian_cells,
@@ -292,6 +293,7 @@ def _dataset(rows: tuple = ()) -> ParticipantExportDataset:
         generated_at=datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc),
         columns=columns,
         rows=rows,
+        total=len(rows),
     )
 
 
@@ -363,3 +365,13 @@ def test_print_html_empty_result() -> None:
     page = render_print_html(_dataset())
     assert "Участники не найдены." in page
     assert "<tbody></tbody>" in page
+
+
+# --- report preview window (Issue #299) ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("page", "page_size", "offset"), [(1, 50, 0), (2, 50, 50), (3, 2, 4), (1, 100, 0)]
+)
+def test_export_window_offset_is_the_start_of_the_page(page, page_size, offset) -> None:
+    assert ExportWindow(page=page, page_size=page_size).offset == offset

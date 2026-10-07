@@ -134,6 +134,17 @@ Participant Export является отдельным operational workflow. К�
 
 Не следует создавать несколько независимых backend authorization paths для XLSX/PDF/Print. Все форматы должны использовать один canonical export dataset и одну authorization policy.
 
+### 9.1 Report preview (Issue #299, implementation sync)
+
+Preview отчёта «Участники мероприятий» (`docs/04-ux/import-export-ui.md` §3.3) — read contract над тем же canonical dataset, не отдельная выборка:
+
+`POST /api/v1/memberships/exports/preview`
+
+- request — та же selection, что у `POST /api/v1/memberships/exports` (`context`, `group_id`, `event_id`, `membership_status`, `participation_status`, `fields`), без `format`, плюс `page` (≥1, default 1) и `page_size` (1-100, default 50); неизвестные ключи отклоняются;
+- authorization, validation (включая `invalid_participation_status`), field allowlist и 404 existence hiding — те же самые, через тот же backend service, что и у export;
+- response: `title`, `columns` (`field_code`, `label` — выбранные поля в порядке запроса), `items` (по одной текстовой ячейке на column, в том же представлении, что PDF/Print) и стандартный `pagination`; `pagination.total` — размер всего dataset;
+- порядок строк и pagination вычисляются backend в SQL по canonical порядку export dataset.
+
 ## 10. MVP exclusions
 
 Не входит в TH-0118.4:

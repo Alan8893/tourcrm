@@ -926,3 +926,217 @@ def test_export_rejects_non_canonical_participation_status(client, scenario, sta
     error = response.json()["error"]
     assert error["code"] == "invalid_participation_status"
     assert error["details"]["allowed"] == ["cancelled", "registered"]
+
+
+# --- report preview (Issue #299) ---------------------------------------------
+
+_PREVIEW_URL = "/api/v1/memberships/exports/preview"
+_REPORT_FIELDS = [
+    "person.last_name",
+    "person.first_name",
+    "person.middle_name",
+    "group.name",
+    "event.name",
+    "event.starts_at",
+    "event_participation.status",
+]
+
+
+def _preview(client: TestClient, **body):
+    body.setdefault("fields", ["person.last_name", "person.first_name"])
+    return client.post(_PREVIEW_URL, json=body, headers=_csrf_headers(client))
+
+
+def _group_event(scenario: Scenario, **extra) -> dict:
+    return {
+        "context": "group_event",
+        "group_id": str(scenario.group_id),
+        "event_id": str(scenario.event_id),
+        **extra,
+    }
+
+
+def test_preview_returns_the_same_dataset_as_every_export_format(client, scenario) -> None:
+    selection = _group_event(scenario, fields=_REPORT_FIELDS)
+    preview = _preview(client, **selection)
+    assert preview.status_code == 200, preview.text
+    body = preview.json()
+
+    assert body["title"] == "Участники группы «Юные туристы» — мероприятие «Осенний поход»"
+    assert body["columns"] == [
+        {"field_code": "person.last_name", "label": "Фамилия"},
+        {"field_code": "person.first_name", "label": "Имя"},
+        {"field_code": "person.middle_name", "label": "Отчество"},
+        {"field_code": "group.name", "label": "Группа"},
+        {"field_code": "event.name", "label": "Мероприятие"},
+        {"field_code": "event.starts_at", "label": "Начало мероприятия"},
+        {"field_code": "event_participation.status", "label": "Статус участия"},
+    ]
+    assert body["items"] == [
+        [
+            "Алексеева",
+            "Анна",
+            "Игоревна",
+            "Юные туристы",
+            "Осенний поход",
+            "2026-10-01 13:00",
+            "registered",
+        ],
+        [
+            "Григорьев",
+            "Глеб",
+            "",
+            "Юные туристы",
+            "Осенний поход",
+            "2026-10-01 13:00",
+            "registered",
+        ],
+    ]
+    assert body["pagination"] == {"page": 1, "page_size": 50, "total": 2, "pages": 1}
+
+    # Print renders the very same cells; XLSX the very same rows.
+    assert _print_rows(_export(client, format="print", **selection)) == body["items"]
+    sheet = load_workbook(
+        io.BytesIO(_export(client, format="xlsx", **selection).content)
+    ).active
+    assert [row[0] for row in sheet.iter_rows(min_row=2, values_only=True)] == [
+        row[0] for row in body["items"]
+    ]
+
+
+def test_preview_participation_status_filter_uses_canonical_values(client, scenario) -> None:
+    with session_scope() as session:
+        anna_id = session.execute(
+            select(Person.id).where(Person.last_name == "Алексеева")
+        ).scalar_one()
+        participation = session.execute(
+            select(EventParticipation).where(
+                EventParticipation.event_id == scenario.event_id,
+                EventParticipation.person_id == anna_id,
+            )
+        ).scalar_one()
+        participation.registration_status = "cancelled"
+        session.commit()
+    fields = ["person.last_name", "event_participation.status"]
+
+    registered = _preview(client, **_group_event(scenario, participation_status="registered"))
+    cancelled = _preview(
+        client, **_group_event(scenario, participation_status="cancelled", fields=fields)
+    )
+    every_status = _preview(client, **_group_event(scenario, fields=fields))
+
+    assert [row[0] for row in registered.json()["items"]] == ["Григорьев"]
+    assert cancelled.json()["items"] == [["Алексеева", "cancelled"]]
+    assert every_status.json()["items"] == [
+        ["Алексеева", "cancelled"],
+        ["Григорьев", "registered"],
+    ]
+
+
+def test_preview_paginates_in_the_canonical_order(client, scenario) -> None:
+    pages = [
+        _preview(client, context="club", page=page, page_size=2).json() for page in (1, 2, 3)
+    ]
+    # Active ClubMembership: Алексеева, Борисов, Васильева, Дмитриева, Егоров.
+    assert [[row[0] for row in page["items"]] for page in pages] == [
+        ["Алексеева", "Борисов"],
+        ["Васильева", "Дмитриева"],
+        ["Егоров"],
+    ]
+    assert [page["pagination"] for page in pages] == [
+        {"page": number, "page_size": 2, "total": 5, "pages": 3} for number in (1, 2, 3)
+    ]
+    beyond = _preview(client, context="club", page=4, page_size=2).json()
+    assert beyond["items"] == []
+    assert beyond["pagination"]["total"] == 5
+
+
+def test_preview_empty_result(client, scenario) -> None:
+    response = _preview(client, **_group_event(scenario, participation_status="cancelled"))
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    assert response.json()["pagination"] == {"page": 1, "page_size": 50, "total": 0, "pages": 0}
+
+
+@pytest.mark.parametrize(
+    "bounds", [{"page": 0}, {"page_size": 0}, {"page_size": 101}, {"format": "xlsx"}]
+)
+def test_preview_rejects_invalid_page_bounds_and_export_only_keys(
+    client, scenario, bounds
+) -> None:
+    response = _preview(client, context="club", **bounds)
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_preview_rejects_what_the_export_rejects(client, scenario) -> None:
+    status_error = _preview(
+        client, context="event", event_id=str(scenario.event_id), participation_status="declined"
+    )
+    assert status_error.status_code == 422
+    assert status_error.json()["error"]["code"] == "invalid_participation_status"
+    not_applicable = _preview(client, context="club", participation_status="registered")
+    assert not_applicable.json()["error"]["code"] == "export_filter_not_applicable"
+    unavailable = _preview(client, context="club", fields=["person.last_name", "group.name"])
+    assert unavailable.json()["error"]["code"] == "export_field_not_available"
+    unknown = _preview(client, context="club", fields=["person.medical_notes"])
+    assert unknown.json()["error"]["code"] == "unknown_export_field"
+
+
+def test_preview_unauthenticated_is_401(client) -> None:
+    assert _preview(client, context="club").status_code == 401
+
+
+def test_preview_requires_csrf_token(client, scenario) -> None:
+    response = client.post(_PREVIEW_URL, json={"context": "club", "fields": ["person.last_name"]})
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("role_code", ["instructor", "member", "guardian"])
+def test_preview_is_administrator_only(client, scenario, role_code) -> None:
+    user_id = _user_without_admin_role(scenario.club_id)
+    _assign_system_role(user_id, role_code, club_id=scenario.club_id)
+    _authenticate_as(user_id)
+    response = _preview(client, **_group_event(scenario))
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+
+
+def test_preview_requires_the_same_read_grants_as_the_export(client, scenario) -> None:
+    _revoke_admin_grant("event.read")
+    assert _preview(client, context="club").status_code == 200
+    assert _preview(client, context="event", event_id=str(scenario.event_id)).status_code == 403
+
+
+def test_preview_of_another_clubs_event_is_indistinguishable_from_nonexistent(
+    client, scenario, monkeypatch
+) -> None:
+    with session_scope() as session:
+        other = _make_club(session)
+        other_event = _make_event(session, other, "Чужой поход")
+        stranger = _make_person(session, "Чужой", "Участник")
+        _make_club_membership(session, other, stranger)
+        _participate(session, other_event, stranger)
+        session.commit()
+        other_event_id = other_event.id
+    monkeypatch.setattr("app.exports.service.resolve_sole_club_id", lambda _s: scenario.club_id)
+
+    foreign = _preview(client, context="event", event_id=str(other_event_id))
+    missing = _preview(client, context="event", event_id=str(uuid.uuid4()))
+    assert foreign.status_code == missing.status_code == 404
+    assert foreign.json()["error"]["message"] == missing.json()["error"]["message"]
+    club_rows = _preview(client, context="club").json()["items"]
+    assert "Чужой" not in [row[0] for row in club_rows]
+
+
+def test_preview_changes_nothing(client, scenario) -> None:
+    def snapshot() -> tuple:
+        with session_scope() as session:
+            return tuple(
+                session.execute(select(func.count()).select_from(model)).scalar_one()
+                for model in (Person, ClubMembership, GroupMembership, EventParticipation)
+            )
+
+    before = snapshot()
+    assert _preview(client, **_group_event(scenario)).status_code == 200
+    assert snapshot() == before
