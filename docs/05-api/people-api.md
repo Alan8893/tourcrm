@@ -363,7 +363,7 @@ Request:
 
 ### 15.4. Массовый перевод
 
-Bulk transfer **вне scope Issue #286** и не реализуется этим срезом. Отдельное решение/issue потребуется, если массовый перевод снова станет необходимой бизнес-возможностью.
+Массовый перевод остаётся требуемой бизнес-возможностью (`docs/02-requirements/business-rules.md` §9 п. 6), но является отложенной (deferred) capability и **не входит в текущий MVP implementation contract** (Issue #286, Issue #296). Текущий API не содержит bulk transfer endpoint. Конкретный API-контракт массового перевода определяется отдельной будущей implementation/specification задачей.
 
 ### GET `/api/v1/groups/{group_id}/members`
 
