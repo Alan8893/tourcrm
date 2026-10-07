@@ -18,6 +18,10 @@ The documentation-reconciliation pass for Issue #62 ("Foundation: People & Membe
 
 `guardian_relationship.read` and `guardian_relationship.manage` are added to the canonical permission catalog (`docs/02-requirements/roles-and-permissions.md` §4), following the existing `<resource>.<action>` convention. `people-api.md`'s prior reference to a non-canonical `guardian.read` is corrected to use these two codes.
 
+For `guardian_relationship.manage`, the resource is Club-neutral because `GuardianRelationship` has no `club_id`. TourCRM MVP operates with exactly one Club; the legacy `UserRoleAssignment.club_id` field therefore must not block an otherwise authorized Administrator operation merely because the assignment contains the current Club id while the resource has no Club boundary. A Club-scoped Administrator grant is valid for `guardian_relationship.manage` on the Club-neutral relationship. This is a narrow Club-boundary applicability rule for this permission/resource pair; it does not make `admin` globally assignable, introduce a new permission or scope, or permit non-Administrators to manage relationships.
+
+Cross-Club isolation remains mandatory for Club-scoped resources. No multi-Club behavior is introduced by this decision.
+
 ### 3. GuardianRelationship termination semantics
 
 The `terminate` API action always sets `GuardianRelationship.status = revoked`. `inactive` remains a distinct, non-revoked historical status reached through other lifecycle events (for example, the relationship's `valid_to` naturally elapsing). No new status value is introduced; the three canonical values (`active`, `inactive`, `revoked`) from ADR-0023 §3 are unchanged.
