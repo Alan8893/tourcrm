@@ -231,9 +231,27 @@ API валидирует допустимость перехода, permission r
 
 ### GET `/api/v1/groups`
 
-Permission: `group.read`. Scope: `all` или `own_groups`.
+Permission: `group.read`. Scope: `all`, `own_groups`, or `children`.
 
 Active groups are returned according to the requester's canonical scope/object relationship.
+
+For Guardian `children` scope, the result is the union of active Groups for which at least one currently accessible child has an active `GroupMembership`. The authorization path is:
+
+```text
+Guardian
+  ↓ active, interval-valid GuardianRelationship
+Child
+  ↓ active ClubMembership in the same Club
+GroupMembership
+  ↓ active
+Group (status = active)
+```
+
+The client does not provide a child/person UUID to establish this access. The authenticated Guardian identity and all relationship checks are resolved server-side. Multiple children produce a UNION of accessible Groups.
+
+Guardian `children` scope is read-only. It does not grant access to Group management, membership mutation, instructor assignment, or the Group participant roster. Guardian Group Detail is reached contextually from `Guardian → Child → Group`; there is no standalone Guardian Groups navigation section.
+
+Archived Groups are excluded from the Guardian `children` group set and remain unavailable through the Guardian Group item endpoint.
 
 Archived groups are visible **only to Administrator**. Non-administrator requesters must not receive archived groups in list results and must not retrieve an archived group through the item endpoint. Frontend visibility is not a substitute for backend authorization.
 
@@ -247,7 +265,10 @@ Archived groups are visible **only to Administrator**. Non-administrator request
 
 ### GET `/api/v1/groups/{group_id}`
 
-Permission: `group.read` + scope + object relationship (`own_groups`: требуется active `GroupInstructorAssignment` requester на данную группу).
+Permission: `group.read` + scope + object relationship.
+
+- `own_groups`: требуется active `GroupInstructorAssignment` requester на данную группу.
+- `children`: требуется, чтобы хотя бы один текущий доступный ребёнок Guardian имел active `GroupMembership` в этой группе; Group должен быть `active` и принадлежать тому же Club context.
 
 IDOR/existence-hiding: несуществующая группа и группа, к которой requester не авторизован, возвращают одинаковый HTTP 404 с кодом `group_not_found` (см. §29, по аналогии с существующим GuardianRelationship-паттерном §18). Archived группа без scope `all` считается неавторизованной и возвращает тот же `404 group_not_found` (см. GET list выше).
 
@@ -592,7 +613,12 @@ first_name
 middle_name
 birth_date
 photo_file_id
+groups[]
 ```
+
+`groups[]` — компактная read-only projection текущих **активных** групп ребёнка, достаточная для contextual navigation `Guardian → Child → Group`. Минимальный контракт элемента: `id`, `name`. Эта вложенная projection не заменяет `GET /api/v1/groups` как canonical Group resource и не расширяет права Guardian: каждая последующая загрузка Group Detail повторно проходит backend object authorization.
+
+Группа включается в projection только если ребёнок остаётся доступным Guardian по active, interval-valid `GuardianRelationship`, у ребёнка есть active ClubMembership в том же Club context и active `GroupMembership`, а сама Group имеет `status = active`. Исторические/ended GroupMembership и archived Groups не включаются.
 
 `phone`, `email`, `address` и другие чувствительные Person-поля в этой projection не возвращаются (см. §26).
 
