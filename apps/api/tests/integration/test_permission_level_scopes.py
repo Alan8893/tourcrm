@@ -132,11 +132,10 @@ def _assign(  # type: ignore[no-untyped-def]
 @requires_postgres
 def test_one_permission_may_carry_several_scopes_and_any_one_allows() -> None:
     """instructor `event.read` with `own_groups` + `own_events` through one
-    RoleAssignment."""
+    RoleAssignment (the canonical seeded grant, migration a7c3e5f19d24)."""
     with session_scope() as session:
         club, user = _club_and_user(session)
         instructor = _role(session, "instructor")
-        _grant(session, instructor, "event.read", "own_groups", "own_events")
         _assign(session, user, instructor, club)
         session.commit()
 
@@ -243,16 +242,22 @@ def test_legacy_assignment_scope_never_narrows_a_grant() -> None:
 def test_legacy_instructor_all_assignment_gets_no_new_permission() -> None:
     """A legacy `instructor` + `all` assignment does not mean
     `person.read`/`group.read`/`event.read` = `all`: the instructor role
-    only holds its canonical `user.directory.read` grant."""
+    only holds its canonical grants, at their canonical scopes."""
     with session_scope() as session:
         club, user = _club_and_user(session)
         _assign(session, user, _role(session, "instructor"), club, scope_type="all")
         session.commit()
 
         wide = ResourceContext(club_id=club.id)
-        for permission_code in ("person.read", "person.update", "group.read", "event.read"):
+        for permission_code in ("person.read", "person.update", "group.read"):
             assert applicable_grants(session, user.id, permission_code) == []
             assert can(session, user.id, permission_code, wide) is False
+        # Issue #305 (migration a7c3e5f19d24): event.read is seeded only at
+        # own_groups/own_events — the legacy `all` assignment scope still
+        # does not widen it.
+        event_grants = applicable_grants(session, user.id, "event.read")
+        assert sorted(grant.scope_type for grant in event_grants) == ["own_events", "own_groups"]
+        assert can(session, user.id, "event.read", wide) is False
         directory_grants = applicable_grants(session, user.id, "user.directory.read")
         assert [grant.scope_type for grant in directory_grants] == ["all"]
 
@@ -295,6 +300,12 @@ def test_canonical_grants_carry_exactly_the_decided_scopes() -> None:
     expected[("guardian", "group.read")] = {"children"}
     # PO decision on GET /me/children, migration d8e3b5f02a47.
     expected[("guardian", "guardian_relationship.read")] = {"children"}
+    # Issue #305, migration a7c3e5f19d24.
+    expected[("instructor", "attendance.read")] = {"own_groups", "own_events"}
+    expected[("instructor", "attendance.update")] = {"own_groups", "own_events"}
+    expected[("instructor", "event.read")] = {"own_groups", "own_events"}
+    expected[("member", "attendance.read")] = {"self"}
+    expected[("guardian", "attendance.read")] = {"children"}
     assert by_grant == expected
 
 

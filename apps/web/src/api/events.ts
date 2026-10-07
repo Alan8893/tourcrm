@@ -1,4 +1,4 @@
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch, ApiError, type CollectionResponse } from "./client";
 import type { EventStatus } from "../domain/statusMapping";
@@ -431,5 +431,123 @@ export function useEventParticipants(eventId: string | undefined, page: number, 
       ),
     enabled: Boolean(eventId),
     placeholderData: keepPreviousData,
+  });
+}
+
+// --- Attendance (events-api.md §22-§25, ADR-0032, ADR-0047) -----------------
+// The existing Attendance API, addressed by an ordinary Event id or a
+// recurring occurrence id. Which rows the caller sees (`all`/`own_*` — the
+// whole roster; `self` — their own row; `children` — their accessible
+// children) and every lifecycle rule are decided by the backend; these
+// hooks only send requests and refresh the cached views. `status: null` is
+// "unmarked" — never "absent".
+
+export type AttendanceStatus = "present" | "absent";
+
+export type AttendanceEntry = {
+  person: { id: string; first_name: string; last_name: string; middle_name: string | null };
+  status: AttendanceStatus | null;
+  absence_reason: string | null;
+  comment: string | null;
+};
+
+export type AttendanceSummary = {
+  total: number;
+  marked: number;
+  present: number;
+  absent: number;
+  unmarked: number;
+};
+
+export type AttendanceList = CollectionResponse<AttendanceEntry> & { summary: AttendanceSummary };
+
+function attendanceQueryKey(eventId: string | undefined, page: number, pageSize: number) {
+  return ["events", "attendance", eventId, page, pageSize] as const;
+}
+
+function fetchAttendance(eventId: string, page: number, pageSize: number): Promise<AttendanceList> {
+  return apiFetch<AttendanceList>(`/events/${eventId}/attendance?page=${page}&page_size=${pageSize}`);
+}
+
+export function useEventAttendance(eventId: string | undefined, page: number, pageSize = 50) {
+  return useQuery<AttendanceList, ApiError>({
+    queryKey: attendanceQueryKey(eventId, page, pageSize),
+    queryFn: () => fetchAttendance(eventId as string, page, pageSize),
+    enabled: Boolean(eventId),
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** Calendar attendance indication (ADR-0047 §4-§6): one `GET
+ * .../attendance` per given calendar item, through the existing endpoint
+ * (no calendar-projection field exists for it). Returns the backend
+ * response per item id; an item the caller may not read attendance for
+ * (404) simply has no entry — the calendar then shows no indication. */
+export const CALENDAR_ATTENDANCE_PAGE_SIZE = 100;
+
+export function useCalendarAttendance(eventIds: readonly string[], enabled: boolean) {
+  const results = useQueries({
+    queries: eventIds.map((eventId) => ({
+      queryKey: attendanceQueryKey(eventId, 1, CALENDAR_ATTENDANCE_PAGE_SIZE),
+      queryFn: () => fetchAttendance(eventId, 1, CALENDAR_ATTENDANCE_PAGE_SIZE),
+      enabled,
+      retry: false,
+      staleTime: 60_000,
+    })),
+  });
+  const byId = new Map<string, AttendanceList>();
+  results.forEach((result, index) => {
+    if (result.data) byId.set(eventIds[index], result.data);
+  });
+  return byId;
+}
+
+function invalidateAttendance(queryClient: ReturnType<typeof useQueryClient>, eventId: string) {
+  void queryClient.invalidateQueries({ queryKey: ["events", "attendance", eventId] });
+}
+
+export type AttendanceMarkInput = { personId: string; status: AttendanceStatus };
+
+/** `PUT .../attendance/{person_id}` — normal window (scheduled /
+ * in_progress occurrence). */
+export function useMarkAttendance(eventId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<unknown, ApiError, AttendanceMarkInput>({
+    mutationFn: ({ personId, status }) =>
+      apiFetch(`/events/${eventId}/attendance/${personId}`, {
+        method: "PUT",
+        body: JSON.stringify({ status }),
+      }),
+    onSuccess: () => invalidateAttendance(queryClient, eventId),
+  });
+}
+
+/** `PUT .../attendance` — the existing bulk upsert: listed Persons are
+ * created/updated in one transaction, omitted ones stay unchanged. */
+export function useBulkMarkAttendance(eventId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<unknown, ApiError, AttendanceMarkInput[]>({
+    mutationFn: (items) =>
+      apiFetch(`/events/${eventId}/attendance`, {
+        method: "PUT",
+        body: JSON.stringify({
+          items: items.map(({ personId, status }) => ({ person_id: personId, status })),
+        }),
+      }),
+    onSuccess: () => invalidateAttendance(queryClient, eventId),
+  });
+}
+
+/** `POST .../attendance/{person_id}/corrections` — after the occurrence is
+ * completed; requires a reason and an existing Attendance record. */
+export function useCorrectAttendance(eventId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<unknown, ApiError, AttendanceMarkInput & { reason: string }>({
+    mutationFn: ({ personId, status, reason }) =>
+      apiFetch(`/events/${eventId}/attendance/${personId}/corrections`, {
+        method: "POST",
+        body: JSON.stringify({ status, reason }),
+      }),
+    onSuccess: () => invalidateAttendance(queryClient, eventId),
   });
 }
