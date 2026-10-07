@@ -16,9 +16,20 @@ club_boundary_matches` rule, a club-scoped assignment of any scope_type
 never matches a GuardianRelationship — only a global (`club_id IS NULL`)
 assignment can. This is the plain, existing fail-closed default already
 documented for an unresolved-club resource, applied here without any
-GuardianRelationship-specific carve-out. The one exception is the
-`GET /me/children` projection's `children` scope (PO decision, Issue
-#301): it resolves Club-neutrally — see `children_visibility_filter`.
+GuardianRelationship-specific carve-out. Two explicit exceptions exist:
+
+- the `GET /me/children` projection's `children` scope (PO decision,
+  Issue #301): it resolves Club-neutrally — see
+  `children_visibility_filter`;
+- `guardian_relationship.manage` (TH-0288; ADR-0025 §2,
+  role-permission-scope-matrix.md, roles-and-permissions.md
+  GuardianRelationship): TourCRM MVP has exactly one Club, so the Club
+  boundary is not applicable to this Club-neutral resource/permission
+  pair and a normal Club-scoped Administrator assignment is not rejected
+  merely because the relationship has no `club_id` — see
+  `can_manage_guardian_relationship`. Permission and scope are still
+  checked; Club-scoped resources and `guardian_relationship.read` keep
+  the generic boundary.
 
 Two canonical scopes apply, resolved via ADR-0023 §5's relationship
 sources:
@@ -79,7 +90,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
 from app.authorization.context import ResourceContext
-from app.authorization.service import applicable_grants
+from app.authorization.service import applicable_grants, scope_matches
 from app.db.identity import GuardianRelationship, Person, User
 from app.people.authorization import own_group_condition_for_person
 
@@ -124,7 +135,9 @@ def build_guardian_relationship_resource_context(
 ) -> ResourceContext:
     """Resolve the ResourceContext for one already-loaded
     GuardianRelationship against the acting user. `club_id` stays `None`
-    (see module docstring).
+    (see module docstring; `guardian_relationship.manage` is evaluated by
+    `can_manage_guardian_relationship`, which does not apply the Club
+    boundary).
     """
     requester_person_id = _person_id_for_user(session, requester_user_id)
     is_self = relationship.child_person_id == requester_person_id
@@ -165,6 +178,42 @@ def build_guardian_relationship_create_context(
         )
     ).scalar()
     return ResourceContext(club_id=None, is_self=is_self, is_child=bool(is_child))
+
+
+GUARDIAN_RELATIONSHIP_MANAGE_PERMISSION = "guardian_relationship.manage"
+
+
+def can_manage_guardian_relationship(
+    session: Session, *, user_id: uuid.UUID, context: ResourceContext
+) -> bool:
+    """Authorize create/update/terminate of a GuardianRelationship
+    (`guardian_relationship.manage`) against a ResourceContext already
+    resolved by `build_guardian_relationship_resource_context` or
+    `build_guardian_relationship_create_context`.
+
+    GuardianRelationship is a Club-neutral resource (no `club_id`); in
+    the single-club MVP the Club boundary is not applied for
+    `guardian_relationship.manage` (TH-0288; ADR-0025 §2,
+    role-permission-scope-matrix.md, roles-and-permissions.md). The
+    generic `app.authorization.service.can()` would compare a
+    Club-scoped assignment's `club_id` against the resource's absent one
+    and fail closed (`club_boundary_matches(club_id, None)` is False),
+    denying the normal Club-scoped Administrator. Here the assignment's
+    `club_id` is therefore not consulted — only for this one
+    resource/permission pair; `club_boundary_matches` itself is
+    unchanged and keeps failing closed for every other caller.
+
+    Everything else is the same as `can()`: only currently-effective
+    grants of exactly this permission count (`applicable_grants`), and
+    each grant's own scope must match the backend-resolved context
+    (`scope_matches`). No role name is inspected — a role without
+    `guardian_relationship.manage` (in MVP: every role except `admin`)
+    is denied, and a grant whose scope does not match is denied.
+    """
+    return any(
+        scope_matches(grant.scope_type, context)
+        for grant in applicable_grants(session, user_id, GUARDIAN_RELATIONSHIP_MANAGE_PERMISSION)
+    )
 
 
 def guardian_relationship_visibility_filter(
@@ -268,6 +317,8 @@ def children_visibility_filter(
 
 
 __all__ = [
+    "GUARDIAN_RELATIONSHIP_MANAGE_PERMISSION",
+    "can_manage_guardian_relationship",
     "build_guardian_relationship_resource_context",
     "build_guardian_relationship_create_context",
     "guardian_relationship_visibility_filter",

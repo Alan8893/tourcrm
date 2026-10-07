@@ -37,11 +37,13 @@ from app.api.v1.guardian_relationships_schemas import (
     GuardianRelationshipOut,
     GuardianRelationshipUpdateRequest,
 )
-from app.authorization.service import Authorizer
 from app.db.identity import GuardianRelationship
 from app.db.session import get_db
 from app.people import guardian_service
-from app.people.guardian_authorization import build_guardian_relationship_resource_context
+from app.people.guardian_authorization import (
+    build_guardian_relationship_resource_context,
+    can_manage_guardian_relationship,
+)
 from app.people.guardian_lifecycle import (
     AlreadyRevokedError,
     DuplicateActiveGuardianRelationshipError,
@@ -73,14 +75,16 @@ def guardian_relationship_out(relationship: GuardianRelationship) -> GuardianRel
     )
 
 
-def get_authorized_guardian_relationship_or_404(
+def get_manageable_guardian_relationship_or_404(
     db: Session,
     *,
     relationship_id: uuid.UUID,
     user_id: uuid.UUID,
-    permission_code: str,
     lock: bool = False,
 ) -> GuardianRelationship:
+    """Load a GuardianRelationship the caller may manage
+    (`guardian_relationship.manage`), via the Club-neutral manage policy
+    `can_manage_guardian_relationship` (TH-0288, ADR-0025 §2)."""
     stmt = select(GuardianRelationship).where(GuardianRelationship.id == relationship_id)
     if lock:
         stmt = stmt.with_for_update()
@@ -91,8 +95,7 @@ def get_authorized_guardian_relationship_or_404(
     context = build_guardian_relationship_resource_context(
         db, relationship=relationship, requester_user_id=user_id
     )
-    authorizer = Authorizer(session=db, user_id=user_id, permission_code=permission_code)
-    if not authorizer.is_allowed(context):
+    if not can_manage_guardian_relationship(db, user_id=user_id, context=context):
         # Deliberately the same status/code/message as "does not exist"
         # above — an existing-but-unauthorized relationship must be
         # indistinguishable from a nonexistent one (IDOR protection).
@@ -109,12 +112,8 @@ def update_guardian_relationship(
     db: Session = Depends(get_db),
     _csrf: None = Depends(require_csrf_token),
 ) -> GuardianRelationshipOut:
-    relationship = get_authorized_guardian_relationship_or_404(
-        db,
-        relationship_id=relationship_id,
-        user_id=principal.user_id,
-        permission_code="guardian_relationship.manage",
-        lock=True,
+    relationship = get_manageable_guardian_relationship_or_404(
+        db, relationship_id=relationship_id, user_id=principal.user_id, lock=True
     )
     fields = payload.model_dump(exclude_unset=True)
     try:
@@ -140,12 +139,8 @@ def terminate_guardian_relationship(
     db: Session = Depends(get_db),
     _csrf: None = Depends(require_csrf_token),
 ) -> GuardianRelationshipOut:
-    relationship = get_authorized_guardian_relationship_or_404(
-        db,
-        relationship_id=relationship_id,
-        user_id=principal.user_id,
-        permission_code="guardian_relationship.manage",
-        lock=True,
+    relationship = get_manageable_guardian_relationship_or_404(
+        db, relationship_id=relationship_id, user_id=principal.user_id, lock=True
     )
     try:
         relationship = guardian_service.terminate_guardian_relationship(

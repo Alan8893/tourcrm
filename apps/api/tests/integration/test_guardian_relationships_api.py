@@ -765,10 +765,13 @@ def test_create_guardian_relationship_without_permission_is_forbidden(client: Te
 
 
 @requires_postgres
-def test_create_guardian_relationship_club_scoped_grant_is_forbidden(client: TestClient) -> None:
-    """Cross-club misuse guard: a club-scoped `guardian_relationship.manage`
-    assignment must never authorize creation — GuardianRelationship is
-    Club-neutral and defines no club-scoped override (unlike Person)."""
+def test_create_guardian_relationship_club_scoped_manage_grant_succeeds(
+    client: TestClient,
+) -> None:
+    """TH-0288 (ADR-0025 §2): GuardianRelationship is Club-neutral, so the
+    Club boundary is not applied for `guardian_relationship.manage` — a
+    Club-scoped grant is not rejected merely because the relationship has
+    no `club_id` (supersedes the earlier fail-closed expectation)."""
     with session_scope() as session:
         club = _make_club()
         guardian, guardian_user, child, requester_user = _make_guardian_child_requester(session)
@@ -786,7 +789,7 @@ def test_create_guardian_relationship_club_scoped_grant_is_forbidden(client: Tes
         json={"guardian_person_id": str(guardian_id), "relationship_type": "parent"},
         headers=_csrf_headers(client),
     )
-    assert response.status_code == 403, response.text
+    assert response.status_code == 201, response.text
 
 
 @requires_postgres
@@ -1193,6 +1196,196 @@ def test_terminate_guardian_relationship_missing_and_unauthorized_are_indistingu
         == "guardian_relationship_not_found"
     )
     assert missing_response.json()["error"]["message"] == denied_response.json()["error"]["message"]
+
+
+# --- TH-0288: Club-scoped canonical roles and guardian_relationship.manage --
+#
+# The canonical baseline roles (`admin`/`instructor`/`member`/`guardian`,
+# seeded by migrations) with the normal Club-scoped UserRoleAssignment.
+# Only `admin` holds `guardian_relationship.manage` (scope `all`); the
+# Club boundary is not applied for this Club-neutral resource/permission
+# pair (ADR-0025 §2, role-permission-scope-matrix.md,
+# roles-and-permissions.md GuardianRelationship), while Club-scoped
+# resources keep their own Club boundary.
+
+
+def _assign_canonical_role(user_id: uuid.UUID, role_code: str, club_id: uuid.UUID) -> None:
+    with session_scope() as session:
+        role_id = session.execute(select(Role.id).where(Role.code == role_code)).scalar_one()
+        session.add(UserRoleAssignment(user_id=user_id, role_id=role_id, club_id=club_id))
+        session.commit()
+
+
+def _revoke_role_permission(role_code: str, permission_code: str) -> None:
+    """Remove `permission_code` from the baseline `role_code` for this test
+    only (every integration test starts from the migrated baseline
+    snapshot)."""
+    with session_scope() as session:
+        role_permission = session.execute(
+            select(RolePermission)
+            .join(Role, Role.id == RolePermission.role_id)
+            .join(Permission, Permission.id == RolePermission.permission_id)
+            .where(Role.code == role_code, Permission.code == permission_code)
+        ).scalar_one()
+        session.delete(role_permission)
+        session.commit()
+
+
+def _club_scoped_role_setup(role_code: str):  # type: ignore[no-untyped-def]
+    """Commit a Club, guardian/child Persons, an existing active
+    relationship between them, and a requester User (an active member of
+    the Club) holding `role_code` through a Club-scoped assignment.
+    Returns (child_id, guardian_id, relationship_id, requester_user_id)."""
+    with session_scope() as session:
+        club = _make_club()
+        guardian, guardian_user, child, requester_user = _make_guardian_child_requester(session)
+        session.add(club)
+        session.commit()
+        session.add(_make_club_membership(club, requester_user.person))
+        relationship = _make_guardian_relationship(guardian, child)
+        session.add(relationship)
+        session.commit()
+        ids = (child.id, guardian.id, relationship.id, requester_user.id, club.id)
+    _assign_canonical_role(ids[3], role_code, ids[4])
+    _authenticate_as(ids[3])
+    return ids[:4]
+
+
+def _post_create(client: TestClient, child_id: uuid.UUID, guardian_id: uuid.UUID):  # type: ignore[no-untyped-def]
+    return client.post(
+        f"/api/v1/persons/{child_id}/guardian-relationships",
+        json={"guardian_person_id": str(guardian_id), "relationship_type": "guardian"},
+        headers=_csrf_headers(client),
+    )
+
+
+def _patch_type(client: TestClient, relationship_id: uuid.UUID):  # type: ignore[no-untyped-def]
+    return client.patch(
+        f"/api/v1/guardian-relationships/{relationship_id}",
+        json={"relationship_type": "grandparent"},
+        headers=_csrf_headers(client),
+    )
+
+
+def _post_terminate(client: TestClient, relationship_id: uuid.UUID):  # type: ignore[no-untyped-def]
+    return client.post(
+        f"/api/v1/guardian-relationships/{relationship_id}/terminate",
+        headers=_csrf_headers(client),
+    )
+
+
+@requires_postgres
+def test_club_scoped_admin_can_create_guardian_relationship(client: TestClient) -> None:
+    with session_scope() as session:
+        guardian, _, child, _ = _make_guardian_child_requester(session)
+        child_id, guardian_id = child.id, guardian.id
+    _, _, _, admin_user_id = _club_scoped_role_setup("admin")
+
+    response = _post_create(client, child_id, guardian_id)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["guardian_person_id"] == str(guardian_id)
+    assert body["child_person_id"] == str(child_id)
+    assert body["status"] == "active"
+    audit_row = _latest_audit_row(
+        action="guardian_relationship.created", resource_id=uuid.UUID(body["id"])
+    )
+    assert audit_row is not None
+    assert audit_row.actor_user_id == admin_user_id
+
+
+@requires_postgres
+def test_club_scoped_admin_can_update_guardian_relationship(client: TestClient) -> None:
+    _, _, relationship_id, _ = _club_scoped_role_setup("admin")
+
+    response = _patch_type(client, relationship_id)
+    assert response.status_code == 200, response.text
+    assert response.json()["relationship_type"] == "grandparent"
+
+
+@requires_postgres
+def test_club_scoped_admin_can_terminate_guardian_relationship(client: TestClient) -> None:
+    _, _, relationship_id, _ = _club_scoped_role_setup("admin")
+
+    response = _post_terminate(client, relationship_id)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "revoked"
+
+
+@requires_postgres
+def test_club_scoped_admin_without_manage_permission_is_denied(client: TestClient) -> None:
+    """The Club-neutral rule only lifts the Club boundary; it never
+    substitutes for the permission itself (no role-name shortcut)."""
+    _revoke_role_permission("admin", "guardian_relationship.manage")
+    child_id, guardian_id, relationship_id, _ = _club_scoped_role_setup("admin")
+
+    assert _post_create(client, child_id, guardian_id).status_code == 403
+    assert _patch_type(client, relationship_id).status_code == 404
+    assert _post_terminate(client, relationship_id).status_code == 404
+    with session_scope() as session:
+        relationship = session.get(GuardianRelationship, relationship_id)
+        assert relationship.relationship_type == "parent"
+        assert relationship.status == "active"
+
+
+@requires_postgres
+@pytest.mark.parametrize("role_code", ["instructor", "member", "guardian"])
+def test_club_scoped_non_admin_roles_cannot_manage_guardian_relationship(
+    client: TestClient, role_code: str
+) -> None:
+    child_id, guardian_id, relationship_id, _ = _club_scoped_role_setup(role_code)
+
+    response = _post_create(client, child_id, guardian_id)
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
+    assert _patch_type(client, relationship_id).status_code == 404
+    assert _post_terminate(client, relationship_id).status_code == 404
+    with session_scope() as session:
+        relationship = session.get(GuardianRelationship, relationship_id)
+        assert relationship.relationship_type == "parent"
+        assert relationship.status == "active"
+
+
+@requires_postgres
+def test_club_scoped_guardian_party_to_relationship_cannot_manage_it(client: TestClient) -> None:
+    """The canonical `guardian` role, even as a party to the relationship
+    (Club-scoped assignment), still has no `guardian_relationship.manage`."""
+    with session_scope() as session:
+        club = _make_club()
+        guardian, guardian_user, child, _ = _make_guardian_child_requester(session)
+        session.add(club)
+        session.commit()
+        relationship = _make_guardian_relationship(guardian, child)
+        session.add(relationship)
+        session.commit()
+        relationship_id, guardian_user_id, club_id = relationship.id, guardian_user.id, club.id
+    _assign_canonical_role(guardian_user_id, "guardian", club_id)
+    _authenticate_as(guardian_user_id)
+
+    assert _patch_type(client, relationship_id).status_code == 404
+    assert _post_terminate(client, relationship_id).status_code == 404
+
+
+@requires_postgres
+def test_club_scoped_admin_keeps_club_boundary_for_club_scoped_resources(
+    client: TestClient,
+) -> None:
+    """The GuardianRelationship rule does not leak into Club-scoped
+    resources: the same Club-scoped admin still cannot read a Person who
+    belongs only to another Club, nor that Person's ClubMembership."""
+    with session_scope() as session:
+        other_club = _make_club()
+        outsider = _make_person(first_name="Outsider")
+        session.add_all([other_club, outsider])
+        session.commit()
+        membership = _make_club_membership(other_club, outsider)
+        session.add(membership)
+        session.commit()
+        outsider_id, membership_id = outsider.id, membership.id
+    _club_scoped_role_setup("admin")
+
+    assert client.get(f"/api/v1/persons/{outsider_id}").status_code == 404
+    assert client.get(f"/api/v1/memberships/{membership_id}").status_code == 404
 
 
 # --- GET /me/children ------------------------------------------------------
