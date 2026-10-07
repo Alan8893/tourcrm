@@ -81,7 +81,7 @@ Guardian не может изменять:
 |---|---|---|---|---|
 | `person.read` | `all` | `own_groups` | `self` | `children` |
 | `person.create` | `all` | — | — | — |
-| `person.update` | `all`, all fields | — | — | `children`, restricted fields |
+| `person.update` | `all`, all fields | — | `self`, restricted fields | `children`, restricted fields |
 
 ### 4.1 Field-level policy for `person.update`
 

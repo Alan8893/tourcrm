@@ -6,8 +6,8 @@
   that Person; anything else keeps the existing existence-hiding 404.
 - `person.update(children)`: same reach; only first/last/middle name,
   phone, address and the avatar may change. email / birth_date -> 403.
-- Child-specific field restrictions apply only when the Person is reachable
-  solely through `children` — `self`/`all` keep their ordinary rules.
+- The field restrictions apply when the Person is reachable solely through
+  `children` and/or `self` (Issue #312) — `all` keeps its ordinary rules.
 
 Self-contained factories, per this codebase's convention of not importing
 helpers across test files.
@@ -370,14 +370,15 @@ def test_update_without_person_update_keeps_existing_404(client: TestClient) -> 
     assert response.status_code == 404, response.text
 
 
-# --- Multiple scopes: self / all keep their ordinary rules ----------------------------
+# --- Multiple scopes: self restricted too, all keeps its ordinary rules ------------
 
 
 @requires_postgres
-def test_guardian_self_scope_still_updates_own_email(client: TestClient) -> None:
-    """A Guardian holding `self` + `children` edits their own Person under the
-    ordinary self rules (email allowed) — the child restriction applies only
-    to access granted solely through `children`."""
+def test_self_scope_restricts_own_email_like_children(client: TestClient) -> None:
+    """A user holding `self` + `children` edits their own Person under the
+    `self` field rules (role-permission-scope-matrix.md §4.1, Issue #312):
+    `email` is outside the restricted field set through `self` exactly as
+    through `children`, while an allowed field still updates."""
     guardian_user_id, guardian_person_id, child_id, _ = _seed()
     _grant(guardian_user_id, "person.update", "self")
     _grant(guardian_user_id, "person.update", "children")
@@ -393,10 +394,15 @@ def test_guardian_self_scope_still_updates_own_email(client: TestClient) -> None
         json={"email": "child-new@example.com"},
         headers=_csrf_headers(client),
     )
+    own_phone = client.patch(
+        f"/api/v1/persons/{guardian_person_id}",
+        json={"phone": "+70000000000"},
+        headers=_csrf_headers(client),
+    )
 
-    assert own.status_code == 200, own.text
-    assert own.json()["email"] == "guardian-new@example.com"
+    assert own.status_code == 403, own.text
     assert child.status_code == 403, child.text
+    assert own_phone.status_code == 200, own_phone.text
 
 
 @requires_postgres
