@@ -178,7 +178,7 @@ Feature setting не может расширить permissions.
 | Membership: изменение type | ✅ | ❌ | ❌ | ❌ |
 | Membership: lifecycle | ✅ | ❌ | ❌ | ❌ |
 | Participant import job management | ✅ `membership.import` + `all` | ❌ | ❌ | ❌ |
-| GuardianRelationship: чтение | authorized global | по `own_groups` | собственные relationship records | собственные relationship records |
+| GuardianRelationship: чтение | `all` (Club boundary неприменим) | по `own_groups` | собственные relationship records | собственные relationship records |
 | GuardianRelationship: создание | ✅ | ❌ | ❌ | ❌ |
 | GuardianRelationship: изменение | ✅ | ❌ | ❌ | ❌ |
 | GuardianRelationship: terminate | ✅ | ❌ | ❌ | ❌ |

@@ -547,7 +547,10 @@ URI: канонический ресурс — `guardian-relationships`, не `g
 
 Authorization/scope: `GuardianRelationship` остаётся Club-neutral и не имеет `club_id`. Доступ вычисляется по роли, permission и relationship policy. Для этой сущности применяются только существующие scopes `all`, `self`, `children`, `none`; новые scopes не вводятся.
 
-- `admin`: чтение всех разрешённых relationships в глобальном `all` scope; create/update/terminate.
+- `admin`: `guardian_relationship.read` — `all`, `guardian_relationship.manage` — create/update/terminate; для обеих permissions Club boundary неприменим в single-club MVP, поэтому обычное Club-scoped назначение `admin` является достаточным.
+- `instructor`: `guardian_relationship.read` — `own_groups`; mutations запрещены.
+- `member`: `guardian_relationship.read` — `self`.
+- `guardian`: `guardian_relationship.read` — собственные relationship records; другие representatives ребёнка не раскрываются.
 - `instructor`: только чтение relationships, связанных с Persons, доступными через `own_groups`; mutations запрещены.
 - `member`: только чтение собственных relationship records (`self`).
 - `guardian`: только чтение собственных relationship records; другие representatives ребёнка не раскрываются.
