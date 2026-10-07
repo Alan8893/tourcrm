@@ -559,3 +559,88 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* --- Attendance (Issue #305 / ADR-0047) ---------------------------------
+   Calendar indication never relies on color alone: chips carry a marker
+   glyph + visually hidden text, rows carry a text badge. Unmarked keeps
+   the default presentation. */
+
+.chipAttendancePresent {
+  box-shadow: inset 3px 0 0 var(--color-success);
+}
+
+.chipAttendanceAbsent {
+  box-shadow: inset 3px 0 0 var(--color-danger);
+}
+
+.attendanceBadge {
+  flex: 0 0 auto;
+  font-size: var(--font-size-sm);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.attendancePresent {
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+
+.attendanceAbsent {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+
+.attendanceSummary {
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.attendanceToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+}
+
+.attendanceList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  list-style: none;
+}
+
+.attendanceRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.attendanceName {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.attendanceUnmarked {
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+}
+
+.attendanceActions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.attendanceNote {
+  margin: 0 0 var(--space-3);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}

@@ -60,8 +60,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.achievements import triggers as achievement_triggers
+from app.audit.service import record_audit_event
 from app.db.event_recurrence import EventOccurrence
-from app.db.events import Event, EventGroupTarget, EventStaffAssignment
+from app.db.events import Event, EventGroupTarget, EventParticipation, EventStaffAssignment
+from app.db.groups import GroupMembership
+from app.db.identity import ClubMembership
 from app.db.trips import TRIP_EVENT_FK
 from app.events.lifecycle import (
     validate_coordinates,
@@ -86,6 +89,13 @@ ARCHIVED_STATUS = "archived"
 # no per-assignment role selector, matching the dominant convention already
 # used across this codebase's own EventStaffAssignment tests/fixtures.
 DEFAULT_STAFF_ROLE_IN_EVENT = "instructor"
+
+# ADR-0047 §1: the one Event type whose Group targeting registers the
+# current Group participants at creation.
+LESSON_EVENT_TYPE = "lesson"
+_REGISTERED_STATUS = "registered"
+_ACTIVE_CLUB_MEMBERSHIP_STATUS = "active"
+_ACTIVE_GROUP_MEMBERSHIP_STATUS = "active"
 
 # The PATCH-writable Event fields (Issue #40): `status`/`cancellation_reason`
 # only change through transition_event_status()/archive_event(); `id`,
@@ -304,6 +314,71 @@ def _apply_event_group_targets(
             )
 
 
+def _register_lesson_group_participants(
+    session: Session,
+    *,
+    event_id: uuid.UUID,
+    club_id: uuid.UUID,
+    group_ids: Sequence[uuid.UUID],
+    actor_user_id: uuid.UUID,
+) -> None:
+    """ADR-0047 §1: for a `lesson` with target Groups, create one
+    `EventParticipation(registered)` per Person who has an active
+    GroupMembership — backed by an active ClubMembership in the Event's
+    Club, the same chain self-registration eligibility uses
+    (app.events.participation._person_has_active_group_membership) — in at
+    least one target Group at this moment. One row per Person even when
+    they are in several target Groups (`DISTINCT`, and the existing
+    `(event_id, person_id)` unique constraint). No commit: runs inside
+    `create_event_with_targeting`'s transaction, so any failure rolls the
+    Event back too. Never creates Attendance (ADR-0047 §1.6). Each row is
+    audited with the existing `event_participation.status_changed` action,
+    exactly like self-registration.
+
+    Snapshot only: later GroupMembership changes neither add nor cancel
+    these rows (ADR-0047 §1.4/§1.5) — nothing else calls this function.
+    """
+    now = sa.func.now()
+    person_ids = (
+        session.execute(
+            sa.select(ClubMembership.person_id)
+            .join(GroupMembership, GroupMembership.club_membership_id == ClubMembership.id)
+            .where(
+                ClubMembership.club_id == club_id,
+                ClubMembership.status == _ACTIVE_CLUB_MEMBERSHIP_STATUS,
+                GroupMembership.group_id.in_(list(group_ids)),
+                GroupMembership.membership_status == _ACTIVE_GROUP_MEMBERSHIP_STATUS,
+                GroupMembership.valid_from <= now,
+                sa.or_(GroupMembership.valid_to.is_(None), now < GroupMembership.valid_to),
+            )
+            .distinct()
+            .order_by(ClubMembership.person_id)
+        )
+        .scalars()
+        .all()
+    )
+    for person_id in person_ids:
+        row = EventParticipation(
+            event_id=event_id, person_id=person_id, registration_status=_REGISTERED_STATUS
+        )
+        session.add(row)
+        session.flush()
+        record_audit_event(
+            session,
+            action="event_participation.status_changed",
+            actor_type="user",
+            actor_user_id=actor_user_id,
+            club_id=club_id,
+            resource_type="event_participation",
+            resource_id=row.id,
+            outcome="success",
+            details={
+                "changes": {"registration_status": {"from": None, "to": _REGISTERED_STATUS}},
+                "source": "lesson_group_registration",
+            },
+        )
+
+
 def _apply_event_staff_assignments(
     session: Session,
     *,
@@ -378,9 +453,9 @@ def create_event_with_targeting(
     EventGroupTarget rows are created. `instructor_user_ids=()` means no
     responsible User is assigned yet — both are valid, independent
     states. Group targeting and instructor assignment never create
-    GroupMembership, EventParticipation, or any other relationship —
-    this function touches only Event, EventOccurrence, EventGroupTarget
-    and EventStaffAssignment.
+    GroupMembership or any other relationship, and — except for a
+    `lesson` (ADR-0047 §1, `_register_lesson_group_participants`) — never
+    create EventParticipation either. Attendance is never created.
     """
     validate_event_type(event_type)
     validate_time_range(start_at, end_at)
@@ -436,6 +511,16 @@ def create_event_with_targeting(
             role_in_event=role_in_event,
             now=now,
         )
+        if event_type == LESSON_EVENT_TYPE and group_ids:
+            # Group targets are flushed (and validated as same-Club) first.
+            session.flush()
+            _register_lesson_group_participants(
+                session,
+                event_id=event_id,
+                club_id=club_id,
+                group_ids=group_ids,
+                actor_user_id=created_by,
+            )
         session.commit()
     except Exception:
         session.rollback()

@@ -32,20 +32,34 @@ import {
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import {
   useArchiveEvent,
+  useBulkMarkAttendance,
+  useCalendarAttendance,
   useCalendarRange,
+  useCorrectAttendance,
   useCreateEvent,
   useEvent,
+  useEventAttendance,
   useEventParticipants,
+  useMarkAttendance,
   useOccurrence,
   useRegisterForEvent,
   useRescheduleOccurrence,
   useTransitionEventStatus,
   useUpdateEvent,
   useWithdrawFromEvent,
+  type AttendanceEntry,
+  type AttendanceStatus,
   type CalendarItem,
   type EventDetail,
   type EventFields,
 } from "../api/events";
+import {
+  attendanceIndication,
+  attendanceIndicationLabel,
+  isAttendanceIndicated,
+  isAttendanceStaff,
+  type AttendanceIndication,
+} from "../domain/attendanceIndication";
 import {
   documentRequirementResultIcon,
   documentRequirementResultLabel,
@@ -77,7 +91,7 @@ import { useMediaQuery } from "../hooks/useMediaQuery";
 import { hasAdministratorRole } from "../shell/navigation";
 import { canManageEvents, eventDetailTabIds, type EventDetailTabId } from "../domain/eventAccess";
 import type { IconId } from "../assets/icons";
-import { FormDialog, TextAreaField } from "./InventoryForms";
+import { FormDialog, SelectField, TextAreaField } from "./InventoryForms";
 import styles from "./EventsPage.module.css";
 
 const MOBILE_QUERY = "(max-width: 767.98px)";
@@ -184,9 +198,8 @@ export function EventsPage() {
   // Issue #299: Event management actions and the instructor-management
   // filters are staff-only (domain/eventAccess) — UX only, the backend
   // authorizes every operation.
-  const canManage = canManageEvents(
-    (meQuery.data?.role_assignments ?? []).map(({ role_code }) => role_code),
-  );
+  const roleCodes = (meQuery.data?.role_assignments ?? []).map(({ role_code }) => role_code);
+  const canManage = canManageEvents(roleCodes);
 
   const groupsQuery = useGroups({ status: "active" });
 
@@ -213,6 +226,22 @@ export function EventsPage() {
     }
     return map;
   }, [calendarQuery.data]);
+
+  // Issue #305 / ADR-0047 §4-§6: attendance indication for visible
+  // lessons, from the existing `GET .../attendance` (the backend decides
+  // which rows the viewer gets). Presentation only — the role picks the
+  // summary vs. personal form, never what is visible.
+  const attendanceStaff = isAttendanceStaff(roleCodes);
+  const lessonIds = useMemo(
+    () => (calendarQuery.data ?? []).filter(isAttendanceIndicated).map((item) => item.id),
+    [calendarQuery.data],
+  );
+  const attendanceById = useCalendarAttendance(lessonIds, meQuery.isSuccess);
+  const indications = new Map<string, AttendanceIndication>();
+  for (const id of lessonIds) {
+    const indication = attendanceIndication(attendanceById.get(id), attendanceStaff);
+    if (indication) indications.set(id, indication);
+  }
 
   const selectedDayItems = itemsByDay.get(formatDateParam(selectedDate)) ?? [];
   const isRangeEmpty = calendarQuery.isSuccess && (calendarQuery.data?.length ?? 0) === 0;
@@ -343,6 +372,7 @@ export function EventsPage() {
           isFetching={calendarQuery.isFetching}
           dayItems={selectedDayItems}
           isRangeEmpty={isRangeEmpty}
+          indications={indications}
           onOpenItem={setDetailItem}
         />
       ) : (
@@ -357,6 +387,7 @@ export function EventsPage() {
           itemsByDay={itemsByDay}
           dayItems={selectedDayItems}
           isRangeEmpty={isRangeEmpty}
+          indications={indications}
           onOpenItem={setDetailItem}
         />
       )}
@@ -594,6 +625,7 @@ function DesktopCalendar({
   itemsByDay,
   dayItems,
   isRangeEmpty,
+  indications,
   onOpenItem,
 }: {
   selectedDate: Date;
@@ -606,6 +638,7 @@ function DesktopCalendar({
   itemsByDay: Map<string, CalendarItem[]>;
   dayItems: CalendarItem[];
   isRangeEmpty: boolean;
+  indications: Map<string, AttendanceIndication>;
   onOpenItem: (item: CalendarItem) => void;
 }) {
   const grid = useMemo(() => buildMonthGrid(selectedDate), [selectedDate]);
@@ -629,6 +662,7 @@ function DesktopCalendar({
                 key={day.key}
                 day={day}
                 items={itemsByDay.get(day.key) ?? []}
+                indications={indications}
                 selected={isSameDay(day.date, selectedDate)}
                 onSelect={() => onSelectDate(day.date)}
               />
@@ -643,6 +677,7 @@ function DesktopCalendar({
           isRangeEmpty={isRangeEmpty}
           isLoading={isInitialLoading}
           isFetching={isFetching}
+          indications={indications}
           onOpenItem={onOpenItem}
         />
       </div>
@@ -699,14 +734,23 @@ function chipStatusClass(status: string): string {
   }
 }
 
+function chipAttendanceClass(indication: AttendanceIndication | undefined): string {
+  if (indication?.kind !== "personal") return "";
+  if (indication.state === "present") return styles.chipAttendancePresent;
+  if (indication.state === "absent") return styles.chipAttendanceAbsent;
+  return "";
+}
+
 function MonthCell({
   day,
   items,
+  indications,
   selected,
   onSelect,
 }: {
   day: MonthGridDay;
   items: CalendarItem[];
+  indications: Map<string, AttendanceIndication>;
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -731,12 +775,23 @@ function MonthCell({
     >
       <span className={styles.monthCellDate}>{day.date.getDate()}</span>
       <span className={styles.monthCellChips}>
-        {visible.map((item) => (
-          <span key={item.id} className={[styles.chip, chipStatusClass(item.status)].join(" ")}>
-            {item.kind === "occurrence" ? <span aria-hidden="true">↻ </span> : null}
-            {formatTime(item.start_at)} {item.title}
-          </span>
-        ))}
+        {visible.map((item) => {
+          const indication = indications.get(item.id);
+          return (
+            <span
+              key={item.id}
+              className={[styles.chip, chipStatusClass(item.status), chipAttendanceClass(indication)]
+                .filter(Boolean)
+                .join(" ")}
+            >
+              {item.kind === "occurrence" ? <span aria-hidden="true">↻ </span> : null}
+              {formatTime(item.start_at)} {item.title}
+              {indication && (indication.kind === "summary" || indication.state !== "unmarked") ? (
+                <span className="visually-hidden"> ({attendanceIndicationLabel(indication)})</span>
+              ) : null}
+            </span>
+          );
+        })}
         {overflow > 0 ? <span className={styles.chipOverflow}>+{overflow}</span> : null}
       </span>
     </button>
@@ -765,6 +820,7 @@ function MobileAgenda({
   isFetching,
   dayItems,
   isRangeEmpty,
+  indications,
   onOpenItem,
 }: {
   selectedDate: Date;
@@ -776,6 +832,7 @@ function MobileAgenda({
   isFetching: boolean;
   dayItems: CalendarItem[];
   isRangeEmpty: boolean;
+  indications: Map<string, AttendanceIndication>;
   onOpenItem: (item: CalendarItem) => void;
 }) {
   return (
@@ -809,6 +866,7 @@ function MobileAgenda({
         isRangeEmpty={isRangeEmpty}
         isLoading={isInitialLoading}
         isFetching={isFetching}
+        indications={indications}
         onOpenItem={onOpenItem}
       />
     </div>
@@ -822,12 +880,14 @@ function DayEventList({
   isRangeEmpty,
   isLoading,
   isFetching,
+  indications,
   onOpenItem,
 }: {
   items: CalendarItem[];
   isRangeEmpty: boolean;
   isLoading: boolean;
   isFetching: boolean;
+  indications: Map<string, AttendanceIndication>;
   onOpenItem: (item: CalendarItem) => void;
 }) {
   if (isLoading) {
@@ -852,14 +912,53 @@ function DayEventList({
     <ul className={styles.dayList}>
       {items.map((item) => (
         <li key={item.id}>
-          <CalendarEventRow item={item} onOpen={() => onOpenItem(item)} />
+          <CalendarEventRow
+            item={item}
+            indication={indications.get(item.id)}
+            onOpen={() => onOpenItem(item)}
+          />
         </li>
       ))}
     </ul>
   );
 }
 
-function CalendarEventRow({ item, onOpen }: { item: CalendarItem; onOpen: () => void }) {
+function AttendanceIndicationBadge({ indication }: { indication: AttendanceIndication }) {
+  const label = attendanceIndicationLabel(indication);
+  if (indication.kind === "summary") {
+    return (
+      <span className={`${styles.attendanceBadge} ${styles.attendanceSummary}`} title={label}>
+        <span aria-hidden="true">
+          {indication.marked}/{indication.total}
+        </span>
+        <span className="visually-hidden">{label}</span>
+      </span>
+    );
+  }
+  // Unmarked keeps the neutral/default presentation (never "absent").
+  if (indication.state === "unmarked") return null;
+  return (
+    <span
+      className={`${styles.attendanceBadge} ${
+        indication.state === "present" ? styles.attendancePresent : styles.attendanceAbsent
+      }`}
+      title={label}
+    >
+      <span aria-hidden="true">{indication.state === "present" ? "Был" : "Не был"}</span>
+      <span className="visually-hidden">{label}</span>
+    </span>
+  );
+}
+
+function CalendarEventRow({
+  item,
+  indication,
+  onOpen,
+}: {
+  item: CalendarItem;
+  indication: AttendanceIndication | undefined;
+  onOpen: () => void;
+}) {
   const cancelled = item.status === "cancelled";
   return (
     <button type="button" className={styles.eventRow} onClick={onOpen}>
@@ -873,6 +972,7 @@ function CalendarEventRow({ item, onOpen }: { item: CalendarItem; onOpen: () => 
         </span>
         <span className={styles.eventRowMeta}>{eventTypeLabel(item.event_type)}</span>
       </span>
+      {indication ? <AttendanceIndicationBadge indication={indication} /> : null}
       <StatusBadge status={eventStatusIcon(item.status as EventStatus)} label={eventStatusLabel(item.status as EventStatus)} />
     </button>
   );
@@ -919,7 +1019,12 @@ function EventDetailDialog({
   // roster (domain/eventAccess); UX only — backend stays authoritative.
   const roleCodes = roleAssignments.map(({ role_code }) => role_code);
   const canManage = canManageEvents(roleCodes);
-  const tabIds = eventDetailTabIds(roleCodes, item.kind);
+  const tabIds = eventDetailTabIds(roleCodes, item.kind, item.event_type);
+  // The attendance lifecycle follows the concrete occurrence's current
+  // status (ADR-0032 §5) — the loaded detail first, the calendar row as a
+  // fallback. The backend re-checks it on every write.
+  const attendanceLifecycleStatus =
+    item.kind === "event" ? status : (occurrenceQuery.data?.status ?? item.status);
   const [selectedTab, setSelectedTab] = useState<EventDetailTabId>("overview");
   const activeTab = tabIds.includes(selectedTab) ? selectedTab : "overview";
 
@@ -979,7 +1084,19 @@ function EventDetailDialog({
                   label: "Участники",
                   content: <EventParticipantsTab key={item.id} eventId={item.id} />,
                 }
-              : { id, label: "Обзор", content: overview },
+              : id === "attendance"
+                ? {
+                    id,
+                    label: "Посещаемость",
+                    content: (
+                      <EventAttendanceTab
+                        key={item.id}
+                        eventId={item.id}
+                        lifecycleStatus={attendanceLifecycleStatus}
+                      />
+                    ),
+                  }
+                : { id, label: "Обзор", content: overview },
           )}
         />
       ) : (
@@ -1096,6 +1213,248 @@ function EventParticipantsTab({ eventId }: { eventId: string }) {
         onPageChange={setPage}
       />
     </section>
+  );
+}
+
+// --- Event attendance tab (Issue #305 / ADR-0047 §3, ADR-0032) -------------
+//
+// Staff marking UI over the existing Attendance API: the roster, the
+// derived summary and which rows are visible all come from `GET
+// .../attendance`; marks go through the existing single / bulk PUT, and a
+// completed occurrence only through the correction endpoint. Unmarked
+// (`status: null`) is shown as its own state — never as absent. The
+// backend re-validates authorization and lifecycle on every request.
+
+const ATTENDANCE_PAGE_SIZE = 50;
+
+type AttendanceMode = "normal" | "correction" | "closed";
+
+function attendanceMode(lifecycleStatus: string): AttendanceMode {
+  if (lifecycleStatus === "cancelled") return "closed";
+  if (lifecycleStatus === "completed") return "correction";
+  return "normal";
+}
+
+function attendanceStatusLabel(status: AttendanceStatus | null): string {
+  if (status === "present") return "Присутствовал";
+  if (status === "absent") return "Отсутствовал";
+  return "Не отмечен";
+}
+
+function attendanceStatusClass(status: AttendanceStatus | null): string {
+  if (status === "present") return styles.attendancePresent;
+  if (status === "absent") return styles.attendanceAbsent;
+  return styles.attendanceUnmarked;
+}
+
+function personName(entry: AttendanceEntry): string {
+  return [entry.person.last_name, entry.person.first_name, entry.person.middle_name]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function EventAttendanceTab({ eventId, lifecycleStatus }: { eventId: string; lifecycleStatus: string }) {
+  const [page, setPage] = useState(1);
+  const attendanceQuery = useEventAttendance(eventId, page, ATTENDANCE_PAGE_SIZE);
+  const markAttendance = useMarkAttendance(eventId);
+  const bulkMarkAttendance = useBulkMarkAttendance(eventId);
+  const [correcting, setCorrecting] = useState<AttendanceEntry | null>(null);
+  const notify = useNotify();
+  const headingId = useId();
+  const mode = attendanceMode(lifecycleStatus);
+
+  if (attendanceQuery.isLoading) return <Loading label="Загружаем посещаемость…" />;
+  if (attendanceQuery.isError) {
+    const { status } = attendanceQuery.error;
+    return (
+      <ErrorState
+        illustration={status === 403 ? "403" : status === 404 ? "404" : "error"}
+        title={
+          status === 403 || status === 404
+            ? "Посещаемость недоступна"
+            : "Не удалось загрузить посещаемость"
+        }
+        description={attendanceQuery.error.message}
+        action={
+          status !== 403 && status !== 404 ? (
+            <Button variant="secondary" onClick={() => void attendanceQuery.refetch()}>
+              Повторить
+            </Button>
+          ) : undefined
+        }
+      />
+    );
+  }
+  if (!attendanceQuery.data) return null;
+
+  const { items, pagination, summary } = attendanceQuery.data;
+  if (summary.total === 0) {
+    return (
+      <EmptyState
+        illustration="no-results"
+        title="Нет участников"
+        description="Посещаемость отмечается для участников, записанных на занятие."
+      />
+    );
+  }
+
+  const pending = markAttendance.isPending || bulkMarkAttendance.isPending;
+  const unmarkedOnPage = items.filter((entry) => entry.status === null);
+
+  function mark(entry: AttendanceEntry, status: AttendanceStatus) {
+    markAttendance.mutate(
+      { personId: entry.person.id, status },
+      { onError: (error) => notify("error", error.message) },
+    );
+  }
+
+  function markUnmarkedPresent() {
+    bulkMarkAttendance.mutate(
+      unmarkedOnPage.map((entry) => ({ personId: entry.person.id, status: "present" as const })),
+      {
+        onSuccess: () => notify("success", "Посещаемость сохранена"),
+        onError: (error) => notify("error", error.message),
+      },
+    );
+  }
+
+  return (
+    <section aria-labelledby={headingId}>
+      <div className={styles.attendanceToolbar}>
+        <h3 id={headingId} className={styles.participantsHeading}>
+          Отмечено {summary.marked} из {summary.total}
+        </h3>
+        {mode === "normal" ? (
+          <Button
+            variant="secondary"
+            disabled={pending || unmarkedOnPage.length === 0}
+            onClick={markUnmarkedPresent}
+          >
+            Отметить неотмеченных присутствующими
+          </Button>
+        ) : null}
+      </div>
+      <p className={styles.attendanceNote}>
+        Присутствовали: {summary.present} · Отсутствовали: {summary.absent} · Не отмечены:{" "}
+        {summary.unmarked}
+      </p>
+      {mode === "correction" ? (
+        <p className={styles.attendanceNote}>
+          Занятие завершено: отметку можно только исправить с указанием причины.
+        </p>
+      ) : null}
+      {mode === "closed" ? (
+        <p className={styles.attendanceNote}>Для отменённого занятия посещаемость не отмечается.</p>
+      ) : null}
+      <ul className={styles.attendanceList}>
+        {items.map((entry) => {
+          const name = personName(entry);
+          return (
+            <li key={entry.person.id} className={styles.attendanceRow}>
+              <span className={styles.attendanceName}>{name}</span>
+              <span className={`${styles.attendanceBadge} ${attendanceStatusClass(entry.status)}`}>
+                {attendanceStatusLabel(entry.status)}
+              </span>
+              {mode === "normal" ? (
+                <span className={styles.attendanceActions}>
+                  <Button
+                    variant={entry.status === "present" ? "primary" : "secondary"}
+                    aria-pressed={entry.status === "present"}
+                    aria-label={`${name}: присутствовал`}
+                    disabled={pending}
+                    onClick={() => mark(entry, "present")}
+                  >
+                    Присутствовал
+                  </Button>
+                  <Button
+                    variant={entry.status === "absent" ? "primary" : "secondary"}
+                    aria-pressed={entry.status === "absent"}
+                    aria-label={`${name}: отсутствовал`}
+                    disabled={pending}
+                    onClick={() => mark(entry, "absent")}
+                  >
+                    Отсутствовал
+                  </Button>
+                </span>
+              ) : null}
+              {mode === "correction" && entry.status !== null ? (
+                <Button
+                  variant="secondary"
+                  aria-label={`${name}: исправить отметку`}
+                  onClick={() => setCorrecting(entry)}
+                >
+                  Исправить
+                </Button>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      <Pagination
+        page={pagination.page}
+        pages={pagination.pages}
+        total={pagination.total}
+        onPageChange={setPage}
+      />
+      {correcting ? (
+        <AttendanceCorrectionDialog
+          eventId={eventId}
+          entry={correcting}
+          onClose={() => setCorrecting(null)}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function AttendanceCorrectionDialog({
+  eventId,
+  entry,
+  onClose,
+}: {
+  eventId: string;
+  entry: AttendanceEntry;
+  onClose: () => void;
+}) {
+  const correctAttendance = useCorrectAttendance(eventId);
+  const notify = useNotify();
+  const [status, setStatus] = useState<AttendanceStatus>(
+    entry.status === "present" ? "absent" : "present",
+  );
+  const [reason, setReason] = useState("");
+
+  return (
+    <FormDialog
+      title="Исправить отметку"
+      description={personName(entry)}
+      submitLabel="Сохранить"
+      pending={correctAttendance.isPending}
+      error={correctAttendance.error?.message ?? null}
+      canSubmit={reason.trim().length > 0}
+      onClose={onClose}
+      onSubmit={() =>
+        correctAttendance.mutate(
+          { personId: entry.person.id, status, reason: reason.trim() },
+          {
+            onSuccess: () => {
+              notify("success", "Отметка исправлена");
+              onClose();
+            },
+          },
+        )
+      }
+    >
+      <SelectField
+        label="Новая отметка"
+        value={status}
+        options={[
+          { value: "present", label: "Присутствовал" },
+          { value: "absent", label: "Отсутствовал" },
+        ]}
+        onChange={(value) => setStatus(value as AttendanceStatus)}
+      />
+      <TextAreaField label="Причина исправления" value={reason} onChange={setReason} />
+    </FormDialog>
   );
 }
 

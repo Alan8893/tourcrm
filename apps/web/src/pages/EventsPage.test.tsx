@@ -2957,3 +2957,275 @@ describe("EventsPage — role-aware management controls (Issue #299)", () => {
     },
   );
 });
+
+// --- Issue #305 / ADR-0047: lesson attendance ---------------------------------
+
+type AttendanceRowFixture = { id: string; name: string; status: "present" | "absent" | null };
+
+function attendanceResponse(rows: AttendanceRowFixture[], total = rows.length) {
+  const marked = rows.filter((row) => row.status !== null).length;
+  const present = rows.filter((row) => row.status === "present").length;
+  const absent = rows.filter((row) => row.status === "absent").length;
+  return {
+    items: rows.map((row) => {
+      const [last_name, first_name] = row.name.split(" ");
+      return {
+        person: { id: row.id, first_name, last_name, middle_name: null },
+        status: row.status,
+        absence_reason: null,
+        comment: null,
+      };
+    }),
+    pagination: { page: 1, page_size: 50, total: rows.length, pages: rows.length ? 1 : 0 },
+    summary: { total, marked, present, absent, unmarked: total - marked },
+  };
+}
+
+function lessonCalendarHandlers(roleCode: string, attendanceByEvent: Record<string, unknown>) {
+  const range = fixedRange();
+  return [
+    { match: "/auth/me", response: meResponse({ roleCode }) },
+    { match: "/groups?status=active", response: groupsResponse() },
+    ...Object.entries(attendanceByEvent).map(([eventId, response]) => ({
+      match: `/events/${eventId}/attendance`,
+      response,
+    })),
+    {
+      match: encodeURIComponent(range.from),
+      response: calendarResponse([
+        { id: "les-present", title: "Урок присутствовал", start_at: "2026-03-15T10:00:00+03:00", end_at: "2026-03-15T11:00:00+03:00" },
+        { id: "les-absent", title: "Урок отсутствовал", start_at: "2026-03-15T12:00:00+03:00", end_at: "2026-03-15T13:00:00+03:00" },
+        // Next day: a cell shows at most two chips.
+        { id: "les-unmarked", title: "Урок не отмечен", start_at: "2026-03-16T14:00:00+03:00", end_at: "2026-03-16T15:00:00+03:00" },
+        {
+          id: "training-1",
+          event_type: "training",
+          title: "Тренировка",
+          start_at: "2026-03-16T16:00:00+03:00",
+          end_at: "2026-03-16T17:00:00+03:00",
+        },
+      ]),
+    },
+  ];
+}
+
+function chipFor(title: string): HTMLElement {
+  const chip = within(screen.getByRole("grid"))
+    .getAllByText((_, element) => Boolean(element?.className.includes(styles.chip) && element.textContent?.includes(title)))
+    .at(0);
+  if (!chip) throw new Error(`No chip for ${title}`);
+  return chip;
+}
+
+function rowFor(title: string): HTMLElement {
+  const row = screen.getByText(title).closest("button");
+  if (!row) throw new Error(`No row for ${title}`);
+  return row;
+}
+
+function attendanceRequests(fetchMock: ReturnType<typeof stubFetch>): string[] {
+  return fetchMock.mock.calls
+    .map(([input]) => String(input))
+    .filter((url) => url.includes("/attendance"));
+}
+
+describe("EventsPage — lesson attendance in the calendar (Issue #305)", () => {
+  it("Member: present is green, absent is red, unmarked stays neutral", async () => {
+    const fetchMock = stubFetch(
+      lessonCalendarHandlers("member", {
+        "les-present": attendanceResponse([{ id: "me", name: "Иванова Анна", status: "present" }]),
+        "les-absent": attendanceResponse([{ id: "me", name: "Иванова Анна", status: "absent" }]),
+        "les-unmarked": attendanceResponse([{ id: "me", name: "Иванова Анна", status: null }]),
+      }),
+    );
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+
+    await waitFor(() =>
+      expect(chipFor("Урок присутствовал")).toHaveClass(styles.chipAttendancePresent),
+    );
+    await waitFor(() => expect(chipFor("Урок отсутствовал")).toHaveClass(styles.chipAttendanceAbsent));
+    const neutral = chipFor("Урок не отмечен");
+    expect(neutral).not.toHaveClass(styles.chipAttendancePresent);
+    expect(neutral).not.toHaveClass(styles.chipAttendanceAbsent);
+
+    expect(within(rowFor("Урок присутствовал")).getByText("Посещаемость: присутствовал")).toBeInTheDocument();
+    expect(within(rowFor("Урок отсутствовал")).getByText("Посещаемость: отсутствовал")).toBeInTheDocument();
+    // Unmarked is never rendered as absent (nor labelled at all).
+    expect(screen.queryByText("Посещаемость: не отмечено")).not.toBeInTheDocument();
+
+    // Only lessons query attendance, through the existing endpoint.
+    expect(attendanceRequests(fetchMock).sort()).toEqual([
+      "/api/v1/events/les-absent/attendance?page=1&page_size=100",
+      "/api/v1/events/les-present/attendance?page=1&page_size=100",
+      "/api/v1/events/les-unmarked/attendance?page=1&page_size=100",
+    ]);
+  });
+
+  it("Guardian: aggregates the visible children with present > absent > unmarked", async () => {
+    stubFetch(
+      lessonCalendarHandlers("guardian", {
+        // Mixed present + absent children -> green.
+        "les-present": attendanceResponse([
+          { id: "c1", name: "Петров Иван", status: "absent" },
+          { id: "c2", name: "Петрова Мария", status: "present" },
+        ]),
+        // No present child, one absent -> red.
+        "les-absent": attendanceResponse([
+          { id: "c1", name: "Петров Иван", status: "absent" },
+          { id: "c2", name: "Петрова Мария", status: null },
+        ]),
+        // All accessible children unmarked -> neutral.
+        "les-unmarked": attendanceResponse([
+          { id: "c1", name: "Петров Иван", status: null },
+          { id: "c2", name: "Петрова Мария", status: null },
+        ]),
+      }),
+    );
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+
+    await waitFor(() =>
+      expect(chipFor("Урок присутствовал")).toHaveClass(styles.chipAttendancePresent),
+    );
+    await waitFor(() => expect(chipFor("Урок отсутствовал")).toHaveClass(styles.chipAttendanceAbsent));
+    const neutral = chipFor("Урок не отмечен");
+    expect(neutral).not.toHaveClass(styles.chipAttendancePresent);
+    expect(neutral).not.toHaveClass(styles.chipAttendanceAbsent);
+    // No participant names or per-child details leak into the calendar.
+    expect(screen.queryByText(/Петров/)).not.toBeInTheDocument();
+  });
+
+  it.each([["admin"], ["instructor"]])(
+    "%s sees a marked/total summary, never one color for a mixed roster",
+    async (role) => {
+      const mixed = attendanceResponse(
+        [
+          ...Array.from({ length: 10 }, (_, index) => ({ id: `p${index}`, name: "Участник А", status: "present" as const })),
+          ...Array.from({ length: 5 }, (_, index) => ({ id: `q${index}`, name: "Участник Б", status: "absent" as const })),
+        ],
+        18,
+      );
+      stubFetch(lessonCalendarHandlers(role, { "les-present": mixed }));
+      renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+
+      const row = await screen.findByText("Урок присутствовал");
+      await waitFor(() =>
+        expect(within(row.closest("button") as HTMLElement).getByText("15/18")).toBeInTheDocument(),
+      );
+      expect(within(rowFor("Урок присутствовал")).getByText("Отмечено 15 из 18")).toBeInTheDocument();
+      const chip = chipFor("Урок присутствовал");
+      expect(chip).not.toHaveClass(styles.chipAttendancePresent);
+      expect(chip).not.toHaveClass(styles.chipAttendanceAbsent);
+    },
+  );
+
+  it("shows no indication where the backend refuses attendance", async () => {
+    stubFetch([
+      ...lessonCalendarHandlers("member", {}).slice(0, 2),
+      { match: "/attendance", response: { detail: "Event not found" }, status: 404 },
+      ...lessonCalendarHandlers("member", {}).slice(2),
+    ]);
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+
+    await screen.findByText("Урок присутствовал");
+    const chip = chipFor("Урок присутствовал");
+    expect(chip).not.toHaveClass(styles.chipAttendancePresent);
+    expect(chip).not.toHaveClass(styles.chipAttendanceAbsent);
+    expect(screen.queryByText(/Посещаемость:/)).not.toBeInTheDocument();
+  });
+});
+
+describe("EventsPage — «Посещаемость» tab (Issue #305)", () => {
+  const roster = attendanceResponse([
+    { id: "p-1", name: "Алексеев Иван", status: null },
+    { id: "p-2", name: "Борисова Анна", status: "absent" },
+  ]);
+
+  function attendanceHandlers(role: string, detail = eventDetailResponse()) {
+    return [
+      ...eventCalendarHandlers(role),
+      { match: "/events/ev-1/attendance", response: roster },
+      { match: "/events/ev-1", response: detail },
+    ];
+  }
+
+  function writes(fetchMock: ReturnType<typeof stubFetch>) {
+    return fetchMock.mock.calls
+      .filter(([, init]) => init?.method && init.method !== "GET")
+      .map(([input, init]) => ({ url: String(input), method: init?.method, body: JSON.parse(String(init?.body ?? "null")) }));
+  }
+
+  it("is not offered to Member or Guardian", async () => {
+    for (const role of ["member", "guardian"]) {
+      stubFetch(attendanceHandlers(role));
+      const { unmount } = renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+      const { dialog } = await openEvent();
+      expect(within(dialog).queryByRole("tab", { name: "Посещаемость" })).not.toBeInTheDocument();
+      unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([["admin"], ["instructor"]])(
+    "%s sees the roster with unmarked distinct from absent and marks through the existing PUT",
+    async (role) => {
+      const fetchMock = stubFetch(attendanceHandlers(role));
+      renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+      const { user, dialog } = await openEvent();
+      await user.click(within(dialog).getByRole("tab", { name: "Посещаемость" }));
+
+      const panel = await within(dialog).findByRole("tabpanel");
+      expect(await within(panel).findByText("Отмечено 1 из 2")).toBeInTheDocument();
+      const first = within(panel).getByText("Алексеев Иван").closest("li") as HTMLElement;
+      const second = within(panel).getByText("Борисова Анна").closest("li") as HTMLElement;
+      expect(within(first).getByText("Не отмечен")).toBeInTheDocument();
+      expect(within(second).getAllByText("Отсутствовал").length).toBeGreaterThan(0);
+
+      await user.click(within(panel).getByRole("button", { name: "Алексеев Иван: присутствовал" }));
+      await waitFor(() =>
+        expect(writes(fetchMock)).toContainEqual({
+          url: "/api/v1/events/ev-1/attendance/p-1",
+          method: "PUT",
+          body: { status: "present" },
+        }),
+      );
+
+      await user.click(within(panel).getByRole("button", { name: "Отметить неотмеченных присутствующими" }));
+      await waitFor(() =>
+        expect(writes(fetchMock)).toContainEqual({
+          url: "/api/v1/events/ev-1/attendance",
+          method: "PUT",
+          body: { items: [{ person_id: "p-1", status: "present" }] },
+        }),
+      );
+    },
+  );
+
+  it("routes a completed lesson through the correction workflow with a reason", async () => {
+    const fetchMock = stubFetch(attendanceHandlers("admin", eventDetailResponse({ status: "completed" })));
+    renderWithProviders(<EventsPage />, { route: `/events?date=${FIXED_DATE}` });
+    const { user, dialog } = await openEvent();
+    await user.click(within(dialog).getByRole("tab", { name: "Посещаемость" }));
+    const panel = await within(dialog).findByRole("tabpanel");
+    await within(panel).findByText("Отмечено 1 из 2");
+
+    // No normal marking for a completed occurrence, and no correction for
+    // an unmarked participant (a correction never creates a record).
+    expect(within(panel).queryByRole("button", { name: /: присутствовал$/ })).not.toBeInTheDocument();
+    expect(within(panel).queryByRole("button", { name: "Алексеев Иван: исправить отметку" })).not.toBeInTheDocument();
+
+    await user.click(within(panel).getByRole("button", { name: "Борисова Анна: исправить отметку" }));
+    const correction = await screen.findByRole("dialog", { name: "Исправить отметку" });
+    const save = within(correction).getByRole("button", { name: "Сохранить" });
+    expect(save).toBeDisabled();
+    await user.type(within(correction).getByLabelText("Причина исправления"), "Ошибка при отметке");
+    await user.click(save);
+
+    await waitFor(() =>
+      expect(writes(fetchMock)).toContainEqual({
+        url: "/api/v1/events/ev-1/attendance/p-2/corrections",
+        method: "POST",
+        body: { status: "present", reason: "Ошибка при отметке" },
+      }),
+    );
+  });
+});

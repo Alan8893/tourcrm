@@ -1373,7 +1373,10 @@ def test_create_event_with_instructor_from_another_club_is_rejected(client: Test
 @requires_postgres
 def test_group_targeting_does_not_create_participation(client: TestClient) -> None:
     """Test 9: targeting a Group is audience selection only — it never
-    creates EventParticipation, even for members of that Group."""
+    creates EventParticipation, even for members of that Group. ADR-0047
+    supersedes this for `lesson` only (see
+    test_lesson_registration_attendance_api.py), so a non-lesson type is
+    used here."""
     with session_scope() as session:
         club = _make_club()
         creator_person = _make_person()
@@ -1395,7 +1398,7 @@ def test_group_targeting_does_not_create_participation(client: TestClient) -> No
 
     response = client.post(
         "/api/v1/events",
-        json=_create_event_payload(club_id, group_ids=[str(group_id)]),
+        json=_create_event_payload(club_id, event_type="training", group_ids=[str(group_id)]),
         headers=_csrf_headers(client),
     )
     assert response.status_code == 201, response.text

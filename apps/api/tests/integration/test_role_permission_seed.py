@@ -123,7 +123,11 @@ def test_admin_role_permission_count_matches_canonical_catalog_exactly() -> None
 # (migration c4f7a2e91b36) grants `guardian` `group.read` (scope
 # `children`), and the PO decision on `GET /me/children` (migration
 # d8e3b5f02a47) grants `guardian` `guardian_relationship.read` (scope
-# `children`). No role receives anything beyond those at head.
+# `children`), and Issue #305 (migration a7c3e5f19d24) grants `instructor`
+# `attendance.read`/`attendance.update`/`event.read` (scopes `own_groups`/
+# `own_events`), `member` `attendance.read` (scope `self`) and `guardian`
+# `attendance.read` (scope `children`). No role receives anything beyond
+# those at head.
 
 
 @requires_postgres
@@ -149,6 +153,11 @@ def test_non_admin_baseline_roles_receive_no_unexpected_grants() -> None:
             ("member", "event.read"),
             ("guardian", "group.read"),
             ("guardian", "guardian_relationship.read"),
+            ("instructor", "attendance.read"),
+            ("instructor", "attendance.update"),
+            ("instructor", "event.read"),
+            ("member", "attendance.read"),
+            ("guardian", "attendance.read"),
         }
 
 
@@ -173,21 +182,23 @@ def test_migration_converges_partial_admin_grants_and_preserves_unrelated_rows(
                 code: session.execute(
                     select(Permission).where(Permission.code == code)
                 ).scalar_one()
-                for code in (*partial_codes, "event.read")
+                for code in partial_codes
             }
             for code in partial_codes:
                 _insert_pre_auth_2a_grant(session, admin_role.id, permissions[code].id)
             # An unrelated/custom grant for a different role — outside this
             # migration's own fixed (admin, canonical-code) list — must
             # survive the migration untouched.
-            _insert_pre_auth_2a_grant(session, instructor_role.id, permissions["event.read"].id)
+            # (instructor, person.read): no migration seeds it, so it stays a
+            # truly custom grant.
+            _insert_pre_auth_2a_grant(session, instructor_role.id, permissions["person.read"].id)
             session.commit()
 
         upgrade = run_alembic("upgrade", "head", database_url=database_url)
         assert upgrade.returncode == 0, upgrade.stderr
 
         assert _admin_permission_codes() == set(DOCUMENTED_PERMISSION_CODES)
-        assert ("instructor", "event.read") in _all_role_permission_pairs()
+        assert ("instructor", "person.read") in _all_role_permission_pairs()
         # AUTH-2A (20e1297d4e1a) seeds scopes only for canonical grants: the
         # custom grant survives without a scope, i.e. it grants nothing
         # rather than being widened.
@@ -197,7 +208,7 @@ def test_migration_converges_partial_admin_grants_and_preserves_unrelated_rows(
                 .join(RolePermission, RolePermission.id == RolePermissionScope.role_permission_id)
                 .join(Role, Role.id == RolePermission.role_id)
                 .join(Permission, Permission.id == RolePermission.permission_id)
-                .where(Role.code == "instructor", Permission.code == "event.read")
+                .where(Role.code == "instructor", Permission.code == "person.read")
             ).all()
         assert custom_scopes == []
     finally:
@@ -229,9 +240,11 @@ def test_reapplying_admin_seed_after_downgrade_and_upgrade_is_idempotent(
         # Issue #285's (member, event.read) grant (migration 9b4d6e2f8a10)
         # and Issue #301's (guardian, group.read) grant (migration
         # c4f7a2e91b36) and the (guardian, guardian_relationship.read) grant
-        # (migration d8e3b5f02a47), all re-applied by the same
-        # upgrade-to-head above.
-        assert len(rows) == len(DOCUMENTED_PERMISSION_CODES) + 10
+        # (migration d8e3b5f02a47) and Issue #305's five grants (instructor
+        # attendance.read/attendance.update/event.read, member
+        # attendance.read, guardian attendance.read; migration
+        # a7c3e5f19d24), all re-applied by the same upgrade-to-head above.
+        assert len(rows) == len(DOCUMENTED_PERMISSION_CODES) + 15
 
 
 # --- (5) downgrade removes only rows this migration introduced -------------
