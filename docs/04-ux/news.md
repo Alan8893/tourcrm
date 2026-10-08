@@ -128,9 +128,11 @@ The management entry point may be placed in the existing Reports/administrative 
 
 ## 8. Notifications
 
-News publication does not send push, email, Telegram or other notifications in this version.
+News publication does not define a delivery rule by itself.
 
-Notification delivery will be addressed as part of the future Notifications domain.
+When News notifications are implemented, publication will emit the appropriate business event into the shared Notification Center defined by ADR-0045. Recipient scope, channels, mandatory/opt-in semantics, template and timing must be approved through the Notification business-event specification gate.
+
+No direct Email/Telegram provider call is introduced into the News domain.
 
 ## 9. Authorization
 

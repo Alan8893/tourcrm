@@ -820,6 +820,10 @@ Money operations must be auditable and not silently overwritten after posting.
 
 ## 18. Notifications and communications
 
+Canonical contract: ADR-0045.
+
+Notification state is separated from channel-specific delivery state. A single logical Notification may have zero or more channel Deliveries.
+
 ### `notification_templates`
 
 - `id` PK
@@ -843,21 +847,47 @@ Money operations must be auditable and not silently overwritten after posting.
 - scheduling parameters
 - timestamps
 
+Rules participate in effective policy resolution. They do not grant resource permissions.
+
 ### `notifications`
 
+Logical notification record.
+
 - `id` PK
-- `user_id` FK nullable
-- `channel`
+- `club_id` FK nullable
+- `event_type`
+- `subject_type`
+- `subject_id` nullable
+- `recipient_user_id` FK
 - `template_id` FK nullable
-- `trigger_type`
-- `trigger_id` nullable
-- `status`
+- `priority`
 - `scheduled_at` nullable
-- `sent_at` nullable
-- `retry_count`
-- `provider_message_id` nullable
-- `last_error` nullable
+- `status`
+- `idempotency_key`
 - timestamps
+
+The idempotency key must prevent duplicate logical Notifications for the same business event/recipient according to the event's specification.
+
+### `notification_deliveries`
+
+Channel-specific delivery state.
+
+- `id` PK
+- `notification_id` FK -> `notifications.id`
+- `channel`
+- `destination_type`
+- `destination_id`
+- `status`
+- `attempts`
+- `first_attempt_at` nullable
+- `delivered_at` nullable
+- `next_retry_at` nullable
+- `provider_message_id` nullable
+- `last_error_code` nullable
+- `last_error_message` nullable
+- timestamps
+
+A Delivery failure does not roll back the committed business transaction. Delivery is retry-safe and observable.
 
 ### `communication_preferences`
 
@@ -868,6 +898,28 @@ Money operations must be auditable and not silently overwritten after posting.
 - `enabled`
 - quiet-hours configuration where applicable
 - timestamps
+
+A user preference cannot override an effective Administrator OFF policy.
+
+### Telegram destinations
+
+Telegram group/topic routing must preserve:
+
+- `chat_id` — Telegram chat/group identity;
+- `message_thread_id` nullable — Topic identity;
+- human-readable name;
+- enabled state;
+- notification scope/configuration.
+
+Topic display names are not routing identifiers.
+
+The exact physical association to the Telegram integration/external identity is fixed by the implementation/API contract and must preserve these invariants.
+
+### Transaction boundary
+
+Business mutation, Notification creation and outbox record creation occur in the same PostgreSQL transaction. The worker processes the outbox only after commit.
+
+The outbox implementation must be idempotent and retry-safe. The exact queue/worker technology remains deferred under ODR-005.
 
 ## 19. Audit
 

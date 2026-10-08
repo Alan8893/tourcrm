@@ -87,7 +87,45 @@ Secrets, connection strings и deployment-specific credentials не являют
 
 Build/deployment configuration не должен храниться в обычном пользовательском settings UI.
 
-## 10. Acceptance criteria
+
+## 10. Notification settings
+
+Notification settings are governed by ADR-0045.
+
+The notification configuration has three distinct categories:
+
+1. **Feature policy** — whether a channel/function is enabled for the installation or club.
+2. **Integration configuration** — provider configuration such as SMTP host/port and Telegram bot identity.
+3. **Secrets** — SMTP passwords, Telegram bot tokens and other credentials.
+
+Integration credentials and secrets are not ordinary user-editable feature settings and must follow the deployment secret-management policy.
+
+The effective notification decision follows:
+
+```text
+Admin Policy
+    ↓
+Notification Rule
+    ↓
+User Preference
+    ↓
+Delivery
+```
+
+**Admin OFF always overrides User ON.** A user preference can never re-enable a channel or event disabled by the effective administrator policy.
+
+Notification configuration changes must not grant permissions or bypass resource authorization.
+
+For notification settings that are stored in the settings catalog, each definition must state:
+
+- scope;
+- default;
+- who may change it;
+- audit requirement;
+- activation semantics;
+- dependency on channel integration configuration.
+
+## 11. Acceptance criteria
 
 - [ ] существует единый каталог settings;
 - [ ] для каждой настройки определён scope;
