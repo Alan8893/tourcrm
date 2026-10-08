@@ -17,7 +17,7 @@ Accepted
 - пересчёта производных статистик, если операция превышает допустимое время HTTP request;
 - других длительных или повторяемых операций.
 
-Redis используется как broker/cache только там, где наличие отдельной очереди оправдано. Конкретная библиотека worker queue фиксируется перед реализацией.
+Redis может использоваться как broker/cache только там, где наличие отдельной очереди оправдано. Для текущего Notification Center конкретное решение зафиксировано в ADR-0046: отдельный Python worker с PostgreSQL-backed outbox, без внешнего broker. Введение Redis/Celery/RQ/ARQ/Dramatiq или другого broker-backed framework требует нового ADR.
 
 Все background jobs должны быть:
 
