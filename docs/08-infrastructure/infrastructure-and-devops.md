@@ -492,6 +492,6 @@ Before production, create ADRs for:
 - storage backend;
 - backup tooling;
 - monitoring stack;
-- worker/scheduler technology (scheduler для периодических system jobs — принят в `ADR-0044`; queue worker framework — открыт, ODR-005);
+- worker/scheduler technology (periodic system jobs — `ADR-0044`; asynchronous worker — `ADR-0046`);
 - deployment topology;
 - secret management mechanism.
