@@ -6,7 +6,9 @@
 - app.notifications.ports — Admin Policy / recipient access / preference
   policy ports (#319);
 - app.notifications.engine — the Notification Engine application boundary
-  business modules call instead of any provider (#319).
+  business modules call instead of any provider (#319);
+- app.notifications.delivery — the `notification.delivery` worker handler
+  and the ChannelAdapter boundary (#325).
 
-Channel adapters and the worker are separate Issues.
+Email/Telegram channel adapters are separate Issues.
 """
