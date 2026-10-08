@@ -100,10 +100,12 @@ The notification configuration has three distinct categories:
 
 Integration credentials and secrets are not ordinary user-editable feature settings and must follow the deployment secret-management policy.
 
-The effective notification decision follows:
+The effective notification decision follows (ADR-0045 §2.4):
 
 ```text
-Admin Policy
+Global Admin Policy
+    ↓
+Club Admin Policy
     ↓
 Notification Rule
     ↓
@@ -112,7 +114,11 @@ User Preference
 Delivery
 ```
 
+A narrower level can only restrict a broader one, never expand it; Global OFF cannot be overridden by Club ON.
+
 **Admin OFF always overrides User ON.** A user preference can never re-enable a channel or event disabled by the effective administrator policy.
+
+Admin Policy (the Global and Club feature-policy levels above) is the policy source of the Notification Engine, consumed through an Admin Policy port (ADR-0045 §2.10). The persistence and UI that store and edit it are a separate implementation slice (Administrator Notification Settings, #317); the Notification Engine (#319) does not implement Settings persistence or UI. Until a policy source is connected, the Engine fails closed.
 
 Notification configuration changes must not grant permissions or bypass resource authorization.
 

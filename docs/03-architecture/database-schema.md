@@ -824,7 +824,7 @@ Canonical contract: ADR-0045 (worker/outbox: ADR-0046). Implemented by Issue #31
 
 MVP channel vocabulary: `email`, `telegram` (ADR-0045 §2.5; MAX is an extension point and requires a vocabulary/CHECK migration).
 
-Notification state is separated from channel-specific delivery state. A single logical Notification may have zero or more channel Deliveries.
+Notification state is separated from channel-specific delivery state. A single logical Notification may have one or more channel Deliveries. The Notification Engine creates a Notification only when at least one eligible Delivery exists; when policy, audience and preference resolution leave no eligible Delivery, no Notification, Delivery or outbox job is created (ADR-0045 §2.10).
 
 ### `notification_templates`
 
@@ -913,6 +913,8 @@ A Delivery failure does not roll back the committed business transaction. Delive
 - timestamps
 
 At most one preference per (`user_id`, `channel`, `notification_type`).
+
+`notification_type` holds the canonical `event_type` (ADR-0045 §2.8); notification type is not modelled separately.
 
 A user preference cannot override an effective Administrator OFF policy.
 
