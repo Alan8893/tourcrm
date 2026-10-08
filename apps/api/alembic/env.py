@@ -26,6 +26,8 @@ from app.db import (
     imports,  # noqa: E402,F401  (registers models on Base.metadata)
     inventory,  # noqa: E402,F401  (registers models on Base.metadata)
     news,  # noqa: E402,F401  (registers models on Base.metadata)
+    notifications,  # noqa: E402,F401  (registers models on Base.metadata)
+    outbox,  # noqa: E402,F401  (registers model on Base.metadata)
     trips,  # noqa: E402,F401  (registers models on Base.metadata)
 )
 from app.db.base import Base  # noqa: E402
