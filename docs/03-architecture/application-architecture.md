@@ -41,13 +41,13 @@ Browser / PWA-capable Web Client
       |
       +--> migrations / transactional data
 
-Backend --> Notification adapters --> Email / Telegram / MAX
+Backend --> Notification Engine --> PostgreSQL Outbox --> Background Worker --> Notification adapters --> Email / Telegram / MAX
 Backend <--> TourSlet integration (future, after archive analysis)
 
 Monitoring / Logs / Metrics receive telemetry from all services.
 ```
 
-The exact reverse proxy, object-storage implementation and worker technology are architecture decisions documented separately before implementation.
+The exact reverse proxy, object-storage implementation and worker technology are architecture decisions documented separately before implementation. Notification delivery follows ADR-0045: business modules do not call channel providers directly; the Notification Engine creates durable Notification/Delivery state and an outbox record, and the background worker performs asynchronous channel delivery.
 
 Periodic system jobs are triggered by a dedicated single-replica scheduler that invokes system CLI entrypoints and needs no Redis (`docs/03-architecture/adr/ADR-0044-scheduler-for-periodic-system-jobs.md`); the queue worker technology remains open (ADR-0008 ODR-005).
 
@@ -160,7 +160,7 @@ The first implementation should avoid introducing Redis-dependent business corre
 
 Candidate background jobs:
 
-- notification delivery;
+- notification outbox processing / delivery;
 - retrying failed notification delivery;
 - scheduled reminders;
 - GPX parsing/metadata extraction;
