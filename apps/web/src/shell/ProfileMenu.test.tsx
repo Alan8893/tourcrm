@@ -122,12 +122,34 @@ describe("ProfileMenu", () => {
     // TH-0114 requirement: the user must not remain authenticated after a
     // reload following logout — modeled here as unmounting and remounting
     // ProfileMenu against the SAME React Query cache the logout mutation
-    // ran against, with the backend now actually reporting no session.
+    // ran against. The fake backend is stateful like the real one: a
+    // successful POST /auth/logout ends the session, so EVERY later GET
+    // /auth/me — including one a still-mounted observer may issue right
+    // after the logout removed the cached query — gets 401, never the
+    // previous identity.
     const client = createTestQueryClient();
-    const fetchMock = stubFetch([
-      { match: "/auth/me", response: meResponse() },
-      { match: "/auth/logout", response: {} },
-    ]);
+    let sessionActive = true;
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async (input, init) => {
+        const url = String(input);
+        if (url.includes("/auth/logout") && init?.method === "POST") {
+          sessionActive = false;
+          return json({});
+        }
+        if (url.includes("/auth/me")) {
+          return sessionActive
+            ? json(meResponse())
+            : json({ error: { code: "unauthenticated", message: "Not authenticated" } }, 401);
+        }
+        throw new Error(`No stub registered for fetch(${url})`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
 
     const { unmount } = renderWithProviders(
       <Routes>
@@ -141,11 +163,9 @@ describe("ProfileMenu", () => {
     await user.click(await screen.findByRole("button", { name: /Иванова Анна/ }));
     await user.click(screen.getByRole("menuitem", { name: "Выйти" }));
     await screen.findByText("Login page");
+    expect(sessionActive).toBe(false);
     unmount();
 
-    fetchMock.mockImplementation(
-      async () => new Response(JSON.stringify({}), { status: 401, headers: { "Content-Type": "application/json" } }),
-    );
     // The exact number of `/auth/me` calls around logout is incidental
     // (removing the query can let a still-mounted observer refetch before
     // unmount), so only require a fresh request after the remount and wait
