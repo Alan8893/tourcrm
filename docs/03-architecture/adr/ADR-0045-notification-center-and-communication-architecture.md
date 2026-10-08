@@ -109,6 +109,20 @@ An administrator-level disabled channel or notification rule is authoritative.
 
 If no applicable Notification Rule exists for the event, no Delivery is created. There is no implicit "allowed" default.
 
+The same restrict-only rule applies within the Notification Rule level:
+
+```text
+Installation-wide Rule (club_id = NULL)
+    ↓
+Club-specific Rule
+    ↓
+User Preference
+    ↓
+Delivery
+```
+
+The installation-wide Rule is the broader level and the Club-specific Rule the narrower one. A Club-specific Rule can only restrict the installation-wide Rule, never expand it: if the installation-wide Rule disables (OFF) a notification/channel, a Club-specific Rule cannot re-enable it (ON). Likewise, a User Preference cannot override an administrative OFF.
+
 A user preference can opt out only where the effective administrative policy permits the notification.
 
 Security authorization remains independent from notification settings. Settings never grant access to a resource or permission.

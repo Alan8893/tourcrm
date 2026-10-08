@@ -851,6 +851,8 @@ Notification state is separated from channel-specific delivery state. A single l
 
 At most one rule per (`club_id`, `event_type`, `channel`, `recipient_scope`); `club_id` NULL is the installation-wide rule and is unique as well (NULLS NOT DISTINCT).
 
+Rule precedence is restrict-only (ADR-0045 §2.4): the installation-wide rule (`club_id` NULL) is the broader level, a club-specific rule the narrower one. A club-specific rule can only restrict the installation-wide rule; it cannot re-enable a notification/channel the installation-wide rule disables.
+
 Rules participate in effective policy resolution. They do not grant resource permissions.
 
 ### `notifications`

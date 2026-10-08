@@ -136,6 +136,20 @@ Delivery
 
 Более узкий уровень может только ограничивать (restrict) более широкий, но не расширять (expand) его. Global OFF — абсолютное ограничение: его не может отменить ни Club Admin Policy, ни Notification Rule, ни User Preference. Если применимого Notification Rule нет, Delivery не создаётся.
 
+Внутри уровня Notification Rule действует то же правило:
+
+```text
+Installation-wide Rule (club_id = NULL)
+    ↓
+Club-specific Rule
+    ↓
+User Preference
+    ↓
+Delivery
+```
+
+Installation-wide Rule — более широкий уровень, Club-specific Rule — более узкий. Club-specific Rule может только ограничивать installation-wide Rule: если installation-wide Rule запрещает (OFF) уведомление/канал, Club Rule не может включить его обратно (ON). Аналогично User Preference не может переопределить административный запрет.
+
 Тип уведомления в настройках — канонический `event_type`.
 
 Настройки включают:
