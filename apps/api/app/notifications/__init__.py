@@ -1,7 +1,12 @@
-"""Notification Center persistence foundation (Issue #318, ADR-0045).
+"""Notification Center (ADR-0045).
 
-See app.notifications.vocabulary for the closed channel/status
-vocabularies and app.notifications.repository for the write contracts the
-Notification Engine (#319) builds on. Policy resolution, channel adapters
-and the worker are separate Issues.
+- app.notifications.vocabulary — closed channel/status vocabularies and
+  the `notification.delivery` outbox contract;
+- app.notifications.repository — idempotent persistence contracts (#318);
+- app.notifications.ports — Admin Policy / recipient access / preference
+  policy ports (#319);
+- app.notifications.engine — the Notification Engine application boundary
+  business modules call instead of any provider (#319).
+
+Channel adapters and the worker are separate Issues.
 """

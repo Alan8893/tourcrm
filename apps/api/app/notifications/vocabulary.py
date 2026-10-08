@@ -67,7 +67,17 @@ CANONICAL_DESTINATION_TYPES: frozenset[str] = frozenset(
     {DESTINATION_USER, DESTINATION_TELEGRAM_DESTINATION}
 )
 
+# ADR-0045 §2.10 outbox contract: exactly one job per Delivery.
+NOTIFICATION_DELIVERY_JOB_TYPE = "notification.delivery"
+
+
+def notification_delivery_deduplication_key(delivery_id: object) -> str:
+    return f"notification_delivery:{delivery_id}"
+
+
 __all__ = [
+    "NOTIFICATION_DELIVERY_JOB_TYPE",
+    "notification_delivery_deduplication_key",
     "CHANNEL_EMAIL",
     "CHANNEL_TELEGRAM",
     "CANONICAL_NOTIFICATION_CHANNELS",
