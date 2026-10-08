@@ -549,10 +549,67 @@ job's Delivery to `processing`, calls the channel's `ChannelAdapter`
 outside any transaction, then records `delivered`, `failed` with
 `next_retry_at` (retry scheduled) or `failed` without it (terminal),
 atomically with the job result. A Delivery already `delivered`,
-`cancelled` or `skipped` completes its job without channel work. No
-Email/Telegram adapter exists yet (separate Issues): until one is
-registered, a Delivery is retried as `channel_adapter_unavailable` and ends
-as a terminal failure once its attempts are exhausted.
+`cancelled` or `skipped` completes its job without channel work. The
+Email adapter is registered when SMTP is configured (below); a channel with
+no registered adapter (Telegram — a separate Issue — or Email without
+`SMTP_HOST`) is retried as `channel_adapter_unavailable` and ends as a
+terminal failure once its attempts are exhausted.
 
 No production deployment topology exists yet (ADR-0046 §9 step 3); a
 future one runs this command as its own service with the application image.
+
+### Email delivery over SMTP (Issue #327)
+
+`app.notifications.email_adapter.EmailChannelAdapter` is the only component
+that sends email; `app.notifications.smtp` is the only module that speaks
+SMTP. The worker registers it when `SMTP_HOST` is set; an invalid SMTP
+configuration stops the worker at startup with a message that never
+contains the password.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SMTP_HOST` | — (unset = Email disabled) | SMTP server host |
+| `SMTP_PORT` | 587 / 465 / 25 by security | SMTP server port |
+| `SMTP_SECURITY` | `starttls` | `starttls`, `ssl` (implicit TLS) or `none` |
+| `SMTP_TIMEOUT_SECONDS` | 30 | connect / command timeout |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | — | AUTH credentials, both or neither |
+| `SMTP_SENDER_EMAIL` | — (required with a host) | From address |
+| `SMTP_SENDER_NAME` | — | From display name |
+
+`SMTP_PASSWORD` is a secret: supply it only through the deployment's
+environment/secret management, never in a committed file, an ordinary
+feature setting or a log. It is excluded from the settings object's repr;
+it never appears in Delivery/outbox payloads, error codes/messages or logs.
+TLS (`starttls`/`ssl`) verifies the server certificate and host name;
+`none` is for local/LAN relays only.
+
+Per Delivery the adapter:
+
+- sends only to the recipient User's `login_identifier`, and only when
+  `email_verified_at` is set — otherwise a terminal `destination_unverified`
+  failure, never retried. `Person.email` is never used; there is no
+  fallback (PO decision on #327);
+- sends the Notification's email template as stored: `subject_template` as
+  Subject (omitted when empty), `body_template` as the `text/plain` body —
+  no rendering, no HTML. A missing template or one of another channel is a
+  terminal `template_unavailable`;
+- reads that data in a short session closed before any SMTP I/O, then
+  connects, upgrades (STARTTLS) or uses implicit TLS, authenticates when
+  credentials are set, sends and quits.
+
+Errors are reported as a stable code plus at most `SMTP <reply code>` —
+never the server's reply text:
+
+- retryable (the worker schedules the next attempt): `smtp_timeout`,
+  `smtp_connection_failed` (connection refused/reset, disconnect,
+  temporary DNS failure), `smtp_transient_failure` (any 4xx),
+  `smtp_tls_failed` (a TLS error other than certificate verification);
+- permanent (terminal at once): `destination_unverified`,
+  `destination_invalid`, `template_unavailable`, `smtp_rejected` (5xx),
+  `smtp_authentication_failed` (5xx AUTH), `smtp_tls_failed` (certificate
+  verification), `smtp_configuration_invalid` (unknown host, STARTTLS/AUTH
+  not supported).
+
+Delivery is at-least-once: a timeout after the message data was sent may
+mean the server accepted it, and the retry can send it again. The
+Delivery's `provider_message_id` is the message's own `Message-ID`.
