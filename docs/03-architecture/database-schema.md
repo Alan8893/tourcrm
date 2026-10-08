@@ -900,6 +900,8 @@ Channel-specific delivery state.
 
 `status`: `pending`, `processing`, `delivered`, `failed`, `cancelled`, `skipped` (`docs/04-modules/notifications-and-communications.md` §4).
 
+The outbox worker (ADR-0046, `apps/api/app/notifications/delivery.py`) marks a Delivery `processing` while an attempt runs, then records `delivered`, `failed` with `next_retry_at` set (a retry is scheduled) or `failed` with `next_retry_at` NULL (terminal: permanent failure or attempts exhausted).
+
 `destination_type` + `destination_id` is an internal reference, never a raw email address or Telegram chat id: `user` (the recipient User's own channel identity, resolved by the channel adapter) or `telegram_destination` (a `telegram_destinations` row; Telegram channel only). At most one Delivery per (`notification_id`, `channel`, `destination_type`, `destination_id`) — the stable delivery identity of ADR-0046 §5.5.
 
 A Delivery failure does not roll back the committed business transaction. Delivery is retry-safe and observable.

@@ -500,3 +500,59 @@ database, checks the non-root user, and runs
 against PostgreSQL (success) and against an unreachable database (logged
 failures, scheduler still running, next run still happens, no password in
 the logs), then a graceful `SIGTERM` stop.
+
+## Outbox worker for asynchronous jobs (Issue #325, ADR-0046)
+
+A dedicated process, separate from FastAPI and from the scheduler, that
+consumes committed `outbox_jobs` rows (the PostgreSQL-backed outbox — no
+Redis or broker):
+
+```bash
+DATABASE_URL=... python -m app.cli.run_outbox_worker
+```
+
+- **Claim** (`app.outbox.claiming`): one short transaction selects eligible
+  jobs — `pending` and due, or `processing` with an expired lease — in
+  `(next_attempt_at, id)` order with `FOR UPDATE SKIP LOCKED`, and leases
+  them (`status = processing`, `locked_by`, `locked_until = now() + lease`,
+  `attempts + 1`). Several worker processes can run side by side.
+- **Process** (`app.outbox.worker`): dispatch by `job_type`; no row lock is
+  held while a handler does channel work. The result is written in a
+  separate fenced transaction: it lands only if `(id, locked_by,
+  attempts)` still matches, so a worker that lost its lease can never
+  overwrite the new owner's result.
+- **Retry**: a retryable failure returns the job to `pending` after
+  `min(retry_base * 2**(attempt - 1), retry_max)`; after `max_attempts`
+  attempts, or on a permanent failure or an unknown `job_type`, it ends
+  `dead` with its last safe error code. An expired lease re-claimed with no
+  attempts left ends `dead` (`lease_expired`) without running again.
+- **Shutdown**: `SIGTERM`/`SIGINT` stop claiming, finish the job in
+  progress and hand claimed-but-not-started jobs back as `pending` (attempt
+  not counted). A killed worker's leases expire and are re-claimed.
+- **Logs**: one line per job — job type, id, attempt, result, duration,
+  error code. Payloads, error messages and exception text are never logged.
+
+Configuration (environment, all optional):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OUTBOX_WORKER_ID` | `host:pid:random` | lease owner identity (unique per process) |
+| `OUTBOX_WORKER_POLL_INTERVAL_SECONDS` | 5 | sleep when a cycle found no work |
+| `OUTBOX_WORKER_BATCH_SIZE` | 1 | jobs leased per claim |
+| `OUTBOX_WORKER_LEASE_SECONDS` | 300 | lease (visibility timeout); a job must finish within it |
+| `OUTBOX_WORKER_MAX_ATTEMPTS` | 5 | attempts before `dead` |
+| `OUTBOX_WORKER_RETRY_BASE_SECONDS` | 60 | first retry delay |
+| `OUTBOX_WORKER_RETRY_MAX_SECONDS` | 3600 | backoff cap |
+
+Handlers: `notification.delivery` (`app.notifications.delivery`) moves the
+job's Delivery to `processing`, calls the channel's `ChannelAdapter`
+outside any transaction, then records `delivered`, `failed` with
+`next_retry_at` (retry scheduled) or `failed` without it (terminal),
+atomically with the job result. A Delivery already `delivered`,
+`cancelled` or `skipped` completes its job without channel work. No
+Email/Telegram adapter exists yet (separate Issues): until one is
+registered, a Delivery is retried as `channel_adapter_unavailable` and ends
+as a terminal failure once its attempts are exhausted.
+
+No production deployment topology exists yet (ADR-0046 §9 step 3); a
+future one runs this command as its own service with the application image.
