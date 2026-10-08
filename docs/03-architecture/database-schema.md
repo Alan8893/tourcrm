@@ -846,7 +846,7 @@ Notification state is separated from channel-specific delivery state. A single l
 - `channel`
 - `recipient_scope`
 - `is_enabled`
-- scheduling parameters (`scheduling` JSON object, nullable; shape fixed per event by its specification gate)
+- scheduling parameters (`scheduling` JSONB object, nullable — an extensible persistence field with no fixed structure; its content is defined by the Notification Engine / event specification gates)
 - timestamps
 
 At most one rule per (`club_id`, `event_type`, `channel`, `recipient_scope`); `club_id` NULL is the installation-wide rule and is unique as well (NULLS NOT DISTINCT).
@@ -872,7 +872,9 @@ Logical notification record.
 
 The idempotency key must prevent duplicate logical Notifications for the same business event/recipient according to the event's specification. It is globally UNIQUE; its composition is defined by each event's specification gate (ADR-0045 §5).
 
-`status` is the logical lifecycle only: `pending` (created, Deliveries not yet materialized), `processed` (Deliveries materialized), `skipped` (effective policy suppresses every channel), `cancelled`. Channel outcome (delivered/failed) is Delivery state and is not duplicated on the Notification.
+`status` is logical Notification state only; channel outcome (delivered/failed) is Delivery state and is not duplicated on the Notification. The persisted vocabulary `pending`, `processed`, `skipped`, `cancelled` is **provisional**: the Notification lifecycle and its business semantics are defined by the Notification Engine (#319) / ADR-0045 and may change the vocabulary through a migration. Until then only the initial `pending` value is relied on.
+
+`priority` is persisted as given; no ordering or meaning is assigned to its values by this schema.
 
 ### `notification_deliveries`
 
@@ -926,7 +928,7 @@ Telegram group/topic routing must preserve:
 
 Topic display names are not routing identifiers.
 
-Physical table: `telegram_destinations` — `id`, `club_id` FK nullable, `name`, `chat_id` (BIGINT), `message_thread_id` (BIGINT, nullable, positive), `topic_name` nullable (presentation metadata only), `enabled`, `notification_scope` (JSON object), timestamps. (`chat_id`, `message_thread_id`) is UNIQUE with NULLS NOT DISTINCT. No bot token or other credential is stored. The User profile stores no Telegram numeric id; user linking is a separate flow.
+Physical table: `telegram_destinations` — `id`, `club_id` FK nullable, `name`, `chat_id` (BIGINT), `message_thread_id` (BIGINT, nullable, positive), `topic_name` nullable (presentation metadata only), `enabled`, `notification_scope` (JSONB object — an extensible persistence field with no fixed structure), timestamps. (`chat_id`, `message_thread_id`) is UNIQUE with NULLS NOT DISTINCT. No bot token or other credential is stored. The User profile stores no Telegram numeric id; user linking is a separate flow.
 
 The exact physical association to the Telegram integration/external identity is fixed by the implementation/API contract and must preserve these invariants.
 

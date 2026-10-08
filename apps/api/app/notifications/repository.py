@@ -89,7 +89,7 @@ def create_notification(
     priority: int = 0,
     scheduled_at: Optional[datetime] = None,
 ) -> tuple[Notification, bool]:
-    """Create one `pending` logical Notification in the caller's open
+    """Create one logical Notification (initial status `pending`) in the caller's open
     transaction, idempotently on `idempotency_key`.
 
     Returns `(notification, created)`; when a Notification with the same

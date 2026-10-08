@@ -571,7 +571,7 @@ def test_rule_is_unique_per_club_event_channel_and_scope() -> None:
         club = _club(session)
         session.add_all(
             [
-                _rule(club.id, scheduling={"offset_minutes": 60}),
+                _rule(club.id, scheduling={"any": {"extensible": ["shape"]}}),
                 _rule(club.id, channel="telegram"),
                 _rule(club.id, recipient_scope="other_scope"),
                 _rule(None),  # installation-wide rule

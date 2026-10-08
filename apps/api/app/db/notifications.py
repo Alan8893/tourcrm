@@ -44,12 +44,12 @@ from app.notifications.vocabulary import (
     CANONICAL_DELIVERY_STATUSES,
     CANONICAL_DESTINATION_TYPES,
     CANONICAL_NOTIFICATION_CHANNELS,
-    CANONICAL_NOTIFICATION_STATUSES,
     CHANNEL_TELEGRAM,
     DELIVERY_DELIVERED,
     DELIVERY_PENDING,
     DESTINATION_TELEGRAM_DESTINATION,
     NOTIFICATION_PENDING,
+    PROVISIONAL_NOTIFICATION_STATUSES,
 )
 
 
@@ -112,8 +112,9 @@ class NotificationTemplate(Base):
 class NotificationRule(Base):
     """Administrative rule for one event type / channel / recipient scope
     (ADR-0045 §2.4). `club_id` NULL is the installation-wide rule.
-    `scheduling` holds the rule's timing parameters, whose exact shape is
-    fixed per event by its specification gate (ADR-0045 §5)."""
+    `scheduling` holds the rule's timing parameters as an extensible JSON
+    object with no fixed structure at the persistence level (ADR-0045 §5
+    specification gates / #319 define its content)."""
 
     __tablename__ = "notification_rules"
 
@@ -162,7 +163,11 @@ class NotificationRule(Base):
 
 class Notification(Base):
     """The logical message addressed to one recipient (ADR-0045 §2.1).
-    Not a provider delivery attempt — see NotificationDelivery."""
+    Not a provider delivery attempt — see NotificationDelivery.
+
+    `status` uses a PROVISIONAL vocabulary (see
+    app.notifications.vocabulary); only its initial `pending` value is
+    relied on here."""
 
     __tablename__ = "notifications"
 
@@ -181,8 +186,8 @@ class Notification(Base):
         sa.ForeignKey("notification_templates.id", ondelete="RESTRICT"),
         nullable=True,
     )
-    # Relative priority (larger = more urgent); its use is the Notification
-    # Engine's/worker's concern.
+    # Persisted as given; ADR-0045 assigns no ordering/meaning to its values
+    # yet — that is the Notification Engine's (#319) contract.
     priority: Mapped[int] = mapped_column(
         sa.SmallInteger, nullable=False, default=0, server_default=sa.text("0")
     )
@@ -202,7 +207,7 @@ class Notification(Base):
     __table_args__ = (
         sa.UniqueConstraint("idempotency_key", name="uq_notifications_idempotency_key"),
         sa.CheckConstraint(
-            f"status IN ({_in(CANONICAL_NOTIFICATION_STATUSES)})",
+            f"status IN ({_in(PROVISIONAL_NOTIFICATION_STATUSES)})",
             name="ck_notifications_status_valid",
         ),
         sa.CheckConstraint(
@@ -375,7 +380,8 @@ class TelegramDestination(Base):
     `message_thread_id` identifies a forum Topic and is NULL for the chat
     itself. `topic_name` is presentation metadata only and never used for
     routing. `notification_scope` is the destination's notification
-    scope/configuration, interpreted by the Notification Engine. No bot
+    scope/configuration as an extensible JSON object with no fixed
+    structure at the persistence level. No bot
     token or other credential is stored here."""
 
     __tablename__ = "telegram_destinations"

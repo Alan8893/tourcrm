@@ -17,20 +17,19 @@ CHANNEL_TELEGRAM = "telegram"
 
 CANONICAL_NOTIFICATION_CHANNELS: frozenset[str] = frozenset({CHANNEL_EMAIL, CHANNEL_TELEGRAM})
 
-# Logical Notification lifecycle (database-schema.md §18). Channel outcome
-# (delivered/failed) is Delivery state and is never duplicated here:
-# - pending   — created; Deliveries not yet materialized;
-# - processed — the Notification Engine has materialized its Deliveries;
-# - skipped   — no Delivery is created because effective policy suppresses
-#               every channel;
-# - cancelled — withdrawn before processing.
+# PROVISIONAL persistence vocabulary for `notifications.status`
+# (database-schema.md §18). ADR-0045 does not yet define the logical
+# Notification lifecycle; its business semantics and transitions are
+# fixed by the Notification Engine (#319) / ADR-0045, which may change
+# these values through a migration. Only `pending` — the initial value of
+# a newly created Notification — is used by this foundation; no business
+# logic may be built on the other values until #319 defines them.
+# Channel outcome (delivered/failed) is Delivery state, not Notification
+# state.
 NOTIFICATION_PENDING = "pending"
-NOTIFICATION_PROCESSED = "processed"
-NOTIFICATION_SKIPPED = "skipped"
-NOTIFICATION_CANCELLED = "cancelled"
 
-CANONICAL_NOTIFICATION_STATUSES: frozenset[str] = frozenset(
-    {NOTIFICATION_PENDING, NOTIFICATION_PROCESSED, NOTIFICATION_SKIPPED, NOTIFICATION_CANCELLED}
+PROVISIONAL_NOTIFICATION_STATUSES: frozenset[str] = frozenset(
+    {NOTIFICATION_PENDING, "processed", "skipped", "cancelled"}
 )
 
 # notifications-and-communications.md §4: the closed Delivery status
@@ -73,10 +72,7 @@ __all__ = [
     "CHANNEL_TELEGRAM",
     "CANONICAL_NOTIFICATION_CHANNELS",
     "NOTIFICATION_PENDING",
-    "NOTIFICATION_PROCESSED",
-    "NOTIFICATION_SKIPPED",
-    "NOTIFICATION_CANCELLED",
-    "CANONICAL_NOTIFICATION_STATUSES",
+    "PROVISIONAL_NOTIFICATION_STATUSES",
     "DELIVERY_PENDING",
     "DELIVERY_PROCESSING",
     "DELIVERY_DELIVERED",
