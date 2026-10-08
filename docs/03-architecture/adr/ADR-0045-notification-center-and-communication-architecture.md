@@ -6,6 +6,7 @@
 - **Decision type:** Architecture decision
 - **Supersedes:** none
 - **Refines:** ADR-0007 (background processing) for asynchronous notification delivery
+- **Amended:** 2026-10-08 — Notification Engine policy decisions for #319 (§2.4, §2.10)
 - **Related:** ADR-0044, ODR-005, `docs/03-architecture/application-architecture.md`, `docs/03-architecture/database-schema.md`, `docs/09-governance/feature-settings.md`
 
 ## 1. Context
@@ -89,7 +90,9 @@ The exact queue/worker technology remains governed by ODR-005 and is not selecte
 Notification eligibility is resolved in this order:
 
 ```text
-Admin Policy
+Global Admin Policy
+    ↓
+Club Admin Policy
     ↓
 Notification Rule
     ↓
@@ -98,9 +101,27 @@ User Preference
 Delivery
 ```
 
+Each narrower level can only restrict the broader level above it; it can never expand it. **Global OFF is absolute**: a Club Admin Policy, Notification Rule or User Preference cannot re-enable a notification or channel disabled by the Global Admin Policy, and a Notification Rule or User Preference cannot re-enable one disabled by the Club Admin Policy.
+
 An administrator-level disabled channel or notification rule is authoritative.
 
 **Admin OFF always overrides User ON.**
+
+If no applicable Notification Rule exists for the event, no Delivery is created. There is no implicit "allowed" default.
+
+The same restrict-only rule applies within the Notification Rule level:
+
+```text
+Installation-wide Rule (club_id = NULL)
+    ↓
+Club-specific Rule
+    ↓
+User Preference
+    ↓
+Delivery
+```
+
+The installation-wide Rule is the broader level and the Club-specific Rule the narrower one. A Club-specific Rule can only restrict the installation-wide Rule, never expand it: if the installation-wide Rule disables (OFF) a notification/channel, a Club-specific Rule cannot re-enable it (ON). Likewise, a User Preference cannot override an administrative OFF.
 
 A user preference can opt out only where the effective administrative policy permits the notification.
 
@@ -152,6 +173,8 @@ A Topic is identified by `message_thread_id`, not by its display name.
 
 User preferences are channel/event preferences and are subordinate to effective administrative policy.
 
+A preference's notification type is the canonical `event_type`; no separate notification-type mapping model exists.
+
 The preference model must not allow a user to enable a channel that the administrator has globally disabled.
 
 Quiet hours may be supported by channel where defined by the future UX/API contract; this ADR does not define a universal quiet-hours policy.
@@ -172,6 +195,19 @@ Delivery state must be persisted, including:
 A failed delivery must not roll back the already committed business transaction.
 
 A terminal delivery failure remains observable in the delivery journal.
+
+### 2.10 Notification Engine contract
+
+The Notification Engine is the application boundary business modules call; it executes, and does not invent, notification policy.
+
+- **Admin Policy is an Engine dependency.** The Engine obtains the effective Global/Club Admin Policy through an Admin Policy port/abstraction. The persistence and UI that back it are a separate Settings implementation slice. If no effective Admin Policy source is connected, the Engine fails closed: no Notification, Delivery or outbox job is created.
+- **Effective policy per event comes from its specification gate (§5).** Mandatory / opt-in / opt-out semantics, including behaviour when a user has no stored preference, are defined by the business event's specification gate. The Engine receives that already-defined effective policy and applies it; it has no built-in preference default.
+- **Zero eligible Deliveries means no Notification.** If, after policy, audience and preference resolution, no eligible Delivery remains, the Engine creates no Notification, no Delivery and no outbox job. A Notification exists only together with at least one eligible Delivery.
+- **Templates are resolved before any Delivery is created.** Channel-specific template selection uses the existing template model.
+- **Outbox contract.** Each Delivery has exactly one outbox job:
+  - `job_type`: `notification.delivery`;
+  - `payload`: `{"delivery_id": "<uuid>"}`;
+  - deduplication key: `notification_delivery:<delivery_id>`.
 
 ## 3. Data model contract
 
@@ -237,7 +273,7 @@ The canonical relational model is:
 - `id` PK
 - `user_id` FK
 - `channel`
-- `notification_type`
+- `notification_type` (the canonical `event_type`, §2.8)
 - `enabled`
 - quiet-hours configuration where applicable
 - timestamps
