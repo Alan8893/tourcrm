@@ -820,7 +820,9 @@ Money operations must be auditable and not silently overwritten after posting.
 
 ## 18. Notifications and communications
 
-Canonical contract: ADR-0045.
+Canonical contract: ADR-0045 (worker/outbox: ADR-0046). Implemented by Issue #318 (`apps/api/app/db/notifications.py`, `apps/api/app/db/outbox.py`).
+
+MVP channel vocabulary: `email`, `telegram` (ADR-0045 §2.5; MAX is an extension point and requires a vocabulary/CHECK migration).
 
 Notification state is separated from channel-specific delivery state. A single logical Notification may have zero or more channel Deliveries.
 
@@ -844,8 +846,10 @@ Notification state is separated from channel-specific delivery state. A single l
 - `channel`
 - `recipient_scope`
 - `is_enabled`
-- scheduling parameters
+- scheduling parameters (`scheduling` JSON object, nullable; shape fixed per event by its specification gate)
 - timestamps
+
+At most one rule per (`club_id`, `event_type`, `channel`, `recipient_scope`); `club_id` NULL is the installation-wide rule and is unique as well (NULLS NOT DISTINCT).
 
 Rules participate in effective policy resolution. They do not grant resource permissions.
 
@@ -866,7 +870,9 @@ Logical notification record.
 - `idempotency_key`
 - timestamps
 
-The idempotency key must prevent duplicate logical Notifications for the same business event/recipient according to the event's specification.
+The idempotency key must prevent duplicate logical Notifications for the same business event/recipient according to the event's specification. It is globally UNIQUE; its composition is defined by each event's specification gate (ADR-0045 §5).
+
+`status` is the logical lifecycle only: `pending` (created, Deliveries not yet materialized), `processed` (Deliveries materialized), `skipped` (effective policy suppresses every channel), `cancelled`. Channel outcome (delivered/failed) is Delivery state and is not duplicated on the Notification.
 
 ### `notification_deliveries`
 
@@ -880,12 +886,17 @@ Channel-specific delivery state.
 - `status`
 - `attempts`
 - `first_attempt_at` nullable
+- `last_attempt_at` nullable (ADR-0045 §2.9)
 - `delivered_at` nullable
 - `next_retry_at` nullable
 - `provider_message_id` nullable
 - `last_error_code` nullable
 - `last_error_message` nullable
 - timestamps
+
+`status`: `pending`, `processing`, `delivered`, `failed`, `cancelled`, `skipped` (`docs/04-modules/notifications-and-communications.md` §4).
+
+`destination_type` + `destination_id` is an internal reference, never a raw email address or Telegram chat id: `user` (the recipient User's own channel identity, resolved by the channel adapter) or `telegram_destination` (a `telegram_destinations` row; Telegram channel only). At most one Delivery per (`notification_id`, `channel`, `destination_type`, `destination_id`) — the stable delivery identity of ADR-0046 §5.5.
 
 A Delivery failure does not roll back the committed business transaction. Delivery is retry-safe and observable.
 
@@ -896,12 +907,14 @@ A Delivery failure does not roll back the committed business transaction. Delive
 - `channel`
 - `notification_type`
 - `enabled`
-- quiet-hours configuration where applicable
+- quiet-hours configuration where applicable (`quiet_hours_start`, `quiet_hours_end`, `quiet_hours_timezone` — all set or all NULL)
 - timestamps
+
+At most one preference per (`user_id`, `channel`, `notification_type`).
 
 A user preference cannot override an effective Administrator OFF policy.
 
-### Telegram destinations
+### Telegram destinations (`telegram_destinations`)
 
 Telegram group/topic routing must preserve:
 
@@ -913,13 +926,33 @@ Telegram group/topic routing must preserve:
 
 Topic display names are not routing identifiers.
 
+Physical table: `telegram_destinations` — `id`, `club_id` FK nullable, `name`, `chat_id` (BIGINT), `message_thread_id` (BIGINT, nullable, positive), `topic_name` nullable (presentation metadata only), `enabled`, `notification_scope` (JSON object), timestamps. (`chat_id`, `message_thread_id`) is UNIQUE with NULLS NOT DISTINCT. No bot token or other credential is stored. The User profile stores no Telegram numeric id; user linking is a separate flow.
+
 The exact physical association to the Telegram integration/external identity is fixed by the implementation/API contract and must preserve these invariants.
+
+### `outbox_jobs`
+
+Generic PostgreSQL-backed transactional outbox (ADR-0046). One table for every asynchronous job type — no provider-specific outbox.
+
+- `id` PK
+- `job_type`
+- `payload` JSON object (identifiers/context only; never secrets)
+- `deduplication_key` nullable, UNIQUE
+- `status`: `pending`, `processing`, `completed`, `dead`
+- `attempts`
+- `next_attempt_at` — earliest claim time (scheduled time / retry time)
+- `locked_by`, `locked_until` nullable — worker lease, set exactly while `processing`
+- `last_error_code`, `last_error_message` nullable — last safe error
+- `finished_at` nullable — set exactly in the terminal `completed`/`dead` states
+- timestamps
+
+Eligible work is `status = 'pending' AND next_attempt_at <= now()` or an expired lease (`status = 'processing' AND locked_until < now()`), claimed in (`next_attempt_at`, `id`) order with `FOR UPDATE SKIP LOCKED`. Partial indexes: (`next_attempt_at`, `id`) WHERE `status = 'pending'`; (`locked_until`) WHERE `status = 'processing'`.
 
 ### Transaction boundary
 
 Business mutation, Notification creation and outbox record creation occur in the same PostgreSQL transaction. The worker processes the outbox only after commit.
 
-The outbox implementation must be idempotent and retry-safe. The exact queue/worker technology remains deferred under ODR-005.
+The outbox implementation must be idempotent and retry-safe. The worker technology is fixed by ADR-0046 (dedicated Python worker, PostgreSQL-backed outbox).
 
 ## 19. Audit
 

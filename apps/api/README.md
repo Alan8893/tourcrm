@@ -46,7 +46,9 @@ app/
     ├── foundation.py  # non-domain FoundationHealthCheck table (migration/ORM smoke checks only)
     ├── identity.py    # Club, Person, User, ClubMembership (Issue #17)
     ├── authorization.py  # Role, Permission, RolePermission, UserRoleAssignment (Issue #19)
-    └── authentication.py # AuthenticatedSession, EmailVerificationChallenge, PasswordResetChallenge (Issue #33)
+    ├── authentication.py # AuthenticatedSession, EmailVerificationChallenge, PasswordResetChallenge (Issue #33)
+    ├── notifications.py  # Notification, NotificationDelivery, rules/templates/preferences, TelegramDestination (Issue #318)
+    └── outbox.py         # OutboxJob — generic transactional outbox (Issue #318, ADR-0046)
 alembic/                 # migrations; URL comes from DATABASE_URL via env.py, never hardcoded
 tests/
 ├── conftest.py         # shared technical fixtures (Issue #7) — no business data
