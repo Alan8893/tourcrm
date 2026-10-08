@@ -1,6 +1,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch, ApiError, type CollectionResponse } from "./client";
+import type { MeResponse } from "./auth";
 import type { GuardianRelationshipStatus, MembershipStatus } from "../domain/statusMapping";
 
 /**
@@ -314,6 +315,26 @@ export function useUpdatePerson() {
       queryClient.setQueryData(["persons", "detail", person.id], person);
       // Name changes affect how this Person renders in the list.
       void queryClient.invalidateQueries({ queryKey: ["persons", "list"] });
+      // TH #311: when the edited Person is the signed-in user's own, the
+      // canonical `/auth/me` identity (header ProfileMenu name/avatar)
+      // reflects the saved names immediately and is then re-derived from
+      // the backend — no second current-user store.
+      const me = queryClient.getQueryData<MeResponse>(["auth", "me"]);
+      if (me && me.user.person.id === person.id) {
+        queryClient.setQueryData<MeResponse>(["auth", "me"], {
+          ...me,
+          user: {
+            ...me.user,
+            person: {
+              ...me.user.person,
+              first_name: person.first_name,
+              last_name: person.last_name,
+              middle_name: person.middle_name,
+            },
+          },
+        });
+        void queryClient.invalidateQueries({ queryKey: ["auth", "me"] });
+      }
     },
   });
 }

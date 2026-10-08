@@ -117,6 +117,29 @@ export function usePasswordResetConfirm() {
   });
 }
 
+export type ChangePasswordPayload = {
+  current_password: string;
+  new_password: string;
+};
+
+/** `POST /api/v1/auth/password/change` (auth-api.md §15) — authenticated
+ * self-service change; the backend verifies the current password
+ * (`403 incorrect_current_password`) and owns the password policy
+ * (`422 weak_password`). The session is left exactly as the backend
+ * leaves it: no logout or `/auth/me` change follows here. `gcTime: 0`
+ * plus the caller's `reset()` after settling keeps the passwords out of
+ * the shared mutation cache beyond the request itself. */
+export function useChangePassword() {
+  return useMutation<void, ApiError, ChangePasswordPayload>({
+    mutationFn: (payload) =>
+      apiFetch<void>("/auth/password/change", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+    gcTime: 0,
+  });
+}
+
 /** `POST /api/v1/auth/logout` (auth-api.md §8) — the ONE canonical logout
  * mechanism; no separate client-side token/identity store exists to clear
  * beyond this. Idempotent server-side (a no-op success even with no/an
