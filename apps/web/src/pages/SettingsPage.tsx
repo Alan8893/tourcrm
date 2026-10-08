@@ -9,8 +9,11 @@ import { Loading } from "../components/ui/Loading";
 import { PageHeader } from "../components/ui/PageHeader";
 import { useNotify } from "../components/ui/notificationContext";
 import { displayName, useCurrentUser } from "../api/auth";
+import { usePerson } from "../api/people";
 import { currentUserPhotoUrl, useDeletePersonPhoto, useUploadPersonPhoto } from "../api/profilePhoto";
 import { PhotoCropDialog } from "./PhotoCropDialog";
+import { SettingsPasswordForm } from "./SettingsPasswordForm";
+import { SettingsProfileForm } from "./SettingsProfileForm";
 import styles from "./SettingsPage.module.css";
 
 /**
@@ -21,6 +24,13 @@ import styles from "./SettingsPage.module.css";
  * normalization and storage are entirely the backend's; after save/delete
  * the `auth/me` query is updated, so the ProfileMenu avatar changes
  * without a page reload.
+ *
+ * TH #311 adds the user's own Person data (`GET`/`PATCH
+ * /persons/{person_id}`, `person.read(self)`/`person.update(self)`) and a
+ * «Безопасность» section with the self-service password change. Whether
+ * the Person data is available is decided by the backend: a role without
+ * a `person.read` grant reaching its own Person gets the existence-hiding
+ * 404, shown as a note rather than a form — no frontend permission model.
  */
 export function SettingsPage() {
   const me = useCurrentUser();
@@ -30,6 +40,7 @@ export function SettingsPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const person = usePerson(me.data?.user.person.id);
 
   if (me.isLoading) {
     return (
@@ -127,6 +138,25 @@ export function SettingsPage() {
             </div>
           </div>
         </div>
+        <div className={styles.profileData}>
+          {person.isLoading ? <Loading label="Загружаем данные профиля…" /> : null}
+          {person.isError && (person.error.status === 404 || person.error.status === 403) ? (
+            <p className={styles.note}>Изменение данных профиля в настройках вам недоступно.</p>
+          ) : null}
+          {person.isError && person.error.status !== 404 && person.error.status !== 403 ? (
+            <div className={styles.loadError}>
+              <p className={styles.error} role="alert">
+                Не удалось загрузить данные профиля.
+              </p>
+              <Button variant="secondary" onClick={() => void person.refetch()}>
+                Повторить
+              </Button>
+            </div>
+          ) : null}
+          {person.data ? (
+            <SettingsProfileForm key={person.data.updated_at} person={person.data} />
+          ) : null}
+        </div>
         <input
           ref={fileInputRef}
           className={styles.fileInput}
@@ -136,6 +166,12 @@ export function SettingsPage() {
           data-testid="profile-photo-input"
           onChange={handleFileChange}
         />
+      </Card>
+
+      <Card className={styles.profileCard}>
+        <h2 className={styles.sectionTitle}>Безопасность</h2>
+        <h3 className={styles.subsectionTitle}>Изменить пароль</h3>
+        <SettingsPasswordForm />
       </Card>
 
       <PhotoCropDialog
