@@ -457,17 +457,17 @@ def update_person(
         db, person_id=person_id, user_id=principal.user_id, permission_code="person.update"
     )
     fields = payload.model_dump(exclude_unset=True)
-    # AUTH-1 (role-permission-scope-matrix.md §3.4/§4): when the Person is
-    # reachable only through `person.update(children)`, just
-    # CHILD_UPDATABLE_PERSON_FIELDS may change — email/birth_date are 403.
-    # Access through any other scope (`self`, `all`, `own_groups`) keeps its
-    # ordinary field rules.
+    # AUTH-1 / AUTH-2C (role-permission-scope-matrix.md §3.3/§3.4/§4.1):
+    # when the Person is reachable only through `person.update(children)`
+    # or `person.update(self)`, just CHILD_UPDATABLE_PERSON_FIELDS may
+    # change — email/birth_date are 403 (Issue #312). Access through any
+    # other scope (`all`, `own_groups`) keeps its ordinary field rules.
     if set(fields) - CHILD_UPDATABLE_PERSON_FIELDS and not is_person_visible(
         db,
         person_id=person.id,
         user_id=principal.user_id,
         permission_code="person.update",
-        exclude_scope_types=frozenset({"children"}),
+        exclude_scope_types=frozenset({"children", "self"}),
     ):
         raise AuthorizationDenied("person.update")
     if "birth_date" in fields:

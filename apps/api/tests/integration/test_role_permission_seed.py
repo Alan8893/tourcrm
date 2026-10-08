@@ -126,8 +126,9 @@ def test_admin_role_permission_count_matches_canonical_catalog_exactly() -> None
 # `children`), and Issue #305 (migration a7c3e5f19d24) grants `instructor`
 # `attendance.read`/`attendance.update`/`event.read` (scopes `own_groups`/
 # `own_events`), `member` `attendance.read` (scope `self`) and `guardian`
-# `attendance.read` (scope `children`). No role receives anything beyond
-# those at head.
+# `attendance.read` (scope `children`), and Issue #312 (migration
+# 3b1fd730bb0d) grants `member` `person.read`/`person.update` (scope
+# `self`). No role receives anything beyond those at head.
 
 
 @requires_postgres
@@ -158,6 +159,8 @@ def test_non_admin_baseline_roles_receive_no_unexpected_grants() -> None:
             ("instructor", "event.read"),
             ("member", "attendance.read"),
             ("guardian", "attendance.read"),
+            ("member", "person.read"),
+            ("member", "person.update"),
         }
 
 
@@ -243,8 +246,10 @@ def test_reapplying_admin_seed_after_downgrade_and_upgrade_is_idempotent(
         # (migration d8e3b5f02a47) and Issue #305's five grants (instructor
         # attendance.read/attendance.update/event.read, member
         # attendance.read, guardian attendance.read; migration
-        # a7c3e5f19d24), all re-applied by the same upgrade-to-head above.
-        assert len(rows) == len(DOCUMENTED_PERMISSION_CODES) + 15
+        # a7c3e5f19d24) and Issue #312's two grants (member person.read/
+        # person.update; migration 3b1fd730bb0d), all re-applied by the same
+        # upgrade-to-head above.
+        assert len(rows) == len(DOCUMENTED_PERMISSION_CODES) + 17
 
 
 # --- (5) downgrade removes only rows this migration introduced -------------

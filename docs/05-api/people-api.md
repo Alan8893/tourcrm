@@ -128,11 +128,12 @@ Response: `201 Created`, `{"person": PersonOut, "temporary_credential": "..." | 
 
 Частичное обновление с audit для значимых изменений.
 
-Authorization:
-- `admin` может обновлять Persons в своём разрешённом `all` scope;
-- `instructor` может обновлять Persons, доступных через `own_groups`;
-- `member` и `guardian` могут обновлять только собственный Person;
-- все роли могут изменять собственные `first_name`, `last_name`, `middle_name`, `phone`, `email`, `address`, `photo_file_id`;
+Authorization (ADR-0035 §3, AUTH-2C; field-level source of truth — `docs/02-requirements/role-permission-scope-matrix.md` §4.1):
+- `admin` — `person.update(all)`: Persons в своём разрешённом `all` scope, любые поля, включая `email` и `birth_date`;
+- `instructor` — не имеет `person.update`;
+- `member` — `person.update(self)`: только собственный Person;
+- `guardian` — `person.update(children)`: только Person детей через активную `GuardianRelationship`;
+- через `self` и `children` изменяются только `first_name`, `last_name`, `middle_name`, `phone`, `address`, `photo_file_id`; запрос с `email`, `birth_date` или иным полем вне этого набора отклоняется `403`;
 - `birth_date` может изменять только `admin`, включая собственный Person;
 - `id` неизменяем.
 

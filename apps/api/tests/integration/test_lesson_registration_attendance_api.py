@@ -672,6 +672,12 @@ _SEEDED = {
     ("member", "attendance.read", "self"),
     ("guardian", "attendance.read", "children"),
 }
+# Seeded by a later migration (3b1fd730bb0d, Issue #312), so any downgrade
+# below this revision removes them as well.
+_LATER_SEEDED = {
+    ("member", "person.read", "self"),
+    ("member", "person.update", "self"),
+}
 
 
 def _grant_scopes() -> set[tuple[str, str, str]]:
@@ -701,6 +707,7 @@ def _grant_pairs() -> set[tuple[str, str]]:
 def test_seed_migration_downgrade_and_upgrade(database_url: str) -> None:
     at_head = _grant_scopes()
     assert _SEEDED <= at_head
+    at_seed = at_head - _LATER_SEEDED
     # Deliberately not seeded (separate authorization GAP, outside #305).
     for code in ("event.create", "event.update", "event.cancel", "event.manage"):
         assert ("instructor", code) not in _grant_pairs()
@@ -709,7 +716,7 @@ def test_seed_migration_downgrade_and_upgrade(database_url: str) -> None:
         downgrade = run_alembic("downgrade", _BEFORE_SEED_REVISION, database_url=database_url)
         assert downgrade.returncode == 0, downgrade.stderr
         # Exactly this migration's scopes and grants are gone; nothing else.
-        assert _grant_scopes() == at_head - _SEEDED
+        assert _grant_scopes() == at_seed - _SEEDED
         assert not {(r, p) for r, p, _ in _SEEDED} & _grant_pairs()
 
         # A pre-existing extra scope on one of the same grants must survive
@@ -739,7 +746,7 @@ def test_seed_migration_downgrade_and_upgrade(database_url: str) -> None:
 
         upgrade = run_alembic("upgrade", _SEED_REVISION, database_url=database_url)
         assert upgrade.returncode == 0, upgrade.stderr
-        assert _grant_scopes() == at_head | {("member", "attendance.read", "none")}
+        assert _grant_scopes() == at_seed | {("member", "attendance.read", "none")}
 
         downgrade = run_alembic("downgrade", _BEFORE_SEED_REVISION, database_url=database_url)
         assert downgrade.returncode == 0, downgrade.stderr

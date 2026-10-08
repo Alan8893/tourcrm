@@ -27,7 +27,9 @@ way — `person.read(children)`/`person.update(children)` reach a Person
 only through an active, interval-valid GuardianRelationship from the
 requester to that Person. `person.update(children)` is further limited to
 `CHILD_UPDATABLE_PERSON_FIELDS` (enforced by the router); that limit
-applies only when the Person is reachable *solely* through `children`.
+applies when the Person is reachable *solely* through `children` and/or
+`self` — AUTH-2C gives `person.update(self)` the same restricted field set
+(Issue #312).
 
 `Person` has no `club_id` of its own (Club-neutral: a Person may have
 `ClubMembership` rows in more than one Club). Because of this, a single
@@ -211,9 +213,9 @@ def _own_group_condition_for_membership(
     )
 
 
-# AUTH-1 (role-permission-scope-matrix.md §3.4/§4): the only Person fields
-# `person.update(children)` may change — email, birth_date and every
-# administrative field are excluded.
+# AUTH-1 / AUTH-2C (role-permission-scope-matrix.md §3.3/§3.4/§4.1): the
+# only Person fields `person.update(children)` and `person.update(self)` may
+# change — email, birth_date and every administrative field are excluded.
 CHILD_UPDATABLE_PERSON_FIELDS = frozenset(
     {"first_name", "last_name", "middle_name", "phone", "address", "photo_file_id"}
 )
