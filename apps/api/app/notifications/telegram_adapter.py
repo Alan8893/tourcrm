@@ -132,12 +132,16 @@ class TelegramChannelAdapter:
             session.rollback()
         if isinstance(loaded, str):
             return ChannelResult.permanent(loaded)
+        return self.send(loaded)
 
+    def send(self, content: TelegramContent) -> ChannelResult:
+        """Send one plain-text message. No database access: callers (deliver,
+        the administrator test send) hold no transaction during this call."""
         try:
             message_id = self._client.send_message(
-                chat_id=loaded.chat_id,
-                text=loaded.text,
-                message_thread_id=loaded.message_thread_id,
+                chat_id=content.chat_id,
+                text=content.text,
+                message_thread_id=content.message_thread_id,
             )
         except TelegramApiError as exc:
             if exc.retryable:

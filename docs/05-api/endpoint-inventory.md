@@ -527,6 +527,17 @@ Financial mutation endpoints require explicit permissions and idempotency where 
 
 Mass send operations should normally be asynchronous.
 
+### 21.0 Administrator Notification Settings (implemented, Issue #333)
+
+- `GET/PUT /settings/notifications/policy` — Global Admin Policy (`notification.manage`)
+- `GET /settings/notifications/rules`, `PATCH /settings/notifications/rules/{id}` — enable/disable existing installation-wide rules (`notification.manage`)
+- `GET /settings/notifications/status` — channel readiness (`notification.manage`)
+- `GET /settings/notifications/telegram-destinations`, `POST /settings/notifications/test-send` — test send (`notification.manage`)
+- `GET /settings/notifications/integrations`, `PUT /settings/notifications/integrations/{email,telegram}` — non-secret integration settings (`settings.manage`)
+- `PUT/DELETE /settings/notifications/integrations/email/password`, `PUT/DELETE /settings/notifications/integrations/telegram/bot-token` — write-only secrets (`settings.manage`)
+
+Contract: `docs/05-api/notification-settings-api.md`. These replace the generic `/notification-rules` and `/settings/{key}` sketches for this area; rules are not created or deleted through the API.
+
 ### 21.1 Telegram link (implemented, Issue #329)
 
 - `GET /me/telegram-link`

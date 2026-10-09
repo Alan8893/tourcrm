@@ -117,3 +117,13 @@ def _reset_between_tests(database_url: str, _integration_baseline_snapshot) -> N
     finally:
         engine.dispose()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _settings_key_ring(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue #333: every integration test runs with the TEST-ONLY settings
+    key ring (tests/notification_settings_helpers.py) unless it removes or
+    replaces it to exercise the fail-closed paths."""
+    from tests.notification_settings_helpers import TEST_KEY_RING
+
+    monkeypatch.setenv("SETTINGS_ENCRYPTION_KEYS", TEST_KEY_RING)

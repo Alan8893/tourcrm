@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from app.core.config import ConfigurationError, SmtpSettings, get_smtp_settings
+from app.core.config import ConfigurationError, SmtpSettings
 from app.notifications.email_adapter import EmailContent, build_message, parse_email_address
 from app.notifications.smtp import (
     SMTP_AUTHENTICATION_FAILED,
@@ -57,72 +57,41 @@ def _settings(**overrides: Any) -> SmtpSettings:
     return SmtpSettings(**fields)
 
 
-@pytest.fixture
-def smtp_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
-    for name in _SMTP_ENV:
-        monkeypatch.delenv(name, raising=False)
-    return monkeypatch
-
-
-# --- Configuration ------------------------------------------------------------------
-
-
-def test_smtp_is_disabled_without_host(smtp_env: pytest.MonkeyPatch) -> None:
-    assert get_smtp_settings() is None
-
-
-def test_smtp_settings_from_env(smtp_env: pytest.MonkeyPatch) -> None:
-    for name, value in {
-        "SMTP_HOST": "smtp.test",
-        "SMTP_PORT": "2525",
-        "SMTP_SECURITY": "SSL",
-        "SMTP_TIMEOUT_SECONDS": "7.5",
-        "SMTP_USERNAME": "mailer",
-        "SMTP_PASSWORD": SECRET,
-        "SMTP_SENDER_EMAIL": "noreply@club.test",
-        "SMTP_SENDER_NAME": "TourCRM Club",
-    }.items():
-        smtp_env.setenv(name, value)
-    settings = get_smtp_settings()
-    assert settings == _settings(port=2525, security="ssl", timeout_seconds=7.5)
-
-
-@pytest.mark.parametrize(("security", "port"), [("starttls", 587), ("ssl", 465), ("none", 25)])
-def test_default_port_follows_security(
-    smtp_env: pytest.MonkeyPatch, security: str, port: int
-) -> None:
-    smtp_env.setenv("SMTP_HOST", "smtp.test")
-    smtp_env.setenv("SMTP_SECURITY", security)
-    smtp_env.setenv("SMTP_SENDER_EMAIL", "noreply@club.test")
-    settings = get_smtp_settings()
-    assert settings is not None and settings.port == port and settings.username is None
+# --- Configuration (validation of the settings built from Settings, ADR-0048) ----------
 
 
 @pytest.mark.parametrize(
-    "env",
+    "overrides",
     [
-        {"SMTP_PORT": "0"},
-        {"SMTP_PORT": "70000"},
-        {"SMTP_PORT": "abc"},
-        {"SMTP_SECURITY": "tls13"},
-        {"SMTP_TIMEOUT_SECONDS": "0"},
-        {"SMTP_TIMEOUT_SECONDS": "soon"},
-        {"SMTP_SENDER_EMAIL": "not-an-address"},
-        {"SMTP_SENDER_EMAIL": ""},
-        {"SMTP_USERNAME": "mailer"},
-        {"SMTP_PASSWORD": SECRET},
+        {"host": " "},
+        {"port": 0},
+        {"port": 70000},
+        {"security": "tls13"},
+        {"timeout_seconds": 0},
+        {"sender_email": "not-an-address"},
+        {"sender_email": ""},
+        {"password": None},
+        {"username": None},
     ],
 )
 def test_invalid_configuration_is_rejected_without_echoing_the_password(
-    smtp_env: pytest.MonkeyPatch, env: dict[str, str]
+    overrides: dict[str, Any],
 ) -> None:
-    smtp_env.setenv("SMTP_HOST", "smtp.test")
-    smtp_env.setenv("SMTP_SENDER_EMAIL", "noreply@club.test")
-    for name, value in env.items():
-        smtp_env.setenv(name, value)
     with pytest.raises(ConfigurationError) as exc_info:
-        get_smtp_settings()
+        _settings(**overrides)
     assert SECRET not in str(exc_info.value)
+
+
+def test_smtp_environment_is_not_a_configuration_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-0048 §2.6: no env fallback — app.core.config no longer offers an
+    environment reader for SMTP at all."""
+    for name in _SMTP_ENV:
+        monkeypatch.setenv(name, "smtp.test")
+    import app.core.config as config
+
+    assert not hasattr(config, "get_smtp_settings")
 
 
 def test_password_is_never_in_repr() -> None:

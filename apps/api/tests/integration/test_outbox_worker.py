@@ -56,6 +56,7 @@ from app.outbox.worker import (
     OutboxWorker,
     WorkerConfig,
 )
+from tests.notification_settings_helpers import store_policy
 
 from ._schema_reset import API_ROOT
 from .conftest import requires_postgres
@@ -679,7 +680,19 @@ def test_delivery_failure_never_touches_business_or_notification_state() -> None
 
 
 @requires_postgres
-def test_production_worker_registers_no_channel_adapter() -> None:
+def test_production_worker_without_saved_policy_does_not_deliver() -> None:
+    """ADR-0048 §2.8: no saved Global Admin Policy = channel OFF, so even
+    an already queued Delivery is not sent (terminal)."""
+    _, delivery_id, _ = _delivery_job()
+    (report,) = build_worker(_config()).run_once()
+    assert (report.result, report.error_code) == ("dead", "channel_disabled_by_policy")
+    delivery = _delivery(delivery_id)
+    assert (delivery.status, delivery.next_retry_at) == ("failed", None)
+
+
+@requires_postgres
+def test_production_worker_without_channel_configuration_retries_unavailable() -> None:
+    store_policy(email=True, telegram=True)
     _, delivery_id, _ = _delivery_job()
     (report,) = build_worker(_config()).run_once()
     assert (report.result, report.error_code) == (
@@ -687,6 +700,7 @@ def test_production_worker_registers_no_channel_adapter() -> None:
         CHANNEL_ADAPTER_UNAVAILABLE_ERROR_CODE,
     )
     assert _delivery(delivery_id).status == "failed"
+    assert _delivery(delivery_id).last_error_message == "configuration=not_configured"
 
 
 @requires_postgres

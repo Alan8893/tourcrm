@@ -39,6 +39,13 @@ transferred); `telegram_identity.unlinked` — an active identity ended,
 by the User's unlink or because the User linked a different Telegram
 account (`details.reason`). Never the token, the Telegram message or the
 Telegram user id.
+
+ADR-0048 §2.11 (Administrator Notification Settings, #333) adds
+`notification_policy.updated`, `notification_rule.updated`,
+`notification_integration.updated` (changed field names only),
+`notification_secret.set` / `notification_secret.cleared` (which secret,
+never its value) and `notification_test_send.attempted` (outcome success or
+failure with a safe error code).
 """
 
 CANONICAL_ACTOR_TYPES: frozenset[str] = frozenset({"user", "system"})
@@ -171,5 +178,14 @@ CANONICAL_AUDIT_ACTIONS: frozenset[str] = frozenset(
         "telegram_link_challenge.created",
         "telegram_identity.linked",
         "telegram_identity.unlinked",
+        # Administrator Notification Settings (ADR-0048 §2.11 amendment to
+        # ADR-0024 §4, #333). Metadata only: never a secret value,
+        # ciphertext, key, address, chat id, message or provider response.
+        "notification_policy.updated",
+        "notification_rule.updated",
+        "notification_integration.updated",
+        "notification_secret.set",
+        "notification_secret.cleared",
+        "notification_test_send.attempted",
     }
 )

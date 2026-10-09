@@ -974,6 +974,16 @@ Durable long-polling progress (ADR-0047 §3.2).
 
 The poller advances `last_update_id` in the same transaction as the update's processing (including a link) and polls with `offset = last_update_id + 1`. Raw updates are not stored.
 
+### Administrator Notification Settings (Issue #333, ADR-0048)
+
+- `notification_global_policy` — singleton (`id = 1`, CHECK): `email_enabled`, `telegram_enabled`, timestamps, `updated_by_user_id` FK -> `users.id` nullable. The persisted Global Admin Policy (the Notification Engine's `AdminPolicy` source, `apps/api/app/notification_settings/policy.py`); no row = every channel OFF. No club-level policy table.
+- `notification_email_settings` — singleton: `smtp_host` (nullable, not blank), `smtp_port` (nullable, 1–65535; NULL = default of the mode), `smtp_security` (`starttls`/`ssl`/`none`), `smtp_username`, `sender_email`, `sender_name`, timestamps, `updated_by_user_id`. Non-secret only.
+- `notification_telegram_settings` — singleton: `bot_username` (nullable, not blank), timestamps, `updated_by_user_id`.
+- `integration_secrets` — `name` PK (`smtp_password` | `telegram_bot_token`, CHECK), `ciphertext` (CHECK `LIKE 'v1.%'`: the AES-256-GCM token `v1.<key_id>.<nonce>.<ciphertext+tag>`), timestamps, `updated_by_user_id`. The only place a UI-managed secret exists; the encryption keys are deployment configuration (`SETTINGS_ENCRYPTION_KEYS`) and are never stored. Clearing deletes the row.
+- `notification_test_send_attempts` — `id`, `actor_user_id` FK -> `users.id`, `channel`, `destination_kind` (`email_address`/`own_telegram_account`/`telegram_destination`), `created_at`, `completed_at` + `outcome` (`delivered`/`failed`, set together) and safe `error_code`; index (`actor_user_id`, `created_at`) for the 5-per-10-minutes rate limit. No address, chat id or message.
+
+These tables are separate from feature settings (`system_settings`) and from notification/outbox data; no secret is ever copied into a Notification, Delivery, outbox payload or audit row.
+
 ### `outbox_jobs`
 
 Generic PostgreSQL-backed transactional outbox (ADR-0046). One table for every asynchronous job type — no provider-specific outbox.

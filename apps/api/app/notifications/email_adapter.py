@@ -141,15 +141,19 @@ class EmailChannelAdapter:
             session.rollback()
         if isinstance(loaded, str):
             return ChannelResult.permanent(loaded)
+        return self.send(loaded)
 
+    def send(self, content: EmailContent) -> ChannelResult:
+        """Build and send one message. No database access: callers (deliver,
+        the administrator test send) hold no transaction during this call."""
         try:
-            message = build_message(self._settings, loaded)
+            message = build_message(self._settings, content)
         except ValueError:
             # The stored subject cannot be a header (e.g. a line break).
             return ChannelResult.permanent(TEMPLATE_UNAVAILABLE)
         try:
             self._transport.send(
-                message, sender=self._settings.sender_email, recipient=loaded.recipient
+                message, sender=self._settings.sender_email, recipient=content.recipient
             )
         except (smtplib.SMTPException, OSError) as exc:
             failure = classify_smtp_error(exc)
