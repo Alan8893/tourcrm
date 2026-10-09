@@ -41,8 +41,10 @@ export type NotificationSecretFieldProps = {
  * - unchanged (default): nothing is sent, also when other settings are
  *   saved;
  * - «Заменить» / «Задать»: opens an empty input; the new value is sent once
- *   with its own request and cleared from local state and the mutation
- *   cache as soon as the request settles;
+ *   with its own request and, once the request settles (success, HTTP or
+ *   network error), cleared from local state and removed from the
+ *   TanStack MutationCache (useReplaceSecret's `discard`); after an error
+ *   the input stays open, empty, for a new attempt;
  * - «Очистить»: a separate action behind a confirmation dialog.
  */
 export function NotificationSecretField({
@@ -56,7 +58,7 @@ export function NotificationSecretField({
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
-  const replace = useReplaceSecret(name);
+  const { mutation: replace, discard } = useReplaceSecret(name);
   const clear = useClearSecret(name);
   const notify = useNotify();
   const pending = replace.isPending || clear.isPending;
@@ -76,9 +78,16 @@ export function NotificationSecretField({
         cancel();
         notify("success", configured ? `${label}: значение заменено` : `${label}: значение сохранено`);
       },
+      // The form stays open for a new attempt; the message never contains
+      // the value.
       onError: (mutationError) => setError(secretErrorMessage(mutationError)),
-      // Never keep the secret in the mutation cache.
-      onSettled: () => replace.reset(),
+      // Whatever the outcome (success, HTTP error, network error): the
+      // entered value leaves component state and the MutationCache as soon
+      // as the request has settled — never before it was sent.
+      onSettled: () => {
+        setValue("");
+        discard();
+      },
     });
   }
 

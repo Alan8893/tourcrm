@@ -21,6 +21,9 @@ One cycle (`run_once`):
 Retries are bounded: `max_attempts` claims at most, with deterministic
 exponential backoff `min(retry_base * 2**(attempt - 1), retry_max)`.
 An unknown `job_type` and any permanent failure end `dead` at once.
+A handler may instead defer a job that is temporarily not runnable
+(`HandlerResult.deferred`): it goes back to `pending` after the given delay
+with the claim's attempt not counted — not a failure, never `dead`.
 
 Graceful shutdown: once `stop` is set the worker claims nothing new,
 finishes the job it is executing, and hands every claimed-but-not-started
@@ -49,6 +52,7 @@ from app.outbox.claiming import (
     ClaimedJob,
     FinalStatus,
     claim_jobs,
+    defer_job,
     finalize_job,
     lock_owned_job,
     release_job,
@@ -66,6 +70,9 @@ LEASE_LOST_RESULT = "lease_lost"
 # The finalize transaction itself failed; the job stays leased and is
 # recovered once its lease expires.
 FINALIZE_FAILED_RESULT = "finalize_failed"
+# The handler deferred the job (not an attempt): `pending` again later with
+# its attempt count unchanged.
+DEFERRED_RESULT = "deferred"
 
 T = TypeVar("T")
 
@@ -81,7 +88,7 @@ class WorkerConfig:
     optional: OUTBOX_WORKER_ID, OUTBOX_WORKER_POLL_INTERVAL_SECONDS,
     OUTBOX_WORKER_BATCH_SIZE, OUTBOX_WORKER_LEASE_SECONDS,
     OUTBOX_WORKER_MAX_ATTEMPTS, OUTBOX_WORKER_RETRY_BASE_SECONDS,
-    OUTBOX_WORKER_RETRY_MAX_SECONDS."""
+    OUTBOX_WORKER_RETRY_MAX_SECONDS, OUTBOX_WORKER_PAUSE_RECHECK_SECONDS."""
 
     worker_id: str
     poll_interval: timedelta = timedelta(seconds=5)
@@ -90,11 +97,13 @@ class WorkerConfig:
     max_attempts: int = 5
     retry_base: timedelta = timedelta(seconds=60)
     retry_max: timedelta = timedelta(seconds=3600)
+    # How long a deferred (paused) job waits before it is claimable again.
+    pause_recheck: timedelta = timedelta(seconds=60)
 
     def __post_init__(self) -> None:
         if not self.worker_id.strip():
             raise WorkerConfigurationError("worker_id must not be blank")
-        for name in ("poll_interval", "lease", "retry_base", "retry_max"):
+        for name in ("poll_interval", "lease", "retry_base", "retry_max", "pause_recheck"):
             if getattr(self, name) <= timedelta(0):
                 raise WorkerConfigurationError(f"{name} must be positive")
         for name in ("batch_size", "max_attempts"):
@@ -117,6 +126,9 @@ class WorkerConfig:
             max_attempts=_positive_int("OUTBOX_WORKER_MAX_ATTEMPTS", defaults.max_attempts),
             retry_base=seconds("OUTBOX_WORKER_RETRY_BASE_SECONDS", defaults.retry_base),
             retry_max=seconds("OUTBOX_WORKER_RETRY_MAX_SECONDS", defaults.retry_max),
+            pause_recheck=seconds(
+                "OUTBOX_WORKER_PAUSE_RECHECK_SECONDS", defaults.pause_recheck
+            ),
         )
 
 
@@ -164,10 +176,12 @@ class HandlerResult:
     inside the finalize transaction, after the lease check, so handler
     state commits atomically with the job result — or not at all."""
 
-    kind: Literal["success", "retryable_failure", "permanent_failure"]
+    kind: Literal["success", "retryable_failure", "permanent_failure", "deferred"]
     error_code: Optional[str] = None
     error_message: Optional[str] = None
     record: Optional[RecordFn] = None
+    # `deferred` only: how long to wait before the job is claimable again.
+    defer_for: Optional[timedelta] = None
 
     @classmethod
     def success(cls, record: Optional[RecordFn] = None) -> "HandlerResult":
@@ -184,6 +198,16 @@ class HandlerResult:
         cls, code: str, message: Optional[str] = None, record: Optional[RecordFn] = None
     ) -> "HandlerResult":
         return cls("permanent_failure", code, message, record)
+
+    @classmethod
+    def deferred(
+        cls, code: str, defer_for: timedelta, record: Optional[RecordFn] = None
+    ) -> "HandlerResult":
+        """The job is temporarily not runnable (e.g. its channel is paused
+        by policy): not an attempt. The worker hands it back as `pending`
+        after `defer_for`, without counting the claim's attempt, so pausing
+        never exhausts the retry budget (ADR-0048 §2.8)."""
+        return cls("deferred", code, None, record, defer_for)
 
 
 class JobLease:
@@ -309,7 +333,25 @@ class OutboxWorker:
         )
         return report
 
+    def _defer(self, job: ClaimedJob, result: HandlerResult) -> str:
+        assert result.defer_for is not None
+        with self._session_factory() as session:
+            next_attempt_at = defer_job(
+                session, job, delay=result.defer_for, reason_code=result.error_code
+            )
+            if next_attempt_at is None:
+                session.rollback()
+                return LEASE_LOST_RESULT
+            if result.record is not None:
+                result.record(
+                    session, Disposition(cast(FinalStatus, OUTBOX_PENDING), next_attempt_at)
+                )
+            session.commit()
+        return DEFERRED_RESULT
+
     def _finalize(self, job: ClaimedJob, result: HandlerResult) -> str:
+        if result.kind == "deferred":
+            return self._defer(job, result)
         status: FinalStatus
         if result.kind == "success":
             status = cast(FinalStatus, OUTBOX_COMPLETED)
@@ -359,6 +401,7 @@ __all__ = [
     "AbandonAwareHandler",
     "LEASE_LOST_RESULT",
     "FINALIZE_FAILED_RESULT",
+    "DEFERRED_RESULT",
     "WorkerConfigurationError",
     "WorkerConfig",
     "default_worker_id",

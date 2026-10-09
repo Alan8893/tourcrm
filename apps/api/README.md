@@ -544,6 +544,7 @@ Configuration (environment, all optional):
 | `OUTBOX_WORKER_MAX_ATTEMPTS` | 5 | attempts before `dead` |
 | `OUTBOX_WORKER_RETRY_BASE_SECONDS` | 60 | first retry delay |
 | `OUTBOX_WORKER_RETRY_MAX_SECONDS` | 3600 | backoff cap |
+| `OUTBOX_WORKER_PAUSE_RECHECK_SECONDS` | 60 | re-check interval of a job deferred because its channel is paused (not an attempt) |
 
 Handlers: `notification.delivery` (`app.notifications.delivery`) moves the
 job's Delivery to `processing`, calls the channel's `ChannelAdapter`
@@ -553,9 +554,14 @@ atomically with the job result. A Delivery already `delivered`,
 `cancelled` or `skipped` completes its job without channel work. The Email
 and Telegram adapters are always registered and read their configuration
 from Settings → Notifications for every attempt (see "Administrator
-Notification Settings" below): a channel disabled by the Global Admin
-Policy ends as a terminal `channel_disabled_by_policy`; one that is not
-configured (or whose secret cannot be decrypted) is retried as
+Notification Settings" below). A channel disabled by the Global Admin
+Policy is **paused**: the handler defers the job (`HandlerResult.deferred`,
+`app.outbox.claiming.defer_job`) — back to `pending` after
+`OUTBOX_WORKER_PAUSE_RECHECK_SECONDS` with the claim's attempt not counted,
+the Delivery untouched — so it resumes by the ordinary path once the channel
+is switched back on and never exhausts its attempts while paused. A channel
+that is switched on but not configured (or whose secret cannot be decrypted)
+is retried as
 `channel_adapter_unavailable` and ends as a terminal failure once its
 attempts are exhausted.
 
@@ -735,8 +741,9 @@ the UI) on `/api/v1/settings/notifications` (`docs/05-api/notification-settings-
 - **Global Admin Policy** — Email/Telegram on/off for the installation
   (`notification.manage`). Not saved yet = every channel OFF. It is the
   Notification Engine's `AdminPolicy` source
-  (`app.notification_settings.policy.GlobalAdminPolicy`) and the worker
-  also refuses queued deliveries of a disabled channel.
+  (`app.notification_settings.policy.GlobalAdminPolicy`); the worker pauses
+  queued deliveries of a disabled channel without counting attempts and
+  resumes them when it is switched back on.
 - **Rules** — existing installation-wide rules can be enabled/disabled;
   none are created or deleted here (an empty list is normal).
 - **Integrations** (`settings.manage`) — non-secret SMTP/Telegram settings

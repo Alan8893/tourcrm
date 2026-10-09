@@ -15,9 +15,11 @@ Email and Telegram adapters (app.notifications.configured_adapters, Issue
 #333, ADR-0048). SMTP and the Telegram bot are configured in Settings →
 Notifications and read for every delivery attempt — never from the
 environment and without restarting the worker. A channel disabled by the
-Global Admin Policy ends as a terminal `channel_disabled_by_policy`; one that
-is not (yet) configured is retried as `channel_adapter_unavailable` and ends
-as a terminal failure once its attempts are exhausted. The worker only sends
+Global Admin Policy is PAUSED: its Deliveries are not sent and no attempt is
+counted; the job is re-checked every OUTBOX_WORKER_PAUSE_RECHECK_SECONDS and
+resumes once the channel is switched back on. A channel that is not (yet)
+configured is retried as `channel_adapter_unavailable` and ends as a
+terminal failure once its attempts are exhausted. The worker only sends
 Telegram messages; it never polls for Telegram updates (that is
 app.cli.run_telegram_poller).
 """
@@ -30,6 +32,7 @@ from types import FrameType
 from typing import Optional
 
 from app.db.session import get_session_factory
+from app.notification_settings.policy import GlobalAdminPolicy
 from app.notifications.configured_adapters import (
     BotApiClientFactory,
     ConfiguredEmailAdapter,
@@ -62,9 +65,12 @@ def build_worker(
             session_factory=session_factory, client_factory=telegram_client_factory
         ),
     }
+    handler = NotificationDeliveryHandler(
+        adapters, admin_policy=GlobalAdminPolicy(), pause_recheck=config.pause_recheck
+    )
     return OutboxWorker(
         session_factory=session_factory,
-        handlers={NOTIFICATION_DELIVERY_JOB_TYPE: NotificationDeliveryHandler(adapters)},
+        handlers={NOTIFICATION_DELIVERY_JOB_TYPE: handler},
         config=config,
     )
 

@@ -680,14 +680,15 @@ def test_delivery_failure_never_touches_business_or_notification_state() -> None
 
 
 @requires_postgres
-def test_production_worker_without_saved_policy_does_not_deliver() -> None:
-    """ADR-0048 §2.8: no saved Global Admin Policy = channel OFF, so even
-    an already queued Delivery is not sent (terminal)."""
-    _, delivery_id, _ = _delivery_job()
+def test_production_worker_without_saved_policy_pauses_without_counting() -> None:
+    """ADR-0048 §2.8: no saved Global Admin Policy = channel OFF. A queued
+    Delivery is paused — not sent, no attempt counted, not terminal."""
+    _, delivery_id, job_id = _delivery_job()
     (report,) = build_worker(_config()).run_once()
-    assert (report.result, report.error_code) == ("dead", "channel_disabled_by_policy")
-    delivery = _delivery(delivery_id)
-    assert (delivery.status, delivery.next_retry_at) == ("failed", None)
+    assert (report.result, report.error_code) == ("deferred", "channel_disabled_by_policy")
+    job, delivery = _job(job_id), _delivery(delivery_id)
+    assert (job.status, job.attempts, job.locked_by) == ("pending", 0, None)
+    assert (delivery.status, delivery.attempts) == ("pending", 0)
 
 
 @requires_postgres
@@ -729,3 +730,90 @@ def test_worker_process_starts_and_stops_gracefully_on_sigterm(database_url: str
             process.kill()
     assert process.returncode == 0
     assert "outbox worker stopped" in stderr
+
+
+# --- Deferral (a handler's "not runnable now", ADR-0048 §2.8) ---------------------
+
+
+class _DeferringHandler:
+    def __init__(self, delay: timedelta = timedelta(minutes=1)) -> None:
+        self.calls = 0
+        self.delay = delay
+        self.recorded: list[Any] = []
+
+    def __call__(self, lease: Any) -> HandlerResult:
+        self.calls += 1
+
+        def record(session: Any, disposition: Any) -> None:
+            self.recorded.append(disposition)
+
+        return HandlerResult.deferred("paused_for_test", self.delay, record)
+
+
+def _deferring_worker(handler: _DeferringHandler, **config: Any) -> OutboxWorker:
+    return OutboxWorker(
+        session_factory=get_session_factory(),
+        handlers={"test.deferrable": handler},
+        config=_config(**config),
+    )
+
+
+@requires_postgres
+def test_deferred_job_is_pending_later_with_its_attempt_not_counted() -> None:
+    job_id = _raw_job("test.deferrable", {"n": 1})
+    handler = _DeferringHandler(timedelta(minutes=2))
+    before = _db_now()
+    (report,) = _deferring_worker(handler, max_attempts=1).run_once()
+    assert (report.result, report.error_code) == ("deferred", "paused_for_test")
+    job = _job(job_id)
+    assert (job.status, job.attempts, job.locked_by, job.locked_until) == (
+        "pending",
+        0,
+        None,
+        None,
+    )
+    assert job.finished_at is None
+    assert job.last_error_code == "paused_for_test"
+    assert job.next_attempt_at >= before + timedelta(minutes=2)
+    # The record ran with the job's new eligibility.
+    (disposition,) = handler.recorded
+    assert (disposition.status, disposition.next_attempt_at) == ("pending", job.next_attempt_at)
+
+
+@requires_postgres
+def test_deferral_never_exhausts_the_retry_budget_and_is_not_a_busy_loop() -> None:
+    job_id = _raw_job("test.deferrable", {"n": 1})
+    handler = _DeferringHandler()
+    worker = _deferring_worker(handler, max_attempts=2)
+    for _ in range(5):
+        worker.run_once()
+        # Not re-claimed until it is due again: no busy loop.
+        assert worker.run_once() == []
+        _make_due(job_id)
+    assert handler.calls == 5
+    job = _job(job_id)
+    assert (job.status, job.attempts) == ("pending", 0)
+
+
+@requires_postgres
+def test_deferral_after_a_lost_lease_writes_nothing() -> None:
+    job_id = _raw_job("test.deferrable", {"n": 1})
+
+    class _LosingLease(_DeferringHandler):
+        def __call__(self, lease: Any) -> HandlerResult:
+            # Another worker re-claims the job while this one still works on it.
+            with session_scope() as session:
+                session.execute(
+                    sa.update(OutboxJob)
+                    .where(OutboxJob.id == job_id)
+                    .values(locked_by="worker-other", attempts=OutboxJob.attempts + 1)
+                )
+                session.commit()
+            return super().__call__(lease)
+
+    handler = _LosingLease()
+    (report,) = _deferring_worker(handler).run_once()
+    assert report.result == "lease_lost"
+    job = _job(job_id)
+    assert (job.status, job.locked_by, job.attempts) == ("processing", "worker-other", 2)
+    assert handler.recorded == []

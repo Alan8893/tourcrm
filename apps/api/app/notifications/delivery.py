@@ -11,8 +11,14 @@ Per attempt:
 1. fenced transaction — load the Delivery. Already terminal
    (`delivered`, `cancelled`, `skipped`, or `failed` with no retry
    scheduled) -> the job completes with no channel work (idempotent
-   re-processing). Otherwise mark it `processing` and count the attempt
-   (`attempts`, `first_attempt_at`, `last_attempt_at`).
+   re-processing). If the Global Admin Policy (the AdminPolicy port,
+   ADR-0048 §2.8) has the Delivery's channel OFF, the Delivery is
+   **paused**: nothing is sent and nothing is counted — the Delivery keeps
+   its status and attempts, and the job is deferred (`HandlerResult.
+   deferred`) for `pause_recheck` with the claim's attempt not counted, so
+   it resumes by the ordinary path once the channel is switched back on.
+   Otherwise mark it `processing` and count the attempt (`attempts`,
+   `first_attempt_at`, `last_attempt_at`).
 2. no transaction held — hand an immutable `DeliveryRequest` to the
    channel's `ChannelAdapter`. Email/Telegram adapters are separate
    Issues; a channel without a registered adapter is a retryable
@@ -31,12 +37,14 @@ is introduced.
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Literal, Optional, Protocol
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from app.db.notifications import NotificationDelivery
+from app.notifications.ports import AdminPolicy
 from app.notifications.vocabulary import (
     DELIVERY_CANCELLED,
     DELIVERY_DELIVERED,
@@ -58,6 +66,8 @@ from app.outbox.worker import (
 INVALID_PAYLOAD_ERROR_CODE = "invalid_payload"
 DELIVERY_NOT_FOUND_ERROR_CODE = "delivery_not_found"
 CHANNEL_ADAPTER_UNAVAILABLE_ERROR_CODE = "channel_adapter_unavailable"
+# Not an error: the job's reason code while it is paused by Global OFF.
+CHANNEL_DISABLED_BY_POLICY = "channel_disabled_by_policy"
 ADAPTER_ERROR_CODE = "channel_adapter_error"
 
 _TERMINAL_STATUSES = frozenset({DELIVERY_DELIVERED, DELIVERY_CANCELLED, DELIVERY_SKIPPED})
@@ -109,9 +119,12 @@ class ChannelAdapter(Protocol):
     def deliver(self, request: DeliveryRequest) -> ChannelResult: ...
 
 
-def _start_attempt(session: Session, delivery_id: uuid.UUID) -> DeliveryRequest | str:
+def _start_attempt(
+    session: Session, delivery_id: uuid.UUID, admin_policy: Optional[AdminPolicy]
+) -> DeliveryRequest | str:
     """Fenced step 1. Returns the request to send, `"terminal"` when the
-    Delivery needs no further work, or `"missing"`."""
+    Delivery needs no further work, `"paused"` when its channel is disabled
+    by the Global Admin Policy (nothing written), or `"missing"`."""
     delivery = session.execute(
         sa.select(NotificationDelivery)
         .where(NotificationDelivery.id == delivery_id)
@@ -123,6 +136,10 @@ def _start_attempt(session: Session, delivery_id: uuid.UUID) -> DeliveryRequest 
         delivery.status == DELIVERY_FAILED and delivery.next_retry_at is None
     ):
         return "terminal"
+    if admin_policy is not None and not admin_policy.global_channel_enabled(
+        session, channel=delivery.channel
+    ):
+        return "paused"
     session.execute(
         sa.update(NotificationDelivery)
         .where(NotificationDelivery.id == delivery_id)
@@ -179,14 +196,44 @@ def _recorder(delivery_id: uuid.UUID, result: ChannelResult) -> RecordFn:
     return record
 
 
+def _pause_recorder(delivery_id: uuid.UUID) -> RecordFn:
+    """A paused Delivery keeps its status, attempts and last error. Only a
+    Delivery already waiting for a retry (`failed` with `next_retry_at`)
+    has that time moved to the job's new eligibility, so the two agree."""
+
+    def record(session: Session, disposition: Disposition) -> None:
+        session.execute(
+            sa.update(NotificationDelivery)
+            .where(
+                NotificationDelivery.id == delivery_id,
+                NotificationDelivery.status == DELIVERY_FAILED,
+                NotificationDelivery.next_retry_at.is_not(None),
+            )
+            .values(next_retry_at=disposition.next_attempt_at)
+            .execution_options(synchronize_session=False)
+        )
+
+    return record
+
+
 class NotificationDeliveryHandler:
     """Handler for `notification.delivery` jobs. `adapters` maps a channel
     to its adapter; no adapter is built into the worker."""
 
     job_type = NOTIFICATION_DELIVERY_JOB_TYPE
 
-    def __init__(self, adapters: Mapping[str, ChannelAdapter]) -> None:
+    def __init__(
+        self,
+        adapters: Mapping[str, ChannelAdapter],
+        *,
+        admin_policy: Optional[AdminPolicy] = None,
+        pause_recheck: timedelta = timedelta(seconds=60),
+    ) -> None:
+        """`admin_policy`, when given, pauses Deliveries of a channel the
+        Global Admin Policy disables (re-checked every `pause_recheck`)."""
         self._adapters = dict(adapters)
+        self._admin_policy = admin_policy
+        self._pause_recheck = pause_recheck
 
     def __call__(self, lease: JobLease) -> HandlerResult:
         try:
@@ -194,7 +241,9 @@ class NotificationDeliveryHandler:
         except (KeyError, ValueError, TypeError):
             return HandlerResult.permanent(INVALID_PAYLOAD_ERROR_CODE)
 
-        started = lease.run_fenced(lambda session: _start_attempt(session, delivery_id))
+        started = lease.run_fenced(
+            lambda session: _start_attempt(session, delivery_id, self._admin_policy)
+        )
         if started is None:
             # Lease lost before any work; the finalize step will see it too.
             return HandlerResult.retryable(LEASE_LOST_RESULT)
@@ -202,6 +251,10 @@ class NotificationDeliveryHandler:
             return HandlerResult.permanent(DELIVERY_NOT_FOUND_ERROR_CODE)
         if started == "terminal":
             return HandlerResult.success()
+        if started == "paused":
+            return HandlerResult.deferred(
+                CHANNEL_DISABLED_BY_POLICY, self._pause_recheck, _pause_recorder(delivery_id)
+            )
         assert isinstance(started, DeliveryRequest)
 
         adapter = self._adapters.get(started.channel)
@@ -256,6 +309,7 @@ __all__ = [
     "INVALID_PAYLOAD_ERROR_CODE",
     "DELIVERY_NOT_FOUND_ERROR_CODE",
     "CHANNEL_ADAPTER_UNAVAILABLE_ERROR_CODE",
+    "CHANNEL_DISABLED_BY_POLICY",
     "ADAPTER_ERROR_CODE",
     "DeliveryRequest",
     "ChannelResult",

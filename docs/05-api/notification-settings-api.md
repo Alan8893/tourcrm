@@ -32,7 +32,7 @@ Both are existing admin-only permissions; they are checked against the installat
 
 Body `{"email_enabled": true, "telegram_enabled": false}` — both required, strict booleans, no other fields (no `club_id`, no MAX). Returns the saved policy. Audited as `notification_policy.updated` with per-channel before/after values.
 
-A channel that is OFF blocks delivery: the Notification Engine creates no Delivery for it, and the worker ends an already queued Delivery as a terminal `channel_disabled_by_policy` failure. The Telegram switch does not affect Telegram account linking or the poller.
+A channel that is OFF **pauses** delivery — it does not cancel notifications. The Notification Engine creates no Delivery for it, and a Delivery already queued for it is not sent: the worker defers its job (re-checked every `OUTBOX_WORKER_PAUSE_RECHECK_SECONDS`, default 60) without counting an attempt, the Delivery keeps its status and attempts, and it is delivered by the ordinary path once the channel is switched back on. A send already in progress is not cancelled. The Telegram switch does not affect Telegram account linking or the poller.
 
 ## Rules
 

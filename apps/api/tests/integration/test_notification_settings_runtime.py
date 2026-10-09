@@ -5,9 +5,11 @@ change applies without a new worker), Global OFF blocks already queued
 deliveries, undecryptable secrets fail closed without any provider call,
 the key-rotation CLI, and the migration round trip."""
 
+import smtplib
 import subprocess
 import sys
 import uuid
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -112,6 +114,20 @@ def _delivery(channel: str = "email", telegram_chat: int = TELEGRAM_CHAT) -> dic
         return {"delivery": delivery.id, "job": job.id}
 
 
+def _db_now() -> Any:
+    with session_scope() as session:
+        return session.execute(sa.select(sa.func.now())).scalar_one()
+
+
+def _recipient(ids: dict[str, uuid.UUID]) -> str:
+    with session_scope() as session:
+        delivery = session.get(NotificationDelivery, ids["delivery"])
+        assert delivery is not None
+        user = session.get(User, delivery.destination_id)
+        assert user is not None and user.login_identifier is not None
+        return user.login_identifier
+
+
 def _row(model: Any, row_id: uuid.UUID) -> Any:
     with session_scope() as session:
         return session.get(model, row_id)
@@ -148,21 +164,189 @@ def test_worker_uses_the_current_settings_for_every_delivery() -> None:
     assert _row(NotificationDelivery, second["delivery"]).status == "delivered"
 
 
+def _make_due(job_id: uuid.UUID) -> None:
+    with session_scope() as session:
+        session.execute(
+            sa.update(OutboxJob)
+            .where(OutboxJob.id == job_id)
+            .values(next_attempt_at=sa.func.now() - timedelta(seconds=1))
+        )
+        session.commit()
+
+
+def _counts() -> tuple[int, int]:
+    with session_scope() as session:
+        return (
+            session.execute(sa.select(sa.func.count()).select_from(NotificationDelivery))
+            .scalar_one(),
+            session.execute(sa.select(sa.func.count()).select_from(OutboxJob)).scalar_one(),
+        )
+
+
+class _FailingTransport(_RecordingTransport):
+    def send(self, message: Any, *, sender: str, recipient: str) -> None:
+        raise smtplib.SMTPServerDisconnected("connection lost")
+
+
 @requires_postgres
-def test_global_off_blocks_already_queued_deliveries() -> None:
+def test_global_off_pauses_without_provider_call_attempt_or_terminal_state() -> None:
     store_policy(email=True, telegram=True)
     store_email_settings(password=SMTP_PASSWORD)
     ids = _delivery()
     store_policy(email=False, telegram=True)
-    (report,) = _worker().run_once()
-    assert (report.result, report.error_code) == ("dead", "channel_disabled_by_policy")
+    worker = _worker()
+    before = _db_now()
+    (report,) = worker.run_once()
+    assert (report.result, report.error_code) == ("deferred", "channel_disabled_by_policy")
     assert _RecordingTransport.instances == []
-    delivery = _row(NotificationDelivery, ids["delivery"])
-    assert (delivery.status, delivery.next_retry_at, delivery.last_error_code) == (
-        "failed",
+    job = _row(OutboxJob, ids["job"])
+    assert (job.status, job.attempts, job.locked_by, job.finished_at) == (
+        "pending",
+        0,
         None,
-        "channel_disabled_by_policy",
+        None,
     )
+    # Re-checked after the pause interval, not immediately: no busy loop.
+    assert job.next_attempt_at >= before + worker.config.pause_recheck
+    assert worker.run_once() == []
+    delivery = _row(NotificationDelivery, ids["delivery"])
+    assert (delivery.status, delivery.attempts, delivery.last_error_code) == ("pending", 0, None)
+    assert delivery.first_attempt_at is None
+
+
+@requires_postgres
+def test_paused_delivery_survives_many_rechecks_then_resumes_when_switched_on() -> None:
+    """Full path: Global OFF -> deferred without attempts -> Global ON ->
+    the same Delivery and job are processed by the ordinary path."""
+    store_email_settings(password=SMTP_PASSWORD)
+    store_policy(email=False, telegram=False)
+    ids = _delivery()
+    worker = _worker()
+    # More re-checks than max_attempts (5): the budget is never consumed.
+    for _ in range(worker.config.max_attempts + 3):
+        (report,) = worker.run_once()
+        assert report.result == "deferred"
+        _make_due(ids["job"])
+    assert _row(OutboxJob, ids["job"]).attempts == 0
+    assert _row(NotificationDelivery, ids["delivery"]).attempts == 0
+
+    store_policy(email=True, telegram=False)
+    (report,) = worker.run_once()
+    assert report.result == "completed"
+    assert [t.sent for t in _RecordingTransport.instances] == [[_recipient(ids)]]
+    job, delivery = _row(OutboxJob, ids["job"]), _row(NotificationDelivery, ids["delivery"])
+    assert (job.status, job.attempts) == ("completed", 1)
+    assert (delivery.status, delivery.attempts) == ("delivered", 1)
+    # No duplicate Delivery or outbox job, and nothing left to process.
+    assert _counts() == (1, 1)
+    _make_due(ids["job"])
+    assert worker.run_once() == []
+
+
+@requires_postgres
+def test_provider_errors_still_consume_attempts_and_a_retrying_delivery_pauses() -> None:
+    store_policy(email=True)
+    store_email_settings(password=SMTP_PASSWORD)
+    ids = _delivery()
+    failing = build_worker(
+        WorkerConfig(worker_id=f"w-{uuid.uuid4().hex[:6]}"),
+        smtp_transport_factory=_FailingTransport,  # type: ignore[arg-type]
+    )
+    (report,) = failing.run_once()
+    assert (report.result, report.error_code) == ("pending", "smtp_connection_failed")
+    job, delivery = _row(OutboxJob, ids["job"]), _row(NotificationDelivery, ids["delivery"])
+    assert (job.attempts, delivery.attempts, delivery.status) == (1, 1, "failed")
+    assert delivery.next_retry_at is not None
+
+    # Switched OFF while the retry waits: the retry is paused, not counted.
+    store_policy(email=False)
+    _make_due(ids["job"])
+    (report,) = failing.run_once()
+    assert report.result == "deferred"
+    job, delivery = _row(OutboxJob, ids["job"]), _row(NotificationDelivery, ids["delivery"])
+    assert (job.attempts, delivery.attempts) == (1, 1)
+    assert (delivery.status, delivery.last_error_code) == ("failed", "smtp_connection_failed")
+    # The Delivery's scheduled retry follows the job's new eligibility.
+    assert delivery.next_retry_at == job.next_attempt_at
+
+    store_policy(email=True)
+    _make_due(ids["job"])
+    (report,) = _worker().run_once()
+    assert report.result == "completed"
+    assert _row(OutboxJob, ids["job"]).attempts == 2
+    assert _row(NotificationDelivery, ids["delivery"]).attempts == 2
+
+
+@requires_postgres
+def test_switching_off_during_a_send_does_not_cancel_it_but_pauses_the_next() -> None:
+    store_policy(email=True)
+    store_email_settings(password=SMTP_PASSWORD)
+    first, second = _delivery(), _delivery()
+
+    class _SwitchOffMidSend(_RecordingTransport):
+        def send(self, message: Any, *, sender: str, recipient: str) -> None:
+            store_policy(email=False)
+            super().send(message, sender=sender, recipient=recipient)
+
+    worker = build_worker(
+        WorkerConfig(worker_id=f"w-{uuid.uuid4().hex[:6]}", batch_size=2),
+        smtp_transport_factory=_SwitchOffMidSend,  # type: ignore[arg-type]
+    )
+    reports = worker.run_once()
+    assert [report.result for report in reports] == ["completed", "deferred"]
+    delivered = [first, second][0 if reports[0].job_id == first["job"] else 1]
+    paused = second if delivered is first else first
+    assert _row(NotificationDelivery, delivered["delivery"]).status == "delivered"
+    assert _row(NotificationDelivery, paused["delivery"]).attempts == 0
+
+
+@requires_postgres
+def test_concurrent_workers_pause_and_resume_every_delivery_exactly_once() -> None:
+    import threading
+
+    store_email_settings(password=SMTP_PASSWORD)
+    store_policy(email=False)
+    ids = [_delivery() for _ in range(6)]
+    workers = [
+        build_worker(
+            WorkerConfig(worker_id=f"w-{index}-{uuid.uuid4().hex[:4]}", batch_size=2),
+            smtp_transport_factory=_RecordingTransport,  # type: ignore[arg-type]
+        )
+        for index in range(3)
+    ]
+
+    def run_all() -> list[Any]:
+        results: list[Any] = []
+        barrier = threading.Barrier(len(workers))
+
+        def run(worker: Any) -> None:
+            barrier.wait()
+            results.extend(worker.run_once())
+
+        threads = [threading.Thread(target=run, args=(worker,)) for worker in workers]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+        return results
+
+    paused = run_all()
+    assert sorted(report.result for report in paused) == ["deferred"] * 6
+    assert len({report.job_id for report in paused}) == 6
+    assert _RecordingTransport.instances == []
+    assert all(_row(OutboxJob, item["job"]).attempts == 0 for item in ids)
+
+    store_policy(email=True)
+    for item in ids:
+        _make_due(item["job"])
+    resumed = run_all()
+    assert sorted(report.result for report in resumed) == ["completed"] * 6
+    assert len({report.job_id for report in resumed}) == 6
+    assert sum(len(t.sent) for t in _RecordingTransport.instances) == 6
+    assert all(
+        _row(NotificationDelivery, item["delivery"]).status == "delivered" for item in ids
+    )
+    assert _counts() == (6, 6)
 
 
 @requires_postgres

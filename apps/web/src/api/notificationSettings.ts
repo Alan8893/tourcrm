@@ -1,3 +1,4 @@
+import { useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch, ApiError, type CollectionResponse } from "./client";
@@ -213,11 +214,22 @@ export function useUpdateTelegramSettings() {
   });
 }
 
-/** Set or replace a secret. The value is sent once and never stored by
- * the client. */
+const secretMutationKey = (name: SecretName) =>
+  ["settings", "notifications", "secret", name] as const;
+
+/** Set or replace a secret. The value is sent once and must not outlive the
+ * request on the client: the mutation has its own key and `gcTime: 0`, and
+ * `discard()` — to be called as soon as the request settles, whatever its
+ * outcome — resets the observer AND removes every settled mutation of this
+ * key from the MutationCache. (`reset()` alone only detaches the observer;
+ * TanStack Query keeps the mutation, with its `variables`, until gcTime.)
+ * No other mutation or cache entry is touched. */
 export function useReplaceSecret(name: SecretName) {
+  const queryClient = useQueryClient();
   const invalidate = useInvalidateNotificationSettings();
-  return useMutation<{ configured: boolean }, ApiError, string>({
+  const mutation = useMutation<{ configured: boolean }, ApiError, string>({
+    mutationKey: secretMutationKey(name),
+    gcTime: 0,
     mutationFn: (value) =>
       apiFetch<{ configured: boolean }>(`${BASE}${SECRET_PATH[name]}`, {
         method: "PUT",
@@ -225,6 +237,15 @@ export function useReplaceSecret(name: SecretName) {
       }),
     onSuccess: invalidate,
   });
+  const { reset } = mutation;
+  const discard = useCallback(() => {
+    reset();
+    const cache = queryClient.getMutationCache();
+    for (const settled of cache.findAll({ mutationKey: secretMutationKey(name), exact: true })) {
+      if (settled.state.status !== "pending") cache.remove(settled);
+    }
+  }, [name, queryClient, reset]);
+  return { mutation, discard };
 }
 
 export function useClearSecret(name: SecretName) {

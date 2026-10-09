@@ -6,7 +6,7 @@
 - **Decision type:** Architecture decision
 - **Refines:** ADR-0045 (Notification Center and Communication Architecture), Feature Settings Governance
 - **Related:** #317, ADR-0046, ADR-0047, `docs/09-governance/feature-settings.md`, `docs/04-modules/notifications-and-communications.md`
-- **Amended:** 2026-10-09 — Product Owner implementation decisions for #333 (§2.6–§2.11); ADR-0047 §6 aligned
+- **Amended:** 2026-10-09 — Product Owner implementation decisions for #333 (§2.6–§2.11); ADR-0047 §6 aligned; Global OFF pauses instead of ending deliveries (§2.8, review of PR #334)
 
 ## 1. Context
 
@@ -96,7 +96,8 @@ Only an authorized administrator may initiate a test send. The UI requires an ex
 ### 2.8 Global policy and rules (PO decision, #333)
 
 - The Global Admin Policy is per channel (Email, Telegram). When no policy has been saved, every channel is OFF (fail closed).
-- Global OFF blocks delivery: the Engine creates no Delivery for a disabled channel, and the worker does not send an already queued Delivery while its channel is disabled — it ends as a terminal `channel_disabled_by_policy` failure.
+- Global OFF **pauses** delivery; it is not a cancellation (PO decision, review of PR #334). The Engine creates no Delivery for a disabled channel. A Delivery already queued for a disabled channel is not sent and its job is deferred by the worker: the Delivery keeps its status and attempt count, the outbox job returns to `pending` for a later re-check **without consuming an attempt**, so pausing never exhausts the retry budget and never makes the Delivery terminal. When the channel is switched back on, the paused Deliveries are processed by the ordinary path. A send already in progress when the channel is switched off is not cancelled; every send that starts afterwards follows the current policy.
+- Three different outcomes must not be confused: a **pause** by Global OFF (temporary, no attempt counted, resumes automatically); a **permanent failure** of configuration or delivery (for example an unverified destination or a rejected recipient — terminal at once); and **retry budget exhaustion** (retryable failures, including a channel that is switched on but not configured, consume attempts until the worker's maximum and then end terminal).
 - The Telegram switch does not affect Telegram account linking or the poller (ADR-0047 §6).
 - Administrators can list existing installation-wide rules (`club_id = NULL`) and only enable/disable them. Rules are not created or deleted through the UI; no `event_type`, `recipient_scope` or business event is invented. An empty rule list is valid. No business event that has not passed its ADR-0045 §5 specification gate is wired to the Engine by this decision.
 

@@ -208,6 +208,40 @@ def release_job(session: Session, job: ClaimedJob) -> bool:
     return released is not None
 
 
+def defer_job(
+    session: Session,
+    job: ClaimedJob,
+    *,
+    delay: timedelta,
+    reason_code: Optional[str] = None,
+) -> Optional[datetime]:
+    """Hand a leased job back as `pending` until `now() + delay` WITHOUT
+    counting the claim's attempt — the handler found the job temporarily
+    not runnable (e.g. its channel is paused by policy), which is neither a
+    success nor a failed attempt. Like `release_job` but delayed, so the job
+    is not re-claimed in a busy loop. `reason_code` is kept as the job's
+    last error code for observability. Returns the new `next_attempt_at`, or
+    None — writing nothing — when this worker no longer owns the lease."""
+    if delay <= timedelta(0):
+        raise ValueError("delay must be positive")
+    row = session.execute(
+        sa.update(OutboxJob)
+        .where(_owned(job))
+        .values(
+            status=OUTBOX_PENDING,
+            locked_by=None,
+            locked_until=None,
+            attempts=OutboxJob.attempts - 1,
+            next_attempt_at=sa.func.now() + delay,
+            last_error_code=_truncate(reason_code, ERROR_CODE_MAX_LENGTH),
+            last_error_message=None,
+        )
+        .returning(OutboxJob.next_attempt_at)
+        .execution_options(synchronize_session=False)
+    ).scalar_one_or_none()
+    return row
+
+
 __all__ = [
     "ClaimedJob",
     "FinalizedJob",
@@ -215,4 +249,5 @@ __all__ = [
     "lock_owned_job",
     "finalize_job",
     "release_job",
+    "defer_job",
 ]
