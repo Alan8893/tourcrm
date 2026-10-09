@@ -49,6 +49,8 @@ Monitoring / Logs / Metrics receive telemetry from all services.
 
 The exact reverse proxy, object-storage implementation and worker technology are architecture decisions documented separately before implementation. Notification delivery follows ADR-0045: business modules do not call channel providers directly; the Notification Engine creates durable Notification/Delivery state and an outbox record, and the background worker performs asynchronous channel delivery.
 
+Inbound Telegram updates (account linking) are received by a dedicated single-replica long-polling process, separate from FastAPI and from the outbox worker, with its progress checkpointed in PostgreSQL; no webhook or public endpoint is involved (`docs/03-architecture/adr/ADR-0047-telegram-long-polling-and-linking.md`).
+
 Periodic system jobs are triggered by a dedicated single-replica scheduler that invokes system CLI entrypoints and needs no Redis (`docs/03-architecture/adr/ADR-0044-scheduler-for-periodic-system-jobs.md`); the queue worker technology remains open (ADR-0008 ODR-005).
 
 ## 4. Frontend

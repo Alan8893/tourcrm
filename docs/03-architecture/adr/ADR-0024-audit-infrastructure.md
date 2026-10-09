@@ -16,6 +16,8 @@ Accepted. Closes ODR-015. Closes the audit-record-shape portion of ODR-013; **re
 
 **Amended by #247 (Trip Audit Trail):** adds `trip.created`, `trip_participant.actual_participation_recorded`, and `trip_participant.actual_participation_changed` for the tourism facts introduced by #245.
 
+**Amended by ADR-0047 §4.3 (#329, Telegram linking):** adds `telegram_link_challenge.created`, `telegram_identity.linked` and `telegram_identity.unlinked` for the metadata-only audit of Telegram account linking.
+
 ## Context
 
 The system requires significant business mutations to be auditable, but a canonical persistence contract, write boundary and failure mode had not previously been defined. Existing unimplemented `AuditLog` sketches using `target_type`/`target_id`, `ip_address`, `user_agent` and a bare `status` are superseded by this ADR.
@@ -121,6 +123,10 @@ document.exported
 trip.created
 trip_participant.actual_participation_recorded
 trip_participant.actual_participation_changed
+
+telegram_link_challenge.created
+telegram_identity.linked
+telegram_identity.unlinked
 ```
 
 `membership.import.applied` records execution of an approved participant-import batch as a single batch-level business action. It is emitted by the import apply workflow with the import job as the audit resource. This action does not replace the domain-level audit records required for individual `person.*`, `user.*`, `membership.*` or other mutations performed by the import.
@@ -134,6 +140,8 @@ For recurrence, `event_series.version_created` records creation of a successor S
 `trip.created` records creation of the canonical Trip extension of an Event; its resource is the Trip identified by `event_id`.
 
 `trip_participant.actual_participation_recorded` records the first creation of a TripParticipant tourism fact for `actual_participation`. `trip_participant.actual_participation_changed` records a change of the stored `actual_participation` value and carries explicit safe before/after values in `details.changes.actual_participation`. Repeated writes of the already stored value are idempotent no-ops and do not create duplicate audit records. EventParticipation registration lifecycle remains covered by `event_participation.status_changed` and is not duplicated by Trip audit.
+
+`telegram_link_challenge.created` records issuance (or reissue, `details.reissue`) of a one-time Telegram linking challenge by its own User; the resource is the challenge. `telegram_identity.linked` records consumption of a challenge from a trusted Telegram Bot API update: outcome `success` with the identity as resource (`details.already_linked`, `details.replaced_previous`), or outcome `failure` with the challenge as resource and `details.reason = identity_linked_to_another_user` when the Telegram account is actively linked to a different User and is not transferred. `telegram_identity.unlinked` records the end of an active identity, `details.reason` being `user_unlinked` or `replaced`. None of them carries the token, its hash, the Telegram user id or message content (ADR-0047 §4.3).
 
 `action` values are stable business codes, never HTTP methods, URL paths or arbitrary UI text.
 
