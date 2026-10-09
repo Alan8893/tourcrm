@@ -720,6 +720,10 @@ def transition_event_status(
         cancellation_reason=cancellation_reason,
         updated_by=updated_by,
     )
+    if new_status == "cancelled":
+        plan_event_lifecycle_notification(
+            session, event=event, event_type="event.cancelled", mandatory=True
+        )
     session.commit()
     if new_status == "completed":
         # Issue #220 (A7): a completed Trip is a canonical fact of the
