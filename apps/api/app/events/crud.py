@@ -599,7 +599,13 @@ def update_event(
     `cancellation_reason` are never accepted here — see
     transition_event_status()/archive_event() for lifecycle changes.
     """
+    previous_start_at = event.start_at
+    previous_end_at = event.end_at
     _apply_event_field_updates(session, event=event, updated_by=updated_by, **fields)
+    if event.start_at != previous_start_at or event.end_at != previous_end_at:
+        plan_event_lifecycle_notification(
+            session, event=event, event_type="event.rescheduled", mandatory=True
+        )
     session.commit()
     return event
 
