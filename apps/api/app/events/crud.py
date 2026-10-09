@@ -639,6 +639,8 @@ def update_event_with_targeting(
     those functions' docstrings for the add/end/leave-untouched
     idempotency shape.
     """
+    previous_start_at = event.start_at
+    previous_end_at = event.end_at
     _apply_event_field_updates(session, event=event, updated_by=updated_by, **fields)
 
     try:
@@ -652,6 +654,10 @@ def update_event_with_targeting(
                 user_ids=instructor_user_ids,
                 role_in_event=role_in_event,
                 now=now,
+            )
+        if event.start_at != previous_start_at or event.end_at != previous_end_at:
+            plan_event_lifecycle_notification(
+                session, event=event, event_type="event.rescheduled", mandatory=True
             )
         session.commit()
     except Exception:
