@@ -130,3 +130,8 @@ The authenticated user must be able to control personal Telegram messages in **S
 - Show whether the user's Telegram account is linked. If it is not linked, explain how to complete the verified linking flow; never attempt delivery to an unverified destination.
 - The backend is authoritative and must enforce this preference when planning personal deliveries. UI-only enforcement is insufficient.
 - The user can change only their own preference. Notification administration and group/topic routing remain Administrator-only.
+
+
+### Telegram group discovery and personal delivery boundaries
+
+The production Telegram bot is already a member of the club group. Use Bot API updates actually available to the bot to verify the group `chat_id` and topic `message_thread_id`; do not infer routing IDs from visible topic names. Bot membership does not imply access to the group's full historical message archive. Update visibility depends on Bot API privacy mode, permissions, update types and webhook/polling configuration. Group membership also does not enable private messaging: each user must complete the verified Telegram-linking flow and have an active Telegram identity. Group/topic destinations and personal-user destinations are configured and authorized independently.
