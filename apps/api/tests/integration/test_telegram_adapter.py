@@ -14,7 +14,6 @@ import pytest
 import sqlalchemy as sa
 
 from app.cli.run_outbox_worker import build_worker
-from app.core.config import TelegramSettings
 from app.db.identity import Club, Person, User
 from app.db.notifications import (
     Notification,
@@ -43,6 +42,7 @@ from app.outbox.service import enqueue_outbox_job
 from app.outbox.worker import OutboxWorker, WorkerConfig
 from app.telegram import bot_api
 from app.telegram.bot_api import BotApiResponse, TelegramTransportError
+from tests.notification_settings_helpers import store_policy, store_telegram_settings
 from tests.telegram_fakes import (
     BOT_TOKEN,
     FakeBotApiServer,
@@ -366,17 +366,25 @@ def test_no_database_transaction_is_held_during_the_bot_api_call() -> None:
 # --- Production wiring and secrets ----------------------------------------------------------
 
 
+def _configure_telegram(monkeypatch: pytest.MonkeyPatch, base_url: str) -> None:
+    """Settings as the Administrator UI stores them (ADR-0048); the base
+    URL is the allowlisted loopback override for the local fake server."""
+    monkeypatch.setenv("TELEGRAM_API_BASE_URL", base_url)
+    store_policy(telegram=True)
+    store_telegram_settings(token=BOT_TOKEN, username="tourcrm_test_bot")
+
+
 @requires_postgres
-def test_production_worker_sends_through_the_real_http_transport() -> None:
+def test_production_worker_sends_through_the_real_http_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     ids = _telegram_delivery(destination="telegram_destination", thread_id=11)
     config = FakeBotApiServerConfig(
         by_method={"sendMessage": ServerReply(body=b'{"ok": true, "result": {"message_id": 77}}')}
     )
     with FakeBotApiServer(config) as server:
-        settings = TelegramSettings(bot_token=BOT_TOKEN, api_base_url=server.base_url)
-        worker = build_worker(
-            WorkerConfig(worker_id=f"w-{uuid.uuid4().hex[:6]}"), telegram_settings=settings
-        )
+        _configure_telegram(monkeypatch, server.base_url)
+        worker = build_worker(WorkerConfig(worker_id=f"w-{uuid.uuid4().hex[:6]}"))
         (report,) = worker.run_once()
     assert report.result == "completed"
     ((path, params),) = config.received
@@ -387,6 +395,7 @@ def test_production_worker_sends_through_the_real_http_transport() -> None:
 
 @requires_postgres
 def test_worker_without_telegram_configuration_keeps_the_unavailable_behaviour() -> None:
+    store_policy(telegram=True)
     _telegram_delivery()
     worker = build_worker(WorkerConfig(worker_id=f"w-{uuid.uuid4().hex[:6]}"))
     (report,) = worker.run_once()
@@ -395,7 +404,7 @@ def test_worker_without_telegram_configuration_keeps_the_unavailable_behaviour()
 
 @requires_postgres
 def test_token_and_message_body_never_reach_state_or_logs(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     caplog.set_level(logging.DEBUG)
     ids = _telegram_delivery()
@@ -409,10 +418,8 @@ def test_token_and_message_body_never_reach_state_or_logs(
     ).encode()
     config = FakeBotApiServerConfig(by_method={"sendMessage": ServerReply(status=400, body=echo)})
     with FakeBotApiServer(config) as server:
-        settings = TelegramSettings(bot_token=BOT_TOKEN, api_base_url=server.base_url)
-        worker = build_worker(
-            WorkerConfig(worker_id=f"w-{uuid.uuid4().hex[:6]}"), telegram_settings=settings
-        )
+        _configure_telegram(monkeypatch, server.base_url)
+        worker = build_worker(WorkerConfig(worker_id=f"w-{uuid.uuid4().hex[:6]}"))
         (report,) = worker.run_once()
     assert (report.result, report.error_code) == ("dead", bot_api.TELEGRAM_REQUEST_REJECTED)
 

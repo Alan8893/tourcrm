@@ -1,4 +1,5 @@
 import { useRef, useState, type ChangeEvent } from "react";
+import { Link } from "react-router-dom";
 
 import { Avatar } from "../components/ui/Avatar";
 import { Button } from "../components/ui/Button";
@@ -11,6 +12,7 @@ import { useNotify } from "../components/ui/notificationContext";
 import { displayName, useCurrentUser } from "../api/auth";
 import { usePerson } from "../api/people";
 import { currentUserPhotoUrl, useDeletePersonPhoto, useUploadPersonPhoto } from "../api/profilePhoto";
+import { hasAdministratorRole } from "../shell/navigation";
 import { PhotoCropDialog } from "./PhotoCropDialog";
 import { SettingsPasswordForm } from "./SettingsPasswordForm";
 import { SettingsProfileForm } from "./SettingsProfileForm";
@@ -173,6 +175,18 @@ export function SettingsPage() {
         <h3 className={styles.subsectionTitle}>Изменить пароль</h3>
         <SettingsPasswordForm />
       </Card>
+
+      {hasAdministratorRole(me.data.role_assignments) ? (
+        <Card className={styles.profileCard}>
+          <h2 className={styles.sectionTitle}>Администрирование</h2>
+          <p className={styles.note}>
+            Каналы Email и Telegram, глобальная политика уведомлений и тестовая отправка.
+          </p>
+          <p>
+            <Link to="/settings/notifications">Уведомления</Link>
+          </p>
+        </Card>
+      ) : null}
 
       <PhotoCropDialog
         file={selectedFile}

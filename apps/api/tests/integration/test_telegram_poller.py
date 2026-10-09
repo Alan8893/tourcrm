@@ -1,9 +1,13 @@
 """PostgreSQL integration tests for the Telegram long-polling runtime
-(Issue #329, ADR-0047 §3): checkpoint ordering and atomicity with linking,
-duplicate/replayed update ids, crash-before-commit replay, private-chat
-only linking, the single-poller lock, `409 Conflict`, configuration
-failures, bounded backoff, graceful stop and secret-free logs. The Bot API
-is the scripted in-memory transport — never real Telegram."""
+(Issue #329, ADR-0047 §3; dynamic configuration #333, ADR-0047 §6):
+checkpoint ordering and atomicity with linking, duplicate/replayed update
+ids, crash-before-commit replay, private-chat only linking, the
+single-poller lock, `409 Conflict`, configuration states read from
+Settings (not configured, secret unavailable, token rejected, username
+mismatch), token switching with lock handover and per-bot checkpoints,
+bounded backoff, graceful stop and secret-free logs. The Bot API is the
+scripted in-memory transport or a local fake server — never real
+Telegram."""
 
 import json
 import logging
@@ -32,10 +36,19 @@ from app.telegram.poller import (
     EXIT_CONFIGURATION,
     EXIT_CONFLICT,
     EXIT_OK,
+    STATE_POLLING,
+    STATE_TOKEN_REJECTED,
+    STATE_USERNAME_MISMATCH,
     PollerConfig,
     TelegramPoller,
+    TelegramPollerService,
 )
 from app.telegram.updates import REPLY_LINKED, REPLY_REJECTED
+from tests.notification_settings_helpers import (
+    TEST_KEY_B,
+    store_policy,
+    store_telegram_settings,
+)
 from tests.telegram_fakes import (
     BOT_ID,
     BOT_TOKEN,
@@ -84,7 +97,12 @@ def _transport() -> ScriptedTransport:
     )
 
 
-_FAST = PollerConfig(poll_timeout_seconds=1, backoff_base_seconds=0.01, backoff_max_seconds=0.05)
+_FAST = PollerConfig(
+    poll_timeout_seconds=1,
+    backoff_base_seconds=0.01,
+    backoff_max_seconds=0.05,
+    config_interval_seconds=0.01,
+)
 
 
 def _poller(transport: ScriptedTransport, **kwargs: Any) -> TelegramPoller:
@@ -132,7 +150,7 @@ def started() -> Any:
 
     def start(transport: ScriptedTransport, **kwargs: Any) -> TelegramPoller:
         instance = _poller(transport, **kwargs)
-        assert instance.start(threading.Event())
+        instance.start()
         created.append(instance)
         return instance
 
@@ -342,7 +360,41 @@ def test_stop_between_updates_leaves_the_rest_for_replay(started: Any) -> None:
     assert _checkpoint() == 900
 
 
-# --- Run loop: single poller, conflict, configuration, backoff, shutdown -------------------
+# --- Service loop: configuration, single poller, conflict, backoff, shutdown ---------------
+
+OTHER_BOT_ID = 987654321
+OTHER_BOT_TOKEN = "987654321:BBOtherFakeBotTokenForTestsOnly_987654xyz"
+
+
+def _service(
+    transports: "ScriptedTransport | dict[str, ScriptedTransport]",
+    *,
+    configure: bool = True,
+    username: Optional[str] = BOT_USERNAME,
+) -> TelegramPollerService:
+    """A service whose Bot API client is chosen by the configured token."""
+    if configure:
+        store_telegram_settings(token=BOT_TOKEN, username=username)
+    by_token = transports if isinstance(transports, dict) else {BOT_TOKEN: transports}
+    return TelegramPollerService(
+        engine=get_engine(),
+        session_factory=get_session_factory(),
+        config=_FAST,
+        client_factory=lambda settings: client_for(by_token[settings.bot_token]),
+    )
+
+
+def _lock_is_free(bot_id: int) -> bool:
+    with get_engine().connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+        key = {"key": f"tourcrm.telegram_poller:{bot_id}"}
+        acquired = connection.execute(
+            sa.text("SELECT pg_try_advisory_lock(hashtextextended(:key, 0))"), key
+        ).scalar_one()
+        if acquired:
+            connection.execute(
+                sa.text("SELECT pg_advisory_unlock(hashtextextended(:key, 0))"), key
+            )
+        return bool(acquired)
 
 
 @requires_postgres
@@ -350,18 +402,143 @@ def test_run_stops_gracefully_on_stop_event() -> None:
     stop = threading.Event()
     transport = _transport()
     _stop_when_drained(transport, stop)
-    assert _poller(transport).run(stop) == EXIT_OK
+    assert _service(transport).run(stop) == EXIT_OK
     # The lock was released: a new poller can start.
-    other = _poller(_transport())
-    assert other.start(threading.Event())
-    other.close()
+    assert _lock_is_free(BOT_ID)
+
+
+@requires_postgres
+def test_not_configured_idles_without_lock_then_starts_once_a_token_is_saved() -> None:
+    transport = _transport().script("getUpdates", ok([]))
+    service = _service(transport, configure=False)
+    stop = threading.Event()
+    assert service.run_once(stop) == _FAST.config_interval_seconds
+    assert service.state == "not_configured"
+    assert transport.calls == []
+    assert _checkpoint() is None
+
+    store_telegram_settings(token=BOT_TOKEN, username=BOT_USERNAME)
+    assert service.run_once(stop) is None
+    assert (service.state, service.active_bot_id) == (STATE_POLLING, BOT_ID)
+    assert len(transport.calls_to("getUpdates")) == 1
+    assert not _lock_is_free(BOT_ID)
+    service._deactivate()
+
+
+@requires_postgres
+def test_token_change_hands_the_lock_over_and_uses_the_new_bots_checkpoint() -> None:
+    user_id = _user()
+    old = _transport().script("getUpdates", ok([private_start(10, ANNA_TG, "hello")]))
+    new = ScriptedTransport(
+        defaults={
+            "getMe": get_me_ok(bot_id=OTHER_BOT_ID, username="other_club_bot"),
+            "sendMessage": ok({"message_id": 1}),
+        }
+    ).script("getUpdates", ok([private_start(3, ANNA_TG, f"/start {_issue(user_id)}")]))
+    service = _service({BOT_TOKEN: old, OTHER_BOT_TOKEN: new})
+    stop = threading.Event()
+    service.run_once(stop)
+    assert (service.active_bot_id, _checkpoint()) == (BOT_ID, 10)
+
+    # The administrator replaces the token and username in Settings.
+    store_telegram_settings(token=OTHER_BOT_TOKEN, username="other_club_bot")
+    assert service.run_once(stop) is None
+    assert service.active_bot_id == OTHER_BOT_ID
+    # Old bot's lock released, new bot's lock held — never both loops.
+    assert _lock_is_free(BOT_ID)
+    assert not _lock_is_free(OTHER_BOT_ID)
+    # The new bot polls from its own checkpoint (none yet), not the old one.
+    assert "offset" not in new.calls_to("getUpdates")[0].params
+    with session_scope() as session:
+        checkpoints = dict(
+            session.execute(
+                sa.select(
+                    TelegramUpdateCheckpoint.bot_id, TelegramUpdateCheckpoint.last_update_id
+                )
+            ).all()
+        )
+    assert checkpoints == {BOT_ID: 10, OTHER_BOT_ID: 3}
+    assert _active_identity(user_id) == ANNA_TG
+    # The old bot is no longer polled.
+    assert len(old.calls_to("getUpdates")) == 1
+    service._deactivate()
+    assert _lock_is_free(OTHER_BOT_ID)
+
+
+@requires_postgres
+def test_cleared_token_stops_polling_and_releases_the_lock() -> None:
+    transport = _transport().script("getUpdates", ok([]))
+    service = _service(transport)
+    stop = threading.Event()
+    service.run_once(stop)
+    assert not _lock_is_free(BOT_ID)
+    with session_scope() as session:
+        session.execute(sa.text("DELETE FROM integration_secrets"))
+        session.commit()
+    assert service.run_once(stop) == _FAST.config_interval_seconds
+    assert (service.state, service.active_bot_id) == ("not_configured", None)
+    assert _lock_is_free(BOT_ID)
+
+
+@requires_postgres
+def test_undecryptable_token_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = _transport()
+    service = _service(transport)
+    monkeypatch.setenv("SETTINGS_ENCRYPTION_KEYS", f"other:{TEST_KEY_B}")
+    assert service.run_once(threading.Event()) == _FAST.config_interval_seconds
+    assert service.state == "secret_unavailable"
+    assert transport.calls == []
+    monkeypatch.delenv("SETTINGS_ENCRYPTION_KEYS")
+    service.run_once(threading.Event())
+    assert service.state == "secret_unavailable"
+    assert transport.calls == []
+
+
+@requires_postgres
+def test_rejected_token_waits_for_a_configuration_change() -> None:
+    transport = ScriptedTransport(defaults={"getMe": api_error(401, "Unauthorized")})
+    service = _service(transport)
+    stop = threading.Event()
+    for _ in range(3):
+        assert service.run_once(stop) == _FAST.config_interval_seconds
+    assert service.state == STATE_TOKEN_REJECTED
+    # getMe is not retried with the same rejected token.
+    assert len(transport.calls_to("getMe")) == 1
+    assert transport.calls_to("getUpdates") == []
+    assert _lock_is_free(BOT_ID)
+
+
+@requires_postgres
+def test_username_mismatch_waits_and_recovers_when_the_username_is_fixed() -> None:
+    transport = _transport().script("getUpdates", ok([]))
+    service = _service(transport, username="other_club_bot")
+    stop = threading.Event()
+    assert service.run_once(stop) == _FAST.config_interval_seconds
+    assert service.state == STATE_USERNAME_MISMATCH
+    assert transport.calls_to("getUpdates") == []
+    assert _lock_is_free(BOT_ID)
+
+    store_telegram_settings(token=None, username=BOT_USERNAME)
+    assert service.run_once(stop) is None
+    assert service.state == STATE_POLLING
+    service._deactivate()
+
+
+@requires_postgres
+def test_telegram_delivery_policy_off_does_not_stop_the_poller() -> None:
+    store_policy(email=False, telegram=False)
+    transport = _transport().script("getUpdates", ok([private_start(40, ANNA_TG, "hello")]))
+    service = _service(transport)
+    service.run_once(threading.Event())
+    assert (service.state, _checkpoint()) == (STATE_POLLING, 40)
+    service._deactivate()
 
 
 @requires_postgres
 def test_second_poller_for_the_same_bot_exits_without_polling(started: Any) -> None:
     started(_transport())
     second_transport = _transport()
-    assert _poller(second_transport).run(threading.Event()) == EXIT_CONFLICT
+    assert _service(second_transport).run(threading.Event()) == EXIT_CONFLICT
     assert second_transport.calls_to("getUpdates") == []
 
 
@@ -373,27 +550,11 @@ def test_telegram_409_conflict_stops_with_a_safe_operational_error(
     transport = _transport().script(
         "getUpdates", api_error(409, "Conflict: terminated by other getUpdates request")
     )
-    assert _poller(transport).run(threading.Event()) == EXIT_CONFLICT
+    assert _service(transport).run(threading.Event()) == EXIT_CONFLICT
     assert len(transport.calls_to("getUpdates")) == 1
     assert "conflict" in caplog.text.lower()
     assert BOT_TOKEN not in caplog.text
-
-
-@requires_postgres
-def test_rejected_token_at_startup_is_a_configuration_exit() -> None:
-    transport = ScriptedTransport().script("getMe", api_error(401, "Unauthorized"))
-    assert _poller(transport).run(threading.Event()) == EXIT_CONFIGURATION
-    assert transport.calls_to("getUpdates") == []
-
-
-@requires_postgres
-def test_username_mismatch_is_a_configuration_exit() -> None:
-    transport = _transport()
-    assert (
-        _poller(transport, expected_username="other_club_bot").run(threading.Event())
-        == EXIT_CONFIGURATION
-    )
-    assert transport.calls_to("getUpdates") == []
+    assert _lock_is_free(BOT_ID)
 
 
 @requires_postgres
@@ -422,35 +583,29 @@ def test_transient_failures_back_off_boundedly_then_recover(
         ok([private_start(1000, ANNA_TG, "hello")]),
     )
     _stop_when_drained(transport, stop)
-    assert _poller(transport).run(stop) == EXIT_OK
+    assert _service(transport).run(stop) == EXIT_OK
     assert _checkpoint() == 1000
-    # getMe retry + 6 getUpdates failures; all bounded by backoff_max (0.05s),
-    # the 429's retry_after included.
-    assert len(waits) == 7
-    assert max(waits) <= _FAST.backoff_max_seconds
-    # Exponential, reset by nothing until success; the 429 waits its
-    # retry_after, capped at backoff_max.
-    assert waits[1:3] == [0.01, 0.02]
-    assert waits[3] == _FAST.backoff_max_seconds
+    # getMe failure + 6 getUpdates failures: exponential, bounded by
+    # backoff_max (0.05s) — the 429's retry_after included.
+    assert waits == [0.01, 0.02, 0.04, 0.05, 0.05, 0.05, 0.05]
 
 
 @requires_postgres
 def test_database_failure_in_the_loop_backs_off(monkeypatch: pytest.MonkeyPatch) -> None:
     stop = threading.Event()
     transport = _transport()
-    instance = _poller(transport)
     calls = {"n": 0}
-    real_checkpoint = instance.checkpoint
+    real_checkpoint = TelegramPoller.checkpoint
 
-    def flaky_checkpoint() -> Optional[int]:
+    def flaky_checkpoint(self: TelegramPoller) -> Optional[int]:
         calls["n"] += 1
         if calls["n"] == 1:
             raise sa.exc.OperationalError("SELECT 1", {}, Exception("db restarting"))
-        return real_checkpoint()
+        return real_checkpoint(self)
 
-    monkeypatch.setattr(instance, "checkpoint", flaky_checkpoint)
+    monkeypatch.setattr(TelegramPoller, "checkpoint", flaky_checkpoint)
     _stop_when_drained(transport, stop)
-    assert instance.run(stop) == EXIT_OK
+    assert _service(transport).run(stop) == EXIT_OK
     assert calls["n"] == 2
 
 
@@ -470,35 +625,56 @@ def test_logs_never_contain_token_or_message_text(caplog: pytest.LogCaptureFixtu
         ),
     )
     _stop_when_drained(transport, stop)
-    assert _poller(transport).run(stop) == EXIT_OK
-    for secret in (BOT_TOKEN, token, SECRET_TEXT, str(ANNA_TG)):
+    assert _service(transport).run(stop) == EXIT_OK
+    for secret in (BOT_TOKEN, BOT_TOKEN.split(":")[1], token, SECRET_TEXT, str(ANNA_TG)):
         assert secret not in caplog.text
     assert "update_id=1100 outcome=linked" in caplog.text
+
+
+@requires_postgres
+def test_unexpected_error_backs_off_and_logs_only_its_type(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    stop = threading.Event()
+    transport = _transport().script(
+        "getUpdates",
+        ok([private_start(1200, ANNA_TG, SECRET_TEXT)]),
+        ok([private_start(1200, ANNA_TG, SECRET_TEXT)]),
+    )
+    calls = {"n": 0}
+    real_handle = poller_module.handle_update
+
+    def broken_once(session: Any, item: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise KeyError(SECRET_TEXT)
+        return real_handle(session, item)
+
+    monkeypatch.setattr(poller_module, "handle_update", broken_once)
+    _stop_when_drained(transport, stop)
+    assert _service(transport).run(stop) == EXIT_OK
+    assert _checkpoint() == 1200
+    assert "type=KeyError" in caplog.text
+    assert SECRET_TEXT not in caplog.text
 
 
 # --- CLI -----------------------------------------------------------------------------------
 
 
 @requires_postgres
-def test_cli_without_token_exits_with_configuration_error(
+def test_cli_invalid_poller_tuning_exits_with_configuration_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("TELEGRAM_POLL_TIMEOUT_SECONDS", "0")
     assert run_telegram_poller.main() == EXIT_CONFIGURATION
 
 
 @requires_postgres
-def test_cli_invalid_token_is_not_echoed(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+def test_cli_process_reads_the_token_from_settings_and_stops_on_sigterm(
+    database_url: str,
 ) -> None:
-    bad = "this-is-not-a-valid-token-but-secret"
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", bad)
-    assert run_telegram_poller.main() == EXIT_CONFIGURATION
-    assert bad not in caplog.text
-
-
-@requires_postgres
-def test_cli_process_shuts_down_gracefully_on_sigterm(database_url: str) -> None:
+    store_telegram_settings(token=BOT_TOKEN, username=BOT_USERNAME)
     me = {"ok": True, "result": {"id": BOT_ID, "is_bot": True, "username": BOT_USERNAME}}
     config = FakeBotApiServerConfig(
         by_method={
@@ -508,13 +684,17 @@ def test_cli_process_shuts_down_gracefully_on_sigterm(database_url: str) -> None
     )
     with FakeBotApiServer(config) as server:
         env = {
-            **os.environ,
-            "DATABASE_URL": database_url,
-            "TELEGRAM_BOT_TOKEN": BOT_TOKEN,
-            "TELEGRAM_BOT_USERNAME": BOT_USERNAME,
-            "TELEGRAM_API_BASE_URL": server.base_url,
-            "TELEGRAM_POLL_TIMEOUT_SECONDS": "1",
+            key: value
+            for key, value in os.environ.items()
+            if key not in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME")
         }
+        env.update(
+            {
+                "DATABASE_URL": database_url,
+                "TELEGRAM_API_BASE_URL": server.base_url,
+                "TELEGRAM_POLL_TIMEOUT_SECONDS": "1",
+            }
+        )
         process = subprocess.Popen(
             [sys.executable, "-m", "app.cli.run_telegram_poller"],
             cwd=Path(__file__).resolve().parents[2],
@@ -537,31 +717,5 @@ def test_cli_process_shuts_down_gracefully_on_sigterm(database_url: str) -> None
     assert process.returncode == EXIT_OK
     text = output.decode()
     assert "telegram poller started" in text and "telegram poller stopped" in text
-    assert BOT_TOKEN not in text
-
-
-@requires_postgres
-def test_unexpected_error_backs_off_and_logs_only_its_type(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    caplog.set_level(logging.DEBUG)
-    stop = threading.Event()
-    transport = _transport().script(
-        "getUpdates", ok([private_start(1200, ANNA_TG, SECRET_TEXT)])
-    )
-    calls = {"n": 0}
-    real_handle = poller_module.handle_update
-
-    def broken_once(session: Any, item: Any) -> Any:
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise KeyError(SECRET_TEXT)
-        return real_handle(session, item)
-
-    monkeypatch.setattr(poller_module, "handle_update", broken_once)
-    transport.script("getUpdates", ok([private_start(1200, ANNA_TG, SECRET_TEXT)]))
-    _stop_when_drained(transport, stop)
-    assert _poller(transport).run(stop) == EXIT_OK
-    assert _checkpoint() == 1200
-    assert "type=KeyError" in caplog.text
-    assert SECRET_TEXT not in caplog.text
+    assert "state=polling" in text
+    assert BOT_TOKEN not in text and BOT_TOKEN.split(":")[1] not in text

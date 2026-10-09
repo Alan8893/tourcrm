@@ -60,6 +60,14 @@ The UI must distinguish:
 - disabled by user preference;
 - enabled and deliverable.
 
+### Implemented scope (Issue #333, ADR-0048)
+
+- **General** is the per-channel Global Admin Policy (Email on/off, Telegram on/off) plus each channel's readiness; with no saved policy every channel is off.
+- **Notification rules** lists the existing installation-wide rules (`club_id = NULL`) with an enable/disable switch only — no create/delete, no event catalog editing; an empty list is a normal state.
+- **Email** and **Telegram** edit the non-secret settings; the SMTP password and bot token are write-only fields showing `••••••••` when configured, with separate «Заменить» and «Очистить» (confirmation dialog) actions. Saving the other fields never sends or changes a secret.
+- **Test message**: Email to an address entered by the administrator; Telegram to the administrator's own linked account or an existing enabled destination. Results are labelled as test results.
+- Telegram destination/topic management, user-linking overview and user preferences remain separate slices.
+
 ## 3. User surface
 
 Authenticated users receive **My Notifications / Notification Preferences** in Settings.

@@ -44,6 +44,7 @@ from app.notifications.vocabulary import (
 )
 from app.outbox.service import enqueue_outbox_job
 from app.outbox.worker import OutboxWorker, WorkerConfig
+from tests.notification_settings_helpers import store_email_settings, store_policy
 from tests.smtp_server import FakeSmtpConfig, FakeSmtpServer
 
 from .conftest import requires_postgres
@@ -215,10 +216,13 @@ def test_full_path_through_the_production_worker_and_a_real_smtp_conversation() 
     ids = _email_delivery()
     config = FakeSmtpConfig(username="mailer", password=SECRET)
     with FakeSmtpServer(config) as server:
-        settings = _settings(host="127.0.0.1", port=server.port, security="none")
-        worker = build_worker(
-            WorkerConfig(worker_id=f"w-{uuid.uuid4().hex[:6]}"), smtp_settings=settings
+        # Configured the way Settings stores it (ADR-0048): DB + encrypted
+        # password, read by the worker's adapter for this delivery.
+        store_policy(email=True)
+        store_email_settings(
+            host="127.0.0.1", port=server.port, security="none", password=SECRET
         )
+        worker = build_worker(WorkerConfig(worker_id=f"w-{uuid.uuid4().hex[:6]}"))
         (report,) = worker.run_once()
 
     assert report.result == "completed"
@@ -390,11 +394,13 @@ def test_smtp_password_never_reaches_state_logs_or_payloads(
     # A server that echoes the credentials in its rejection text.
     config = FakeSmtpConfig(username="mailer", password="expected-other")
     with FakeSmtpServer(config) as server:
-        settings = _settings(host="127.0.0.1", port=server.port, security="none")
-        worker = build_worker(
-            WorkerConfig(worker_id=f"w-{uuid.uuid4().hex[:6]}"), smtp_settings=settings
+        store_policy(email=True)
+        store_email_settings(
+            host="127.0.0.1", port=server.port, security="none", password=SECRET
         )
+        worker = build_worker(WorkerConfig(worker_id=f"w-{uuid.uuid4().hex[:6]}"))
         (report,) = worker.run_once()
+    settings = _settings(host="127.0.0.1", security="none")
 
     assert (report.result, report.error_code) == ("dead", SMTP_AUTHENTICATION_FAILED)
     job, delivery = _job(ids["job"]), _delivery(ids["delivery"])

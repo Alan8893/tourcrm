@@ -10,8 +10,9 @@ the Telegram identity is established only by the bot receiving
 - `GET` — whether the caller has an active Telegram identity.
 - `POST /challenges` — issue (or reissue, revoking the previous pending
   one) a one-time challenge; returns the deep link to the configured bot.
-  Rate-limited per User (429). 503 `telegram_linking_unavailable` when
-  TELEGRAM_BOT_USERNAME is not configured. `Cache-Control: no-store`: the
+  Rate-limited per User (429). 503 `telegram_linking_unavailable` when no
+  bot username is configured in Settings → Notifications (ADR-0048).
+  `Cache-Control: no-store`: the
   deep link carries the raw token.
 - `DELETE` — unlink the active identity and revoke pending challenges.
   Idempotent 204.
@@ -24,8 +25,8 @@ from app.api.deps import CurrentPrincipal, require_authenticated_principal, requ
 from app.api.errors import APIError
 from app.api.request_context import get_request_id
 from app.api.v1.telegram_link_schemas import TelegramLinkChallengeOut, TelegramLinkStatusOut
-from app.core.config import ConfigurationError, get_telegram_bot_username
 from app.db.session import get_db
+from app.notification_settings.runtime import load_telegram_bot_username
 from app.telegram import linking
 
 router = APIRouter(prefix="/me/telegram-link", tags=["me"])
@@ -54,10 +55,8 @@ def create_my_telegram_link_challenge(
     db: Session = Depends(get_db),
     _csrf: None = Depends(require_csrf_token),
 ) -> TelegramLinkChallengeOut:
-    try:
-        bot_username = get_telegram_bot_username()
-    except ConfigurationError:
-        bot_username = None
+    # ADR-0048 §2.9: the current username from Settings, read per request.
+    bot_username = load_telegram_bot_username(db)
     if bot_username is None:
         raise APIError(
             status.HTTP_503_SERVICE_UNAVAILABLE,

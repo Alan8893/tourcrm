@@ -45,7 +45,7 @@ Errors:
 | 401 | `unauthorized` | not authenticated |
 | 403 | `forbidden` | missing/invalid CSRF token, or the account is not active |
 | 429 | `too_many_requests` | issuance rate limit exceeded |
-| 503 | `telegram_linking_unavailable` | `TELEGRAM_BOT_USERNAME` is not configured (or invalid) |
+| 503 | `telegram_linking_unavailable` | the Telegram bot username is not configured in Settings → Notifications (ADR-0048) |
 
 ## `DELETE /api/v1/me/telegram-link`
 

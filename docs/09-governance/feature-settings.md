@@ -98,7 +98,7 @@ The notification configuration has three distinct categories:
 
 For the current single-club installation, notification administration uses one Global Admin Policy. There is no separate Club Admin Policy API or UI. Existing nullable `club_id` fields are retained for compatibility, but the admin UI manages installation-wide rules only (`club_id = NULL`).
 
-Integration configuration and secrets are managed through the protected administrator Settings UI under ADR-0048. Secret values are encrypted at rest, write-only after save, and never returned by API. The UI shows a masked placeholder and configured/not-configured status; replacing or clearing a secret is a separate explicit action. The encryption key is provided by deployment secret configuration and is not stored beside ciphertext.
+Integration configuration and secrets are managed through the protected administrator Settings UI under ADR-0048. Secret values are encrypted at rest, write-only after save, and never returned by API. The UI shows a masked placeholder and configured/not-configured status; replacing or clearing a secret is a separate explicit action. The encryption key is provided by deployment secret configuration and is not stored beside ciphertext. Environment variables are not an alternative or fallback source for SMTP/Telegram integration configuration or secrets; the only deployment secret of this area is the encryption key ring (ADR-0048 §2.6).
 
 The effective notification decision follows (ADR-0045 §2.4):
 

@@ -380,9 +380,16 @@ Webhook endpoints должны:
 - логировать correlation metadata без секретов;
 - быть идемпотентными, где возможно.
 
-### 21.1 Telegram (ADR-0047, Issue #329)
+### 21.1 UI-managed integration secrets (ADR-0048, Issue #333)
 
-- Bot token — секрет только в environment/secret management процессов outbox worker и telegram-poller; API его не получает. Не хранится в БД (включая `system_settings`, checkpoint, outbox payload), не возвращается API, не попадает в логи, исключения и repr: он является частью URL каждого Bot API запроса, поэтому `app.telegram.bot_api` превращает любой сбой транспорта в стабильный код без исходного исключения. По той же причине endpoint Bot API — allowlist: только `https://api.telegram.org` (порт 443) либо loopback HTTP для локального fake-сервера; `TELEGRAM_API_BASE_URL` проверяется URL-парсером (хост, userinfo, порт, путь, query/fragment), и некорректное значение останавливает процесс до первого запроса.
+- SMTP password и Telegram bot token вводятся администратором в Settings → Notifications (`settings.manage`) и хранятся в PostgreSQL только зашифрованными: AES-256-GCM (`cryptography`), формат с версией, key id, случайным nonce и тегом; идентификатор секрета связан как associated data. Ключи — только в deployment secret configuration (`SETTINGS_ENCRYPTION_KEYS`), отдельно от ciphertext; ротация — CLI перешифрования (`docs/08-infrastructure/infrastructure-and-devops.md` §9.1).
+- Write-only: API никогда не возвращает ни значение, ни ciphertext, ни ключ — только «настроен / не настроен». Замена — явное новое значение, очистка — отдельное действие с подтверждением. Нет ключа, неверный ключ, неизвестный key id, подмена ciphertext — fail closed, без открытого хранения и без fallback на env.
+- Секреты не попадают в логи, audit details, ошибки API, outbox payload, delivery error text и telemetry; audit фиксирует только actor, действие, какой секрет и результат.
+- Тестовая отправка (`notification.manage`) ограничена 5 попытками за 10 минут на администратора (PostgreSQL), не создаёт Notification/Delivery/outbox job, Telegram — только на собственный привязанный аккаунт администратора или существующий включённый `telegram_destination`.
+
+### 21.2 Telegram (ADR-0047, Issue #329)
+
+- Bot token — UI-managed секрет (§21.1); не хранится в открытом виде (включая feature settings, checkpoint, outbox payload), не возвращается API, не попадает в логи, исключения и repr: он является частью URL каждого Bot API запроса, поэтому `app.telegram.bot_api` превращает любой сбой транспорта в стабильный код без исходного исключения. По той же причине endpoint Bot API — allowlist: только `https://api.telegram.org` (порт 443) либо loopback HTTP для локального fake-сервера.
 - Входящие updates принимаются только long polling (без публичного endpoint и webhook). Ровно один poller на токен; конфликт (`409`) останавливает процесс без раскрытия секрета.
 - Привязка Telegram-аккаунта: Telegram id берётся только из доверенного update (`/start <token>` в private chat от не-бота с `chat.id == from.id`), никогда от браузера. Одноразовый токен — 256 бит из CSPRNG, в БД только SHA-256, срок 15 минут, однократное использование, повторная выдача отзывает прежний, лимит 5 выдач в час на User. Все отказы (неизвестный, истёкший, использованный, отозванный токен, конфликт identity, неактивный владелец) дают одинаковый ответ бота. Telegram-аккаунт, активно привязанный к другому User, никогда не переносится молча.
 - Потребление challenge и привязка атомарны (блокировки строк + частичные UNIQUE-индексы); прогресс poller и привязка коммитятся в одной транзакции.

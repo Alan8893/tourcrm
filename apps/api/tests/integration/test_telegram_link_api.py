@@ -20,6 +20,7 @@ from app.db.telegram import TelegramIdentity, TelegramLinkChallenge
 from app.main import app
 from app.telegram import linking
 from app.telegram.vocabulary import CHALLENGE_RATE_LIMIT_COUNT
+from tests.notification_settings_helpers import store_telegram_settings
 from tests.telegram_fakes import BOT_TOKEN, BOT_USERNAME
 
 from .conftest import requires_postgres
@@ -40,8 +41,8 @@ def _user() -> uuid.UUID:
 
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
-    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", BOT_USERNAME)
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    # ADR-0048: the username comes from Settings (PostgreSQL), never env.
+    store_telegram_settings(token=None, username=BOT_USERNAME)
     test_client = TestClient(app, raise_server_exceptions=True)
     yield test_client
     app.dependency_overrides.pop(get_current_principal, None)
@@ -95,16 +96,22 @@ def test_issue_without_bot_configuration_is_unavailable(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _login(_user())
-    for value in (None, "not a bot username"):
-        if value is None:
-            monkeypatch.delenv("TELEGRAM_BOT_USERNAME")
-        else:
-            monkeypatch.setenv("TELEGRAM_BOT_USERNAME", value)
-        response = client.post(f"{BASE}/challenges", headers=_csrf(client))
-        assert response.status_code == 503
-        assert response.json()["error"]["code"] == "telegram_linking_unavailable"
+    # An environment value is not a fallback source (ADR-0048 §2.6).
+    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "env_only_bot")
+    store_telegram_settings(token=None, username=None)
+    response = client.post(f"{BASE}/challenges", headers=_csrf(client))
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "telegram_linking_unavailable"
     # Status still works: missing Telegram config never breaks the API.
     assert client.get(BASE).json() == {"linked": False, "linked_at": None}
+
+
+@requires_postgres
+def test_username_change_applies_to_the_next_link_without_restart(client: TestClient) -> None:
+    _login(_user())
+    store_telegram_settings(token=None, username="other_club_bot")
+    deep_link = client.post(f"{BASE}/challenges", headers=_csrf(client)).json()["deep_link"]
+    assert urlparse(deep_link).path == "/other_club_bot"
 
 
 @requires_postgres

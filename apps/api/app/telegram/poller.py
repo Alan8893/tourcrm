@@ -1,48 +1,61 @@
-"""The Telegram long-polling runtime (Issue #329, ADR-0047 §3).
+"""The Telegram long-polling runtime (Issue #329, ADR-0047 §3; dynamic
+configuration Issue #333, ADR-0047 §6 / ADR-0048 §2.9).
 
 A dedicated process (app.cli.run_telegram_poller) — not a FastAPI
 background task and not part of the outbox worker. It never creates or
 dispatches notification deliveries.
 
-Startup (`start`):
+Two layers:
 
-1. `getMe` — verifies the token and yields the bot's public numeric id
-   (the checkpoint key) and username. When TELEGRAM_BOT_USERNAME is set it
-   must match, otherwise the API's deep links would point at another bot.
-2. Single poller per bot (ADR-0047 §3.1): a PostgreSQL session-level
-   advisory lock keyed on the bot id, held on a dedicated AUTOCOMMIT
-   connection for the process lifetime. A second poller against the same
-   database exits at once. Telegram's own `409 Conflict` (another
-   `getUpdates` consumer elsewhere, or a webhook) also stops the process
-   with a secret-free error instead of competing.
-3. Ensure the bot's `telegram_update_checkpoints` row exists.
+- `TelegramPoller` — one polling session for one bot token:
+  1. `start`: `getMe` verifies the token and yields the bot's public
+     numeric id (the checkpoint key); the configured bot username, when
+     set, must match. Then the single-poller lock (ADR-0047 §3.1): a
+     PostgreSQL session-level advisory lock keyed on the bot id, held on a
+     dedicated AUTOCOMMIT connection, and the bot's
+     `telegram_update_checkpoints` row is ensured. A second poller for the
+     same bot is a fatal conflict (exit 3).
+  2. `poll_once`: `getUpdates(offset = last_update_id + 1)`, then updates
+     are processed **sequentially**, each in its own transaction that locks
+     the checkpoint row, skips an `update_id` at or below the checkpoint
+     (replay/duplicate — idempotent, no business effect), runs
+     app.telegram.updates.handle_update and advances the checkpoint, then
+     commits. The link and the checkpoint commit atomically (ADR-0047 §4.1
+     step 6): a crash before the commit replays the update; a crash after
+     it cannot repeat the effect. Telegram is acknowledged only by the next
+     poll's offset, read from the committed checkpoint. The bot's reply is
+     sent after the commit (at most once).
+  3. `close`: releases the advisory lock.
 
-Each cycle (`poll_once`): `getUpdates(offset = last_update_id + 1)`, then
-updates are processed **sequentially**, each in its own transaction that
-locks the checkpoint row, skips an `update_id` at or below the checkpoint
-(replay/duplicate — idempotent, no business effect), runs
-app.telegram.updates.handle_update and advances the checkpoint to that
-`update_id`, then commits. The link and the checkpoint therefore commit
-atomically (ADR-0047 §4.1 step 6): a crash before the commit replays the
-update; a crash after it cannot repeat the effect. Telegram itself is
-only acknowledged by the next poll's offset, which is read from the
-committed checkpoint. A processing error rolls back and stops the batch;
-the update is retried after a bounded backoff. The bot's reply is sent
-after the commit (at most once; a lost reply is not re-sent).
+- `TelegramPollerService` — the process loop. Between polls it re-reads the
+  Telegram configuration from PostgreSQL (app.notification_settings.runtime,
+  a short session closed before any Bot API call). When the token (or the
+  bot username) changes, the current session finishes its update in
+  progress and is closed — releasing the old bot's lock — before a new
+  session verifies the new token and takes the new bot's lock, so two poll
+  loops never run for one token and each bot continues from its own
+  checkpoint. While Telegram is not configured, its token cannot be
+  decrypted, Telegram rejects it (401/404) or the username does not match
+  the token's bot, no lock is held, nothing is polled and the configuration
+  is re-checked every `config_interval_seconds`. The Global Admin Policy's
+  Telegram switch is not consulted: it governs delivery only.
 
-Transient Bot API/transport failures (and database or unexpected errors) back off
-exponentially, bounded by `backoff_max`; a 429 waits `retry_after`
-(bounded the same way). SIGTERM/SIGINT set `stop`: the poller finishes
-the update in progress and exits; unprocessed updates of the batch are
-replayed by the next run.
+Transient Bot API/transport failures, database errors and unexpected errors
+back off exponentially, bounded by `backoff_max`; a 429 waits `retry_after`
+(bounded the same way). Only a conflict (another poller for the bot, or
+Telegram's `409 Conflict`) stops the process. SIGTERM/SIGINT set `stop`:
+the poller finishes the update in progress and exits; unprocessed updates
+of the batch are replayed by the next run.
 
-Logs carry only safe fields — update id, outcome, error code — never the
-token, the message text or a Telegram user/chat id.
+Logs carry only safe fields — bot id, update id, state, outcome, error
+code — never the token, the message text or a Telegram user/chat id.
 """
 
+import hashlib
 import logging
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -52,27 +65,40 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
+from app.core.config import TelegramSettings
 from app.db.telegram import TelegramUpdateCheckpoint
+from app.notification_settings.runtime import TelegramRuntime, load_telegram_runtime
+from app.notification_settings.vocabulary import CONFIG_CONFIGURED
 from app.telegram.bot_api import (
+    TELEGRAM_CONFIGURATION_INVALID,
     TELEGRAM_CONFLICT,
     BotApiClient,
-    BotIdentity,
     TelegramApiError,
+    build_bot_api_client,
 )
 from app.telegram.updates import UpdateResult, handle_update
 
 logger = logging.getLogger("tourcrm.telegram_poller")
 
 EXIT_OK = 0
-EXIT_UNAVAILABLE = 1
 EXIT_CONFIGURATION = 2
 EXIT_CONFLICT = 3
+
+# Service states (logged on change; ADR-0047 §6).
+STATE_POLLING = "polling"
+STATE_TOKEN_REJECTED = "token_rejected"
+STATE_USERNAME_MISMATCH = "username_mismatch"
+STATE_BOT_API_UNAVAILABLE = "bot_api_unavailable"
 
 _ADVISORY_LOCK_NAMESPACE = "tourcrm.telegram_poller:"
 
 
 class PollerConfigurationError(ValueError):
     """A poller setting is invalid."""
+
+
+class UsernameMismatch(Exception):
+    """The configured bot username is not the token's bot."""
 
 
 class PollerFatalError(Exception):
@@ -87,13 +113,17 @@ class PollerFatalError(Exception):
 @dataclass(frozen=True)
 class PollerConfig:
     """Environment (all optional): TELEGRAM_POLL_TIMEOUT_SECONDS,
-    TELEGRAM_POLL_BACKOFF_BASE_SECONDS, TELEGRAM_POLL_BACKOFF_MAX_SECONDS."""
+    TELEGRAM_POLL_BACKOFF_BASE_SECONDS, TELEGRAM_POLL_BACKOFF_MAX_SECONDS,
+    TELEGRAM_POLL_CONFIG_INTERVAL_SECONDS. Process tuning only — the bot
+    token and username come from Settings (ADR-0048)."""
 
     # Telegram long-poll wait per getUpdates request.
     poll_timeout_seconds: int = 20
     batch_limit: int = 100
     backoff_base_seconds: float = 1.0
     backoff_max_seconds: float = 60.0
+    # Re-check interval while Telegram is not usable.
+    config_interval_seconds: float = 10.0
 
     def __post_init__(self) -> None:
         if not 1 <= self.poll_timeout_seconds <= 50:
@@ -105,6 +135,10 @@ class PollerConfig:
         if self.backoff_max_seconds < self.backoff_base_seconds:
             raise PollerConfigurationError(
                 "TELEGRAM_POLL_BACKOFF_MAX_SECONDS must not be below the base"
+            )
+        if not 0 < self.config_interval_seconds <= 3600:
+            raise PollerConfigurationError(
+                "TELEGRAM_POLL_CONFIG_INTERVAL_SECONDS must be in (0, 3600]"
             )
 
     @classmethod
@@ -129,6 +163,9 @@ class PollerConfig:
             backoff_max_seconds=number(
                 "TELEGRAM_POLL_BACKOFF_MAX_SECONDS", defaults.backoff_max_seconds
             ),
+            config_interval_seconds=number(
+                "TELEGRAM_POLL_CONFIG_INTERVAL_SECONDS", defaults.config_interval_seconds
+            ),
         )
 
 
@@ -146,6 +183,8 @@ def _update_id(update: dict[str, Any]) -> Optional[int]:
 
 
 class TelegramPoller:
+    """One polling session for one bot token (see the module docstring)."""
+
     def __init__(
         self,
         *,
@@ -168,45 +207,27 @@ class TelegramPoller:
 
     # --- startup / shutdown --------------------------------------------------
 
-    def _identify(self, stop: threading.Event) -> Optional[BotIdentity]:
-        failures = 0
-        while not stop.is_set():
-            try:
-                return self._client.get_me()
-            except TelegramApiError as exc:
-                if not exc.retryable:
-                    raise PollerFatalError(
-                        f"telegram poller cannot start error_code={exc.code}",
-                        EXIT_CONFLICT if exc.code == TELEGRAM_CONFLICT else EXIT_CONFIGURATION,
-                    ) from None
-                failures += 1
-                delay = self._delay(failures, exc)
-                logger.warning(
-                    "telegram getMe failed error_code=%s retry_in_s=%.1f", exc.code, delay
-                )
-                stop.wait(delay)
-        return None
-
-    def start(self, stop: threading.Event) -> bool:
+    def start(self) -> None:
         """Identify the bot, take the single-poller lock and ensure the
-        checkpoint row. False when stopped before identification."""
-        identity = self._identify(stop)
-        if identity is None:
-            return False
+        checkpoint row. Raises TelegramApiError (getMe failed),
+        UsernameMismatch, or PollerFatalError (another poller holds the
+        bot's lock)."""
+        identity = self._client.get_me()
         if self._expected_username is not None and (
             identity.username is None
             or identity.username.lower() != self._expected_username.lower()
         ):
-            raise PollerFatalError(
-                "TELEGRAM_BOT_USERNAME does not match the bot of TELEGRAM_BOT_TOKEN",
-                EXIT_CONFIGURATION,
-            )
+            raise UsernameMismatch()
         self.bot_id = identity.bot_id
         connection = self._engine.connect().execution_options(isolation_level="AUTOCOMMIT")
-        acquired = connection.execute(
-            sa.text("SELECT pg_try_advisory_lock(hashtextextended(:key, 0))"),
-            {"key": f"{_ADVISORY_LOCK_NAMESPACE}{identity.bot_id}"},
-        ).scalar_one()
+        try:
+            acquired = connection.execute(
+                sa.text("SELECT pg_try_advisory_lock(hashtextextended(:key, 0))"),
+                {"key": f"{_ADVISORY_LOCK_NAMESPACE}{identity.bot_id}"},
+            ).scalar_one()
+        except BaseException:
+            connection.close()
+            raise
         if not acquired:
             connection.close()
             raise PollerFatalError(
@@ -222,7 +243,6 @@ class TelegramPoller:
             )
             session.commit()
         logger.info("telegram poller started bot_id=%d", identity.bot_id)
-        return True
 
     def close(self) -> None:
         connection, self._lock_connection = self._lock_connection, None
@@ -237,6 +257,7 @@ class TelegramPoller:
             pass
         finally:
             connection.close()
+        logger.info("telegram poller released bot_id=%s", self.bot_id)
 
     def _ensure_lock_held(self) -> None:
         connection = self._lock_connection
@@ -302,7 +323,7 @@ class TelegramPoller:
 
     def poll_once(self, stop: threading.Event) -> int:
         """One getUpdates round. Returns the number of updates processed.
-        Raises TelegramApiError/SQLAlchemyError for the run loop."""
+        Raises TelegramApiError/SQLAlchemyError for the service loop."""
         self._ensure_lock_held()
         last = self.checkpoint()
         updates = self._client.get_updates(
@@ -327,82 +348,213 @@ class TelegramPoller:
                 self._reply(result)
         return processed
 
+
+ClientFactory = Callable[[TelegramSettings], BotApiClient]
+
+
+def _fingerprint(settings: TelegramSettings) -> bytes:
+    """In-memory identity of a configuration (never logged or stored)."""
+    return hashlib.sha256(
+        f"{settings.bot_token}\0{settings.bot_username or ''}".encode("utf-8")
+    ).digest()
+
+
+class TelegramPollerService:
+    """The poller process loop with dynamic configuration (module docstring)."""
+
+    def __init__(
+        self,
+        *,
+        engine: Engine,
+        session_factory: sessionmaker,
+        config: PollerConfig,
+        client_factory: ClientFactory = build_bot_api_client,
+    ) -> None:
+        self._engine = engine
+        self._session_factory = session_factory
+        self._config = config
+        self._client_factory = client_factory
+        self._active: Optional[TelegramPoller] = None
+        self._active_fingerprint: Optional[bytes] = None
+        # A configuration Telegram rejected or whose username mismatched:
+        # not retried until the configuration changes.
+        self._rejected_fingerprint: Optional[bytes] = None
+        self.state: Optional[str] = None
+
+    def __repr__(self) -> str:
+        bot_id = self._active.bot_id if self._active is not None else None
+        return f"TelegramPollerService(state={self.state!r}, bot_id={bot_id!r})"
+
+    @property
+    def active_bot_id(self) -> Optional[int]:
+        return self._active.bot_id if self._active is not None else None
+
+    def _set_state(self, state: str) -> None:
+        if state != self.state:
+            logger.info("telegram poller state=%s bot_id=%s", state, self.active_bot_id)
+            self.state = state
+
+    def _load(self) -> TelegramRuntime:
+        with self._session_factory() as session:
+            runtime = load_telegram_runtime(session)
+            session.rollback()
+        return runtime
+
+    def _deactivate(self) -> None:
+        active, self._active, self._active_fingerprint = self._active, None, None
+        if active is not None:
+            active.close()
+
     def _delay(self, failures: int, exc: Optional[TelegramApiError] = None) -> float:
         delay = backoff_delay(failures, self._config)
         if exc is not None and exc.retry_after is not None:
             delay = min(max(float(exc.retry_after), delay), self._config.backoff_max_seconds)
         return delay
 
-    def run(self, stop: threading.Event) -> int:
-        """Run until `stop` or a fatal error. Returns the exit status."""
+    def _activate(self, settings: TelegramSettings, fingerprint: bytes) -> Optional[str]:
+        """Start a session for `settings`. Returns None when polling, or the
+        state to wait in. Raises TelegramApiError (retryable) and
+        PollerFatalError."""
+        poller = TelegramPoller(
+            client=self._client_factory(settings),
+            engine=self._engine,
+            session_factory=self._session_factory,
+            config=self._config,
+            expected_username=settings.bot_username,
+        )
         try:
-            if not self.start(stop):
-                return EXIT_OK
-            failures = 0
+            poller.start()
+        except UsernameMismatch:
+            poller.close()
+            self._rejected_fingerprint = fingerprint
+            return STATE_USERNAME_MISMATCH
+        except TelegramApiError as exc:
+            poller.close()
+            if exc.code == TELEGRAM_CONFLICT:
+                raise PollerFatalError(
+                    "telegram getUpdates conflict: another poller or a webhook is active; "
+                    "stopping",
+                    EXIT_CONFLICT,
+                ) from None
+            if exc.code == TELEGRAM_CONFIGURATION_INVALID:
+                self._rejected_fingerprint = fingerprint
+                return STATE_TOKEN_REJECTED
+            if not exc.retryable:
+                logger.warning("telegram getMe failed error_code=%s", exc.code)
+                return STATE_BOT_API_UNAVAILABLE
+            raise
+        except BaseException:
+            poller.close()
+            raise
+        self._active, self._active_fingerprint = poller, fingerprint
+        self._rejected_fingerprint = None
+        return None
+
+    def run_once(self, stop: threading.Event) -> Optional[float]:
+        """One supervision step. Returns how long to wait before the next
+        step (None: continue at once). Raises TelegramApiError,
+        SQLAlchemyError and PollerFatalError for `run`."""
+        runtime = self._load()
+        settings = runtime.settings if runtime.state == CONFIG_CONFIGURED else None
+        fingerprint = _fingerprint(settings) if settings is not None else None
+        if self._active is not None and fingerprint != self._active_fingerprint:
+            logger.info("telegram poller configuration changed bot_id=%s", self.active_bot_id)
+            self._deactivate()
+        if settings is None or fingerprint is None:
+            self._set_state(runtime.state)
+            return self._config.config_interval_seconds
+        if fingerprint == self._rejected_fingerprint:
+            return self._config.config_interval_seconds
+        if self._active is None:
+            waiting = self._activate(settings, fingerprint)
+            if waiting is not None:
+                self._set_state(waiting)
+                return self._config.config_interval_seconds
+            self._set_state(STATE_POLLING)
+        assert self._active is not None
+        try:
+            self._active.poll_once(stop)
+        except TelegramApiError as exc:
+            if exc.code == TELEGRAM_CONFLICT:
+                raise PollerFatalError(
+                    "telegram getUpdates conflict: another poller or a webhook is active for "
+                    f"bot_id={self.active_bot_id}; stopping",
+                    EXIT_CONFLICT,
+                ) from None
+            if not exc.retryable:
+                if exc.code == TELEGRAM_CONFIGURATION_INVALID:
+                    self._rejected_fingerprint = fingerprint
+                    state = STATE_TOKEN_REJECTED
+                else:
+                    logger.warning("telegram getUpdates failed error_code=%s", exc.code)
+                    state = STATE_BOT_API_UNAVAILABLE
+                self._deactivate()
+                self._set_state(state)
+                return self._config.config_interval_seconds
+            raise
+        return None
+
+    def run(self, stop: threading.Event) -> int:
+        """Run until `stop` or a conflict. Returns the exit status."""
+        failures = 0
+        try:
             while not stop.is_set():
                 try:
-                    self.poll_once(stop)
+                    wait = self.run_once(stop)
                     failures = 0
                 except TelegramApiError as exc:
-                    if exc.code == TELEGRAM_CONFLICT:
-                        raise PollerFatalError(
-                            "telegram getUpdates conflict: another poller or a webhook is "
-                            f"active for bot_id={self.bot_id}; stopping",
-                            EXIT_CONFLICT,
-                        ) from None
-                    if not exc.retryable:
-                        raise PollerFatalError(
-                            f"telegram poller stopped error_code={exc.code}", EXIT_CONFIGURATION
-                        ) from None
                     failures += 1
-                    delay = self._delay(failures, exc)
+                    wait = self._delay(failures, exc)
                     logger.warning(
                         "telegram getUpdates failed error_code=%s retry_in_s=%.1f",
                         exc.code,
-                        delay,
+                        wait,
                     )
-                    stop.wait(delay)
                 except SQLAlchemyError:
                     failures += 1
-                    delay = self._delay(failures)
+                    wait = self._delay(failures)
                     logger.warning(
                         "telegram poller database error error_code=database_error "
                         "retry_in_s=%.1f",
-                        delay,
+                        wait,
                     )
-                    stop.wait(delay)
+                except PollerFatalError:
+                    raise
                 except Exception as exc:  # noqa: BLE001 - keep polling, bounded
                     # Only the type: exception text could carry update content.
                     failures += 1
-                    delay = self._delay(failures)
+                    wait = self._delay(failures)
                     logger.error(
                         "telegram poller unexpected error error_code=internal_error "
                         "type=%s retry_in_s=%.1f",
                         type(exc).__name__,
-                        delay,
+                        wait,
                     )
-                    stop.wait(delay)
-            logger.info("telegram poller stopped bot_id=%s", self.bot_id)
+                if wait is not None:
+                    stop.wait(wait)
+            logger.info("telegram poller stopped bot_id=%s", self.active_bot_id)
             return EXIT_OK
         except PollerFatalError as exc:
             logger.error("%s", exc)
             return exc.exit_code
-        except SQLAlchemyError:
-            # Only reachable from startup (the loop handles its own).
-            logger.error("telegram poller cannot start error_code=database_error")
-            return EXIT_UNAVAILABLE
         finally:
-            self.close()
+            self._deactivate()
 
 
 __all__ = [
     "EXIT_OK",
-    "EXIT_UNAVAILABLE",
     "EXIT_CONFIGURATION",
     "EXIT_CONFLICT",
+    "STATE_POLLING",
+    "STATE_TOKEN_REJECTED",
+    "STATE_USERNAME_MISMATCH",
+    "STATE_BOT_API_UNAVAILABLE",
     "PollerConfigurationError",
     "PollerFatalError",
+    "UsernameMismatch",
     "PollerConfig",
     "backoff_delay",
     "TelegramPoller",
+    "ClientFactory",
+    "TelegramPollerService",
 ]

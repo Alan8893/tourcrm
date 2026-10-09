@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.authorization.context import ResourceContext
@@ -828,3 +828,43 @@ def test_duplicate_recipients_or_keys_are_rejected() -> None:
                     recipients=[Recipient(user.id, "k"), Recipient(other.id, "k")],
                 ),
             )
+
+
+# --- The persisted Global Admin Policy as the Engine's source (#333, ADR-0048) -------
+
+
+@requires_postgres
+def test_persisted_global_policy_unsaved_means_every_channel_off() -> None:
+    from app.notification_settings.policy import GlobalAdminPolicy
+
+    with session_scope() as session:
+        club, user = _setup(session)
+        outcome = _plan(session, _request([user], club), admin_policy=GlobalAdminPolicy())
+        session.commit()
+    assert outcome.excluded_channels == {"email": EXCLUDED_GLOBAL_POLICY_DISABLED}
+    assert _counts() == (0, 0, 0)
+
+
+@requires_postgres
+def test_persisted_global_policy_on_allows_and_off_blocks() -> None:
+    from app.db.notification_settings import NotificationGlobalPolicy
+    from app.notification_settings.policy import GlobalAdminPolicy
+
+    with session_scope() as session:
+        club, user = _setup(session)
+        session.add(NotificationGlobalPolicy(id=1, email_enabled=True, telegram_enabled=False))
+        session.flush()
+        outcome = _plan(session, _request([user], club), admin_policy=GlobalAdminPolicy())
+        session.commit()
+    assert outcome.recipients[0].created is True
+    assert _counts() == (1, 1, 1)
+
+    with session_scope() as session:
+        session.execute(
+            update(NotificationGlobalPolicy).values(email_enabled=False)
+        )
+        other = _user(session)
+        outcome = _plan(session, _request([other], club), admin_policy=GlobalAdminPolicy())
+        session.commit()
+    assert outcome.excluded_channels == {"email": EXCLUDED_GLOBAL_POLICY_DISABLED}
+    assert _counts() == (1, 1, 1)

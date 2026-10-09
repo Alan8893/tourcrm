@@ -26,6 +26,7 @@ from app.db import (
     imports,  # noqa: E402,F401  (registers models on Base.metadata)
     inventory,  # noqa: E402,F401  (registers models on Base.metadata)
     news,  # noqa: E402,F401  (registers models on Base.metadata)
+    notification_settings,  # noqa: E402,F401  (registers models on Base.metadata)
     notifications,  # noqa: E402,F401  (registers models on Base.metadata)
     outbox,  # noqa: E402,F401  (registers model on Base.metadata)
     telegram,  # noqa: E402,F401  (registers models on Base.metadata)

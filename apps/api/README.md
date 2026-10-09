@@ -544,18 +544,26 @@ Configuration (environment, all optional):
 | `OUTBOX_WORKER_MAX_ATTEMPTS` | 5 | attempts before `dead` |
 | `OUTBOX_WORKER_RETRY_BASE_SECONDS` | 60 | first retry delay |
 | `OUTBOX_WORKER_RETRY_MAX_SECONDS` | 3600 | backoff cap |
+| `OUTBOX_WORKER_PAUSE_RECHECK_SECONDS` | 60 | re-check interval of a job deferred because its channel is paused (not an attempt) |
 
 Handlers: `notification.delivery` (`app.notifications.delivery`) moves the
 job's Delivery to `processing`, calls the channel's `ChannelAdapter`
 outside any transaction, then records `delivered`, `failed` with
 `next_retry_at` (retry scheduled) or `failed` without it (terminal),
 atomically with the job result. A Delivery already `delivered`,
-`cancelled` or `skipped` completes its job without channel work. The
-Email adapter is registered when SMTP is configured (below) and the
-Telegram adapter when `TELEGRAM_BOT_TOKEN` is set (see "Telegram" below); a
-channel with no registered adapter (Email without `SMTP_HOST`, Telegram
-without `TELEGRAM_BOT_TOKEN`) is retried as `channel_adapter_unavailable`
-and ends as a terminal failure once its attempts are exhausted.
+`cancelled` or `skipped` completes its job without channel work. The Email
+and Telegram adapters are always registered and read their configuration
+from Settings → Notifications for every attempt (see "Administrator
+Notification Settings" below). A channel disabled by the Global Admin
+Policy is **paused**: the handler defers the job (`HandlerResult.deferred`,
+`app.outbox.claiming.defer_job`) — back to `pending` after
+`OUTBOX_WORKER_PAUSE_RECHECK_SECONDS` with the claim's attempt not counted,
+the Delivery untouched — so it resumes by the ordinary path once the channel
+is switched back on and never exhausts its attempts while paused. A channel
+that is switched on but not configured (or whose secret cannot be decrypted)
+is retried as
+`channel_adapter_unavailable` and ends as a terminal failure once its
+attempts are exhausted.
 
 No production deployment topology exists yet (ADR-0046 §9 step 3); a
 future one runs this command as its own service with the application image.
@@ -564,26 +572,16 @@ future one runs this command as its own service with the application image.
 
 `app.notifications.email_adapter.EmailChannelAdapter` is the only component
 that sends email; `app.notifications.smtp` is the only module that speaks
-SMTP. The worker registers it when `SMTP_HOST` is set; an invalid SMTP
-configuration stops the worker at startup with a message that never
-contains the password.
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `SMTP_HOST` | — (unset = Email disabled) | SMTP server host |
-| `SMTP_PORT` | 587 / 465 / 25 by security | SMTP server port |
-| `SMTP_SECURITY` | `starttls` | `starttls`, `ssl` (implicit TLS) or `none` |
-| `SMTP_TIMEOUT_SECONDS` | 30 | connect / command timeout |
-| `SMTP_USERNAME`, `SMTP_PASSWORD` | — | AUTH credentials, both or neither |
-| `SMTP_SENDER_EMAIL` | — (required with a host) | From address |
-| `SMTP_SENDER_NAME` | — | From display name |
-
-`SMTP_PASSWORD` is a secret: supply it only through the deployment's
-environment/secret management, never in a committed file, an ordinary
-feature setting or a log. It is excluded from the settings object's repr;
-it never appears in Delivery/outbox payloads, error codes/messages or logs.
-TLS (`starttls`/`ssl`) verifies the server certificate and host name;
-`none` is for local/LAN relays only.
+SMTP. SMTP is configured by an administrator in Settings → Notifications →
+Email (host, port, `starttls`/`ssl`/`none`, username, sender address and
+name, and the write-only password) and read by
+`app.notifications.configured_adapters.ConfiguredEmailAdapter` for every
+delivery attempt — there are no `SMTP_*` environment variables (ADR-0048
+§2.6). The connect/command timeout is 30 s. The password is decrypted only
+in memory, excluded from the settings object's repr, and never appears in
+Delivery/outbox payloads, error codes/messages, audit rows or logs. TLS
+(`starttls`/`ssl`) verifies the server certificate and host name; `none` is
+for local/LAN relays only.
 
 Per Delivery the adapter:
 
@@ -621,46 +619,55 @@ Delivery's `provider_message_id` is the message's own `Message-ID`.
 Three independently deployable pieces share `app/telegram/`:
 
 - **Outbound delivery** — `app.notifications.telegram_adapter.TelegramChannelAdapter`,
-  registered in the outbox worker when `TELEGRAM_BOT_TOKEN` is set. It calls
+  built by the outbox worker for every attempt from the current bot token in
+  Settings → Notifications (`ConfiguredTelegramAdapter`). It calls
   `sendMessage` through `app.telegram.bot_api`, the only module that speaks
   HTTP to Telegram.
 - **Linking API** — `/api/v1/me/telegram-link` (`docs/05-api/telegram-link-api.md`),
-  served by FastAPI. Needs only the public `TELEGRAM_BOT_USERNAME`; never the
-  token. Without it, issuing a challenge answers 503
-  `telegram_linking_unavailable` and the rest of the API is unaffected.
+  served by FastAPI. Reads the current bot username from Settings for every
+  deep link; never the token. Without a username, issuing a challenge
+  answers 503 `telegram_linking_unavailable` and the rest of the API is
+  unaffected.
 - **Inbound poller** — a separate process, never inside FastAPI or the
   outbox worker:
 
 ```bash
-DATABASE_URL=... TELEGRAM_BOT_TOKEN=... TELEGRAM_BOT_USERNAME=... \
-  python -m app.cli.run_telegram_poller
+DATABASE_URL=... SETTINGS_ENCRYPTION_KEYS=... python -m app.cli.run_telegram_poller
 ```
 
-Run **exactly one** poller per bot token. A second one against the same
-database exits at once (PostgreSQL advisory lock on the bot id), and
-Telegram's `409 Conflict` (a poller elsewhere, or a webhook set on the bot)
-stops the process with exit status 3 and a log line naming only the bot's
-public id. Exit status: 0 after `SIGTERM`/`SIGINT`, 1 database unavailable
-at startup, 2 missing/invalid configuration or rejected token, 3 conflict.
+The token and username come from Settings → Notifications and are re-read
+between polls — a replaced token is picked up without a restart: the poller
+finishes the update in progress, releases the old bot's advisory lock, checks
+the new token with `getMe`, takes the new bot's lock and continues from that
+bot's own checkpoint. While Telegram is not configured, the token cannot be
+decrypted, Telegram rejects it or the username does not match the token's bot,
+the poller holds no lock and re-checks every
+`TELEGRAM_POLL_CONFIG_INTERVAL_SECONDS` (`telegram poller state=…` log
+lines). The Global Admin Policy's Telegram switch does not stop it — linking
+keeps working while Telegram delivery is off.
 
-| Variable | Default | Used by | Meaning |
-|---|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | — (unset = Telegram disabled) | worker, poller | **secret** Bot API token |
-| `TELEGRAM_BOT_USERNAME` | — | API (required for linking), poller (checked against `getMe`) | public bot username for deep links |
-| `TELEGRAM_REQUEST_TIMEOUT_SECONDS` | 10 | worker, poller | connect/read timeout of one Bot API request |
-| `TELEGRAM_API_BASE_URL` | `https://api.telegram.org` | worker, poller | allowlisted: only `https://api.telegram.org` (port 443), or `http://localhost|127.0.0.1|[::1]:<port>` for a local fake server; anything else stops the worker/poller at startup |
-| `TELEGRAM_POLL_TIMEOUT_SECONDS` | 20 | poller | `getUpdates` long-poll wait (1–50) |
-| `TELEGRAM_POLL_BACKOFF_BASE_SECONDS` | 1 | poller | first retry delay after a transient failure |
-| `TELEGRAM_POLL_BACKOFF_MAX_SECONDS` | 60 | poller | backoff cap (also caps a 429 `retry_after`) |
+Run **exactly one** poller. A second one for the same bot exits at once
+(PostgreSQL advisory lock on the bot id), and Telegram's `409 Conflict` (a
+poller elsewhere, or a webhook set on the bot) stops the process with exit
+status 3 and a log line naming only the bot's public id. Exit status: 0
+after `SIGTERM`/`SIGINT`, 2 invalid poller tuning, 3 conflict. Database and
+network outages are retried inside the process with bounded backoff.
 
-`TELEGRAM_BOT_TOKEN` is supplied only through the deployment's
-environment/secret management. It is never stored in PostgreSQL (feature
-settings, checkpoints, outbox payloads, Deliveries), returned by the API,
-logged or shown in a repr or exception: it is part of every Bot API URL, so
-`app.telegram.bot_api` converts every transport failure into a stable code
-raised without the original exception context. Because the token is in the
-URL, `TELEGRAM_API_BASE_URL` is validated with a URL parser and rebuilt
-from its components: any other HTTPS host (look-alikes, suffixes), userinfo
+| Variable | Default | Meaning |
+|---|---|---|
+| `TELEGRAM_POLL_TIMEOUT_SECONDS` | 20 | `getUpdates` long-poll wait (1–50) |
+| `TELEGRAM_POLL_BACKOFF_BASE_SECONDS` | 1 | first retry delay after a transient failure |
+| `TELEGRAM_POLL_BACKOFF_MAX_SECONDS` | 60 | backoff cap (also caps a 429 `retry_after`) |
+| `TELEGRAM_POLL_CONFIG_INTERVAL_SECONDS` | 10 | re-check interval while Telegram is not usable |
+| `TELEGRAM_API_BASE_URL` | `https://api.telegram.org` | tests/local fakes only: `https://api.telegram.org` or `http://localhost|127.0.0.1|[::1]:<port>` |
+
+The bot token is never stored in plaintext (feature settings, checkpoints,
+outbox payloads, Deliveries), returned by the API, logged or shown in a repr
+or exception: it is part of every Bot API URL, so `app.telegram.bot_api`
+converts every transport failure into a stable code raised without the
+original exception context. Because the token is in the URL, the Bot API
+base URL is validated with a URL parser and rebuilt from its components: any
+other HTTPS host (look-alikes, suffixes), userinfo
 (`https://api.telegram.org@evil…`), a path, query, fragment, non-default
 port, whitespace/control characters or plain HTTP to a non-loopback host is
 a configuration error, never a request.
@@ -725,3 +732,74 @@ Tests: `pytest tests/unit/test_telegram_bot_api.py tests/unit/test_telegram_upda
 tests/integration/test_telegram_poller.py tests/integration/test_telegram_adapter.py
 tests/integration/test_telegram_link_api.py` (real PostgreSQL; Telegram is an
 in-memory or local fake, never the real API).
+
+## Administrator Notification Settings (Issue #333, ADR-0048)
+
+Settings → Notifications (`/settings/notifications`, Administrator-only in
+the UI) on `/api/v1/settings/notifications` (`docs/05-api/notification-settings-api.md`):
+
+- **Global Admin Policy** — Email/Telegram on/off for the installation
+  (`notification.manage`). Not saved yet = every channel OFF. It is the
+  Notification Engine's `AdminPolicy` source
+  (`app.notification_settings.policy.GlobalAdminPolicy`); the worker pauses
+  queued deliveries of a disabled channel without counting attempts and
+  resumes them when it is switched back on.
+- **Rules** — existing installation-wide rules can be enabled/disabled;
+  none are created or deleted here (an empty list is normal).
+- **Integrations** (`settings.manage`) — non-secret SMTP/Telegram settings
+  and the write-only SMTP password and bot token: set/replace with a new
+  value, clear as a separate confirmed action; the API only ever reports
+  `*_configured`.
+- **Status** — per channel: policy, configuration state
+  (`not_configured`/`incomplete`/`invalid`/`secret_unavailable`/
+  `configured`) and readiness; encryption key ring state.
+- **Test send** — Email to an entered address, Telegram to the
+  administrator's own linked account or an enabled destination;
+  synchronous, no Notification/Delivery/outbox job, max 5 attempts per
+  administrator per 10 minutes (PostgreSQL), audited.
+
+Code: `app/notification_settings/` (`crypto`, `runtime`, `service`,
+`policy`, `test_send`), `app/db/notification_settings.py`, migration
+`bef882c4e71c`.
+
+**Secret encryption.** AES-256-GCM via `cryptography`; stored token
+`v1.<key_id>.<nonce>.<ciphertext+tag>` with the secret's identifier as
+associated data. Key ring `SETTINGS_ENCRYPTION_KEYS`
+(`<key_id>:<base64 32-byte key>[,...]`; first key encrypts, the others only
+decrypt), the same value for the API, worker and poller. Missing/invalid
+key, unknown key id, wrong key or tampered ciphertext fail closed — no
+plaintext, no environment fallback. Rotation:
+
+```bash
+SETTINGS_ENCRYPTION_KEYS=k_new:<new>,k_old:<old> python -m app.cli.reencrypt_settings_secrets
+# -> primary_key_id=k_new reencrypted=2 already_current=0 remaining_old_key=0
+```
+
+then drop the old key from the variable (exit 1: a value could not be
+decrypted, nothing changed; exit 2: key ring missing/invalid). The CLI never
+prints secrets.
+
+**First-time setup and check.**
+
+1. Generate a key
+   (`python -c "import base64,secrets;print(base64.b64encode(secrets.token_bytes(32)).decode())"`),
+   set `SETTINGS_ENCRYPTION_KEYS=<id>:<key>` in the secret configuration of
+   the API, the outbox worker and the poller; apply migrations; start them.
+2. As an administrator open Settings → Notifications; «Общие» should show
+   the encryption key as available (no warning).
+3. Email: enter the SMTP host, port, mode, username and sender, save; then
+   «Задать» the SMTP password. Status should become «Настроен».
+4. Telegram: create the bot with @BotFather, enter its username and save;
+   then «Задать» the bot token. Make sure exactly one poller runs; its log
+   shows `telegram poller state=polling`.
+5. «Тестовое сообщение»: send an Email test to your address and a Telegram
+   test to your linked account (link it via `POST /api/v1/me/telegram-link/challenges`
+   and Start in the bot) or to a configured group. The result is labelled
+   «Тест»; no notification is created.
+6. Switch the channels on in «Общие» when the tests succeed.
+
+Tests: `pytest tests/unit/test_settings_crypto.py` (no database),
+`pytest tests/integration/test_notification_settings_api.py
+tests/integration/test_notification_test_send.py
+tests/integration/test_notification_settings_runtime.py` (real PostgreSQL;
+SMTP and Telegram are local fakes).

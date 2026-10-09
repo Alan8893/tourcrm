@@ -141,6 +141,8 @@ Retryable failures receive a future `next_attempt_at`.
 
 Permanent failures become a terminal error/dead state and remain observable.
 
+A handler may **defer** a job it finds temporarily not runnable — for a notification delivery, a channel paused by the Global Admin Policy (ADR-0048 §2.8). A deferral is not an attempt: the job returns to `pending` with a future `next_attempt_at` (the re-check interval, so it is not re-claimed in a busy loop), its lease is cleared and the claim's attempt is not counted, exactly like a job handed back at shutdown. Deferral is fenced by the lease like any other result.
+
 The exact backoff schedule and maximum attempt count are implementation configuration and must be documented before production.
 
 ### 5.5 Idempotency

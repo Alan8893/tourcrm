@@ -5,7 +5,6 @@ _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
     "equipment",
     "payment",
     "finance",
-    "notification",
     "knowledge",
 )
 # "group" is deliberately not in the list above: Issue #71 adds the real
@@ -37,6 +36,9 @@ _FORBIDDEN_DOMAIN_PATH_FRAGMENTS = (
 # _TRIP_PATHS below) — no route/GPX/tourist-profile endpoints.
 # "achievement" is no longer forbidden either: Issue #220 adds the
 # Achievement Domain administration API (see _ACHIEVEMENT_PATHS below).
+# "notification" is no longer forbidden either: Issue #333 adds the
+# Administrator Notification Settings API (see _NOTIFICATION_SETTINGS_PATHS
+# below) — no notification list/journal/preference endpoints.
 
 
 def test_openapi_schema_is_served(real_client) -> None:
@@ -255,6 +257,21 @@ _ME_PATHS = {
     "/api/v1/me/telegram-link/challenges",
 }
 
+# Issue #333 / ADR-0048: Administrator Notification Settings.
+_NOTIFICATION_SETTINGS_PATHS = {
+    "/api/v1/settings/notifications/policy",
+    "/api/v1/settings/notifications/rules",
+    "/api/v1/settings/notifications/rules/{rule_id}",
+    "/api/v1/settings/notifications/status",
+    "/api/v1/settings/notifications/telegram-destinations",
+    "/api/v1/settings/notifications/test-send",
+    "/api/v1/settings/notifications/integrations",
+    "/api/v1/settings/notifications/integrations/email",
+    "/api/v1/settings/notifications/integrations/email/password",
+    "/api/v1/settings/notifications/integrations/telegram",
+    "/api/v1/settings/notifications/integrations/telegram/bot-token",
+}
+
 _GROUP_PATHS = {
     "/api/v1/groups",
     "/api/v1/groups/{group_id}",
@@ -386,6 +403,7 @@ def test_openapi_has_no_non_auth_domain_endpoints(real_client) -> None:
         | _MEMBERSHIP_EXPORT_PATHS
         | _GUARDIAN_RELATIONSHIP_PATHS
         | _ME_PATHS
+        | _NOTIFICATION_SETTINGS_PATHS
         | _GROUP_PATHS
         | _USER_PATHS
         | _ROLE_ASSIGNMENT_PATHS

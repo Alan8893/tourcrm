@@ -6,6 +6,7 @@
 - **Decision type:** Architecture decision
 - **Refines:** ADR-0045 (Notification Center and Communication Architecture), Feature Settings Governance
 - **Related:** #317, ADR-0046, ADR-0047, `docs/09-governance/feature-settings.md`, `docs/04-modules/notifications-and-communications.md`
+- **Amended:** 2026-10-09 — Product Owner implementation decisions for #333 (§2.6–§2.11); ADR-0047 §6 aligned; Global OFF pauses instead of ending deliveries (§2.8, review of PR #334)
 
 ## 1. Context
 
@@ -76,6 +77,44 @@ Only an authorized administrator may initiate a test send. The UI requires an ex
 - Audit logs record the action and result, never old/new secret values.
 - Settings never grant permissions to business resources.
 - Secret read-back is prohibited, including for administrators.
+
+### 2.6 Configuration source and secret encryption (PO decision, #333)
+
+- SMTP and Telegram runtime configuration is stored in PostgreSQL and managed only through Settings → Notifications. Environment variables are **not** an alternative or fallback source for SMTP host/port/security/username/sender, the SMTP password, the Telegram bot username or the bot token. The integration secret store is separate from feature settings and from notification/outbox data.
+- The only deployment secret of this feature is the encryption key ring `SETTINGS_ENCRYPTION_KEYS`: a comma-separated list of `<key_id>:<base64 32-byte key>` entries. The **first** key encrypts every new value; the others are accepted only for decrypting existing values. Key ids are short public labels; keys never leave deployment secret configuration and are never stored in the database.
+- Encryption is AES-256-GCM through the `cryptography` library (no custom cryptography). Each stored value is a self-describing token carrying a format version, the key id, a random 96-bit nonce and the ciphertext with its authentication tag. The secret's identifier is bound as associated data, so a ciphertext cannot be moved to another secret slot.
+- A missing, malformed or wrong key, an unknown key id, a tampered ciphertext or an unsupported format fails closed: the secret is reported as unavailable, writes are refused, dependent channel operations fail with a safe status. There is no plaintext storage and no environment fallback.
+- Key rotation: add the new key first in `SETTINGS_ENCRYPTION_KEYS` and keep the old one after it; redeploy every process; run the re-encryption CLI (`python -m app.cli.reencrypt_settings_secrets`), which re-encrypts every stored secret with the first key in one transaction and reports counts only; after it reports nothing left under old keys, remove the old key. The CLI never prints secrets or plaintext and aborts without writing anything if any value cannot be decrypted.
+
+### 2.7 Authorization (PO decision, #333)
+
+- `notification.manage` — the Global Admin Policy, installation-wide notification rules, channel readiness and test send.
+- `settings.manage` — integration configuration (SMTP, Telegram bot) and setting, replacing and clearing secrets.
+- Both are existing admin-only permissions of the canonical catalog; no role receives new grants. Both are checked by the backend against the installation's single Club, like other installation-wide administration.
+- Clearing a secret requires an explicit separate action confirmed in the UI; re-entering the administrator's password is not required.
+
+### 2.8 Global policy and rules (PO decision, #333)
+
+- The Global Admin Policy is per channel (Email, Telegram). When no policy has been saved, every channel is OFF (fail closed).
+- Global OFF **pauses** delivery; it is not a cancellation (PO decision, review of PR #334). The Engine creates no Delivery for a disabled channel. A Delivery already queued for a disabled channel is not sent and its job is deferred by the worker: the Delivery keeps its status and attempt count, the outbox job returns to `pending` for a later re-check **without consuming an attempt**, so pausing never exhausts the retry budget and never makes the Delivery terminal. When the channel is switched back on, the paused Deliveries are processed by the ordinary path. A send already in progress when the channel is switched off is not cancelled; every send that starts afterwards follows the current policy.
+- Three different outcomes must not be confused: a **pause** by Global OFF (temporary, no attempt counted, resumes automatically); a **permanent failure** of configuration or delivery (for example an unverified destination or a rejected recipient — terminal at once); and **retry budget exhaustion** (retryable failures, including a channel that is switched on but not configured, consume attempts until the worker's maximum and then end terminal).
+- The Telegram switch does not affect Telegram account linking or the poller (ADR-0047 §6).
+- Administrators can list existing installation-wide rules (`club_id = NULL`) and only enable/disable them. Rules are not created or deleted through the UI; no `event_type`, `recipient_scope` or business event is invented. An empty rule list is valid. No business event that has not passed its ADR-0045 §5 specification gate is wired to the Engine by this decision.
+
+### 2.9 Runtime application (PO decision, #333)
+
+Saved settings take effect without restarting the API, worker or poller: the worker reads the current SMTP/Telegram configuration for every delivery attempt, the API reads the current bot username for every linking deep link, and the poller re-reads its configuration between polls (ADR-0047 §6). Configuration is always read in a short session that is closed before any network I/O.
+
+### 2.10 Test send (PO decision, #333)
+
+- Email: to any syntactically valid address entered by the administrator, through the existing Email adapter and SMTP transport.
+- Telegram: to the administrator's own linked Telegram account, or to an existing enabled `telegram_destination` (group/topic); an arbitrary client-supplied chat id is never accepted.
+- Synchronous; no business Notification, Delivery or outbox job is created; no database transaction is open during the provider call. The message and the response are explicitly marked as a test; provider failures are reported as the adapters' stable safe codes.
+- Rate limit: at most 5 test-send attempts per administrator in any rolling 10 minutes, counting successful and failed attempts, enforced through PostgreSQL so it holds across processes and restarts.
+
+### 2.11 Audit (PO decision, #333)
+
+Audited with actor, action, outcome and safe metadata only: Global Admin Policy changes, rule enable/disable, non-secret integration setting changes (changed field names, not values), secret set/replace/clear (which secret and whether a value already existed — never the value or ciphertext), and every test-send attempt including failures (channel, destination kind, safe error code — never the address, chat id, message, secret or provider response). The canonical audit vocabulary (ADR-0024 §4) is extended accordingly.
 
 ## 3. Consequences
 

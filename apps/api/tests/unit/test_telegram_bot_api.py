@@ -12,9 +12,9 @@ import pytest
 from app.core.config import (
     ConfigurationError,
     TelegramSettings,
-    get_telegram_bot_username,
-    get_telegram_settings,
+    get_telegram_api_base_url,
     validate_telegram_api_base_url,
+    validate_telegram_bot_username,
 )
 from app.telegram import bot_api
 from app.telegram.bot_api import (
@@ -39,21 +39,25 @@ from tests.telegram_fakes import (
 # --- Configuration ------------------------------------------------------------------------
 
 
-def test_settings_absent_when_token_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-    assert get_telegram_settings() is None
-
-
-def test_settings_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_bot_settings_are_not_read_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-0048 §2.6: the token and username come from Settings only."""
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", BOT_TOKEN)
-    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "@TourCRM_Test_Bot")
-    monkeypatch.setenv("TELEGRAM_REQUEST_TIMEOUT_SECONDS", "7.5")
+    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "tourcrm_test_bot")
+    import app.core.config as config
+
+    assert not hasattr(config, "get_telegram_settings")
+    assert not hasattr(config, "get_telegram_bot_username")
+
+
+def test_api_base_url_defaults_to_the_official_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("TELEGRAM_API_BASE_URL", raising=False)
-    settings = get_telegram_settings()
-    assert settings is not None
-    assert settings.bot_username == "TourCRM_Test_Bot"
-    assert settings.api_base_url == "https://api.telegram.org"
-    assert settings.request_timeout_seconds == 7.5
+    assert get_telegram_api_base_url() == "https://api.telegram.org"
+    monkeypatch.setenv("TELEGRAM_API_BASE_URL", "http://127.0.0.1:8081")
+    assert get_telegram_api_base_url() == "http://127.0.0.1:8081"
 
 
 @pytest.mark.parametrize(
@@ -130,11 +134,9 @@ def test_untrusted_api_base_urls_are_rejected(base_url: str) -> None:
 def test_untrusted_api_base_url_from_environment_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("TELEGRAM_API_BASE_URL", "https://api.telegram.org.evil.example")
-    with pytest.raises(ConfigurationError) as raised:
-        get_telegram_settings()
-    assert BOT_TOKEN not in str(raised.value)
+    with pytest.raises(ConfigurationError):
+        get_telegram_api_base_url()
 
 
 def test_transport_never_sends_the_token_to_a_foreign_host(
@@ -167,30 +169,20 @@ def test_settings_repr_never_contains_the_token() -> None:
 
 
 @pytest.mark.parametrize("token", ["not-a-token", "123:short", ":AAAAAAAAAAAAAAAAAAAAAAAA", " "])
-def test_malformed_token_is_rejected_without_echoing_it(
-    monkeypatch: pytest.MonkeyPatch, token: str
-) -> None:
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", token + "x")
+def test_malformed_token_is_rejected_without_echoing_it(token: str) -> None:
     with pytest.raises(ConfigurationError) as raised:
-        get_telegram_settings()
+        TelegramSettings(bot_token=token + "x")
     assert token.strip() + "x" not in str(raised.value)
 
 
 @pytest.mark.parametrize("username", ["ab", "club_notifier", "1startsdigitbot", "x" * 40 + "bot"])
-def test_invalid_bot_username_is_a_configuration_error(
-    monkeypatch: pytest.MonkeyPatch, username: str
-) -> None:
-    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", username)
+def test_invalid_bot_username_is_a_configuration_error(username: str) -> None:
     with pytest.raises(ConfigurationError):
-        get_telegram_bot_username()
+        validate_telegram_bot_username(username)
 
 
-def test_bot_username_alone_needs_no_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "tourcrm_test_bot")
-    assert get_telegram_bot_username() == "tourcrm_test_bot"
-    monkeypatch.delenv("TELEGRAM_BOT_USERNAME")
-    assert get_telegram_bot_username() is None
+def test_bot_username_normalization() -> None:
+    assert validate_telegram_bot_username(" @TourCRM_Test_Bot ") == "TourCRM_Test_Bot"
 
 
 def test_app_imports_and_starts_without_any_telegram_configuration(

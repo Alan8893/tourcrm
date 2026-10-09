@@ -22,6 +22,7 @@ import { ExportPage } from "./pages/ExportPage";
 import { EventParticipantsReportPage } from "./pages/EventParticipantsReportPage";
 import { ImportPage } from "./pages/ImportPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { NotificationSettingsPage } from "./pages/NotificationSettingsPage";
 import { InventoryPage } from "./pages/InventoryPage";
 import { InventoryItemPage } from "./pages/InventoryItemPage";
 import { InventoryInstancePage } from "./pages/InventoryInstancePage";
@@ -118,6 +119,12 @@ export function App() {
               </Route>
               <Route element={<SectionGuard section="settings" />}>
                 <Route path="settings" element={<SettingsPage />} />
+                {/* Issue #333 / ADR-0048: «Настройки → Уведомления» is
+                    Administrator-only (UX guard; the backend authorizes
+                    every request with notification.manage / settings.manage). */}
+                <Route element={<AdministratorGuard />}>
+                  <Route path="settings/notifications" element={<NotificationSettingsPage />} />
+                </Route>
               </Route>
               <Route path="*" element={<NotFoundPage />} />
             </Route>
