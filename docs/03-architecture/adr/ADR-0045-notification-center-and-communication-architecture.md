@@ -6,7 +6,7 @@
 - **Decision type:** Architecture decision
 - **Supersedes:** none
 - **Refines:** ADR-0007 (background processing) for asynchronous notification delivery
-- **Amended:** 2026-10-08 — Notification Engine policy decisions for #319 (§2.4, §2.10)
+- **Amended:** 2026-10-08 — Notification Engine policy decisions for #319 (§2.4, §2.10); 2026-10-09 — single-installation policy and UI-managed integration secrets (ADR-0048)
 - **Related:** ADR-0044, ODR-005, `docs/03-architecture/application-architecture.md`, `docs/03-architecture/database-schema.md`, `docs/09-governance/feature-settings.md`
 
 ## 1. Context
@@ -92,8 +92,6 @@ Notification eligibility is resolved in this order:
 ```text
 Global Admin Policy
     ↓
-Club Admin Policy
-    ↓
 Notification Rule
     ↓
 User Preference
@@ -101,27 +99,15 @@ User Preference
 Delivery
 ```
 
-Each narrower level can only restrict the broader level above it; it can never expand it. **Global OFF is absolute**: a Club Admin Policy, Notification Rule or User Preference cannot re-enable a notification or channel disabled by the Global Admin Policy, and a Notification Rule or User Preference cannot re-enable one disabled by the Club Admin Policy.
+Each narrower level can only restrict the broader level above it; it can never expand it. **Global OFF is absolute**: a Notification Rule or User Preference cannot re-enable a notification or channel disabled by the Global Admin Policy.
 
-An administrator-level disabled channel or notification rule is authoritative.
+TourCRM currently operates as a single-club installation. The MVP therefore has one persisted Global Admin Policy and no separate Club Admin Policy API or UI. Existing nullable `club_id` columns remain for compatibility and future evolution; notification administration in this scope uses installation-wide rules (`club_id = NULL`). Club-specific rule management is deferred until multi-club operation is an approved product requirement.
 
-**Admin OFF always overrides User ON.**
+An administrator-level disabled channel or notification rule is authoritative. **Admin OFF always overrides User ON.**
 
 If no applicable Notification Rule exists for the event, no Delivery is created. There is no implicit "allowed" default.
 
-The same restrict-only rule applies within the Notification Rule level:
-
-```text
-Installation-wide Rule (club_id = NULL)
-    ↓
-Club-specific Rule
-    ↓
-User Preference
-    ↓
-Delivery
-```
-
-The installation-wide Rule is the broader level and the Club-specific Rule the narrower one. A Club-specific Rule can only restrict the installation-wide Rule, never expand it: if the installation-wide Rule disables (OFF) a notification/channel, a Club-specific Rule cannot re-enable it (ON). Likewise, a User Preference cannot override an administrative OFF.
+Within the Notification Rule level, an installation-wide rule is the only active scope in the current single-club MVP. A User Preference cannot override an administrative OFF.
 
 A user preference can opt out only where the effective administrative policy permits the notification.
 
@@ -140,18 +126,13 @@ Each channel is implemented behind a channel adapter interface. Provider-specifi
 
 ### 2.6 Email
 
-Email delivery uses SMTP.
+Email delivery uses SMTP. Integration settings and provider credentials are managed by an authorized administrator through the TourCRM Settings UI, as specified by ADR-0048.
 
-SMTP connection details and credentials are integration/deployment configuration, not ordinary user feature settings.
+The UI may accept SMTP connection settings and credentials, Telegram bot configuration, and channel enablement. Secret values (including SMTP passwords and the Telegram bot token) are write-only after save: the API never returns them, and the UI shows only a masked placeholder and configured/not-configured status. Secret values are encrypted at rest using a deployment-managed encryption key; the key itself is not stored alongside the encrypted values in the application database.
 
-Secrets:
+Secrets must never appear in API responses, logs, audit records, exception text, notification payloads, or delivery error details. Audit records identify the actor, setting changed, and result, but never include secret values. Secret replacement and clearing are explicit operations; a masked placeholder is not a submitted secret value.
 
-- are never returned after save;
-- are never displayed in normal UI after save;
-- are never written to ordinary logs or notification payloads;
-- are supplied through environment-specific secret management where appropriate.
-
-The Notification Center provides a safe test-send operation for an authorized administrator.
+The Notification Center provides a safe test-send operation for an authorized administrator. Test-send responses and logs must not expose credentials.
 
 ### 2.7 Telegram identity and destinations
 
@@ -289,7 +270,9 @@ The exact physical table name and external-identity association are implementati
 - Backend authorization remains authoritative.
 - Notification visibility must not bypass the recipient's existing resource authorization.
 - Channel settings never grant permissions.
-- Provider credentials and bot tokens are secrets.
+- Provider credentials and bot tokens are secrets managed through the protected Settings UI according to ADR-0048.
+- Secret values are encrypted at rest; the encryption key is provided through deployment secret configuration and is never stored beside ciphertext.
+- Secret read-back is prohibited; update/clear are explicit audited actions and audit records contain no secret values.
 - Raw verification/reset/linking tokens are never persisted or logged.
 - Notification payloads and delivery errors must not contain passwords, tokens or other credentials.
 - Administrative configuration changes follow the existing settings/audit policy.
@@ -335,6 +318,7 @@ No business module may invent these rules locally.
 - Notification delivery becomes a background-processing dependency.
 - A worker/outbox implementation is required before reliable asynchronous delivery is production-ready.
 - Admin policy, rules and user preferences require explicit API/UI contracts.
+- UI-managed secrets require encryption-key lifecycle, authorization, audit and safe test-send behavior.
 - Telegram linking and group/topic routing add integration state beyond the User profile.
 - The exact worker technology remains deferred under ODR-005.
 
