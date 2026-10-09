@@ -80,6 +80,7 @@ Before changing a decision, check for an existing ADR. Superseded decisions must
 | People API | `05-api/people-api.md` |
 | Events API | `05-api/events-api.md` |
 | Trips/tourist profile API | `05-api/trips-and-tourist-profile-api.md` |
+| Telegram link API | `05-api/telegram-link-api.md` |
 | Auth/access architecture | `05-api/auth-and-authorization.md` |
 
 ## 8. UI

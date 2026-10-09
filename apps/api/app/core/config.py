@@ -6,6 +6,7 @@ management) — see `apps/api/.env.example`.
 """
 
 import os
+import re
 from dataclasses import dataclass, field
 from email.errors import HeaderParseError
 from email.headerregistry import Address
@@ -127,3 +128,85 @@ def get_smtp_settings() -> Optional[SmtpSettings]:
         username=_optional_env("SMTP_USERNAME"),
         password=os.getenv("SMTP_PASSWORD") or None,
     )
+
+
+# Issue #329, ADR-0047 §6: Telegram is integration/deployment configuration,
+# never an ordinary feature setting. `bot_token` is a secret: supplied only
+# through the environment/secret management, excluded from repr, and never
+# echoed by a ConfigurationError. The bot username is public (it is part of
+# every deep link) and is all the API process needs.
+_TELEGRAM_BOT_TOKEN_PATTERN = re.compile(r"[0-9]{1,20}:[A-Za-z0-9_-]{20,128}")
+# Telegram bot usernames: 5-32 characters, letters/digits/underscore,
+# starting with a letter and ending in "bot" (case-insensitive).
+_TELEGRAM_BOT_USERNAME_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]{1,28}[Bb][Oo][Tt]")
+_DEFAULT_TELEGRAM_API_BASE_URL = "https://api.telegram.org"
+
+
+def validate_telegram_bot_username(value: str) -> str:
+    username = value.strip().removeprefix("@")
+    if not _TELEGRAM_BOT_USERNAME_PATTERN.fullmatch(username):
+        raise ConfigurationError("TELEGRAM_BOT_USERNAME is not a valid Telegram bot username")
+    return username
+
+
+@dataclass(frozen=True)
+class TelegramSettings:
+    """Bot API access for the outbox worker's Telegram adapter and the
+    poller. `api_base_url` exists for tests against a local fake server;
+    production leaves it at the default."""
+
+    bot_token: str = field(repr=False)
+    bot_username: Optional[str] = None
+    api_base_url: str = _DEFAULT_TELEGRAM_API_BASE_URL
+    # Connect/read timeout of one ordinary Bot API request (sendMessage, getMe).
+    request_timeout_seconds: float = 10.0
+
+    def __post_init__(self) -> None:
+        if not _TELEGRAM_BOT_TOKEN_PATTERN.fullmatch(self.bot_token):
+            raise ConfigurationError("TELEGRAM_BOT_TOKEN has an invalid format")
+        if self.bot_username is not None:
+            object.__setattr__(
+                self, "bot_username", validate_telegram_bot_username(self.bot_username)
+            )
+        # The token travels in the URL path: plain HTTP only to a loopback
+        # test server, never over a network.
+        if not (
+            self.api_base_url.startswith("https://")
+            or self.api_base_url.startswith(("http://127.0.0.1:", "http://localhost:"))
+        ):
+            raise ConfigurationError(
+                "TELEGRAM_API_BASE_URL must be an https URL (http only for localhost)"
+            )
+        if not 0 < self.request_timeout_seconds <= 120:
+            raise ConfigurationError("TELEGRAM_REQUEST_TIMEOUT_SECONDS must be in (0, 120]")
+
+
+def get_telegram_settings() -> Optional[TelegramSettings]:
+    """Telegram settings from the environment, or None when
+    TELEGRAM_BOT_TOKEN is unset (Telegram delivery/polling not
+    configured). Raises ConfigurationError for a present but invalid
+    configuration — never echoing the token."""
+    token = _optional_env("TELEGRAM_BOT_TOKEN")
+    if token is None:
+        return None
+    timeout_raw = _optional_env("TELEGRAM_REQUEST_TIMEOUT_SECONDS")
+    try:
+        timeout_seconds = float(timeout_raw) if timeout_raw is not None else 10.0
+    except ValueError:
+        raise ConfigurationError("TELEGRAM_REQUEST_TIMEOUT_SECONDS must be a number") from None
+    return TelegramSettings(
+        bot_token=token.strip(),
+        bot_username=_optional_env("TELEGRAM_BOT_USERNAME"),
+        api_base_url=(
+            _optional_env("TELEGRAM_API_BASE_URL") or _DEFAULT_TELEGRAM_API_BASE_URL
+        ).rstrip("/"),
+        request_timeout_seconds=timeout_seconds,
+    )
+
+
+def get_telegram_bot_username() -> Optional[str]:
+    """The public bot username the API needs to build a linking deep link,
+    or None when TELEGRAM_BOT_USERNAME is unset (linking unavailable). The
+    API process never needs TELEGRAM_BOT_TOKEN."""
+    username = _optional_env("TELEGRAM_BOT_USERNAME")
+    return None if username is None else validate_telegram_bot_username(username)

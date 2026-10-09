@@ -10,7 +10,7 @@
 - app.notifications.delivery — the `notification.delivery` worker handler
   and the ChannelAdapter boundary (#325);
 - app.notifications.email_adapter / app.notifications.smtp — the Email
-  channel adapter and its SMTP transport (#327).
-
-The Telegram channel adapter is a separate Issue.
+  channel adapter and its SMTP transport (#327);
+- app.notifications.telegram_adapter — the Telegram channel adapter over
+  app.telegram.bot_api (#329, ADR-0047 §5).
 """

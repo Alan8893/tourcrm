@@ -250,6 +250,9 @@ _ME_PATHS = {
     "/api/v1/me/children",
     # Issue #88 / TH-0083: Instructor Schedule.
     "/api/v1/me/instructor-schedule",
+    # Issue #329 / ADR-0047: the caller's own Telegram link.
+    "/api/v1/me/telegram-link",
+    "/api/v1/me/telegram-link/challenges",
 }
 
 _GROUP_PATHS = {

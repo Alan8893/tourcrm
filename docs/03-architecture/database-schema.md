@@ -934,9 +934,45 @@ Telegram group/topic routing must preserve:
 
 Topic display names are not routing identifiers.
 
-Physical table: `telegram_destinations` — `id`, `club_id` FK nullable, `name`, `chat_id` (BIGINT), `message_thread_id` (BIGINT, nullable, positive), `topic_name` nullable (presentation metadata only), `enabled`, `notification_scope` (JSONB object — an extensible persistence field with no fixed structure), timestamps. (`chat_id`, `message_thread_id`) is UNIQUE with NULLS NOT DISTINCT. No bot token or other credential is stored. The User profile stores no Telegram numeric id; user linking is a separate flow.
+Physical table: `telegram_destinations` — `id`, `club_id` FK nullable, `name`, `chat_id` (BIGINT), `message_thread_id` (BIGINT, nullable, positive), `topic_name` nullable (presentation metadata only), `enabled`, `notification_scope` (JSONB object — an extensible persistence field with no fixed structure), timestamps. (`chat_id`, `message_thread_id`) is UNIQUE with NULLS NOT DISTINCT. No bot token or other credential is stored. The User profile stores no Telegram numeric id; user linking is the separate `telegram_identities` association below.
 
-The exact physical association to the Telegram integration/external identity is fixed by the implementation/API contract and must preserve these invariants.
+The Telegram channel adapter (`apps/api/app/notifications/telegram_adapter.py`, ADR-0047 §5) sends to `chat_id` with `message_thread_id` as the topic route; a disabled row is a terminal `destination_disabled`.
+
+### Telegram identities (`telegram_identities`)
+
+The User ↔ Telegram identity association (ADR-0047 §4.2, Issue #329).
+
+- `id` PK
+- `user_id` FK -> `users.id` (RESTRICT)
+- `telegram_user_id` BIGINT, positive — the Bot API `User.id` of the sender of a trusted update (for a private chat it is also the chat id used for delivery); never a browser-supplied value
+- `status`: `active`, `unlinked`, `replaced`
+- `linked_at`, `ended_at` nullable — `ended_at` set iff `status <> 'active'`, not before `linked_at`
+- timestamps
+
+Partial UNIQUE indexes over `status = 'active'`: (`telegram_user_id`) — a Telegram account is actively linked to at most one User; (`user_id`) — a User has at most one active Telegram identity. Unlink (`unlinked`) and replacement by the same User's newer link (`replaced`) are lifecycle transitions; rows are never deleted, and an ended row does not block a later link. No Telegram username, display name or message is stored.
+
+### Telegram link challenges (`telegram_link_challenges`)
+
+One-time linking challenges (ADR-0047 §4.1/§4.3).
+
+- `id` PK
+- `user_id` FK -> `users.id` (RESTRICT)
+- `token_hash` — SHA-256 of the raw token, UNIQUE; the raw token is never stored
+- `status`: `pending`, `consumed`, `revoked`; expiry is derived from `expires_at` against database time, not a status
+- `created_at`, `expires_at` (> `created_at`; 15 minutes), `consumed_at` (set iff `consumed`), `revoked_at` (set iff `revoked`)
+- `telegram_identity_id` FK -> `telegram_identities.id` (RESTRICT), set iff `consumed` — the identity linked or confirmed
+
+Partial UNIQUE (`user_id`) WHERE `status = 'pending'`: at most one outstanding challenge per User (reissue revokes the previous one). Index (`user_id`, `created_at`) serves the per-User issuance rate limit (5 per rolling hour).
+
+### Telegram update checkpoints (`telegram_update_checkpoints`)
+
+Durable long-polling progress (ADR-0047 §3.2).
+
+- `bot_id` BIGINT PK — the bot's public numeric id (from `getMe`), never the bot token
+- `last_update_id` BIGINT nullable (≥ 0) — the last update whose processing committed; NULL before the first one
+- timestamps
+
+The poller advances `last_update_id` in the same transaction as the update's processing (including a link) and polls with `offset = last_update_id + 1`. Raw updates are not stored.
 
 ### `outbox_jobs`
 
@@ -1069,6 +1105,8 @@ Associates local users/persons with external providers.
 - timestamps
 
 Unique constraint on (`provider`, `external_subject`).
+
+Not used for Telegram: the Telegram identity is the domain-specific `telegram_identities` table (§18), because ADR-0047 §4.2 requires lifecycle history (unlink/replace without deletion) with uniqueness only among *active* links, which a plain UNIQUE (`provider`, `external_subject`) cannot express.
 
 ### `integration_records`
 

@@ -16,6 +16,8 @@ The system separates:
 
 A user account may be associated with one Person. A Person may have several roles through role assignments where permitted.
 
+A User may additionally link at most one active Telegram identity (ADR-0047 §4, `telegram_identities`). It is a notification delivery address, **not** a login method and grants no permission. It is established only by a one-time challenge the authenticated User issues for themselves and the bot then receives from that Telegram account (`docs/05-api/telegram-link-api.md`); a Telegram id supplied by a client is never accepted as proof of ownership. A Telegram account linked to one User is never transferred to another without the first User unlinking it.
+
 ## 3. Account states
 
 Minimum User lifecycle:
@@ -246,6 +248,8 @@ Changes take effect according to the application session/cache strategy and must
 Authentication, password-reset, invitation and other abuse-prone endpoints should have rate limits and anti-automation controls.
 
 A rate limit must not reveal whether a particular account exists.
+
+Telegram linking challenge issuance is rate-limited per User in PostgreSQL (5 per rolling hour, ADR-0047 §4.3) — independent of the `RateLimiter` boundary used by the authentication endpoints.
 
 ## 22. Security logging
 

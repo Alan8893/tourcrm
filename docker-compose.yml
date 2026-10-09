@@ -53,6 +53,9 @@ services:
       # deployments must explicitly set COOKIE_SECURE=true in their own
       # deployment configuration.
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # Public bot username for Telegram linking deep links (Issue #329).
+      # The API never receives TELEGRAM_BOT_TOKEN.
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
@@ -99,6 +102,45 @@ services:
     # supercronic waits for a running job on SIGTERM; one run is bounded at
     # 55s by the crontab's timeout, so give it that long before SIGKILL.
     stop_grace_period: 60s
+    networks:
+      - tourcrm-dev
+
+  # Telegram long-polling receiver (Issue #329, ADR-0047) — DEVELOPMENT ONLY.
+  # Opt-in via the `telegram` profile and requires TELEGRAM_BOT_TOKEN in .env:
+  #   docker compose --profile telegram up
+  # Exactly ONE replica per bot token: never scale this service and never run
+  # a second poller (another machine, staging) with the same token — a second
+  # one exits with status 3 (see docs/08-infrastructure/infrastructure-and-
+  # devops.md §9.1). No HTTP, no published port. Needs outbound HTTPS to
+  # api.telegram.org only.
+  telegram-poller:
+    profiles: ["telegram"]
+    build:
+      context: ./apps/api
+      args:
+        UID: ${HOST_UID:-1000}
+        GID: ${HOST_GID:-1000}
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    command: ["python", "-m", "app.cli.run_telegram_poller"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+    volumes:
+      - ./apps/api:/app
+    depends_on:
+      # The backend applies migrations before it turns healthy.
+      backend:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    deploy:
+      replicas: 1
+    # Restart with Compose's own delay after a crash; exit 2/3 (configuration
+    # or conflict) also restarts, so fix the cause shown in the logs.
+    restart: on-failure
+    # SIGTERM waits for the in-flight long poll (20s) + request timeout (10s).
+    stop_grace_period: 40s
     networks:
       - tourcrm-dev
 

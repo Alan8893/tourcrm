@@ -28,6 +28,17 @@ multi-transition lifecycle column, rather than one action per direction.
 #247 (Trip Audit Trail) is a further amendment: `trip.created`,
 `trip_participant.actual_participation_recorded` and
 `trip_participant.actual_participation_changed`.
+
+ADR-0047 §4.3 (Telegram linking, #329) is a further amendment: it
+requires the linking flow to be audited with metadata only.
+`telegram_link_challenge.created` — a User issued (or reissued) a one-time
+linking challenge; `telegram_identity.linked` — a challenge was consumed
+from a trusted Bot API update (outcome `failure` when the Telegram
+identity is actively linked to a different User and is therefore not
+transferred); `telegram_identity.unlinked` — an active identity ended,
+by the User's unlink or because the User linked a different Telegram
+account (`details.reason`). Never the token, the Telegram message or the
+Telegram user id.
 """
 
 CANONICAL_ACTOR_TYPES: frozenset[str] = frozenset({"user", "system"})
@@ -156,5 +167,9 @@ CANONICAL_AUDIT_ACTIONS: frozenset[str] = frozenset(
         "trip.created",
         "trip_participant.actual_participation_recorded",
         "trip_participant.actual_participation_changed",
+        # Telegram linking (ADR-0047 §4.3 amendment to ADR-0024 §4, #329).
+        "telegram_link_challenge.created",
+        "telegram_identity.linked",
+        "telegram_identity.unlinked",
     }
 )

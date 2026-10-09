@@ -380,6 +380,14 @@ Webhook endpoints должны:
 - логировать correlation metadata без секретов;
 - быть идемпотентными, где возможно.
 
+### 21.1 Telegram (ADR-0047, Issue #329)
+
+- Bot token — секрет только в environment/secret management процессов outbox worker и telegram-poller; API его не получает. Не хранится в БД (включая `system_settings`, checkpoint, outbox payload), не возвращается API, не попадает в логи, исключения и repr: он является частью URL каждого Bot API запроса, поэтому `app.telegram.bot_api` превращает любой сбой транспорта в стабильный код без исходного исключения.
+- Входящие updates принимаются только long polling (без публичного endpoint и webhook). Ровно один poller на токен; конфликт (`409`) останавливает процесс без раскрытия секрета.
+- Привязка Telegram-аккаунта: Telegram id берётся только из доверенного update (`/start <token>` в private chat от не-бота с `chat.id == from.id`), никогда от браузера. Одноразовый токен — 256 бит из CSPRNG, в БД только SHA-256, срок 15 минут, однократное использование, повторная выдача отзывает прежний, лимит 5 выдач в час на User. Все отказы (неизвестный, истёкший, использованный, отозванный токен, конфликт identity, неактивный владелец) дают одинаковый ответ бота. Telegram-аккаунт, активно привязанный к другому User, никогда не переносится молча.
+- Потребление challenge и привязка атомарны (блокировки строк + частичные UNIQUE-индексы); прогресс poller и привязка коммитятся в одной транзакции.
+- Audit — только метаданные (`telegram_link_challenge.created`, `telegram_identity.linked`, `telegram_identity.unlinked`). Raw updates не хранятся; токены, тексты сообщений, Telegram user/chat id не логируются. Ответы провайдера (description) не сохраняются; в Delivery — только стабильный код ошибки.
+
 ## 22. Security monitoring
 
 Production должен собирать минимум:

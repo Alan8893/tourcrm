@@ -527,6 +527,14 @@ Financial mutation endpoints require explicit permissions and idempotency where 
 
 Mass send operations should normally be asynchronous.
 
+### 21.1 Telegram link (implemented, Issue #329)
+
+- `GET /me/telegram-link`
+- `POST /me/telegram-link/challenges`
+- `DELETE /me/telegram-link`
+
+Self-scoped linking of the authenticated User's own Telegram account (ADR-0047 §4). No endpoint accepts a Telegram id; the identity comes only from the bot's trusted `/start <token>` update. Contract: `docs/05-api/telegram-link-api.md`. There is no webhook endpoint: inbound Telegram updates are received by the separate long-polling process.
+
 ## 22. Communications
 
 - `GET /announcements`

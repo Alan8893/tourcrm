@@ -181,6 +181,12 @@ Installation-wide Rule — более широкий уровень, Club-specif
 
 Привязка пользователя к Telegram должна быть подтверждаемой, чтобы нельзя было отправить данные на чужой chat id.
 
+Реализация (Issue #329, ADR-0047):
+
+- Входящие updates — long polling в отдельном процессе `telegram-poller` (не FastAPI, не outbox worker), ровно один на bot token, с durable checkpoint в PostgreSQL. Webhook не используется.
+- Привязка — пользовательский поток: `POST /api/v1/me/telegram-link/challenges` → deep link `https://t.me/<bot>?start=<одноразовый токен>` → пользователь нажимает Start → бот получает `/start <token>` в private chat → Telegram id отправителя связывается с владельцем challenge. Повторная привязка того же аккаунта — подтверждение; другого аккаунта — замена (`replaced`); аккаунт другого пользователя — отказ без переноса; отвязка — `DELETE /api/v1/me/telegram-link`. Контракт: `docs/05-api/telegram-link-api.md`.
+- Доставка — `TelegramChannelAdapter` в outbox worker: `user` → активная привязанная identity получателя; `telegram_destination` → `chat_id` + `message_thread_id` (topic). Текст — `body_template` telegram-шаблона как plain text. Ошибки провайдера — стабильные коды (retryable: timeout, сеть, 5xx, 429 с `retry_after`; permanent: бот заблокирован, нет доступа к чату, чат/топик не найден, неверная конфигурация); retry/backoff — политика worker.
+
 ### MAX
 
 Интеграция проектируется через тот же Channel Adapter interface. Конкретное API и возможности провайдера уточняются непосредственно перед реализацией.

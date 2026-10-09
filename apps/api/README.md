@@ -48,7 +48,8 @@ app/
     ├── authorization.py  # Role, Permission, RolePermission, UserRoleAssignment (Issue #19)
     ├── authentication.py # AuthenticatedSession, EmailVerificationChallenge, PasswordResetChallenge (Issue #33)
     ├── notifications.py  # Notification, NotificationDelivery, rules/templates/preferences, TelegramDestination (Issue #318)
-    └── outbox.py         # OutboxJob — generic transactional outbox (Issue #318, ADR-0046)
+    ├── outbox.py         # OutboxJob — generic transactional outbox (Issue #318, ADR-0046)
+    └── telegram.py       # TelegramIdentity, TelegramLinkChallenge, TelegramUpdateCheckpoint (Issue #329)
 alembic/                 # migrations; URL comes from DATABASE_URL via env.py, never hardcoded
 tests/
 ├── conftest.py         # shared technical fixtures (Issue #7) — no business data
@@ -550,10 +551,11 @@ outside any transaction, then records `delivered`, `failed` with
 `next_retry_at` (retry scheduled) or `failed` without it (terminal),
 atomically with the job result. A Delivery already `delivered`,
 `cancelled` or `skipped` completes its job without channel work. The
-Email adapter is registered when SMTP is configured (below); a channel with
-no registered adapter (Telegram — a separate Issue — or Email without
-`SMTP_HOST`) is retried as `channel_adapter_unavailable` and ends as a
-terminal failure once its attempts are exhausted.
+Email adapter is registered when SMTP is configured (below) and the
+Telegram adapter when `TELEGRAM_BOT_TOKEN` is set (see "Telegram" below); a
+channel with no registered adapter (Email without `SMTP_HOST`, Telegram
+without `TELEGRAM_BOT_TOKEN`) is retried as `channel_adapter_unavailable`
+and ends as a terminal failure once its attempts are exhausted.
 
 No production deployment topology exists yet (ADR-0046 §9 step 3); a
 future one runs this command as its own service with the application image.
@@ -613,3 +615,108 @@ never the server's reply text:
 Delivery is at-least-once: a timeout after the message data was sent may
 mean the server accepted it, and the retry can send it again. The
 Delivery's `provider_message_id` is the message's own `Message-ID`.
+
+## Telegram: channel adapter, account linking, long-polling poller (Issue #329, ADR-0047)
+
+Three independently deployable pieces share `app/telegram/`:
+
+- **Outbound delivery** — `app.notifications.telegram_adapter.TelegramChannelAdapter`,
+  registered in the outbox worker when `TELEGRAM_BOT_TOKEN` is set. It calls
+  `sendMessage` through `app.telegram.bot_api`, the only module that speaks
+  HTTP to Telegram.
+- **Linking API** — `/api/v1/me/telegram-link` (`docs/05-api/telegram-link-api.md`),
+  served by FastAPI. Needs only the public `TELEGRAM_BOT_USERNAME`; never the
+  token. Without it, issuing a challenge answers 503
+  `telegram_linking_unavailable` and the rest of the API is unaffected.
+- **Inbound poller** — a separate process, never inside FastAPI or the
+  outbox worker:
+
+```bash
+DATABASE_URL=... TELEGRAM_BOT_TOKEN=... TELEGRAM_BOT_USERNAME=... \
+  python -m app.cli.run_telegram_poller
+```
+
+Run **exactly one** poller per bot token. A second one against the same
+database exits at once (PostgreSQL advisory lock on the bot id), and
+Telegram's `409 Conflict` (a poller elsewhere, or a webhook set on the bot)
+stops the process with exit status 3 and a log line naming only the bot's
+public id. Exit status: 0 after `SIGTERM`/`SIGINT`, 1 database unavailable
+at startup, 2 missing/invalid configuration or rejected token, 3 conflict.
+
+| Variable | Default | Used by | Meaning |
+|---|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | — (unset = Telegram disabled) | worker, poller | **secret** Bot API token |
+| `TELEGRAM_BOT_USERNAME` | — | API (required for linking), poller (checked against `getMe`) | public bot username for deep links |
+| `TELEGRAM_REQUEST_TIMEOUT_SECONDS` | 10 | worker, poller | connect/read timeout of one Bot API request |
+| `TELEGRAM_API_BASE_URL` | `https://api.telegram.org` | worker, poller | tests/local fakes only |
+| `TELEGRAM_POLL_TIMEOUT_SECONDS` | 20 | poller | `getUpdates` long-poll wait (1–50) |
+| `TELEGRAM_POLL_BACKOFF_BASE_SECONDS` | 1 | poller | first retry delay after a transient failure |
+| `TELEGRAM_POLL_BACKOFF_MAX_SECONDS` | 60 | poller | backoff cap (also caps a 429 `retry_after`) |
+
+`TELEGRAM_BOT_TOKEN` is supplied only through the deployment's
+environment/secret management. It is never stored in PostgreSQL (feature
+settings, checkpoints, outbox payloads, Deliveries), returned by the API,
+logged or shown in a repr or exception: it is part of every Bot API URL, so
+`app.telegram.bot_api` converts every transport failure into a stable code
+raised without the original exception context.
+
+**Linking flow.** The authenticated User calls
+`POST /api/v1/me/telegram-link/challenges` and gets
+`https://t.me/<bot>?start=<token>` (43-character URL-safe token, within the
+deep-link 64-character `[A-Za-z0-9_-]` limit). Only its SHA-256 hash is
+stored; it expires after 15 minutes, is single-use, reissue revokes the
+previous one, and at most 5 can be issued per User per rolling hour (429).
+The User presses Start; the poller receives `/start <token>` in a private
+chat and `app.telegram.linking.consume_link_challenge` links the sender's
+numeric Telegram id (from the trusted update, never from the browser) to the
+challenge's owner. Semantics:
+
+- not linked anywhere → linked; the owner's previous identity (if any) ends
+  as `replaced`;
+- already the owner's identity → confirmed, no change;
+- actively linked to another User → rejected, never transferred; that User
+  must unlink first;
+- unknown/expired/consumed/revoked/malformed token, inactive owner, group
+  chat → the same generic reply (group/non-command messages get no reply);
+- `DELETE /api/v1/me/telegram-link` → identity `unlinked`, pending
+  challenges revoked; afterwards the Telegram account may be linked again.
+
+Database constraints back this up: partial UNIQUE indexes allow one active
+identity per Telegram id and per User, one pending challenge per User, and a
+UNIQUE token hash.
+
+**Poller durability.** Updates are processed one by one; each runs in a
+transaction that locks `telegram_update_checkpoints`, skips an `update_id`
+at or below the checkpoint (duplicate/replay), applies the link and
+advances the checkpoint, then commits. The next `getUpdates` offset is the
+committed checkpoint + 1, so Telegram is acknowledged only after durable
+processing; a crash before the commit replays the update, a crash after it
+cannot repeat the effect. The bot reply is sent after the commit (at most
+once). Raw updates are never stored; logs carry update id, outcome and
+error code only.
+
+**Delivery** (per Delivery, data read in a short session closed before the
+HTTP call): destination `user` → the recipient's *active* identity (else
+terminal `destination_unlinked`); `telegram_destination` → `chat_id` +
+optional `message_thread_id` (topic) of an enabled row (else
+`destination_not_found`/`destination_disabled`). The telegram template's
+`body_template` is sent as plain text (no `parse_mode`); missing/other
+channel → `template_unavailable`, over 4096 characters → `message_too_long`.
+
+- retryable: `telegram_timeout`, `telegram_network_error`,
+  `telegram_server_error` (5xx), `telegram_rate_limited` (429; message
+  `retry_after=<n>s` — the worker's own backoff is unchanged),
+  `telegram_malformed_response`;
+- permanent: `telegram_bot_blocked`, `telegram_chat_forbidden`,
+  `telegram_chat_not_found`, `telegram_topic_unavailable`,
+  `telegram_chat_migrated`, `telegram_request_rejected`,
+  `telegram_configuration_invalid` (401/404), `telegram_tls_failed`.
+
+Provider description text is never stored or logged. Delivery is
+at-least-once; `provider_message_id` is the Telegram message id.
+
+Tests: `pytest tests/unit/test_telegram_bot_api.py tests/unit/test_telegram_updates.py`
+(no database), `pytest tests/integration/test_telegram_linking.py
+tests/integration/test_telegram_poller.py tests/integration/test_telegram_adapter.py
+tests/integration/test_telegram_link_api.py` (real PostgreSQL; Telegram is an
+in-memory or local fake, never the real API).

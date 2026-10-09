@@ -98,7 +98,8 @@ Production baseline:
 4. `redis` — Redis, если включены фоновые задачи/кэш.
 5. `worker` — background worker при наличии asynchronous jobs.
 6. `scheduler` — отдельный single-replica scheduler для периодических system jobs (supercronic, запускает system CLI) — см. `docs/03-architecture/adr/ADR-0044-scheduler-for-periodic-system-jobs.md`. Не зависит от выбора queue/job framework (ODR-005).
-7. `reverse-proxy` — внешний HTTP/HTTPS entrypoint.
+7. `telegram-poller` — отдельный процесс long polling Telegram (`python -m app.cli.run_telegram_poller`, ADR-0047), только когда Telegram включён; **ровно одна реплика на bot token** (см. §9.1).
+8. `reverse-proxy` — внешний HTTP/HTTPS entrypoint.
 
 Monitoring stack является отдельной capability и не обязан присутствовать на development-инсталляции.
 
@@ -201,6 +202,38 @@ Production credentials никогда не используются в developme
 - public base URLs.
 
 Секреты передаются через environment/secrets mechanism и не попадают в Git.
+
+### 9.1 Telegram (ADR-0047, Issue #329)
+
+Telegram использует **long polling** (`getUpdates`): публичный HTTPS endpoint и webhook не нужны, но процессам worker и poller нужен исходящий HTTPS-доступ к `api.telegram.org`.
+
+| Переменная | Процессы | Назначение |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | outbox worker, telegram-poller | **секрет** бота; только через secret management. Без него Telegram-доставка — `channel_adapter_unavailable`, poller не запускается (exit 2) |
+| `TELEGRAM_BOT_USERNAME` | backend (API), telegram-poller | публичный username бота для deep link; без него `POST /me/telegram-link/challenges` отвечает 503, остальной API работает. Poller сверяет его с `getMe` |
+| `TELEGRAM_REQUEST_TIMEOUT_SECONDS` | worker, poller | таймаут одного Bot API запроса (по умолчанию 10) |
+| `TELEGRAM_POLL_TIMEOUT_SECONDS`, `TELEGRAM_POLL_BACKOFF_BASE_SECONDS`, `TELEGRAM_POLL_BACKOFF_MAX_SECONDS` | poller | ожидание long poll (20), bounded backoff (1…60 с) |
+
+Backend (FastAPI) токен не получает и не нуждается в нём. Токен никогда не хранится в `system_settings`, бизнес-таблицах, checkpoint, outbox payload, не возвращается API и не пишется в логи.
+
+**Развёртывание poller.** Отдельный сервис из того же образа, явно включаемый в конфигурации развёртывания (в dev Compose — профиль `telegram`: `docker compose --profile telegram up`). Требования:
+
+- **одна реплика на bot token** — никогда не масштабировать, не запускать второй экземпляр «для надёжности», не запускать параллельно на staging с тем же токеном;
+- restart policy с задержкой (например `on-failure`/`unless-stopped`), без HTTP healthcheck (у poller нет порта);
+- grace period остановки не меньше `TELEGRAM_POLL_TIMEOUT_SECONDS + TELEGRAM_REQUEST_TIMEOUT_SECONDS` (по умолчанию 30 с; в Compose — 40 с): по SIGTERM poller дожидается текущего long poll, завершает обрабатываемый update и выходит с кодом 0;
+- миграции применены (`alembic upgrade head`) до старта.
+
+**Коды выхода:** 0 — штатная остановка; 1 — БД недоступна при старте; 2 — нет/неверная конфигурация или Telegram отклонил токен (401/404); 3 — конфликт: уже активен другой poller или webhook.
+
+**Диагностика.** Логи `tourcrm.telegram_poller` содержат только `bot_id` (публичный), `update_id`, outcome и стабильный `error_code`; никогда — токен, текст сообщений, Telegram user/chat id. Сигналы для мониторинга: рестарты контейнера, строки `telegram getUpdates failed error_code=…` (повторяющиеся — сеть/Telegram недоступны), отставание `telegram_update_checkpoints.updated_at` при ожидаемой активности.
+
+**Восстановление после `409 Conflict` / exit 3.**
+
+1. Строка `another telegram poller is already active for bot_id=…` — второй poller на той же БД: остановите лишний экземпляр (оставьте одну реплику).
+2. Строка `telegram getUpdates conflict: another poller or a webhook is active` — токен используется где-то ещё (другая среда/хост с тем же токеном) или на боте установлен webhook. Найдите и остановите другой потребитель; если установлен webhook, удалите его вручную через Bot API `deleteWebhook` (TourCRM webhook не использует и не устанавливает). Если источник не найден или токен мог утечь — отзовите токен в @BotFather, выпустите новый, обновите `TELEGRAM_BOT_TOKEN` в secret management worker и poller, перезапустите их.
+3. Перезапустите poller. Прогресс хранится в `telegram_update_checkpoints`: необработанные updates будут получены повторно, уже обработанные (≤ checkpoint) игнорируются идемпотентно. Не редактируйте checkpoint вручную. Telegram хранит неподтверждённые updates ограниченное время (около 24 часов); ссылки привязки, потерянные за это время, пользователь запрашивает заново.
+
+Смена бота (новый токен другого бота) создаёт новую строку checkpoint по его `bot_id`; ранее привязанные пользователи должны нажать Start в новом боте заново, иначе доставка им завершится терминальной ошибкой (`telegram_chat_forbidden`).
 
 `.env.example` хранит только имена переменных и безопасные примерные значения.
 

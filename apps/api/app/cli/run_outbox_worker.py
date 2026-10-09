@@ -10,11 +10,14 @@ started jobs (ADR-0046 §5.6). Configuration: app.outbox.worker.WorkerConfig
 (OUTBOX_WORKER_* environment variables) plus DATABASE_URL.
 
 Registered handlers: `notification.delivery`, with the Email channel
-adapter when SMTP is configured (SMTP_* environment, Issue #327; invalid
-SMTP configuration stops the worker at startup). A channel without an
-adapter (Telegram — a separate Issue — or Email without SMTP_HOST) is
-retried as `channel_adapter_unavailable` and ends as a terminal failure
-once its attempts are exhausted.
+adapter when SMTP is configured (SMTP_* environment, Issue #327) and the
+Telegram channel adapter when TELEGRAM_BOT_TOKEN is set (TELEGRAM_*
+environment, Issue #329, ADR-0047 §5); an invalid configuration of either
+stops the worker at startup. A channel without an adapter (Email without
+SMTP_HOST, Telegram without TELEGRAM_BOT_TOKEN) is retried as
+`channel_adapter_unavailable` and ends as a terminal failure once its
+attempts are exhausted. The worker only sends Telegram messages; it never
+polls for Telegram updates (that is app.cli.run_telegram_poller).
 """
 
 import logging
@@ -24,17 +27,30 @@ import threading
 from types import FrameType
 from typing import Optional
 
-from app.core.config import SmtpSettings, get_smtp_settings
+from app.core.config import (
+    SmtpSettings,
+    TelegramSettings,
+    get_smtp_settings,
+    get_telegram_settings,
+)
 from app.db.session import get_session_factory
 from app.notifications.delivery import ChannelAdapter, NotificationDeliveryHandler
 from app.notifications.email_adapter import EmailChannelAdapter
 from app.notifications.smtp import SmtplibTransport
-from app.notifications.vocabulary import CHANNEL_EMAIL, NOTIFICATION_DELIVERY_JOB_TYPE
+from app.notifications.telegram_adapter import TelegramChannelAdapter
+from app.notifications.vocabulary import (
+    CHANNEL_EMAIL,
+    CHANNEL_TELEGRAM,
+    NOTIFICATION_DELIVERY_JOB_TYPE,
+)
 from app.outbox.worker import OutboxWorker, WorkerConfig
+from app.telegram.bot_api import build_bot_api_client
 
 
 def build_worker(
-    config: WorkerConfig, smtp_settings: Optional[SmtpSettings] = None
+    config: WorkerConfig,
+    smtp_settings: Optional[SmtpSettings] = None,
+    telegram_settings: Optional[TelegramSettings] = None,
 ) -> OutboxWorker:
     session_factory = get_session_factory()
     adapters: dict[str, ChannelAdapter] = {}
@@ -43,6 +59,10 @@ def build_worker(
             settings=smtp_settings,
             transport=SmtplibTransport(smtp_settings),
             session_factory=session_factory,
+        )
+    if telegram_settings is not None:
+        adapters[CHANNEL_TELEGRAM] = TelegramChannelAdapter(
+            client=build_bot_api_client(telegram_settings), session_factory=session_factory
         )
     return OutboxWorker(
         session_factory=session_factory,
@@ -53,7 +73,9 @@ def build_worker(
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    worker = build_worker(WorkerConfig.from_env(), get_smtp_settings())
+    worker = build_worker(
+        WorkerConfig.from_env(), get_smtp_settings(), get_telegram_settings()
+    )
     stop = threading.Event()
 
     def request_stop(signum: int, frame: Optional[FrameType]) -> None:
