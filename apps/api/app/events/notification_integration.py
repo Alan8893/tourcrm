@@ -101,6 +101,11 @@ def plan_event_lifecycle_notification(
             recipient_scope="registered_participants",
             recipients=recipients,
             channel_templates={"telegram": f"{event_type}.telegram.ru"},
+            render_context={
+                "event_title": event.title,
+                "cancellation_reason": event.cancellation_reason or "не указана",
+                "new_event_datetime": event.start_at.isoformat(),
+            },
             subject_id=event.id,
             club_id=event.club_id,
             priority=100 if mandatory else 0,
