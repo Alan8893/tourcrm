@@ -86,6 +86,7 @@ def create_notification(
     subject_id: Optional[uuid.UUID] = None,
     club_id: Optional[uuid.UUID] = None,
     template_id: Optional[uuid.UUID] = None,
+    render_context: Optional[dict[str, Any]] = None,
     priority: int = 0,
     scheduled_at: Optional[datetime] = None,
 ) -> tuple[Notification, bool]:
@@ -109,6 +110,7 @@ def create_notification(
         "recipient_user_id": recipient_user_id,
         "club_id": club_id,
         "template_id": template_id,
+        "render_context": render_context or {},
         "priority": priority,
         "scheduled_at": scheduled_at,
     }
