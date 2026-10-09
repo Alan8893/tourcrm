@@ -132,6 +132,7 @@ class NotificationRequest:
     recipient_scope: str
     recipients: Sequence[Recipient]
     channel_templates: Mapping[str, str]
+    render_context: Mapping[str, str] = field(default_factory=dict)
     subject_id: Optional[uuid.UUID] = None
     club_id: Optional[uuid.UUID] = None
     scheduled_at: Optional[datetime] = None
@@ -306,6 +307,7 @@ def _write(
         recipient_user_id=plan.recipient.user_id,
         club_id=request.club_id,
         template_id=templates[channel].id,
+        render_context=dict(request.render_context),
         priority=request.priority,
         scheduled_at=request.scheduled_at,
     )
