@@ -125,8 +125,6 @@
 ```text
 Global Admin Policy
     ↓
-Club Admin Policy
-    ↓
 Notification Rule
     ↓
 User Preference
@@ -134,21 +132,9 @@ User Preference
 Delivery
 ```
 
-Более узкий уровень может только ограничивать (restrict) более широкий, но не расширять (expand) его. Global OFF — абсолютное ограничение: его не может отменить ни Club Admin Policy, ни Notification Rule, ни User Preference. Если применимого Notification Rule нет, Delivery не создаётся.
+Более узкий уровень может только ограничивать (restrict) более широкий, но не расширять (expand) его. Global OFF — абсолютное ограничение: его не может отменить ни Notification Rule, ни User Preference. Если применимого Notification Rule нет, Delivery не создаётся.
 
-Внутри уровня Notification Rule действует то же правило:
-
-```text
-Installation-wide Rule (club_id = NULL)
-    ↓
-Club-specific Rule
-    ↓
-User Preference
-    ↓
-Delivery
-```
-
-Installation-wide Rule — более широкий уровень, Club-specific Rule — более узкий. Club-specific Rule может только ограничивать installation-wide Rule: если installation-wide Rule запрещает (OFF) уведомление/канал, Club Rule не может включить его обратно (ON). Аналогично User Preference не может переопределить административный запрет.
+В текущей одно-клубной инсталляции используется только Global Admin Policy и installation-wide rules (`club_id = NULL`). Отдельные Club Admin Policy и управление club-specific rules через API/UI не вводятся; существующие nullable `club_id` поля сохраняются для совместимости и будущего развития. Аналогично User Preference не может переопределить административный запрет.
 
 Тип уведомления в настройках — канонический `event_type`.
 
@@ -163,6 +149,8 @@ Installation-wide Rule — более широкий уровень, Club-specif
 Критичные системные сообщения могут быть неотключаемыми, если это будет отдельно установлено требованиями клуба. Семантика mandatory / opt-in / opt-out для конкретного события определяется его specification gate (ADR-0045 §5); Notification Engine её не определяет, а исполняет (ADR-0045 §2.10).
 
 ## 8. Каналы
+
+Настройка интеграций и секретов выполняется уполномоченным администратором через Settings UI согласно ADR-0048. Секреты доступны только для записи/замены/очистки, хранятся зашифрованными; API никогда не возвращает сохранённое значение. UI отображает маску и статус настройки. Ключ шифрования передаётся через deployment secret configuration и не хранится рядом с ciphertext.
 
 ### Email
 
