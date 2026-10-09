@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.db.events import Event, EventParticipation
 from app.db.identity import Person, User
-from app.db.notifications import NotificationGlobalPolicy
+from app.db.notification_settings import NotificationGlobalPolicy
 from app.events.authorization import build_event_resource_context
 from app.notifications.engine import NotificationRequest, Recipient, plan_notifications
 from app.notifications.vocabulary import CHANNEL_TELEGRAM
