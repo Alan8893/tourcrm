@@ -17,6 +17,7 @@ from app.api.v1.membership_exports import router as membership_exports_router
 from app.api.v1.membership_imports import router as membership_imports_router
 from app.api.v1.memberships import router as memberships_router
 from app.api.v1.news import router as news_router
+from app.api.v1.notification_preferences import router as notification_preferences_router
 from app.api.v1.notification_settings import router as notification_settings_router
 from app.api.v1.persons import router as persons_router
 from app.api.v1.role_assignments import router as role_assignments_router
@@ -48,6 +49,7 @@ router.include_router(groups_router)
 router.include_router(role_assignments_router)
 router.include_router(me_router)
 router.include_router(telegram_link_router)
+router.include_router(notification_preferences_router)
 router.include_router(notification_settings_router)
 router.include_router(news_router)
 router.include_router(inventory_router)

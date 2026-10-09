@@ -546,6 +546,13 @@ Contract: `docs/05-api/notification-settings-api.md`. These replace the generic 
 
 Self-scoped linking of the authenticated User's own Telegram account (ADR-0047 §4). No endpoint accepts a Telegram id; the identity comes only from the bot's trusted `/start <token>` update. Contract: `docs/05-api/telegram-link-api.md`. There is no webhook endpoint: inbound Telegram updates are received by the separate long-polling process.
 
+### 21.2 Personal notification preferences (implemented, Issue #336)
+
+- `GET /me/notification-preferences`
+- `PUT /me/notification-preferences`
+
+Self-scoped personal Telegram preferences of the authenticated User (ADR-0049 §2.1): the personal master switch and per-event preferences of optional catalog types; mandatory types are listed read-only. They govern personal messages only, never group/topic routes. Contract: `docs/05-api/notification-preferences-api.md`. This replaces the generic `/notification-preferences` sketch above.
+
 ## 22. Communications
 
 - `GET /announcements`
