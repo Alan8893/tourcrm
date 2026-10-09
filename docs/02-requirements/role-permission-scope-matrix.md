@@ -204,6 +204,8 @@ The following permissions are admin-only under the current matrix:
 
 Instructor, Member and Guardian do not receive these permissions merely because they have another role or because the frontend exposes a route.
 
+Administrator Notification Settings (ADR-0048 §2.7) use two existing admin-only permissions, checked against the installation's single Club: `notification.manage` — Global Admin Policy, installation-wide rule enable/disable, channel readiness and test send; `settings.manage` — SMTP/Telegram integration configuration and secrets. No other role is granted either permission.
+
 ## 12. Multiple roles
 
 Effective access is calculated as:

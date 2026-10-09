@@ -5,6 +5,7 @@
 - **Decision owner:** Product Owner / CTO
 - **Decision type:** Architecture decision
 - **Refines:** ADR-0045 (Notification Center and Communication Architecture), ADR-0046 (PostgreSQL-backed Worker)
+- **Amended:** 2026-10-09 — Telegram bot configuration is managed through the Administrator Settings UI and stored in PostgreSQL (ADR-0048, #333): §3.1, §6
 - **Related:** #317, #329, `docs/03-architecture/database-schema.md`, `docs/04-security/authentication-and-authorization.md`, `docs/04-ux/notifications.md`
 
 ## 1. Context
@@ -34,7 +35,9 @@ The poller is not an in-process FastAPI background task and is not part of the P
 
 Only one active `getUpdates` poller may use a given bot token at a time. Deployment documentation must make this a single-replica service. The process must handle Telegram's conflict response safely and emit a secret-free operational error rather than starting competing poll loops.
 
-The bot token is deployment/integration secret configuration. It must never be stored in ordinary feature settings, PostgreSQL business rows, update checkpoints, outbox payloads, API responses, logs, exception messages or object representations.
+The bot token is an integration secret managed through the Administrator Settings UI (ADR-0048). It is stored only in the encrypted secret store defined there — never in ordinary feature settings, PostgreSQL business rows, update checkpoints, outbox payloads, API responses, logs, exception messages or object representations.
+
+The single-poller rule applies per bot token across token changes: when an administrator replaces the token, the poller releases the old bot's lock before it acquires the new bot's lock (§6), so two poll loops never run for one token.
 
 ### 3.2 Durable update checkpoint
 
@@ -109,12 +112,20 @@ The adapter must not hold a database transaction during network I/O. It returns 
 
 ## 6. Configuration and operations
 
-- `TELEGRAM_BOT_TOKEN` is supplied through environment-specific secret management.
-- The bot username/configuration needed to construct a deep link must be validated at startup or obtained from a safe Bot API identity check; it is not a secret.
-- Missing Telegram configuration must not break FastAPI startup when Telegram is unused. A Telegram delivery with no configured adapter follows the existing worker's bounded `channel_adapter_unavailable` behavior.
-- The poller is a separate deployable process and must be explicitly enabled in deployment configuration.
+*Amended 2026-10-09 by ADR-0048 (#333).*
+
+- The Telegram bot token and bot username are managed by an authorized administrator through Settings → Notifications and stored in PostgreSQL: the username as non-secret integration configuration, the token in the encrypted secret store of ADR-0048 §2.6. **Environment variables are not an alternative or fallback source** for the token or username. The only Telegram-related deployment secret is the settings encryption key ring (`SETTINGS_ENCRYPTION_KEYS`, ADR-0048).
+- Configuration is applied without restarting any process:
+  - the outbox worker's Telegram adapter reads the current token for every delivery attempt, in a short read-only session closed before the Bot API call;
+  - the API reads the current bot username from PostgreSQL whenever it builds a linking deep link;
+  - the poller re-reads the configuration between `getUpdates` rounds. When the token changes it finishes the update in progress, releases the advisory lock of the old bot, verifies the new token with `getMe`, takes the new bot's lock and continues from that bot's own checkpoint. When the token is missing, cannot be decrypted, is rejected by Telegram, or the stored username does not match the token's bot, the poller holds no lock, polls nothing and re-checks the configuration periodically.
+- The bot username must match the bot identity returned by `getMe`; the poller verifies it.
+- The Global Admin Policy's Telegram switch controls notification **delivery** only. It does not disable Telegram account linking or the poller: both keep working while Telegram delivery is off.
+- Missing Telegram configuration must not break FastAPI startup. A Telegram delivery attempted while Telegram is not configured is a retryable `channel_adapter_unavailable` failure, bounded by the worker's existing attempt limit; while the channel is disabled by the Global Admin Policy it is a terminal `channel_disabled_by_policy` failure.
+- The poller is a separate deployable process and must be explicitly enabled in deployment configuration; exactly one replica per installation.
+- `TELEGRAM_API_BASE_URL` remains only as an allowlisted transport override for local fake servers in tests/development (`https://api.telegram.org` or loopback HTTP); it is not a settings source.
 - No Redis, Celery, new broker, webhook ingress or public endpoint is required for this MVP.
-- Group/topic management UI and notification settings UI remain separate implementation slices.
+- Group/topic management UI and user notification-preference UI remain separate implementation slices.
 
 ## 7. Webhook alternative and future migration
 
