@@ -33,6 +33,7 @@ message is still retryable and may produce a duplicate. The returned
 """
 
 from dataclasses import dataclass
+import re
 from typing import Optional
 
 import sqlalchemy as sa
@@ -101,11 +102,19 @@ def _load_content(session: Session, request: DeliveryRequest) -> TelegramContent
     )
     if template is None or template.channel != CHANNEL_TELEGRAM:
         return TEMPLATE_UNAVAILABLE
-    if len(template.body_template) > TELEGRAM_MESSAGE_MAX_LENGTH:
+    context = notification.render_context if notification is not None else {}
+    text = re.sub(
+        r"{{([a-z_]+)}}",
+        lambda match: str(context.get(match.group(1), "")),
+        template.body_template,
+    )
+    if "{{" in text or "}}" in text:
+        return TEMPLATE_UNAVAILABLE
+    if len(text) > TELEGRAM_MESSAGE_MAX_LENGTH:
         return MESSAGE_TOO_LONG
     chat_id, message_thread_id = chat
     return TelegramContent(
-        chat_id=chat_id, message_thread_id=message_thread_id, text=template.body_template
+        chat_id=chat_id, message_thread_id=message_thread_id, text=text
     )
 
 
