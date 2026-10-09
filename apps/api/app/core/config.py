@@ -7,6 +7,7 @@ management) — see `apps/api/.env.example`.
 
 import os
 import re
+import urllib.parse
 from dataclasses import dataclass, field
 from email.errors import HeaderParseError
 from email.headerregistry import Address
@@ -140,6 +141,52 @@ _TELEGRAM_BOT_TOKEN_PATTERN = re.compile(r"[0-9]{1,20}:[A-Za-z0-9_-]{20,128}")
 # starting with a letter and ending in "bot" (case-insensitive).
 _TELEGRAM_BOT_USERNAME_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]{1,28}[Bb][Oo][Tt]")
 _DEFAULT_TELEGRAM_API_BASE_URL = "https://api.telegram.org"
+# The bot token travels in the path of every Bot API URL, so the endpoint is
+# an allowlist, not free configuration: HTTPS only to the official host on
+# the default port, plain HTTP only to a loopback address (local fake
+# servers in tests/development).
+_TELEGRAM_API_HOST = "api.telegram.org"
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_TELEGRAM_API_BASE_URL_ERROR = (
+    "TELEGRAM_API_BASE_URL must be https://api.telegram.org "
+    "(or http://<loopback>:<port> for a local fake server)"
+)
+
+
+def validate_telegram_api_base_url(value: str) -> str:
+    """Return the normalized Bot API base URL (scheme://host[:port], no
+    trailing slash), rebuilt from parsed components, or raise
+    ConfigurationError. Accepted: `https://api.telegram.org` (optionally
+    `:443` or a trailing `/`), and `http://` to `localhost`, `127.0.0.1` or
+    `[::1]` with an explicit port. Rejected: any other host or scheme,
+    userinfo, a path, query or fragment, other ports, and characters that
+    parsers may silently strip (whitespace, control characters, a backslash)."""
+    if not value or any(ch.isspace() or not ch.isprintable() or ch == "\\" for ch in value):
+        raise ConfigurationError(_TELEGRAM_API_BASE_URL_ERROR)
+    try:
+        parts = urllib.parse.urlsplit(value)
+        port = parts.port
+    except ValueError:
+        raise ConfigurationError(_TELEGRAM_API_BASE_URL_ERROR) from None
+    host = parts.hostname
+    if (
+        host is None
+        or "@" in parts.netloc
+        or parts.username is not None
+        or parts.password is not None
+        or parts.path not in ("", "/")
+        or parts.query
+        or parts.fragment
+        or "?" in value
+        or "#" in value
+    ):
+        raise ConfigurationError(_TELEGRAM_API_BASE_URL_ERROR)
+    if parts.scheme == "https" and host == _TELEGRAM_API_HOST and port in (None, 443):
+        return f"https://{_TELEGRAM_API_HOST}"
+    if parts.scheme == "http" and host in _LOOPBACK_HOSTS and port is not None and port > 0:
+        rendered_host = f"[{host}]" if ":" in host else host
+        return f"http://{rendered_host}:{port}"
+    raise ConfigurationError(_TELEGRAM_API_BASE_URL_ERROR)
 
 
 def validate_telegram_bot_username(value: str) -> str:
@@ -152,8 +199,9 @@ def validate_telegram_bot_username(value: str) -> str:
 @dataclass(frozen=True)
 class TelegramSettings:
     """Bot API access for the outbox worker's Telegram adapter and the
-    poller. `api_base_url` exists for tests against a local fake server;
-    production leaves it at the default."""
+    poller. `api_base_url` is restricted by validate_telegram_api_base_url:
+    production leaves it at the official default; a loopback HTTP URL exists
+    only for local fake servers."""
 
     bot_token: str = field(repr=False)
     bot_username: Optional[str] = None
@@ -168,15 +216,9 @@ class TelegramSettings:
             object.__setattr__(
                 self, "bot_username", validate_telegram_bot_username(self.bot_username)
             )
-        # The token travels in the URL path: plain HTTP only to a loopback
-        # test server, never over a network.
-        if not (
-            self.api_base_url.startswith("https://")
-            or self.api_base_url.startswith(("http://127.0.0.1:", "http://localhost:"))
-        ):
-            raise ConfigurationError(
-                "TELEGRAM_API_BASE_URL must be an https URL (http only for localhost)"
-            )
+        object.__setattr__(
+            self, "api_base_url", validate_telegram_api_base_url(self.api_base_url)
+        )
         if not 0 < self.request_timeout_seconds <= 120:
             raise ConfigurationError("TELEGRAM_REQUEST_TIMEOUT_SECONDS must be in (0, 120]")
 
@@ -197,9 +239,7 @@ def get_telegram_settings() -> Optional[TelegramSettings]:
     return TelegramSettings(
         bot_token=token.strip(),
         bot_username=_optional_env("TELEGRAM_BOT_USERNAME"),
-        api_base_url=(
-            _optional_env("TELEGRAM_API_BASE_URL") or _DEFAULT_TELEGRAM_API_BASE_URL
-        ).rstrip("/"),
+        api_base_url=_optional_env("TELEGRAM_API_BASE_URL") or _DEFAULT_TELEGRAM_API_BASE_URL,
         request_timeout_seconds=timeout_seconds,
     )
 

@@ -14,6 +14,7 @@ from app.core.config import (
     TelegramSettings,
     get_telegram_bot_username,
     get_telegram_settings,
+    validate_telegram_api_base_url,
 )
 from app.telegram import bot_api
 from app.telegram.bot_api import (
@@ -56,12 +57,104 @@ def test_settings_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
-    "base_url", ["http://api.telegram.org", "ftp://x", "http://10.0.0.5:8080"]
+    ("base_url", "normalized"),
+    [
+        ("https://api.telegram.org", "https://api.telegram.org"),
+        ("https://api.telegram.org/", "https://api.telegram.org"),
+        ("https://api.telegram.org:443", "https://api.telegram.org"),
+        ("HTTPS://API.TELEGRAM.ORG", "https://api.telegram.org"),
+        ("http://127.0.0.1:8081", "http://127.0.0.1:8081"),
+        ("http://localhost:9000/", "http://localhost:9000"),
+        ("http://[::1]:8081", "http://[::1]:8081"),
+    ],
 )
-def test_non_https_api_base_url_is_rejected_except_loopback(base_url: str) -> None:
-    with pytest.raises(ConfigurationError):
+def test_allowed_api_base_urls_are_normalized(base_url: str, normalized: str) -> None:
+    settings = TelegramSettings(bot_token=BOT_TOKEN, api_base_url=base_url)
+    assert settings.api_base_url == normalized
+    assert validate_telegram_api_base_url(base_url) == normalized
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        # Foreign HTTPS hosts, look-alikes and suffix/prefix tricks.
+        "https://evil.example",
+        "https://api.telegram.org.evil.example",
+        "https://evilapi.telegram.org",
+        "https://telegram.org",
+        "https://api.telegram.org.",
+        "https://xn--api-telegram-org.example",
+        "https://api.telegram.org%2eevil.example",
+        # Userinfo that would make another host the real target.
+        "https://api.telegram.org@evil.example",
+        "https://api.telegram.org:443@evil.example",
+        "https://user:pass@api.telegram.org",
+        "https://evil.example#@api.telegram.org",
+        "https://evil.example?@api.telegram.org",
+        "https://evil.example\\@api.telegram.org",
+        # Unexpected ports, paths, query, fragment.
+        "https://api.telegram.org:8443",
+        "https://api.telegram.org:0",
+        "https://api.telegram.org:99999",
+        "https://api.telegram.org:abc",
+        "https://api.telegram.org/bot",
+        "https://api.telegram.org/../x",
+        "https://api.telegram.org?x=1",
+        "https://api.telegram.org#frag",
+        # Plain HTTP anywhere but loopback; loopback without a port.
+        "http://api.telegram.org",
+        "http://10.0.0.5:8080",
+        "http://127.0.0.2:8080",
+        "http://localhost.evil.example:8080",
+        "http://127.0.0.1",
+        "http://[::2]:8080",
+        # HTTPS to loopback is not an official endpoint either.
+        "https://127.0.0.1:8443",
+        # Other schemes and malformed values.
+        "ftp://api.telegram.org",
+        "//api.telegram.org",
+        "api.telegram.org",
+        "",
+        " https://api.telegram.org",
+        "https://api.telegram.org\t",
+        "https://api.telegram\n.org",
+        "https://evil.example\r\n@api.telegram.org",
+    ],
+)
+def test_untrusted_api_base_urls_are_rejected(base_url: str) -> None:
+    with pytest.raises(ConfigurationError) as raised:
         TelegramSettings(bot_token=BOT_TOKEN, api_base_url=base_url)
-    TelegramSettings(bot_token=BOT_TOKEN, api_base_url="http://127.0.0.1:8081")
+    assert BOT_TOKEN not in str(raised.value)
+
+
+def test_untrusted_api_base_url_from_environment_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("TELEGRAM_API_BASE_URL", "https://api.telegram.org.evil.example")
+    with pytest.raises(ConfigurationError) as raised:
+        get_telegram_settings()
+    assert BOT_TOKEN not in str(raised.value)
+
+
+def test_transport_never_sends_the_token_to_a_foreign_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even if a settings object were forced past its own validation, the
+    transport re-validates before building any URL, and no request is made."""
+    settings = TelegramSettings(bot_token=BOT_TOKEN)
+    object.__setattr__(settings, "api_base_url", "https://evil.example")
+    opened: list[object] = []
+    monkeypatch.setattr(bot_api.urllib.request, "urlopen", lambda *a, **k: opened.append(a))
+    with pytest.raises(ConfigurationError):
+        UrllibBotApiTransport(settings)
+    assert opened == []
+
+
+def test_transport_url_is_built_from_the_normalized_base() -> None:
+    settings = TelegramSettings(bot_token=BOT_TOKEN, api_base_url="https://api.telegram.org:443/")
+    transport = UrllibBotApiTransport(settings)
+    assert "https://api.telegram.org'" in repr(transport)
 
 
 def test_settings_repr_never_contains_the_token() -> None:

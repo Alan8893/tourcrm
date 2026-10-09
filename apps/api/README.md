@@ -648,7 +648,7 @@ at startup, 2 missing/invalid configuration or rejected token, 3 conflict.
 | `TELEGRAM_BOT_TOKEN` | — (unset = Telegram disabled) | worker, poller | **secret** Bot API token |
 | `TELEGRAM_BOT_USERNAME` | — | API (required for linking), poller (checked against `getMe`) | public bot username for deep links |
 | `TELEGRAM_REQUEST_TIMEOUT_SECONDS` | 10 | worker, poller | connect/read timeout of one Bot API request |
-| `TELEGRAM_API_BASE_URL` | `https://api.telegram.org` | worker, poller | tests/local fakes only |
+| `TELEGRAM_API_BASE_URL` | `https://api.telegram.org` | worker, poller | allowlisted: only `https://api.telegram.org` (port 443), or `http://localhost|127.0.0.1|[::1]:<port>` for a local fake server; anything else stops the worker/poller at startup |
 | `TELEGRAM_POLL_TIMEOUT_SECONDS` | 20 | poller | `getUpdates` long-poll wait (1–50) |
 | `TELEGRAM_POLL_BACKOFF_BASE_SECONDS` | 1 | poller | first retry delay after a transient failure |
 | `TELEGRAM_POLL_BACKOFF_MAX_SECONDS` | 60 | poller | backoff cap (also caps a 429 `retry_after`) |
@@ -658,7 +658,12 @@ environment/secret management. It is never stored in PostgreSQL (feature
 settings, checkpoints, outbox payloads, Deliveries), returned by the API,
 logged or shown in a repr or exception: it is part of every Bot API URL, so
 `app.telegram.bot_api` converts every transport failure into a stable code
-raised without the original exception context.
+raised without the original exception context. Because the token is in the
+URL, `TELEGRAM_API_BASE_URL` is validated with a URL parser and rebuilt
+from its components: any other HTTPS host (look-alikes, suffixes), userinfo
+(`https://api.telegram.org@evil…`), a path, query, fragment, non-default
+port, whitespace/control characters or plain HTTP to a non-loopback host is
+a configuration error, never a request.
 
 **Linking flow.** The authenticated User calls
 `POST /api/v1/me/telegram-link/challenges` and gets

@@ -212,6 +212,7 @@ Telegram использует **long polling** (`getUpdates`): публичны�
 | `TELEGRAM_BOT_TOKEN` | outbox worker, telegram-poller | **секрет** бота; только через secret management. Без него Telegram-доставка — `channel_adapter_unavailable`, poller не запускается (exit 2) |
 | `TELEGRAM_BOT_USERNAME` | backend (API), telegram-poller | публичный username бота для deep link; без него `POST /me/telegram-link/challenges` отвечает 503, остальной API работает. Poller сверяет его с `getMe` |
 | `TELEGRAM_REQUEST_TIMEOUT_SECONDS` | worker, poller | таймаут одного Bot API запроса (по умолчанию 10) |
+| `TELEGRAM_API_BASE_URL` | worker, poller | не задавать в production. Допускаются только `https://api.telegram.org` (порт 443) и `http://localhost`/`127.0.0.1`/`[::1]` с явным портом для локального fake-сервера; любой другой хост, userinfo, путь, query/fragment или порт — ошибка конфигурации при старте (токен входит в URL каждого запроса) |
 | `TELEGRAM_POLL_TIMEOUT_SECONDS`, `TELEGRAM_POLL_BACKOFF_BASE_SECONDS`, `TELEGRAM_POLL_BACKOFF_MAX_SECONDS` | poller | ожидание long poll (20), bounded backoff (1…60 с) |
 
 Backend (FastAPI) токен не получает и не нуждается в нём. Токен никогда не хранится в `system_settings`, бизнес-таблицах, checkpoint, outbox payload, не возвращается API и не пишется в логи.

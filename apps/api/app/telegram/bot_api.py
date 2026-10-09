@@ -39,7 +39,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Optional, Protocol
 
-from app.core.config import TelegramSettings
+from app.core.config import TelegramSettings, validate_telegram_api_base_url
 
 TELEGRAM_TIMEOUT = "telegram_timeout"
 TELEGRAM_NETWORK_ERROR = "telegram_network_error"
@@ -95,7 +95,8 @@ class UrllibBotApiTransport:
     default verified TLS context; honours the standard proxy environment)."""
 
     def __init__(self, settings: TelegramSettings) -> None:
-        self._base_url = settings.api_base_url.rstrip("/")
+        # Re-checked here too: the token is appended to this URL.
+        self._base_url = validate_telegram_api_base_url(settings.api_base_url)
         self._token = settings.bot_token
 
     def __repr__(self) -> str:
