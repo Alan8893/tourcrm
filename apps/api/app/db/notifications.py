@@ -186,6 +186,9 @@ class Notification(Base):
         sa.ForeignKey("notification_templates.id", ondelete="RESTRICT"),
         nullable=True,
     )
+    render_context: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=sa.text("'{}'::jsonb")
+    )
     # Persisted as given; ADR-0045 assigns no ordering/meaning to its values
     # yet — that is the Notification Engine's (#319) contract.
     priority: Mapped[int] = mapped_column(
