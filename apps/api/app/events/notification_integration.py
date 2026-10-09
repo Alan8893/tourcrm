@@ -11,13 +11,11 @@ from dataclasses import dataclass
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
-from app.authorization.service import can
 from app.db.events import Event, EventParticipation
 from app.db.identity import Person, User
-from app.db.notifications import NotificationGlobalPolicy, NotificationRule
+from app.db.notifications import NotificationGlobalPolicy
 from app.events.authorization import build_event_resource_context
 from app.notifications.engine import NotificationRequest, Recipient, plan_notifications
-from app.notifications.ports import AdminPolicy
 from app.notifications.vocabulary import CHANNEL_TELEGRAM
 from app.notification_settings.vocabulary import SINGLETON_ID
 
@@ -51,7 +49,7 @@ class _EventPreferencePolicy:
         return stored_enabled is True
 
 
-def _recipients(session: Session, event: Event) -> list[Recipient]:
+def _recipients(session: Session, event: Event, event_type: str) -> list[Recipient]:
     rows = session.execute(
         sa.select(User.id)
         .join(Person, Person.id == User.person_id)
@@ -66,7 +64,7 @@ def _recipients(session: Session, event: Event) -> list[Recipient]:
     return [
         Recipient(
             user_id=user_id,
-            idempotency_key=f"{event.id}:{event.status}:{event.updated_at.isoformat()}:{user_id}",
+            idempotency_key=f"{event.id}:{event_type}:{event.updated_at.isoformat()}:{user_id}",
         )
         for user_id in rows
     ]
@@ -84,7 +82,7 @@ def plan_event_lifecycle_notification(
     Rules/templates are deliberately required to exist in the DB; no rule
     or missing template means no delivery, as specified by the Engine.
     """
-    recipients = _recipients(session, event)
+    session.flush()\n    recipients = _recipients(session, event, event_type)
     if not recipients:
         return
 
