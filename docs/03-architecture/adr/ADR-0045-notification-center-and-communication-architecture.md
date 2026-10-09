@@ -181,7 +181,7 @@ A terminal delivery failure remains observable in the delivery journal.
 
 The Notification Engine is the application boundary business modules call; it executes, and does not invent, notification policy.
 
-- **Admin Policy is an Engine dependency.** The Engine obtains the effective Global/Club Admin Policy through an Admin Policy port/abstraction. The persistence and UI that back it are a separate Settings implementation slice. If no effective Admin Policy source is connected, the Engine fails closed: no Notification, Delivery or outbox job is created.
+- **Admin Policy is an Engine dependency.** The Engine obtains the effective Global Admin Policy through an Admin Policy port/abstraction. The persistence and UI that back it are the Administrator Notification Settings implementation slice defined by ADR-0048. If no effective Admin Policy source is connected, the Engine fails closed: no Notification, Delivery or outbox job is created.
 - **Effective policy per event comes from its specification gate (§5).** Mandatory / opt-in / opt-out semantics, including behaviour when a user has no stored preference, are defined by the business event's specification gate. The Engine receives that already-defined effective policy and applies it; it has no built-in preference default.
 - **Zero eligible Deliveries means no Notification.** If, after policy, audience and preference resolution, no eligible Delivery remains, the Engine creates no Notification, no Delivery and no outbox job. A Notification exists only together with at least one eligible Delivery.
 - **Templates are resolved before any Delivery is created.** Channel-specific template selection uses the existing template model.
