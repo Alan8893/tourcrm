@@ -73,6 +73,7 @@ from app.events.lifecycle import (
     validate_time_range,
 )
 from app.events.service import build_event_group_target, build_event_staff_assignment
+from app.events.notification_integration import plan_event_lifecycle_notification
 
 # ADR-0018: every Event starts as `draft`; no document describes a
 # "create directly as published" path, and `status` is never
