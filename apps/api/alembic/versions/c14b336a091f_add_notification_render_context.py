@@ -1,6 +1,7 @@
 """Persist per-recipient notification template context (Issue #336)."""
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 revision = "c14b336a091f"
 down_revision = "c14b336a091e"
@@ -13,7 +14,7 @@ def upgrade() -> None:
         "notifications",
         sa.Column(
             "render_context",
-            sa.dialects.postgresql.JSONB(astext_type=sa.Text()),
+            postgresql.JSONB(astext_type=sa.Text()),
             server_default=sa.text("'{}'::jsonb"),
             nullable=False,
         ),
