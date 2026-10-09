@@ -117,3 +117,21 @@ Test-send actions must be explicit and must not silently enable the channel.
 - User preferences are available only to the authenticated user.
 - Frontend hiding is not the authorization boundary; backend authorization is authoritative.
 - Mobile layout must remain usable without horizontal scrolling.
+
+
+### Personal Telegram messages (user-controlled)
+
+The authenticated user must be able to control personal Telegram messages in **Settings → My Notifications**. This control is separate from administrator-managed group/topic routing.
+
+- Provide a master switch for personal Telegram messages. For optional business-event notifications, an unset preference defaults to OFF.
+- Where the UI exposes per-event preferences, those preferences further restrict personal delivery; they must never turn on group/topic posting or bypass administrator policy.
+- Turning personal messages off must not affect messages sent to the shared Telegram group or its topics.
+- The master switch cannot opt the user out of the mandatory personal notifications for `event.cancelled` and `event.rescheduled`. Global Telegram OFF and administrator-disabled rules still take precedence and may prevent delivery.
+- Show whether the user's Telegram account is linked. If it is not linked, explain how to complete the verified linking flow; never attempt delivery to an unverified destination.
+- The backend is authoritative and must enforce this preference when planning personal deliveries. UI-only enforcement is insufficient.
+- The user can change only their own preference. Notification administration and group/topic routing remain Administrator-only.
+
+
+### Telegram group discovery and personal delivery boundaries
+
+The production Telegram bot is already a member of the club group. Use Bot API updates actually available to the bot to verify the group `chat_id` and topic `message_thread_id`; do not infer routing IDs from visible topic names. Bot membership does not imply access to the group's full historical message archive. Update visibility depends on Bot API privacy mode, permissions, update types and webhook/polling configuration. Group membership also does not enable private messaging: each user must complete the verified Telegram-linking flow and have an active Telegram identity. Group/topic destinations and personal-user destinations are configured and authorized independently.
