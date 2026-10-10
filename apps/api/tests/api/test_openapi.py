@@ -255,6 +255,8 @@ _ME_PATHS = {
     # Issue #329 / ADR-0047: the caller's own Telegram link.
     "/api/v1/me/telegram-link",
     "/api/v1/me/telegram-link/challenges",
+    # Issue #336 / ADR-0049: the caller's own personal notification preferences.
+    "/api/v1/me/notification-preferences",
 }
 
 # Issue #333 / ADR-0048: Administrator Notification Settings.

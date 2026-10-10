@@ -864,13 +864,19 @@ Logical notification record.
 - `event_type`
 - `subject_type`
 - `subject_id` nullable
-- `recipient_user_id` FK
+- `recipient_user_id` FK -> `users.id` nullable
+- `recipient_destination_id` FK -> `telegram_destinations.id` nullable (ADR-0049 §2.4)
 - `template_id` FK nullable
 - `priority`
 - `scheduled_at` nullable
 - `status`
 - `idempotency_key`
+- `render_context` JSONB object, default `{}` (ADR-0049 §2.3)
 - timestamps
+
+Exactly one recipient is set (CHECK `ck_notifications_exactly_one_recipient`): a User for a personal notification, or an administrator-configured group/topic route for a group publication. A route-addressed Notification has one `telegram` Delivery with `destination_type = telegram_destination`. Index (`recipient_destination_id`, `created_at`) — a route's publication history.
+
+`render_context` is the template's variable snapshot written in the same transaction as the business change (for example both the old and the new date of a reschedule): a flat object of variable name -> already formatted string; no secret, credential, internal note or private data of another person. The Telegram adapter renders the template from it at send time (ADR-0049 §2.5); business tables are not re-read.
 
 The idempotency key must prevent duplicate logical Notifications for the same business event/recipient according to the event's specification. It is globally UNIQUE; its composition is defined by each event's specification gate (ADR-0045 §5).
 
@@ -911,16 +917,32 @@ A Delivery failure does not roll back the committed business transaction. Delive
 - `id` PK
 - `user_id` FK
 - `channel`
+- `destination_type` — CHECK `IN ('user')`, default `user` (ADR-0049 §2.1)
 - `notification_type`
 - `enabled`
 - quiet-hours configuration where applicable (`quiet_hours_start`, `quiet_hours_end`, `quiet_hours_timezone` — all set or all NULL)
 - timestamps
 
-At most one preference per (`user_id`, `channel`, `notification_type`).
+At most one preference per (`user_id`, `channel`, `destination_type`, `notification_type`).
 
 `notification_type` holds the canonical `event_type` (ADR-0045 §2.8); notification type is not modelled separately.
 
+A per-event preference governs only the personal destination (`user`). Group/topic routes are administrator configuration and never read a user preference.
+
 A user preference cannot override an effective Administrator OFF policy.
+
+### `communication_channel_preferences`
+
+The personal master switch (ADR-0049 §2.1) — for example "personal Telegram messages".
+
+- `id` PK
+- `user_id` FK -> `users.id` (RESTRICT)
+- `channel`
+- `destination_type` — CHECK `IN ('user')`, default `user`
+- `enabled`
+- timestamps
+
+At most one row per (`user_id`, `channel`, `destination_type`). No row means OFF. Stored apart from `communication_preferences`, so toggling it never changes a per-event preference. An optional business notification is planned for personal delivery only when the master switch **and** the event preference are ON; a mandatory type ignores both (catalog §5).
 
 ### Telegram destinations (`telegram_destinations`)
 
@@ -934,9 +956,9 @@ Telegram group/topic routing must preserve:
 
 Topic display names are not routing identifiers.
 
-Physical table: `telegram_destinations` — `id`, `club_id` FK nullable, `name`, `chat_id` (BIGINT), `message_thread_id` (BIGINT, nullable, positive), `topic_name` nullable (presentation metadata only), `enabled`, `notification_scope` (JSONB object — an extensible persistence field with no fixed structure), timestamps. (`chat_id`, `message_thread_id`) is UNIQUE with NULLS NOT DISTINCT. No bot token or other credential is stored. The User profile stores no Telegram numeric id; user linking is the separate `telegram_identities` association below.
+Physical table: `telegram_destinations` — `id`, `club_id` FK nullable, `name`, `chat_id` (BIGINT), `message_thread_id` (BIGINT, nullable, positive), `topic_name` nullable (presentation metadata only), `enabled`, `notification_scope` (JSONB object; its `event_types` key, when present, is a JSON array — CHECK — of the notification event types the route publishes, ADR-0049 §2.4; without it the route publishes nothing), timestamps. (`chat_id`, `message_thread_id`) is UNIQUE with NULLS NOT DISTINCT. No bot token or other credential is stored. The User profile stores no Telegram numeric id; user linking is the separate `telegram_identities` association below.
 
-The Telegram channel adapter (`apps/api/app/notifications/telegram_adapter.py`, ADR-0047 §5) sends to `chat_id` with `message_thread_id` as the topic route; a disabled row is a terminal `destination_disabled`.
+The Telegram channel adapter (`apps/api/app/notifications/telegram_adapter.py`, ADR-0047 §5) sends to `chat_id` with `message_thread_id` as the topic route; a disabled row is a terminal `destination_disabled`. The Notification Engine plans a route publication only for an enabled route whose `event_types` lists the event type, under its own installation-wide rule (`recipient_scope = telegram_destination`) (ADR-0049 §2.4).
 
 ### Telegram identities (`telegram_identities`)
 

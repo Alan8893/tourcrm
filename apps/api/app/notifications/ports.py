@@ -17,7 +17,16 @@ through one of these ports:
 - `PreferencePolicy` — the event's effective User Preference policy
   (mandatory / opt-in / opt-out, including what a missing stored
   preference means), defined by the specification gate (ADR-0045 §2.10).
-  The Engine has no built-in preference default.
+  The Engine has no built-in preference default. It receives both personal
+  levels (ADR-0049 §2.1): the per-event preference and the channel's
+  master switch.
+- `RecipientReachability` — whether a personal delivery on a channel can
+  reach the User at all (for Telegram: an active, verified linked
+  identity, ADR-0047 §4). An unreachable recipient gets no Delivery
+  (ADR-0049 §2.2), mandatory event or not.
+
+Group/topic routes (ADR-0049 §2.4) use none of the recipient ports: a
+route is administrator configuration, not a person.
 """
 
 import uuid
@@ -52,11 +61,22 @@ class RecipientAccess(Protocol):
 
 
 class PreferencePolicy(Protocol):
-    """The event's effective User Preference policy for one channel.
-    `stored_enabled` is the recipient's stored preference for
-    (channel, event_type), or None when there is none."""
+    """The event's effective User Preference policy for one channel's
+    personal destination. `stored_enabled` is the recipient's stored
+    per-event preference for (channel, event_type) and `master_enabled`
+    their stored master switch for the channel; each is None when there is
+    none."""
 
-    def allows(self, *, channel: str, stored_enabled: bool | None) -> bool: ...
+    def allows(
+        self, *, channel: str, stored_enabled: bool | None, master_enabled: bool | None
+    ) -> bool: ...
+
+
+class RecipientReachability(Protocol):
+    """Whether a personal delivery to `user_id` on `channel` has a verified
+    destination. Never trusts a client-supplied address."""
+
+    def reachable(self, session: Session, *, user_id: uuid.UUID, channel: str) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -73,4 +93,10 @@ class PermissionRecipientAccess:
         return can(session, user_id, self.permission_code, self.context_for(session, user_id))
 
 
-__all__ = ["AdminPolicy", "RecipientAccess", "PreferencePolicy", "PermissionRecipientAccess"]
+__all__ = [
+    "AdminPolicy",
+    "RecipientAccess",
+    "PreferencePolicy",
+    "RecipientReachability",
+    "PermissionRecipientAccess",
+]

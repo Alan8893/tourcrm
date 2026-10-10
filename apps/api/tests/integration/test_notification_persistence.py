@@ -643,7 +643,7 @@ def test_communication_preference_is_unique_per_user_channel_and_type() -> None:
                 user_id=user.id, channel="email", notification_type="test.event", enabled=True
             )
         )
-        _assert_rejected(session, "uq_communication_preferences_user_channel_type")
+        _assert_rejected(session, "uq_communication_preferences_user_channel_destination_type")
 
 
 @pytest.mark.parametrize(

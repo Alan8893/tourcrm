@@ -8,7 +8,9 @@ Consumes committed `outbox_jobs` rows until SIGTERM/SIGINT, then stops
 claiming, finishes the job in progress and hands back claimed-but-not-
 started jobs (ADR-0046 §5.6). Configuration: app.outbox.worker.WorkerConfig
 (OUTBOX_WORKER_* environment variables), DATABASE_URL and the settings key
-ring SETTINGS_ENCRYPTION_KEYS.
+ring SETTINGS_ENCRYPTION_KEYS, and the optional public frontend address
+APP_PUBLIC_BASE_URL used for links in notification messages (unset: no
+links; invalid: the worker does not start).
 
 Registered handlers: `notification.delivery`, with the settings-driven
 Email and Telegram adapters (app.notifications.configured_adapters, Issue
@@ -31,6 +33,7 @@ import threading
 from types import FrameType
 from typing import Optional
 
+from app.core.config import get_public_base_url
 from app.db.session import get_session_factory
 from app.notification_settings.policy import GlobalAdminPolicy
 from app.notifications.configured_adapters import (
@@ -62,7 +65,10 @@ def build_worker(
             session_factory=session_factory, transport_factory=smtp_transport_factory
         ),
         CHANNEL_TELEGRAM: ConfiguredTelegramAdapter(
-            session_factory=session_factory, client_factory=telegram_client_factory
+            session_factory=session_factory,
+            client_factory=telegram_client_factory,
+            # ADR-0049 §2.7: an invalid value stops the worker at start.
+            public_base_url=get_public_base_url(),
         ),
     }
     handler = NotificationDeliveryHandler(
