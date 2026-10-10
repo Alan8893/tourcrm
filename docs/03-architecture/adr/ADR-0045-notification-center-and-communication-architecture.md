@@ -6,7 +6,7 @@
 - **Decision type:** Architecture decision
 - **Supersedes:** none
 - **Refines:** ADR-0007 (background processing) for asynchronous notification delivery
-- **Amended:** 2026-10-08 — Notification Engine policy decisions for #319 (§2.4, §2.10); 2026-10-09 — single-installation policy and UI-managed integration secrets (ADR-0048)
+- **Amended:** 2026-10-08 — Notification Engine policy decisions for #319 (§2.4, §2.10); 2026-10-09 — single-installation policy and UI-managed integration secrets (ADR-0048); 2026-10-09 — business-event integration: personal-destination preferences with a master switch, render context, route-addressed Notifications, atomic planning without savepoint (ADR-0049, Issue #336)
 - **Related:** ADR-0044, ODR-005, `docs/03-architecture/application-architecture.md`, `docs/03-architecture/database-schema.md`, `docs/09-governance/feature-settings.md`
 
 ## 1. Context
@@ -224,7 +224,8 @@ The canonical relational model is:
 - `event_type`
 - `subject_type`
 - `subject_id` nullable
-- `recipient_user_id`
+- `recipient_user_id` (nullable since ADR-0049: exactly one of it and `recipient_destination_id` — a group/topic route — is set)
+- `render_context` (ADR-0049 §2.3)
 - `template_id` nullable
 - `priority`
 - `scheduled_at` nullable
@@ -254,6 +255,7 @@ The canonical relational model is:
 - `id` PK
 - `user_id` FK
 - `channel`
+- `destination_type` (ADR-0049 §2.1: only the personal destination `user`; a personal master switch per channel is stored separately in `communication_channel_preferences`)
 - `notification_type` (the canonical `event_type`, §2.8)
 - `enabled`
 - quiet-hours configuration where applicable

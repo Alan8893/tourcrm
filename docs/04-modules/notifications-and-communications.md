@@ -138,6 +138,8 @@ Delivery
 
 Тип уведомления в настройках — канонический `event_type`.
 
+Пользовательские настройки относятся только к личной доставке (`destination_type = user`, ADR-0049 §2.1): общий переключатель личных сообщений канала (`communication_channel_preferences`) и предпочтения по событиям (`communication_preferences`). Переключение общего переключателя не изменяет предпочтения по событиям. Публикации в группы/темы Telegram настраиваются администратором и пользовательские настройки не читают. Личная доставка планируется только при активной подтверждённой привязке Telegram (ADR-0049 §2.2). API: `GET`/`PUT /api/v1/me/notification-preferences` (`docs/05-api/notification-preferences-api.md`).
+
 Настройки включают:
 
 - канал;
@@ -173,7 +175,8 @@ Delivery
 
 - Входящие updates — long polling в отдельном процессе `telegram-poller` (не FastAPI, не outbox worker), ровно один на bot token, с durable checkpoint в PostgreSQL. Webhook не используется.
 - Привязка — пользовательский поток: `POST /api/v1/me/telegram-link/challenges` → deep link `https://t.me/<bot>?start=<одноразовый токен>` → пользователь нажимает Start → бот получает `/start <token>` в private chat → Telegram id отправителя связывается с владельцем challenge. Повторная привязка того же аккаунта — подтверждение; другого аккаунта — замена (`replaced`); аккаунт другого пользователя — отказ без переноса; отвязка — `DELETE /api/v1/me/telegram-link`. Контракт: `docs/05-api/telegram-link-api.md`.
-- Доставка — `TelegramChannelAdapter` в outbox worker: `user` → активная привязанная identity получателя; `telegram_destination` → `chat_id` + `message_thread_id` (topic). Текст — `body_template` telegram-шаблона как plain text. Ошибки провайдера — стабильные коды (retryable: timeout, сеть, 5xx, 429 с `retry_after`; permanent: бот заблокирован, нет доступа к чату, чат/топик не найден, неверная конфигурация); retry/backoff — политика worker.
+- Бизнес-события каталога (`docs/04-modules/notification-event-catalog.md`) планируются доменными сервисами в транзакции бизнес-изменения только через `app.notifications.business.plan_catalog_notification` поверх существующего Notification Engine (ADR-0049 §2.6/§2.8). Групповая/тематическая публикация — Notification, адресованный маршруту `telegram_destinations` (`recipient_destination_id`), с собственным правилом `recipient_scope = telegram_destination` и списком `notification_scope.event_types` маршрута (ADR-0049 §2.4).
+- Доставка — `TelegramChannelAdapter` в outbox worker: `user` → активная привязанная identity получателя; `telegram_destination` → `chat_id` + `message_thread_id` (topic). Текст — telegram-шаблон, отрендеренный из `notifications.render_context` с экранированием для Telegram `parse_mode=HTML` (ADR-0049 §2.5): сырой `{{placeholder}}` не отправляется, ошибка рендеринга (`template_render_failed`, `message_too_long`) постоянна. Ссылки строятся из `APP_PUBLIC_BASE_URL`; без него не выводятся. Тестовая отправка администратора остаётся обычным текстом. Ошибки провайдера — стабильные коды (retryable: timeout, сеть, 5xx, 429 с `retry_after`; permanent: бот заблокирован, нет доступа к чату, чат/топик не найден, неверная конфигурация); retry/backoff — политика worker.
 
 ### MAX
 

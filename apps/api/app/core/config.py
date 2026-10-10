@@ -196,3 +196,50 @@ def get_telegram_api_base_url() -> str:
     return validate_telegram_api_base_url(
         _optional_env("TELEGRAM_API_BASE_URL") or _DEFAULT_TELEGRAM_API_BASE_URL
     )
+
+
+# Issue #336, ADR-0049 §2.7: the public web address of the TourCRM
+# frontend, used only to build links in notification messages. Not a secret
+# and not integration configuration (it describes this deployment, not a
+# provider), so it is deployment environment like COOKIE_SECURE. Unset ->
+# messages carry no link.
+_PUBLIC_BASE_URL_ERROR = (
+    "APP_PUBLIC_BASE_URL must be an absolute http(s) URL without credentials, "
+    "query or fragment (for example https://crm.example.org)"
+)
+
+
+def validate_public_base_url(value: str) -> str:
+    """Return the normalized base URL (scheme://host[:port][/path], no
+    trailing slash), rebuilt from parsed components, or raise
+    ConfigurationError. Rejected: other schemes, userinfo, a query or
+    fragment, and characters that parsers may silently strip."""
+    if not value or any(ch.isspace() or not ch.isprintable() or ch == "\\" for ch in value):
+        raise ConfigurationError(_PUBLIC_BASE_URL_ERROR)
+    try:
+        parts = urllib.parse.urlsplit(value)
+        port = parts.port
+    except ValueError:
+        raise ConfigurationError(_PUBLIC_BASE_URL_ERROR) from None
+    host = parts.hostname
+    if (
+        parts.scheme not in ("http", "https")
+        or not host
+        or "@" in parts.netloc
+        or parts.query
+        or parts.fragment
+        or "?" in value
+        or "#" in value
+    ):
+        raise ConfigurationError(_PUBLIC_BASE_URL_ERROR)
+    rendered_host = f"[{host}]" if ":" in host else host
+    netloc = rendered_host if port is None else f"{rendered_host}:{port}"
+    path = urllib.parse.quote(urllib.parse.unquote(parts.path), safe="/-._~").rstrip("/")
+    return f"{parts.scheme}://{netloc}{path}"
+
+
+def get_public_base_url() -> Optional[str]:
+    """`APP_PUBLIC_BASE_URL`, validated, or None when unset. An invalid value
+    is a ConfigurationError — never silently ignored."""
+    value = _optional_env("APP_PUBLIC_BASE_URL")
+    return None if value is None else validate_public_base_url(value.strip())

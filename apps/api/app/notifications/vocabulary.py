@@ -67,6 +67,18 @@ CANONICAL_DESTINATION_TYPES: frozenset[str] = frozenset(
     {DESTINATION_USER, DESTINATION_TELEGRAM_DESTINATION}
 )
 
+# ADR-0049 §2.1: user preferences (the personal master switch and the
+# per-event preferences) exist only for the personal destination; a
+# group/topic route is configured by an administrator and never consults
+# them. The CHECK constraints of both preference tables are built from this
+# set, so a future destination dimension is a vocabulary + migration change.
+PREFERENCE_DESTINATION_TYPES: frozenset[str] = frozenset({DESTINATION_USER})
+
+# ADR-0049 §2.4: the `notification_rules.recipient_scope` of every rule that
+# publishes to administrator-configured group/topic routes. Personal rules
+# use their event's own audience scope (app.notifications.catalog).
+RECIPIENT_SCOPE_TELEGRAM_DESTINATION = "telegram_destination"
+
 # ADR-0045 §2.10 outbox contract: exactly one job per Delivery.
 NOTIFICATION_DELIVERY_JOB_TYPE = "notification.delivery"
 
@@ -93,4 +105,6 @@ __all__ = [
     "DESTINATION_USER",
     "DESTINATION_TELEGRAM_DESTINATION",
     "CANONICAL_DESTINATION_TYPES",
+    "PREFERENCE_DESTINATION_TYPES",
+    "RECIPIENT_SCOPE_TELEGRAM_DESTINATION",
 ]

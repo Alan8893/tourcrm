@@ -10,7 +10,10 @@ each one, in a short read-only session closed before any network I/O:
    retryable `channel_adapter_unavailable`, bounded by its attempt limit;
    the safe message names only the configuration state;
 2. builds the existing EmailChannelAdapter / TelegramChannelAdapter with
-   that configuration and delegates to it unchanged.
+   that configuration and delegates to it unchanged. The Telegram adapter
+   also receives the deployment's validated `APP_PUBLIC_BASE_URL` for
+   message links (ADR-0049 §2.7) — deployment environment, read once when
+   the worker starts.
 
 So a saved settings change applies to the next attempt without restarting
 the worker, and the adapters' own semantics are untouched. The Global Admin
@@ -21,6 +24,7 @@ while a send is already in progress does not cancel that send.
 """
 
 from collections.abc import Callable
+from typing import Optional
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -79,9 +83,11 @@ class ConfiguredTelegramAdapter:
         *,
         session_factory: sessionmaker,
         client_factory: BotApiClientFactory = build_bot_api_client,
+        public_base_url: Optional[str] = None,
     ) -> None:
         self._session_factory = session_factory
         self._client_factory = client_factory
+        self._public_base_url = public_base_url
 
     def __repr__(self) -> str:
         return "ConfiguredTelegramAdapter()"
@@ -94,7 +100,9 @@ class ConfiguredTelegramAdapter:
         if runtime.state != CONFIG_CONFIGURED or runtime.settings is None:
             return _unavailable(runtime.state)
         adapter = TelegramChannelAdapter(
-            client=self._client_factory(runtime.settings), session_factory=self._session_factory
+            client=self._client_factory(runtime.settings),
+            session_factory=self._session_factory,
+            public_base_url=self._public_base_url,
         )
         return adapter.deliver(request)
 

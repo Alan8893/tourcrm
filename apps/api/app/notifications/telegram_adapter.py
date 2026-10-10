@@ -17,11 +17,17 @@ Per call:
      `chat_id` plus optional `message_thread_id` (topic routing). Missing
      -> permanent `destination_not_found`; `enabled = false` -> permanent
      `destination_disabled`;
-   - content: the Notification's template as stored, which must be a
-     `telegram` template; its `body_template` is sent as plain text (no
-     parse_mode, no rendering). Missing/other channel -> permanent
-     `template_unavailable`; longer than Telegram's 4096-character limit
-     -> permanent `message_too_long`;
+   - content: the Notification's template, which must be a `telegram`
+     template, rendered by app.notifications.rendering from the
+     Notification's `render_context` snapshot and the template's declared
+     variables (app.notifications.catalog) into escaped Telegram HTML
+     (`parse_mode=HTML`, ADR-0049 §2.5). Links use the deployment's
+     `APP_PUBLIC_BASE_URL`; without it they are omitted. Missing/other
+     channel -> permanent `template_unavailable`; a template that cannot
+     be rendered (missing required variable, undeclared or malformed
+     placeholder) -> permanent `template_render_failed`; visible text
+     longer than Telegram's 4096-character limit after rendering ->
+     permanent `message_too_long`. A raw `{{placeholder}}` is never sent;
 2. `sendMessage` through app.telegram.bot_api; its failures are already
    stable safe codes (see that module), mapped to retryable/permanent.
    The rate-limit `retry_after` is reported only as the safe message
@@ -40,7 +46,16 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.notifications import Notification, NotificationTemplate, TelegramDestination
 from app.db.telegram import TelegramIdentity
+from app.notifications.catalog import template_variables
 from app.notifications.delivery import ChannelResult, DeliveryRequest
+from app.notifications.rendering import (
+    MESSAGE_TOO_LONG,
+    TELEGRAM_MESSAGE_MAX_LENGTH,
+    TELEGRAM_PARSE_MODE_HTML,
+    TEMPLATE_RENDER_FAILED,
+    TemplateRenderError,
+    render_telegram_html,
+)
 from app.notifications.vocabulary import (
     CHANNEL_TELEGRAM,
     DESTINATION_TELEGRAM_DESTINATION,
@@ -54,10 +69,6 @@ DESTINATION_NOT_FOUND = "destination_not_found"
 DESTINATION_UNLINKED = "destination_unlinked"
 DESTINATION_DISABLED = "destination_disabled"
 TEMPLATE_UNAVAILABLE = "template_unavailable"
-MESSAGE_TOO_LONG = "message_too_long"
-
-# Bot API sendMessage: 1-4096 characters of text after entity parsing.
-TELEGRAM_MESSAGE_MAX_LENGTH = 4096
 
 
 @dataclass(frozen=True)
@@ -65,6 +76,8 @@ class TelegramContent:
     chat_id: int
     message_thread_id: Optional[int]
     text: str
+    # None = plain text (the administrator test send); notifications are HTML.
+    parse_mode: Optional[str] = None
 
 
 def _resolve_chat(
@@ -88,8 +101,10 @@ def _resolve_chat(
     return destination.chat_id, destination.message_thread_id
 
 
-def _load_content(session: Session, request: DeliveryRequest) -> TelegramContent | str:
-    """Returns the content to send, or a permanent error code."""
+def _load_content(
+    session: Session, request: DeliveryRequest, public_base_url: Optional[str]
+) -> TelegramContent | str | ChannelResult:
+    """Returns the content to send, or a permanent error code / result."""
     chat = _resolve_chat(session, request)
     if isinstance(chat, str):
         return chat
@@ -99,23 +114,42 @@ def _load_content(session: Session, request: DeliveryRequest) -> TelegramContent
         if notification is not None and notification.template_id is not None
         else None
     )
-    if template is None or template.channel != CHANNEL_TELEGRAM:
+    if notification is None or template is None or template.channel != CHANNEL_TELEGRAM:
         return TEMPLATE_UNAVAILABLE
-    if len(template.body_template) > TELEGRAM_MESSAGE_MAX_LENGTH:
-        return MESSAGE_TOO_LONG
+    try:
+        text = render_telegram_html(
+            template.body_template,
+            variables=template_variables(template.code),
+            context=notification.render_context,
+            public_base_url=public_base_url,
+        )
+    except TemplateRenderError as exc:
+        return ChannelResult.permanent(exc.code, exc.safe_message)
     chat_id, message_thread_id = chat
     return TelegramContent(
-        chat_id=chat_id, message_thread_id=message_thread_id, text=template.body_template
+        chat_id=chat_id,
+        message_thread_id=message_thread_id,
+        text=text,
+        parse_mode=TELEGRAM_PARSE_MODE_HTML,
     )
 
 
 class TelegramChannelAdapter:
     """ChannelAdapter for `telegram`. `session_factory` is used only for
-    the short read before sending; `client` performs the Bot API I/O."""
+    the short read before sending; `client` performs the Bot API I/O;
+    `public_base_url` (validated APP_PUBLIC_BASE_URL, or None) builds the
+    message links."""
 
-    def __init__(self, *, client: BotApiClient, session_factory: sessionmaker) -> None:
+    def __init__(
+        self,
+        *,
+        client: BotApiClient,
+        session_factory: sessionmaker,
+        public_base_url: Optional[str] = None,
+    ) -> None:
         self._client = client
         self._session_factory = session_factory
+        self._public_base_url = public_base_url
 
     def __repr__(self) -> str:
         return "TelegramChannelAdapter()"
@@ -128,20 +162,23 @@ class TelegramChannelAdapter:
             return ChannelResult.permanent(DESTINATION_UNSUPPORTED)
 
         with self._session_factory() as session:
-            loaded = _load_content(session, request)
+            loaded = _load_content(session, request, self._public_base_url)
             session.rollback()
         if isinstance(loaded, str):
             return ChannelResult.permanent(loaded)
+        if isinstance(loaded, ChannelResult):
+            return loaded
         return self.send(loaded)
 
     def send(self, content: TelegramContent) -> ChannelResult:
-        """Send one plain-text message. No database access: callers (deliver,
-        the administrator test send) hold no transaction during this call."""
+        """Send one message. No database access: callers (deliver, the
+        administrator test send) hold no transaction during this call."""
         try:
             message_id = self._client.send_message(
                 chat_id=content.chat_id,
                 text=content.text,
                 message_thread_id=content.message_thread_id,
+                parse_mode=content.parse_mode,
             )
         except TelegramApiError as exc:
             if exc.retryable:
@@ -156,6 +193,7 @@ __all__ = [
     "DESTINATION_UNLINKED",
     "DESTINATION_DISABLED",
     "TEMPLATE_UNAVAILABLE",
+    "TEMPLATE_RENDER_FAILED",
     "MESSAGE_TOO_LONG",
     "TELEGRAM_MESSAGE_MAX_LENGTH",
     "TelegramContent",

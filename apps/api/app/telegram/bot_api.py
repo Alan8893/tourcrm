@@ -286,13 +286,21 @@ class BotApiClient:
         return result
 
     def send_message(
-        self, *, chat_id: int, text: str, message_thread_id: Optional[int] = None
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        message_thread_id: Optional[int] = None,
+        parse_mode: Optional[str] = None,
     ) -> int:
-        """Send `text` as plain text (no parse_mode). Returns the Telegram
+        """Send `text` — plain text unless `parse_mode` is given (the
+        notification renderer produces escaped `HTML`). Returns the Telegram
         message id."""
         params: dict[str, Any] = {"chat_id": chat_id, "text": text}
         if message_thread_id is not None:
             params["message_thread_id"] = message_thread_id
+        if parse_mode is not None:
+            params["parse_mode"] = parse_mode
         result = self._call("sendMessage", params, timeout=self._request_timeout)
         message_id = result.get("message_id") if isinstance(result, dict) else None
         if not isinstance(message_id, int) or isinstance(message_id, bool):

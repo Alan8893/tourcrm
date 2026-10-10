@@ -48,7 +48,9 @@ from app.notifications.vocabulary import (
     DELIVERY_DELIVERED,
     DELIVERY_PENDING,
     DESTINATION_TELEGRAM_DESTINATION,
+    DESTINATION_USER,
     NOTIFICATION_PENDING,
+    PREFERENCE_DESTINATION_TYPES,
     PROVISIONAL_NOTIFICATION_STATUSES,
 )
 
@@ -58,6 +60,7 @@ def _in(values: frozenset[str]) -> str:
 
 
 _CHANNEL_VALUES = _in(CANONICAL_NOTIFICATION_CHANNELS)
+_PREFERENCE_DESTINATION_VALUES = _in(PREFERENCE_DESTINATION_TYPES)
 
 
 def _created_at() -> Mapped[datetime]:
@@ -165,6 +168,13 @@ class Notification(Base):
     """The logical message addressed to one recipient (ADR-0045 §2.1).
     Not a provider delivery attempt — see NotificationDelivery.
 
+    The recipient is exactly one of (ADR-0049 §2.4): a User
+    (`recipient_user_id`, personal delivery) or an administrator-configured
+    group/topic route (`recipient_destination_id`, a `telegram_destinations`
+    row). `render_context` is the template's variable snapshot, written in
+    the business transaction (ADR-0049 §2.3): string values only, no
+    secret, credential or private data of another person.
+
     `status` uses a PROVISIONAL vocabulary (see
     app.notifications.vocabulary); only its initial `pending` value is
     relied on here."""
@@ -178,8 +188,13 @@ class Notification(Base):
     event_type: Mapped[str] = mapped_column(sa.String(100), nullable=False)
     subject_type: Mapped[str] = mapped_column(sa.String(64), nullable=False)
     subject_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
-    recipient_user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    recipient_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    recipient_destination_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("telegram_destinations.id", ondelete="RESTRICT"),
+        nullable=True,
     )
     template_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
@@ -201,11 +216,22 @@ class Notification(Base):
         server_default=NOTIFICATION_PENDING,
     )
     idempotency_key: Mapped[str] = mapped_column(sa.String(255), nullable=False)
+    render_context: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=sa.text("'{}'::jsonb")
+    )
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 
     __table_args__ = (
         sa.UniqueConstraint("idempotency_key", name="uq_notifications_idempotency_key"),
+        sa.CheckConstraint(
+            "(recipient_user_id IS NULL) <> (recipient_destination_id IS NULL)",
+            name="ck_notifications_exactly_one_recipient",
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(render_context) = 'object'",
+            name="ck_notifications_render_context_is_object",
+        ),
         sa.CheckConstraint(
             f"status IN ({_in(PROVISIONAL_NOTIFICATION_STATUSES)})",
             name="ck_notifications_status_valid",
@@ -223,6 +249,12 @@ class Notification(Base):
         ),
         # Club-scoped administrative delivery journal.
         sa.Index("ix_notifications_club_id_created_at", "club_id", "created_at"),
+        # A group/topic route's publication history.
+        sa.Index(
+            "ix_notifications_recipient_destination_id_created_at",
+            "recipient_destination_id",
+            "created_at",
+        ),
     )
 
 
@@ -319,6 +351,10 @@ class CommunicationPreference(Base):
     Subordinate to effective administrative policy — it can opt out, never
     enable what Admin Policy disables (resolution is #319).
 
+    `destination_type` is the delivery destination the preference governs
+    (ADR-0049 §2.1); only the personal destination (`user`) exists. A
+    group/topic route never reads a user preference.
+
     Quiet hours are optional; when present all three fields are set and
     `quiet_hours_start`/`quiet_hours_end` are local times in
     `quiet_hours_timezone` (a window may cross midnight)."""
@@ -330,6 +366,9 @@ class CommunicationPreference(Base):
         UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
     channel: Mapped[str] = mapped_column(sa.String(16), nullable=False)
+    destination_type: Mapped[str] = mapped_column(
+        sa.String(32), nullable=False, default=DESTINATION_USER, server_default=DESTINATION_USER
+    )
     notification_type: Mapped[str] = mapped_column(sa.String(100), nullable=False)
     enabled: Mapped[bool] = mapped_column(sa.Boolean, nullable=False)
     quiet_hours_start: Mapped[Optional[time]] = mapped_column(sa.Time, nullable=True)
@@ -342,11 +381,16 @@ class CommunicationPreference(Base):
         sa.UniqueConstraint(
             "user_id",
             "channel",
+            "destination_type",
             "notification_type",
-            name="uq_communication_preferences_user_channel_type",
+            name="uq_communication_preferences_user_channel_destination_type",
         ),
         sa.CheckConstraint(
             f"channel IN ({_CHANNEL_VALUES})", name="ck_communication_preferences_channel_valid"
+        ),
+        sa.CheckConstraint(
+            f"destination_type IN ({_PREFERENCE_DESTINATION_VALUES})",
+            name="ck_communication_preferences_destination_type_valid",
         ),
         sa.CheckConstraint(
             "btrim(notification_type) <> ''",
@@ -372,6 +416,45 @@ class CommunicationPreference(Base):
         return value
 
 
+class CommunicationChannelPreference(Base):
+    """A user's master switch for one channel and destination (ADR-0049
+    §2.1) — "personal Telegram messages" on/off. It is stored apart from
+    the per-event preferences, so toggling it never rewrites them. No row
+    means OFF. A mandatory event type ignores it; it never overrides an
+    administrative OFF."""
+
+    __tablename__ = "communication_channel_preferences"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    channel: Mapped[str] = mapped_column(sa.String(16), nullable=False)
+    destination_type: Mapped[str] = mapped_column(
+        sa.String(32), nullable=False, default=DESTINATION_USER, server_default=DESTINATION_USER
+    )
+    enabled: Mapped[bool] = mapped_column(sa.Boolean, nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "user_id",
+            "channel",
+            "destination_type",
+            name="uq_communication_channel_preferences_user_channel_destination",
+        ),
+        sa.CheckConstraint(
+            f"channel IN ({_CHANNEL_VALUES})",
+            name="ck_communication_channel_preferences_channel_valid",
+        ),
+        sa.CheckConstraint(
+            f"destination_type IN ({_PREFERENCE_DESTINATION_VALUES})",
+            name="ck_communication_channel_preferences_destination_type_valid",
+        ),
+    )
+
+
 class TelegramDestination(Base):
     """Telegram group/topic routing destination (ADR-0045 §2.7).
 
@@ -380,9 +463,11 @@ class TelegramDestination(Base):
     `message_thread_id` identifies a forum Topic and is NULL for the chat
     itself. `topic_name` is presentation metadata only and never used for
     routing. `notification_scope` is the destination's notification
-    scope/configuration as an extensible JSON object with no fixed
-    structure at the persistence level. No bot
-    token or other credential is stored here."""
+    scope/configuration as an extensible JSON object. Its `event_types`
+    key, when present, is the array of notification event types the route
+    publishes (ADR-0049 §2.4); without it the route publishes nothing. A
+    route publishes only while `enabled`. No bot token or other credential
+    is stored here."""
 
     __tablename__ = "telegram_destinations"
 
@@ -422,6 +507,11 @@ class TelegramDestination(Base):
             "jsonb_typeof(notification_scope) = 'object'",
             name="ck_telegram_destinations_notification_scope_is_object",
         ),
+        sa.CheckConstraint(
+            "NOT (notification_scope ? 'event_types') "
+            "OR jsonb_typeof(notification_scope -> 'event_types') = 'array'",
+            name="ck_telegram_destinations_event_types_is_array",
+        ),
     )
 
 
@@ -431,5 +521,6 @@ __all__ = [
     "Notification",
     "NotificationDelivery",
     "CommunicationPreference",
+    "CommunicationChannelPreference",
     "TelegramDestination",
 ]

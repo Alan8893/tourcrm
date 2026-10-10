@@ -25,6 +25,7 @@ business event's specification gate (ADR-0045 §5), never here.
 """
 
 import uuid
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Optional
 
@@ -56,6 +57,16 @@ class InvalidDeliveryDestinationError(NotificationPersistenceError):
     non-Telegram channel."""
 
 
+class InvalidNotificationRecipientError(NotificationPersistenceError):
+    """Not exactly one of a recipient User and a recipient route
+    (ADR-0049 §2.4)."""
+
+
+class InvalidRenderContextError(NotificationPersistenceError):
+    """`render_context` is not a mapping of non-blank names to string
+    values (ADR-0049 §2.3)."""
+
+
 class BlankNotificationFieldError(NotificationPersistenceError):
     def __init__(self, field: str) -> None:
         super().__init__(f"{field} must not be blank")
@@ -66,6 +77,19 @@ def _require_not_blank(**fields: str) -> None:
     for name, value in fields.items():
         if not value.strip():
             raise BlankNotificationFieldError(name)
+
+
+def validate_render_context(context: Mapping[str, str]) -> dict[str, str]:
+    """A render context is a flat JSON object of non-blank variable names
+    to string values — already formatted, never a nested structure."""
+    if not isinstance(context, Mapping):
+        raise InvalidRenderContextError("render_context must be a mapping")
+    for name, value in context.items():
+        if not isinstance(name, str) or not name.strip():
+            raise InvalidRenderContextError("render_context names must be non-blank strings")
+        if not isinstance(value, str):
+            raise InvalidRenderContextError(f"render_context value {name!r} must be a string")
+    return dict(context)
 
 
 def get_notification_by_idempotency_key(
@@ -82,15 +106,21 @@ def create_notification(
     idempotency_key: str,
     event_type: str,
     subject_type: str,
-    recipient_user_id: uuid.UUID,
+    recipient_user_id: Optional[uuid.UUID] = None,
+    recipient_destination_id: Optional[uuid.UUID] = None,
     subject_id: Optional[uuid.UUID] = None,
     club_id: Optional[uuid.UUID] = None,
     template_id: Optional[uuid.UUID] = None,
     priority: int = 0,
     scheduled_at: Optional[datetime] = None,
+    render_context: Optional[Mapping[str, str]] = None,
 ) -> tuple[Notification, bool]:
     """Create one logical Notification (initial status `pending`) in the caller's open
     transaction, idempotently on `idempotency_key`.
+
+    The recipient is exactly one of a User (`recipient_user_id`) and a
+    group/topic route (`recipient_destination_id`, ADR-0049 §2.4).
+    `render_context` is the template's variable snapshot (ADR-0049 §2.3).
 
     Returns `(notification, created)`; when a Notification with the same
     key already exists nothing is written and it is returned with
@@ -99,6 +129,11 @@ def create_notification(
     _require_not_blank(
         idempotency_key=idempotency_key, event_type=event_type, subject_type=subject_type
     )
+    if (recipient_user_id is None) == (recipient_destination_id is None):
+        raise InvalidNotificationRecipientError(
+            "exactly one of recipient_user_id and recipient_destination_id is required"
+        )
+    context = validate_render_context(render_context or {})
 
     values: dict[str, Any] = {
         "id": uuid.uuid4(),
@@ -107,6 +142,8 @@ def create_notification(
         "subject_type": subject_type,
         "subject_id": subject_id,
         "recipient_user_id": recipient_user_id,
+        "recipient_destination_id": recipient_destination_id,
+        "render_context": context,
         "club_id": club_id,
         "template_id": template_id,
         "priority": priority,
@@ -196,7 +233,10 @@ __all__ = [
     "NotificationPersistenceError",
     "InvalidNotificationChannelError",
     "InvalidDeliveryDestinationError",
+    "InvalidNotificationRecipientError",
+    "InvalidRenderContextError",
     "BlankNotificationFieldError",
+    "validate_render_context",
     "get_notification_by_idempotency_key",
     "create_notification",
     "add_delivery",

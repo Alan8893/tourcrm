@@ -59,6 +59,9 @@ from .conftest import requires_postgres
 ANNA_TG = 7_000_000_001
 GROUP_CHAT = -1001234567890
 BODY = "Сбор в 8:00 у клуба. <b>не HTML</b> *не Markdown*"
+# ADR-0049 §2.5: the template's literal text is HTML-escaped and sent with
+# parse_mode=HTML, so the recipient sees exactly BODY.
+BODY_HTML = "Сбор в 8:00 у клуба. &lt;b&gt;не HTML&lt;/b&gt; *не Markdown*"
 
 
 def _worker(transport: ScriptedTransport, *, max_attempts: int = 5) -> OutboxWorker:
@@ -178,14 +181,14 @@ def _job(job_id: uuid.UUID) -> OutboxJob:
 
 
 @requires_postgres
-def test_private_user_receives_the_template_body_as_plain_text() -> None:
+def test_private_user_receives_the_template_body_escaped_as_html() -> None:
     ids = _telegram_delivery()
     transport = _sent_ok(555)
     (report,) = _worker(transport).run_once()
 
     assert report.result == "completed"
     (call,) = transport.calls_to("sendMessage")
-    assert call.params == {"chat_id": ANNA_TG, "text": BODY}
+    assert call.params == {"chat_id": ANNA_TG, "text": BODY_HTML, "parse_mode": "HTML"}
     delivery = _delivery(ids["delivery"])
     assert (delivery.status, delivery.provider_message_id) == ("delivered", "555")
     assert _job(ids["job"]).status == "completed"
@@ -198,7 +201,7 @@ def test_group_destination_is_sent_to_its_chat() -> None:
     (report,) = _worker(transport).run_once()
     assert report.result == "completed"
     (call,) = transport.calls_to("sendMessage")
-    assert call.params == {"chat_id": GROUP_CHAT, "text": BODY}
+    assert call.params == {"chat_id": GROUP_CHAT, "text": BODY_HTML, "parse_mode": "HTML"}
 
 
 @requires_postgres
@@ -207,7 +210,12 @@ def test_topic_destination_routes_by_message_thread_id() -> None:
     transport = _sent_ok()
     _worker(transport).run_once()
     (call,) = transport.calls_to("sendMessage")
-    assert call.params == {"chat_id": GROUP_CHAT, "text": BODY, "message_thread_id": 42}
+    assert call.params == {
+        "chat_id": GROUP_CHAT,
+        "text": BODY_HTML,
+        "message_thread_id": 42,
+        "parse_mode": "HTML",
+    }
 
 
 # --- Destination / content failures (permanent, no Bot API call) -----------------------------
@@ -389,7 +397,12 @@ def test_production_worker_sends_through_the_real_http_transport(
     assert report.result == "completed"
     ((path, params),) = config.received
     assert path == f"/bot{BOT_TOKEN}/sendMessage"
-    assert params == {"chat_id": GROUP_CHAT, "text": BODY, "message_thread_id": 11}
+    assert params == {
+        "chat_id": GROUP_CHAT,
+        "text": BODY_HTML,
+        "message_thread_id": 11,
+        "parse_mode": "HTML",
+    }
     assert _delivery(ids["delivery"]).provider_message_id == "77"
 
 
@@ -432,6 +445,6 @@ def test_token_and_message_body_never_reach_state_or_logs(
         )
         notification = session.get(Notification, ids["notification"])
         assert notification is not None
-    for secret in (BOT_TOKEN, BOT_TOKEN.split(":")[1], "can't parse", BODY):
+    for secret in (BOT_TOKEN, BOT_TOKEN.split(":")[1], "can't parse", BODY, BODY_HTML):
         assert secret not in persisted
         assert secret not in caplog.text
