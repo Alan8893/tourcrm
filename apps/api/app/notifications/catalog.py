@@ -10,8 +10,9 @@ with the parts of its specification gate the Engine needs:
   missing value is OFF (ADR-0049 §2.1);
 - `status` — `pending` until its vertical slice integrates the domain
   service; `implemented` afterwards; `blocked` when no canonical domain
-  workflow exists (`membership.approved`, PO decision 12). A non-
-  implemented key is never planned by a domain service;
+  workflow exists (`membership.approved`, PO decision 12). Only an
+  `implemented` key can be planned: app.notifications.business refuses
+  `pending` and `blocked` keys before any write;
 - `recipient_scope` — the `notification_rules.recipient_scope` of its
   personal rule; a group/topic rule uses RECIPIENT_SCOPE_TELEGRAM_
   DESTINATION;

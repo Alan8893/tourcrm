@@ -5,6 +5,9 @@ business notification (Issue #336, ADR-0049 §2.6/§2.8/§2.9).
 Notification Engine — not a second engine. It turns one committed-to-be
 business fact into a `NotificationRequest` exactly per the catalog:
 
+- status: only a key whose vertical slice is implemented
+  (STATUS_IMPLEMENTED) can be planned; `pending` and `blocked` keys are
+  refused before anything is written;
 - channel: Telegram only (catalog §1.2) — Email is never a candidate;
 - personal recipients: the canonical audience the domain service resolved,
   their RecipientAccess check, the entry's preference policy (mandatory /
@@ -39,7 +42,7 @@ from sqlalchemy.orm import Session
 
 from app.db.notifications import TelegramDestination
 from app.notification_settings.policy import GlobalAdminPolicy
-from app.notifications.catalog import CATALOG, STATUS_BLOCKED, CatalogEntry
+from app.notifications.catalog import CATALOG, STATUS_IMPLEMENTED, CatalogEntry
 from app.notifications.engine import (
     EXCLUDED_TEMPLATE_UNAVAILABLE,
     DestinationRecipient,
@@ -68,11 +71,16 @@ class CatalogNotificationError(InvalidNotificationRequestError):
 
 
 def _entry(event_type: str) -> CatalogEntry:
+    """The catalog entry, only once its vertical slice is implemented
+    (catalog STATUS_IMPLEMENTED). A `pending` key (slice not yet done) and a
+    `blocked` key (no canonical workflow) are refused before any write."""
     entry = CATALOG.get(event_type)
     if entry is None:
         raise CatalogNotificationError(f"{event_type!r} is not a catalog notification type")
-    if entry.status == STATUS_BLOCKED:
-        raise CatalogNotificationError(f"{event_type!r} is blocked and cannot be planned")
+    if entry.status != STATUS_IMPLEMENTED:
+        raise CatalogNotificationError(
+            f"{event_type!r} is {entry.status} and cannot be planned"
+        )
     return entry
 
 

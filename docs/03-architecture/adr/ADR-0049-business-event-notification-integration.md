@@ -110,7 +110,7 @@ Message links are built only by the renderer from `APP_PUBLIC_BASE_URL` and a fi
 - whether group routing is allowed;
 - its Telegram template code and declared variables. No business key has an Email template.
 
-`app/notifications/business.plan_catalog_notification` is the only call a domain service makes. It is a thin adapter over the existing Engine that:
+`app/notifications/business.plan_catalog_notification` is the only call a domain service makes. It plans only a key whose status is `implemented`: a `pending` or `blocked` key raises `CatalogNotificationError` before any database access, so nothing is written and the caller's business transaction rolls back. It is a thin adapter over the existing Engine that:
 - builds the request from the catalog entry: Telegram only, the entry's preference policy, the linked-identity reachability check and the persisted Global Admin Policy;
 - validates the render context;
 - adds the subscribed routes when the service publishes to routes;

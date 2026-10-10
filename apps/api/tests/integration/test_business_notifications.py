@@ -15,11 +15,15 @@ contract-error path (the caller rolls the business change back), and
 rendering + escaping + links on the real worker path, including a
 permanent render failure and a retry.
 
-No catalog key is wired to a domain service in PR-0, so the tests use the
-catalog keys directly with test-seeded rules/templates; the business
-mutation is a stand-in row written in the same transaction.
+No catalog key is wired to a domain service in PR-0 and every key is
+`pending` (or `blocked`), which the boundary refuses. The tests therefore
+mark the three keys they exercise `implemented` for the duration of each
+test only (`_implemented_test_keys`), seed their own rules/templates and
+use a stand-in business row written in the same transaction. The status
+gate itself is tested against the real catalog at the end of this module.
 """
 
+import dataclasses
 import datetime
 import uuid
 from typing import Any, Optional
@@ -43,6 +47,7 @@ from app.db.session import get_session_factory, session_scope
 from app.db.telegram import TelegramIdentity
 from app.notification_settings.policy import GlobalAdminPolicy
 from app.notifications.business import CatalogNotificationError, plan_catalog_notification
+from app.notifications.catalog import CATALOG, STATUS_IMPLEMENTED
 from app.notifications.delivery import NotificationDeliveryHandler
 from app.notifications.engine import (
     EXCLUDED_DESTINATION_DISABLED,
@@ -223,6 +228,21 @@ def _plan(
         render_context=context if context is not None else _context(event_type),
         publish_to_routes=routes,
     )
+
+
+# The real catalog entries, captured before any test changes them.
+_REAL_CATALOG = dict(CATALOG)
+_TEST_KEYS = (OPTIONAL, MANDATORY, GROUP_ONLY_PERSONAL)
+
+
+@pytest.fixture(autouse=True)
+def _implemented_test_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Simulate completed slices for the keys under test; monkeypatch
+    restores the real catalog after each test."""
+    for key in _TEST_KEYS:
+        monkeypatch.setitem(
+            CATALOG, key, dataclasses.replace(_REAL_CATALOG[key], status=STATUS_IMPLEMENTED)
+        )
 
 
 def _counts() -> tuple[int, int, int]:
@@ -737,3 +757,34 @@ def test_global_off_after_planning_pauses_delivery() -> None:
     (report,) = _worker(transport).run_once()
     assert report.result == "deferred"
     assert transport.calls_to("sendMessage") == []
+
+
+# --- Catalog status gate against the real catalog ---------------------------------------------
+
+
+@pytest.mark.parametrize("event_type", ["event.cancelled", "membership.approved"])
+@requires_postgres
+def test_pending_and_blocked_keys_write_nothing_and_roll_the_business_back(
+    event_type: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With every rule, template, preference and route in place, a key that
+    is not `implemented` (event.cancelled is `pending` in PR-0,
+    membership.approved is `blocked`) is still refused: no Notification,
+    Delivery or outbox job is written and the caller rolls back."""
+    for key in _TEST_KEYS:
+        monkeypatch.setitem(CATALOG, key, _REAL_CATALOG[key])
+    assert CATALOG[event_type].status != STATUS_IMPLEMENTED
+    store_policy(telegram=True)
+    _seed(MANDATORY, group_rule=True)
+    with session_scope() as session:
+        user = _user(session)
+        _route(session, event_types=[MANDATORY, "membership.approved"])
+        session.commit()
+    with session_scope() as session:
+        club_id = _business_row(session)
+        with pytest.raises(CatalogNotificationError, match="cannot be planned"):
+            _plan(session, event_type, [user], routes=True, context=_context(MANDATORY))
+        session.rollback()
+    assert _counts() == (0, 0, 0)
+    with session_scope() as session:
+        assert session.get(Club, club_id) is None
