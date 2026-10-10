@@ -238,7 +238,9 @@ def _setup(session, *, rule_club: bool = False):  # type: ignore[no-untyped-def]
 def test_one_eligible_delivery_creates_notification_delivery_and_outbox_job() -> None:
     with session_scope() as session:
         club, user = _setup(session)
-        template_id = session.execute(select(NotificationTemplate.id)).scalar_one()
+        template_id = session.execute(
+            select(NotificationTemplate.id).where(NotificationTemplate.code == _EMAIL_TEMPLATE)
+        ).scalar_one()
         request = _request([user], club)
         outcome = _plan(session, request)
         session.commit()

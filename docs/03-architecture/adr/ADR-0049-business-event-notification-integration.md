@@ -127,7 +127,7 @@ Keys are `<event_type>:<fact_id>:user:<user_id>` and `<event_type>:<fact_id>:des
 - the News id of the first publication;
 - the Award id;
 - the audit record of a registration or attendance change;
-- a UUID generated once per detected reschedule or location change, because event updates have no audit record and the same dates can legitimately recur (A→B→A→B is three facts). A repeated request with unchanged values detects no change and so produces no fact.
+- a UUID generated once per detected reschedule or location change, because event updates have no audit record and the same dates can legitimately recur (A→B→A→B is three facts). A repeated request with unchanged values detects no change and so produces no fact. For `event.rescheduled` (Issue #336 PR-1) this UUID is deterministic: a UUIDv5 of the Event id, the old and new schedule and the transaction's start time (`now()`), so planning the same fact twice within its transaction yields the same key, while row-locked mutations in later transactions are distinct facts.
 
 ### 2.10 Initial state
 

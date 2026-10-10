@@ -66,6 +66,7 @@ from app.db.events import Event, EventGroupTarget, EventParticipation, EventStaf
 from app.db.groups import GroupMembership
 from app.db.identity import ClubMembership
 from app.db.trips import TRIP_EVENT_FK
+from app.events import notifications as event_notifications
 from app.events.lifecycle import (
     validate_coordinates,
     validate_event_type,
@@ -83,6 +84,7 @@ INITIAL_EVENT_STATUS = "draft"
 # the dedicated archive endpoint (`event.manage`), never through the
 # general status-transition endpoint.
 ARCHIVED_STATUS = "archived"
+CANCELLED_STATUS = "cancelled"
 
 # TH-0108 / ADR-0037 §2: the free-form `role_in_event` value the Event API
 # assigns to every responsible instructor/User it creates — the form has
@@ -597,9 +599,21 @@ def update_event(
     never a new occurrence, never a deleted one). `status`/
     `cancellation_reason` are never accepted here — see
     transition_event_status()/archive_event() for lifecycle changes.
+
+    A reschedule of a published Event plans `event.rescheduled` in the same
+    transaction (Issue #336, ADR-0049 §2.6); any failure rolls everything
+    back.
     """
+    before = event_notifications.schedule_of(event)
     _apply_event_field_updates(session, event=event, updated_by=updated_by, **fields)
-    session.commit()
+    try:
+        event_notifications.plan_event_rescheduled_if_changed(
+            session, event=event, before=before
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     return event
 
 
@@ -631,7 +645,14 @@ def update_event_with_targeting(
     `_apply_event_group_targets`/`_apply_event_staff_assignments`: see
     those functions' docstrings for the add/end/leave-untouched
     idempotency shape.
+
+    A reschedule of a published Event (`start_at`/`end_at`/`timezone`
+    actually changed, compared with the values captured before the update)
+    plans `event.rescheduled` in the same transaction (Issue #336,
+    ADR-0049 §2.6). A location change made in the same update creates no
+    separate notification (PO decision 1).
     """
+    before = event_notifications.schedule_of(event)
     _apply_event_field_updates(session, event=event, updated_by=updated_by, **fields)
 
     try:
@@ -646,6 +667,9 @@ def update_event_with_targeting(
                 role_in_event=role_in_event,
                 now=now,
             )
+        event_notifications.plan_event_rescheduled_if_changed(
+            session, event=event, before=before
+        )
         session.commit()
     except Exception:
         session.rollback()
@@ -699,6 +723,12 @@ def transition_event_status(
     graph. Raises EventTransitionNotAllowedError (persisting nothing) for
     a request targeting `archived` — that transition is reachable only
     through archive_event(), which alone requires `event.manage`.
+
+    A cancellation plans `event.cancelled` for the participants registered
+    at that moment, in the same transaction as the status change and its
+    occurrence sync (Issue #336, ADR-0049 §2.6); any failure rolls
+    everything back. Time-based reconciliation never cancels, so this is
+    the only cancellation path.
     """
     apply_status_transition(
         session,
@@ -707,7 +737,13 @@ def transition_event_status(
         cancellation_reason=cancellation_reason,
         updated_by=updated_by,
     )
-    session.commit()
+    try:
+        if new_status == CANCELLED_STATUS:
+            event_notifications.plan_event_cancelled(session, event=event)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     if new_status == "completed":
         # Issue #220 (A7): a completed Trip is a canonical fact of the
         # `completed_trips` achievement metric — evaluated after commit,

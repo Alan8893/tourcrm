@@ -188,13 +188,21 @@
 |---|---|---|---|---|---|
 | `event.created` | нет | `targeted_group_members` | `event_created.telegram` | да | ожидает среза PR-3 |
 | `event.updated` | нет | `registered_participants` | `event_updated.telegram` | нет | ожидает среза PR-3 |
-| `event.cancelled` | да | `registered_participants` | `event_cancelled.telegram` | да | ожидает среза PR-1 |
-| `event.rescheduled` | да | `registered_participants` | `event_rescheduled.telegram` | да | ожидает среза PR-1 |
+| `event.cancelled` | да | `registered_participants` | `event_cancelled.telegram` | да | **реализовано** (PR-1): `app.events.crud.transition_event_status` |
+| `event.rescheduled` | да | `registered_participants` | `event_rescheduled.telegram` | да | **реализовано** (PR-1): `app.events.crud.update_event` / `update_event_with_targeting` |
 | `registration.created` | нет | `registrant` | `registration_created.telegram` | нет | ожидает среза PR-2 |
 | `registration.cancelled` | нет | `registrant` | `registration_cancelled.telegram` | нет | ожидает среза PR-2 |
 | `attendance.changed` | нет | `attendance_participant` | `attendance_changed.telegram` | нет | ожидает среза PR-4 |
 | `news.published` | нет | `news_audience` | `news_published.telegram` | да, только аудитория `club` | ожидает среза PR-5 |
 | `achievement.awarded` | нет | `award_recipient` | `achievement_awarded.telegram` | нет | ожидает среза PR-6 |
 | `membership.approved` | нет | `applicant` | `membership_approved.telegram` | нет | **заблокировано**: канонический workflow одобрения отсутствует (решение PO 12) |
+
+Реализация PR-1 (`app/events/notifications.py`):
+
+- **Аудитория** `event.cancelled` / `event.rescheduled`: пользователи со статусом `active`, чья персона имеет регистрацию `registered` на мероприятие в момент изменения; каждый получатель проходит существующую проверку `event.read` для мероприятия. Персона без учётной записи, ранее отменённая регистрация и родители/представители не уведомляются.
+- **Факт**: для отмены — идентификатор мероприятия (отмена окончательна); для переноса — детерминированный UUIDv5 от мероприятия, старого и нового расписания и времени начала транзакции (ADR-0049 §2.9).
+- **Контекст**: `event_title`, `event_datetime` (отмена) или `old_event_datetime`/`new_event_datetime` (перенос) в формате `01.12.2026 12:00–20:00 (Europe/Moscow)` в часовом поясе мероприятия (до и после переноса — в соответствующем поясе), `cancellation_reason` (пустая → «не указана»), `event_id` для ссылки.
+- **Группы/темы**: публикуются через маршруты, подписанные на тип события, при включённом правиле `telegram_destination`.
+- **Миграция `a65b609f4d34`** создаёт шаблоны (`is_active = true`) и четыре правила Telegram (`registered_participants` и `telegram_destination` для каждого типа) с `is_enabled = false`.
 
 Каждый срез создаёт свои шаблоны с `is_active = true` и правила с `is_enabled = false`; правило включает администратор после проверки среза (решение PO 13). Ключ идемпотентности: `<event_type>:<fact_id>:user:<user_id>` / `<event_type>:<fact_id>:dest:<destination_id>` (ADR-0049 §2.9).

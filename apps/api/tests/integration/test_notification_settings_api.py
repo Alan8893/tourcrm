@@ -276,16 +276,41 @@ def _rule(club_id: uuid.UUID | None, *, enabled: bool = True) -> uuid.UUID:
         return rule.id
 
 
+def _clear_rules() -> None:
+    """Remove the rules seeded by implemented slices (Issue #336 PR-1) so a
+    test controls the whole rule table."""
+    with session_scope() as session:
+        session.execute(sa.delete(NotificationRule))
+        session.commit()
+
+
 @requires_postgres
 def test_empty_rule_list_is_valid(client: TestClient, admin: uuid.UUID) -> None:
+    _clear_rules()
     body = client.get(f"{BASE}/rules").json()
     assert body["items"] == [] and body["pagination"]["total"] == 0
+
+
+@requires_postgres
+def test_seeded_business_rules_are_listed_disabled(client: TestClient, admin: uuid.UUID) -> None:
+    """Issue #336 PR-1 / PO decision 13: the event cancellation and
+    reschedule rules exist, Telegram only, and are disabled until an
+    administrator enables them."""
+    items = client.get(f"{BASE}/rules").json()["items"]
+    assert sorted((i["event_type"], i["recipient_scope"], i["channel"], i["is_enabled"])
+                  for i in items) == [
+        ("event.cancelled", "registered_participants", "telegram", False),
+        ("event.cancelled", "telegram_destination", "telegram", False),
+        ("event.rescheduled", "registered_participants", "telegram", False),
+        ("event.rescheduled", "telegram_destination", "telegram", False),
+    ]
 
 
 @requires_postgres
 def test_only_installation_wide_rules_are_listed_and_toggled(
     client: TestClient, admin: uuid.UUID
 ) -> None:
+    _clear_rules()
     installation = _rule(None)
     with session_scope() as session:
         club_id = session.execute(sa.select(Club.id)).scalar_one()
