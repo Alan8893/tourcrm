@@ -127,7 +127,8 @@ EXCLUDED_NO_ELIGIBLE_CHANNEL = "no_eligible_channel"
 
 class NotificationEngineError(ValueError):
     """Base class for the Engine's typed input/contract failures. Raised
-    before anything is written."""
+    before anything is written, except IdempotencyKeyConflictError found
+    after a concurrent insert (see there)."""
 
 
 class InvalidNotificationRequestError(NotificationEngineError):
@@ -138,7 +139,11 @@ class InvalidNotificationRequestError(NotificationEngineError):
 class IdempotencyKeyConflictError(NotificationEngineError):
     """An existing Notification with this idempotency key belongs to a
     different recipient (User or route) or event — the key does not
-    identify this business event/recipient."""
+    identify this business event/recipient. Normally raised by the lookup
+    before any write; when a concurrent transaction committed the key
+    between that lookup and the insert, it is raised after this call may
+    already have written other recipients — the caller rolls the whole
+    transaction back (ADR-0049 §2.6)."""
 
 
 class MultiChannelTemplateNotRepresentableError(NotificationEngineError):
@@ -355,16 +360,36 @@ def _stored_master(session: Session, *, user_id: uuid.UUID, channel: str) -> Opt
     ).scalar_one_or_none()
 
 
+def _require_same_fact(
+    existing: Notification,
+    request: NotificationRequest,
+    *,
+    user_id: Optional[uuid.UUID] = None,
+    destination_id: Optional[uuid.UUID] = None,
+) -> None:
+    """An existing Notification found under the idempotency key must be the
+    one this request would create: the same event type and exactly the same
+    recipient — the User (no route) or the route (no User). Used by the
+    pre-write lookup and again after `create_notification` reports
+    `created=False`: a concurrent transaction may have committed a row with
+    this key between the lookup and the INSERT ... ON CONFLICT DO NOTHING."""
+    if (
+        existing.event_type != request.event_type
+        or existing.recipient_user_id != user_id
+        or existing.recipient_destination_id != destination_id
+    ):
+        raise IdempotencyKeyConflictError(
+            "the idempotency key already identifies another recipient or event"
+        )
+
+
 def _existing_outcome(
     session: Session, request: NotificationRequest, recipient: Recipient
 ) -> Optional[RecipientOutcome]:
     existing = get_notification_by_idempotency_key(session, recipient.idempotency_key)
     if existing is None:
         return None
-    if existing.recipient_user_id != recipient.user_id or existing.event_type != request.event_type:
-        raise IdempotencyKeyConflictError(
-            "the idempotency key already identifies another recipient or event"
-        )
+    _require_same_fact(existing, request, user_id=recipient.user_id)
     return RecipientOutcome(
         user_id=recipient.user_id,
         notification=existing,
@@ -416,8 +441,10 @@ def _write(
         render_context=request.render_context,
     )
     if not created:
-        # A concurrent invocation committed this Notification first; its
-        # transaction already wrote the Deliveries and outbox jobs.
+        # A concurrent invocation committed a Notification with this key
+        # first; its transaction already wrote the Deliveries and outbox
+        # jobs. It is this request's only if it is the same fact.
+        _require_same_fact(notification, request, user_id=plan.recipient.user_id)
         return RecipientOutcome(
             user_id=plan.recipient.user_id,
             notification=notification,
@@ -462,7 +489,10 @@ def plan_notifications(
     (`created=False`) and nothing is written for it.
 
     Raises NotificationEngineError subclasses (or
-    InvalidNotificationChannelError) before any write.
+    InvalidNotificationChannelError) before any write; only an
+    IdempotencyKeyConflictError detected after a concurrent insert of the
+    same key can follow earlier writes of this call, and the caller then
+    rolls its transaction back.
     """
     _validate(request)
 
@@ -582,13 +612,7 @@ def _existing_destination_outcome(
     existing = get_notification_by_idempotency_key(session, destination.idempotency_key)
     if existing is None:
         return None
-    if (
-        existing.recipient_destination_id != destination.destination_id
-        or existing.event_type != request.event_type
-    ):
-        raise IdempotencyKeyConflictError(
-            "the idempotency key already identifies another recipient or event"
-        )
+    _require_same_fact(existing, request, destination_id=destination.destination_id)
     return DestinationOutcome(
         destination_id=destination.destination_id,
         notification=existing,
@@ -643,6 +667,8 @@ def _write_destination(
         render_context=request.render_context,
     )
     if not created:
+        # See _write: a concurrent transaction committed this key first.
+        _require_same_fact(notification, request, destination_id=destination.destination_id)
         return DestinationOutcome(
             destination_id=destination.destination_id,
             notification=notification,

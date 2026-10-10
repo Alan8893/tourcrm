@@ -1088,3 +1088,214 @@ def test_duplicate_routes_are_rejected() -> None:
                          destinations=[DestinationRecipient(route.id, "a"),
                                        DestinationRecipient(route.id, "b")]),
             )
+
+
+# --- The created=False branch: a key committed concurrently (#336 PR-0) ----------
+#
+# The Engine looks a key up before writing, then inserts with
+# INSERT ... ON CONFLICT DO NOTHING (app.notifications.repository). A
+# transaction that commits the same key between the two makes the insert a
+# no-op and `create_notification` return the other transaction's row with
+# `created=False`. `_simulate_race` reproduces that interleaving
+# deterministically: the Engine's pre-write lookup is made blind, so the
+# existing row is found only by `create_notification` itself; the spy
+# records each `created` flag to prove that branch ran.
+
+
+def _simulate_race(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    from app.notifications import engine, repository
+
+    monkeypatch.setattr(engine, "get_notification_by_idempotency_key", lambda session, key: None)
+    created_flags: list[bool] = []
+    real_create = repository.create_notification
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        notification, created = real_create(*args, **kwargs)
+        created_flags.append(created)
+        return notification, created
+
+    monkeypatch.setattr(engine, "create_notification", spy)
+    return created_flags
+
+
+def _session_counts(session: Session) -> tuple[int, int, int]:
+    return tuple(  # type: ignore[return-value]
+        session.execute(select(func.count()).select_from(model)).scalar_one()
+        for model in (Notification, NotificationDelivery, OutboxJob)
+    )
+
+
+def _committed_notification(  # type: ignore[no-untyped-def]
+    session,
+    key: str,
+    *,
+    event_type: str = _EVENT,
+    user_id: uuid.UUID | None = None,
+    destination_id: uuid.UUID | None = None,
+) -> Notification:
+    """The row the 'concurrent' transaction committed under `key`."""
+    from app.notifications.repository import create_notification
+
+    notification, created = create_notification(
+        session,
+        idempotency_key=key,
+        event_type=event_type,
+        subject_type="test_subject",
+        recipient_user_id=user_id,
+        recipient_destination_id=destination_id,
+    )
+    assert created
+    return notification
+
+
+@requires_postgres
+def test_race_same_user_and_event_returns_the_concurrent_notification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with session_scope() as session:
+        club, user = _telegram_setup(session)
+        request = _request([user], club, channels={"telegram": _TELEGRAM_TEMPLATE})
+        first = _plan(session, request)
+        session.commit()
+        first_id = first.recipients[0].notification.id  # type: ignore[union-attr]
+        first_deliveries = [d.id for d in first.recipients[0].deliveries]
+
+    created_flags = _simulate_race(monkeypatch)
+    with session_scope() as session:
+        second = _plan(session, request)
+        session.commit()
+
+    assert created_flags == [False]
+    (recipient,) = second.recipients
+    assert recipient.created is False
+    assert recipient.notification is not None and recipient.notification.id == first_id
+    assert [d.id for d in recipient.deliveries] == first_deliveries
+    assert _counts() == (1, 1, 1)
+
+
+@requires_postgres
+def test_race_same_route_and_event_returns_the_concurrent_notification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.notifications.engine import DestinationRecipient
+
+    with session_scope() as session:
+        club, _user_row = _telegram_setup(session)
+        route = _telegram_route(session, event_types=[_EVENT])
+        request = _request(
+            [], club, channels={"telegram": _TELEGRAM_TEMPLATE},
+            destinations=[DestinationRecipient(route.id, "route-key")],
+        )
+        first = _plan(session, request)
+        session.commit()
+        first_id = first.destinations[0].notification.id  # type: ignore[union-attr]
+
+    created_flags = _simulate_race(monkeypatch)
+    with session_scope() as session:
+        second = _plan(session, request)
+        session.commit()
+
+    assert created_flags == [False]
+    assert second.destinations[0].created is False
+    assert second.destinations[0].notification.id == first_id  # type: ignore[union-attr]
+    assert _counts() == (1, 1, 1)
+
+
+def _personal_conflict(club, user, key: str):  # type: ignore[no-untyped-def]
+    return _request(
+        [user], club, channels={"telegram": _TELEGRAM_TEMPLATE},
+        recipients=[Recipient(user.id, key)],
+    )
+
+
+def _route_conflict(club, route_id: uuid.UUID, key: str):  # type: ignore[no-untyped-def]
+    from app.notifications.engine import DestinationRecipient
+
+    return _request(
+        [], club, channels={"telegram": _TELEGRAM_TEMPLATE},
+        destinations=[DestinationRecipient(route_id, key)],
+    )
+
+
+@pytest.mark.parametrize(
+    ("requester", "existing_owner", "existing_event"),
+    [
+        ("user", "other_user", _EVENT),  # personal vs another user's notification
+        ("user", "route", _EVENT),  # personal vs a route-addressed notification
+        ("user", "same_user", "other.event"),  # personal, same user, other event
+        ("route", "other_route", _EVENT),  # route vs another route
+        ("route", "user", _EVENT),  # route vs a personal notification
+        ("route", "same_route", "other.event"),  # route, same route, other event
+    ],
+)
+@requires_postgres
+def test_race_with_a_mismatching_concurrent_notification_is_a_conflict(
+    monkeypatch: pytest.MonkeyPatch, requester: str, existing_owner: str, existing_event: str
+) -> None:
+    key = f"race-key-{uuid.uuid4().hex[:8]}"
+    with session_scope() as session:
+        club, user = _telegram_setup(session)
+        other_user = _user(session)
+        route = _telegram_route(session, event_types=[_EVENT])
+        other_route = _telegram_route(session, event_types=[_EVENT])
+        owner = {
+            "other_user": {"user_id": other_user.id},
+            "same_user": {"user_id": user.id},
+            "user": {"user_id": user.id},
+            "route": {"destination_id": route.id},
+            "other_route": {"destination_id": other_route.id},
+            "same_route": {"destination_id": route.id},
+        }[existing_owner]
+        existing = _committed_notification(session, key, event_type=existing_event, **owner)
+        session.commit()
+        existing_id = existing.id
+        request = (
+            _personal_conflict(club, user, key)
+            if requester == "user"
+            else _route_conflict(club, route.id, key)
+        )
+    before = _counts()
+    assert before == (1, 0, 0)
+
+    created_flags = _simulate_race(monkeypatch)
+    with session_scope() as session:
+        with pytest.raises(IdempotencyKeyConflictError):
+            _plan(session, request)
+        # Raised before any Delivery or outbox job of the conflicting
+        # recipient could be written, even inside the open transaction.
+        assert _session_counts(session) == before
+        session.rollback()
+
+    assert created_flags == [False]
+    assert _counts() == before
+    with session_scope() as session:
+        unchanged = session.get(Notification, existing_id)
+        assert unchanged is not None and unchanged.event_type == existing_event
+
+
+@requires_postgres
+def test_race_conflict_after_earlier_writes_rolls_the_whole_call_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A conflict detected after a concurrent insert can follow writes for
+    earlier recipients of the same call; the caller rolls everything back
+    (ADR-0049 §2.6), leaving only the concurrent transaction's row."""
+    with session_scope() as session:
+        club, user = _telegram_setup(session)
+        first_user = _user(session)
+        other_user = _user(session)
+        _committed_notification(session, "taken", user_id=other_user.id)
+        session.commit()
+        request = _request(
+            [first_user, user], club, channels={"telegram": _TELEGRAM_TEMPLATE},
+            recipients=[Recipient(first_user.id, "fresh"), Recipient(user.id, "taken")],
+        )
+
+    created_flags = _simulate_race(monkeypatch)
+    with session_scope() as session:
+        with pytest.raises(IdempotencyKeyConflictError):
+            _plan(session, request)
+        session.rollback()
+
+    assert created_flags == [True, False]
+    assert _counts() == (1, 0, 0)
