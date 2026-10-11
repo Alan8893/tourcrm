@@ -17,12 +17,27 @@ of `event.cancelled` and `event.rescheduled`.
 
 An administrator enables a rule in Settings → Notifications after
 verifying the slice; nothing is delivered before that, and route
-publication additionally needs a configured route. Inserts are
-`ON CONFLICT DO NOTHING`, so an existing row is never overwritten.
+publication additionally needs a configured route.
 
-Downgrade deletes the four rules and the two templates. It refuses
-(raises, changing nothing) instead of deleting history when a
-Notification already references one of the templates.
+## Ownership and idempotency
+
+Every row this migration creates has a fixed primary key, frozen below.
+Each insert is `ON CONFLICT DO NOTHING`: when a template with the same
+`code` or a rule with the same (club, event type, channel, recipient
+scope) already exists, nothing is inserted and the existing row — its
+body, `is_active`, `is_enabled` and every other value — is left exactly as
+it was. Re-running `upgrade()` therefore never duplicates or overwrites a
+row.
+
+## Rollback
+
+`downgrade()` deletes only rows carrying one of the fixed primary keys,
+i.e. rows this migration created; a row that existed before `upgrade()`
+has another key and is never touched. Before deleting anything it refuses
+(raises) when a Notification references one of this migration's
+templates, so notification history is never deleted. The refusal happens
+before any delete and the downgrade runs in one transaction, so nothing is
+removed partially.
 """
 from typing import Sequence, Union
 
@@ -36,77 +51,81 @@ down_revision: Union[str, None] = 'ddc70357f0cb'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
+# Frozen as of this migration: (fixed id, code, body).
 _TEMPLATES = (
     (
+        "afb3fb04-3048-44b3-9b76-7fba5b1f66e4",
         "event_cancelled.telegram",
         "Событие **{{event_title}}** отменено. Дата: {{event_datetime}}. "
         "Причина: {{cancellation_reason}}. {{event_url}}",
     ),
     (
+        "82a8f4ac-a206-4fda-ba3e-0f3080e08500",
         "event_rescheduled.telegram",
         "Событие **{{event_title}}** перенесено: {{old_event_datetime}} → "
         "{{new_event_datetime}}. {{event_url}}",
     ),
 )
+# Frozen as of this migration: (fixed id, event type, recipient scope).
 _RULES = (
-    ("event.cancelled", "registered_participants"),
-    ("event.cancelled", "telegram_destination"),
-    ("event.rescheduled", "registered_participants"),
-    ("event.rescheduled", "telegram_destination"),
+    ("18d65f23-d098-469b-b25d-0e60dfa50139", "event.cancelled", "registered_participants"),
+    ("0a29c097-be54-4f11-aed7-23da2102065c", "event.cancelled", "telegram_destination"),
+    ("f316ed2a-b73d-444d-a865-37f4c65bee94", "event.rescheduled", "registered_participants"),
+    ("73237d1a-bf3f-41e3-8eca-fc346b6c606d", "event.rescheduled", "telegram_destination"),
 )
-_TEMPLATE_CODES = tuple(code for code, _body in _TEMPLATES)
-_EVENT_TYPES = ("event.cancelled", "event.rescheduled")
+_TEMPLATE_IDS = [template_id for template_id, _code, _body in _TEMPLATES]
+_RULE_IDS = [rule_id for rule_id, _event_type, _scope in _RULES]
 
 
 def upgrade() -> None:
-    for code, body in _TEMPLATES:
-        op.get_bind().execute(
+    bind = op.get_bind()
+    for template_id, code, body in _TEMPLATES:
+        bind.execute(
             sa.text(
                 "INSERT INTO notification_templates "
                 "(id, code, channel, locale, body_template, version, is_active) "
-                "VALUES (gen_random_uuid(), :code, 'telegram', 'ru', :body, 1, true) "
-                "ON CONFLICT (code) DO NOTHING"
+                "VALUES (CAST(:id AS uuid), :code, 'telegram', 'ru', :body, 1, true) "
+                "ON CONFLICT DO NOTHING"
             ),
-            {"code": code, "body": body},
+            {"id": template_id, "code": code, "body": body},
         )
-    for event_type, recipient_scope in _RULES:
-        op.get_bind().execute(
+    for rule_id, event_type, recipient_scope in _RULES:
+        bind.execute(
             sa.text(
                 "INSERT INTO notification_rules "
                 "(id, club_id, event_type, channel, recipient_scope, is_enabled) "
-                "VALUES (gen_random_uuid(), NULL, :event_type, 'telegram', :scope, false) "
-                "ON CONFLICT ON CONSTRAINT uq_notification_rules_club_event_channel_scope "
-                "DO NOTHING"
+                "VALUES (CAST(:id AS uuid), NULL, :event_type, 'telegram', :scope, false) "
+                "ON CONFLICT DO NOTHING"
             ),
-            {"event_type": event_type, "scope": recipient_scope},
+            {"id": rule_id, "event_type": event_type, "scope": recipient_scope},
         )
 
 
 def downgrade() -> None:
-    referenced = op.get_bind().execute(
+    bind = op.get_bind()
+    referenced = bind.execute(
         sa.text(
-            "SELECT count(*) FROM notifications n "
-            "JOIN notification_templates t ON t.id = n.template_id "
-            "WHERE t.code IN :codes"
-        ).bindparams(sa.bindparam("codes", expanding=True)),
-        {"codes": list(_TEMPLATE_CODES)},
+            "SELECT count(*) FROM notifications "
+            "WHERE template_id IN (SELECT CAST(t AS uuid) FROM unnest(CAST(:ids AS text[])) t)"
+        ),
+        {"ids": _TEMPLATE_IDS},
     ).scalar_one()
     if referenced:
         raise RuntimeError(
             "notifications reference the event cancellation/reschedule templates; "
             "downgrade refused to keep their history"
         )
-    op.get_bind().execute(
+    bind.execute(
         sa.text(
-            "DELETE FROM notification_rules WHERE club_id IS NULL "
-            "AND channel = 'telegram' AND event_type IN :event_types "
-            "AND recipient_scope IN ('registered_participants', 'telegram_destination')"
-        ).bindparams(sa.bindparam("event_types", expanding=True)),
-        {"event_types": list(_EVENT_TYPES)},
-    )
-    op.get_bind().execute(
-        sa.text("DELETE FROM notification_templates WHERE code IN :codes").bindparams(
-            sa.bindparam("codes", expanding=True)
+            "DELETE FROM notification_rules "
+            "WHERE id IN (SELECT CAST(r AS uuid) FROM unnest(CAST(:ids AS text[])) r)"
         ),
-        {"codes": list(_TEMPLATE_CODES)},
+        {"ids": _RULE_IDS},
+    )
+    bind.execute(
+        sa.text(
+            "DELETE FROM notification_templates "
+            "WHERE id IN (SELECT CAST(t AS uuid) FROM unnest(CAST(:ids AS text[])) t)"
+        ),
+        {"ids": _TEMPLATE_IDS},
     )
