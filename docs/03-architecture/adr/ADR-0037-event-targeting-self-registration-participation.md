@@ -211,7 +211,9 @@ Existing canonical permissions remain authoritative:
 - `attendance.read`;
 - `attendance.update`.
 
-Self-registration is a self-service operation governed by the participant's identity, active ClubMembership, targeted GroupMembership and Event lifecycle.
+Self-registration is a self-service operation governed by the participant's identity, active ClubMembership, targeted GroupMembership and Event lifecycle. The self-registration and withdrawal operations themselves do not require or check a separate Event permission; they are not routed through the general `Authorizer`/scope engine.
+
+**Notification eligibility is separate from permission to perform the self-service operation.** For the personal `registration.created` and `registration.cancelled` notifications (Issue #336 PR-2, ADR-0049), the recipient must additionally be an `active` User and pass the existing `event.read` object policy for that Event. If the User does not pass `event.read`, registration/withdrawal still succeeds under the rules above, but no personal notification is planned. This requirement does not change the self-service API authorization contract.
 
 Event management by administrators/instructors continues to require the existing Event permissions and applicable scopes.
 
