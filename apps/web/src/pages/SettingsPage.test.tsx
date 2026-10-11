@@ -89,6 +89,24 @@ function fakeBackend(initialPhotoFileId: string | null, options: FakeBackendOpti
       if (options.passwordChange) return json(await options.passwordChange(body));
       return new Response(JSON.stringify({ status: "ok" }), { status: 200 });
     }
+    // Issue #343: the personal Telegram section of the same page.
+    if (url.endsWith("/me/telegram-link") && method === "GET") {
+      return new Response(JSON.stringify({ linked: false, linked_at: null }), { status: 200 });
+    }
+    if (url.endsWith("/me/notification-preferences") && method === "GET") {
+      return new Response(
+        JSON.stringify({
+          channel: "telegram",
+          personal_enabled: false,
+          telegram_linked: false,
+          events: [
+            { event_type: "event.cancelled", mandatory: true, enabled: true },
+            { event_type: "news.published", mandatory: false, enabled: false },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
     if (url.endsWith("/persons/p1/photo") && method === "PUT") {
       photoFileId = "file-new";
       return new Response(JSON.stringify({ id: "p1", photo_file_id: photoFileId }), { status: 200 });
@@ -689,5 +707,24 @@ describe("SettingsPage password change (TH #311)", () => {
     for (const spy of consoleSpies) expect(spy.mock.calls.some(leaked)).toBe(false);
     expect(leaked({ ...localStorage })).toBe(false);
     expect(leaked({ ...sessionStorage })).toBe(false);
+  });
+});
+
+describe("SettingsPage personal Telegram (Issue #343)", () => {
+  it("shows the Telegram link and personal preferences in the user's own settings", async () => {
+    fakeBackend(null);
+    renderSettingsWithMenu();
+
+    const heading = await screen.findByRole("heading", { name: "Уведомления в Telegram" });
+    const card = heading.parentElement as HTMLElement;
+    expect(await within(card).findByText("Telegram не привязан")).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Привязать Telegram" })).toBeInTheDocument();
+    expect(
+      await within(card).findByRole("switch", { name: "Личные сообщения в Telegram" }),
+    ).not.toBeChecked();
+    expect(within(card).getByRole("switch", { name: "Публикация новости" })).not.toBeChecked();
+    expect(within(card).queryByRole("switch", { name: "Отмена события" })).not.toBeInTheDocument();
+    // Administrator notification settings are not part of a member's page.
+    expect(screen.queryByRole("link", { name: "Уведомления" })).not.toBeInTheDocument();
   });
 });

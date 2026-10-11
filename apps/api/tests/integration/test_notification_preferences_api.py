@@ -141,6 +141,25 @@ def test_master_switch_toggle_preserves_event_preferences(client: TestClient) ->
 
     on = client.put(BASE, json={"personal_enabled": True}, headers=_csrf(client)).json()
     assert _events(on)["news.published"] == (False, True)
+    # Master ON never turns other event types on.
+    assert {key: _events(on)[key] for key in OPTIONAL if key != "news.published"} == {
+        key: (False, False) for key in OPTIONAL if key != "news.published"
+    }
+    assert _stored(user_id) == (True, {"news.published": True, "event.created": False})
+
+
+@requires_postgres
+def test_response_exposes_no_email_preference_or_telegram_id(client: TestClient) -> None:
+    _login(_user(linked=True))
+    body = client.get(BASE).json()
+    assert set(body) == {"channel", "personal_enabled", "telegram_linked", "events"}
+    assert body["channel"] == "telegram"
+    assert all(set(event) == {"event_type", "mandatory", "enabled"} for event in body["events"])
+    assert "7200000001" not in client.get(BASE).text
+    response = client.put(
+        BASE, json={"channel": "email", "personal_enabled": True}, headers=_csrf(client)
+    )
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(

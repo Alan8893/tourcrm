@@ -14,8 +14,10 @@ import { usePerson } from "../api/people";
 import { currentUserPhotoUrl, useDeletePersonPhoto, useUploadPersonPhoto } from "../api/profilePhoto";
 import { hasAdministratorRole } from "../shell/navigation";
 import { PhotoCropDialog } from "./PhotoCropDialog";
+import { SettingsNotificationPreferences } from "./SettingsNotificationPreferences";
 import { SettingsPasswordForm } from "./SettingsPasswordForm";
 import { SettingsProfileForm } from "./SettingsProfileForm";
+import { SettingsTelegramLink } from "./SettingsTelegramLink";
 import styles from "./SettingsPage.module.css";
 
 /**
@@ -33,6 +35,11 @@ import styles from "./SettingsPage.module.css";
  * the Person data is available is decided by the backend: a role without
  * a `person.read` grant reaching its own Person gets the existence-hiding
  * 404, shown as a note rather than a form — no frontend permission model.
+ *
+ * Issue #343 adds «Уведомления в Telegram»: the user's own Telegram link
+ * and personal Telegram notification preferences (self-scoped APIs, see
+ * SettingsTelegramLink / SettingsNotificationPreferences). Administrator
+ * notification settings stay on their own page.
  */
 export function SettingsPage() {
   const me = useCurrentUser();
@@ -174,6 +181,16 @@ export function SettingsPage() {
         <h2 className={styles.sectionTitle}>Безопасность</h2>
         <h3 className={styles.subsectionTitle}>Изменить пароль</h3>
         <SettingsPasswordForm />
+      </Card>
+
+      <Card className={styles.profileCard}>
+        <h2 className={styles.sectionTitle}>Уведомления в Telegram</h2>
+        <h3 className={styles.subsectionTitle}>Привязка аккаунта</h3>
+        <SettingsTelegramLink />
+        <div className={styles.profileData}>
+          <h3 className={styles.subsectionTitle}>Личные уведомления</h3>
+          <SettingsNotificationPreferences />
+        </div>
       </Card>
 
       {hasAdministratorRole(me.data.role_assignments) ? (

@@ -66,7 +66,7 @@ The UI must distinguish:
 - **Notification rules** lists the existing installation-wide rules (`club_id = NULL`) with an enable/disable switch only — no create/delete, no event catalog editing; an empty list is a normal state.
 - **Email** and **Telegram** edit the non-secret settings; the SMTP password and bot token are write-only fields showing `••••••••` when configured, with separate «Заменить» and «Очистить» (confirmation dialog) actions. Saving the other fields never sends or changes a secret.
 - **Test message**: Email to an address entered by the administrator; Telegram to the administrator's own linked account or an existing enabled destination. Results are labelled as test results.
-- Telegram destination/topic management, user-linking overview and user preferences remain separate slices.
+- Telegram destination/topic management and a user-linking overview remain separate slices. The user's own Telegram link and personal preferences are implemented in the user's Settings (Issue #343, §3).
 
 ## 3. User surface
 
@@ -80,6 +80,15 @@ If Admin Policy disables a channel or event:
 - the UI explains that it is disabled by club/system policy.
 
 Telegram linking is explicit and user-driven. The user starts the linking flow from TourCRM, then starts/interacts with the configured Telegram bot using the one-time link.
+
+### Implemented scope (Issue #343)
+
+**Settings → «Уведомления в Telegram»** (`apps/web/src/pages/SettingsPage.tsx`) is available to every authenticated user and uses only the self-scoped APIs `docs/05-api/telegram-link-api.md` and `docs/05-api/notification-preferences-api.md`; the administrator page Settings → Notifications stays separate.
+
+- **Привязка аккаунта:** linked / not linked status with the link date; the Telegram id is never entered or shown. «Привязать Telegram» issues a one-time link: the user opens it with «Открыть Telegram» (the token is only the link target, never shown as text) and presses **Start** in the bot. The expiry time is shown; after it passes the link is hidden and a new one can be requested. While a link is open the status is re-read periodically and by «Проверить привязку». Safe messages for bot not configured (503), too many requests (429), refused (403) and network errors. «Отвязать Telegram» requires confirmation; link status and preferences are refreshed after link/unlink.
+- **Личные уведомления:** the master switch «Личные сообщения в Telegram» and one switch per optional catalog type returned by the API; each switch shows the stored value (unset = off) and each change sends only that one value, so the master switch never changes or enables a per-event choice. Mandatory types (`event.cancelled`, `event.rescheduled`) are listed read-only with «Обязательное» and an explanation that the personal opt-out does not apply while Global Telegram OFF or a disabled administrator rule still stops them. A note states that group/topic posts are administrator configuration and are not affected. A warning is shown while Telegram is not linked.
+- No Email preferences and no guardian/parent options in this slice.
+- The effective Global Admin Policy and rule state are not readable by a non-administrator, so the page does not show them per type; it explains that the administrator can stop delivery. The backend enforces everything when planning a delivery.
 
 ## 4. Delivery journal
 

@@ -60,6 +60,7 @@ from app.notifications.engine import (
     EXCLUDED_RULE_DISABLED,
     NotificationPlanOutcome,
 )
+from app.notifications.preferences import set_personal_preferences
 from app.notifications.telegram_adapter import TelegramChannelAdapter
 from app.notifications.vocabulary import NOTIFICATION_DELIVERY_JOB_TYPE
 from app.outbox.claiming import claim_jobs
@@ -378,6 +379,48 @@ def test_email_is_never_a_candidate_for_business_events() -> None:
         session.commit()
     (recipient,) = outcome.recipients
     assert [d.channel for d in recipient.deliveries] == ["telegram"]
+
+
+@requires_postgres
+def test_preferences_saved_through_the_user_api_service_are_what_planning_enforces() -> None:
+    """Issue #343: the values the user changes in Settings (stored by
+    set_personal_preferences, the service behind PUT
+    /me/notification-preferences) gate optional personal delivery; the
+    master switch keeps per-event values and never turns them on;
+    mandatory types ignore the opt-out."""
+    store_policy(telegram=True)
+    _seed(OPTIONAL)
+    _seed(MANDATORY)
+    with session_scope() as session:
+        user = _user(session)
+        session.commit()
+
+    def save(**values: Any) -> None:
+        with session_scope() as session:
+            set_personal_preferences(session, user_id=user, **values)
+            session.commit()
+
+    def plan(event_type: str, fact: str) -> Any:
+        with session_scope() as session:
+            outcome = _plan(session, event_type, [user], fact=fact)
+            session.commit()
+        return outcome.recipients[0]
+
+    # Unset = OFF.
+    assert plan(OPTIONAL, "f1").excluded_reason == EXCLUDED_PREFERENCE_DISABLED
+    # Master ON enables no event by itself.
+    save(personal_enabled=True)
+    assert plan(OPTIONAL, "f2").excluded_reason == EXCLUDED_PREFERENCE_DISABLED
+    save(events={OPTIONAL: True})
+    assert plan(OPTIONAL, "f3").created is True
+    # Master OFF blocks it while keeping the event choice ...
+    save(personal_enabled=False)
+    assert plan(OPTIONAL, "f4").excluded_reason == EXCLUDED_PREFERENCE_DISABLED
+    # ... but not a mandatory notice.
+    assert plan(MANDATORY, "f5").created is True
+    # Master ON again restores the earlier choice.
+    save(personal_enabled=True)
+    assert plan(OPTIONAL, "f6").created is True
 
 
 # --- Group/topic routes --------------------------------------------------------------
