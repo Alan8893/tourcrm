@@ -18,7 +18,6 @@ from app.db.session import get_engine
 from ._schema_reset import run_alembic
 from .conftest import requires_postgres
 
-_REVISION = "a65b609f4d34"
 _PARENT = "ddc70357f0cb"
 
 # The migration's frozen primary keys.
@@ -52,6 +51,13 @@ def _alembic(*args: str, database_url: str) -> None:
     assert result.returncode == 0, result.stderr
 
 
+# Rows seeded by later migrations (PR-2 registration slice) are created and
+# removed by those migrations whenever these tests move across them; they
+# are not this migration's concern and are left out of every comparison.
+_LATER_TEMPLATE_CODES = ("registration_created.telegram", "registration_cancelled.telegram")
+_LATER_RULE_EVENT_TYPES = ("registration.created", "registration.cancelled")
+
+
 def _templates() -> set[tuple[str, uuid.UUID, bool]]:
     with get_engine().connect() as connection:
         return {
@@ -59,6 +65,7 @@ def _templates() -> set[tuple[str, uuid.UUID, bool]]:
             for row in connection.execute(
                 sa.text("SELECT code, id, is_active FROM notification_templates")
             )
+            if row.code not in _LATER_TEMPLATE_CODES
         }
 
 
@@ -80,6 +87,7 @@ def _rules() -> set[tuple[str, str, uuid.UUID, bool]]:
                     "SELECT event_type, recipient_scope, id, is_enabled FROM notification_rules"
                 )
             )
+            if row.event_type not in _LATER_RULE_EVENT_TYPES
         }
 
 
@@ -231,6 +239,16 @@ def test_downgrade_refuses_without_partial_deletes_while_a_seeded_template_is_us
     database_url: str,
 ) -> None:
     notification_id = _notification_using(_CANCELLED_TEMPLATE_ID)
+    with get_engine().connect() as connection:
+        revision_before = connection.execute(
+            sa.text("SELECT version_num FROM alembic_version")
+        ).scalar_one()
+        all_rows_before = connection.execute(
+            sa.text(
+                "SELECT (SELECT count(*) FROM notification_rules), "
+                "(SELECT count(*) FROM notification_templates)"
+            )
+        ).one()
     try:
         result = run_alembic("downgrade", _PARENT, database_url=database_url)
         assert result.returncode != 0
@@ -243,9 +261,17 @@ def test_downgrade_refuses_without_partial_deletes_while_a_seeded_template_is_us
                 sa.text("SELECT count(*) FROM notifications WHERE id = :id"),
                 {"id": notification_id},
             ).scalar_one() == 1
+            # One transaction: neither this migration nor any later one it
+            # passed through on the way down changed anything.
             assert connection.execute(
                 sa.text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == _REVISION
+            ).scalar_one() == revision_before
+            assert connection.execute(
+                sa.text(
+                    "SELECT (SELECT count(*) FROM notification_rules), "
+                    "(SELECT count(*) FROM notification_templates)"
+                )
+            ).one() == all_rows_before
     finally:
         _alembic("upgrade", "head", database_url=database_url)
 

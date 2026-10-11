@@ -91,7 +91,12 @@ def test_pending_and_blocked_keys_are_refused_before_any_write(
 
 
 # Issue #336 PR-1 implemented the event cancellation/reschedule slice.
-IMPLEMENTED_KEYS = {"event.cancelled", "event.rescheduled"}
+IMPLEMENTED_KEYS = {
+    "event.cancelled",
+    "event.rescheduled",
+    "registration.created",  # Issue #336 PR-2
+    "registration.cancelled",
+}
 
 
 def test_only_the_implemented_slices_are_implemented() -> None:

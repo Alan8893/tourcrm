@@ -190,8 +190,8 @@
 | `event.updated` | нет | `registered_participants` | `event_updated.telegram` | нет | ожидает среза PR-3 |
 | `event.cancelled` | да | `registered_participants` | `event_cancelled.telegram` | да | **реализовано** (PR-1): `app.events.crud.transition_event_status` |
 | `event.rescheduled` | да | `registered_participants` | `event_rescheduled.telegram` | да | **реализовано** (PR-1): `app.events.crud.update_event` / `update_event_with_targeting` |
-| `registration.created` | нет | `registrant` | `registration_created.telegram` | нет | ожидает среза PR-2 |
-| `registration.cancelled` | нет | `registrant` | `registration_cancelled.telegram` | нет | ожидает среза PR-2 |
+| `registration.created` | нет | `registrant` | `registration_created.telegram` | нет | **реализовано** (PR-2): `app.events.participation.register_for_event` |
+| `registration.cancelled` | нет | `registrant` | `registration_cancelled.telegram` | нет | **реализовано** (PR-2): `app.events.participation.withdraw_from_event`, только при `published` / `in_progress` |
 | `attendance.changed` | нет | `attendance_participant` | `attendance_changed.telegram` | нет | ожидает среза PR-4 |
 | `news.published` | нет | `news_audience` | `news_published.telegram` | да, только аудитория `club` | ожидает среза PR-5 |
 | `achievement.awarded` | нет | `award_recipient` | `achievement_awarded.telegram` | нет | ожидает среза PR-6 |
@@ -204,5 +204,14 @@
 - **Контекст**: `event_title`, `event_datetime` (отмена) или `old_event_datetime`/`new_event_datetime` (перенос) в формате `01.12.2026 12:00–20:00 (Europe/Moscow)` в часовом поясе мероприятия (до и после переноса — в соответствующем поясе), `cancellation_reason` (пустая → «не указана»), `event_id` для ссылки.
 - **Группы/темы**: публикуются через маршруты, подписанные на тип события, при включённом правиле `telegram_destination`.
 - **Миграция `a65b609f4d34`** создаёт шаблоны (`is_active = true`) и четыре правила Telegram (`registered_participants` и `telegram_destination` для каждого типа) с `is_enabled = false`.
+
+Реализация PR-2 (`app/events/participation.py` → `app/events/notifications.py`, решения PO от 2026-10-11):
+
+- **Аудитория** `registration.created` / `registration.cancelled`: только пользователь, чья собственная регистрация изменилась, при статусе учётной записи `active` и проверке `event.read` для мероприятия. Инструкторы, родители/представители и другие участники не уведомляются. Групповые/тематические маршруты не используются (правила `telegram_destination` не создаются).
+- **Переходы**: `registration.created` — нет записи → `registered` и `cancelled → registered`; `registration.cancelled` — `registered → cancelled` и только при статусе мероприятия `published` или `in_progress` (в остальных статусах регистрация отменяется без уведомления). Повторная регистрация, повторная отмена и отмена отсутствующей регистрации ничего не планируют. Автоматическая регистрация на занятие (ADR-0047, `lesson_group_registration`) не уведомляется; самостоятельная отмена такой регистрации уведомляется на общих условиях.
+- **Факт**: запись аудита `event_participation.status_changed` перехода, созданная в той же транзакции; каждый реальный переход туда и обратно — новый факт.
+- **Контекст**: `registration.created` — `event_title`, `event_datetime` (в часовом поясе мероприятия), `event_id`; `registration.cancelled` — `event_title`, `event_id`, без даты и времени.
+- **Необязательные события**: нужны включённые общий переключатель личных сообщений и настройка события; отсутствие = OFF.
+- **Миграция `700a5f703346`** создаёт шаблоны (`is_active = true`) и два правила Telegram `registrant` с `is_enabled = false` и фиксированными идентификаторами; откат удаляет только созданные ею строки и отказывается при наличии уведомлений, ссылающихся на её шаблоны.
 
 Каждый срез создаёт свои шаблоны с `is_active = true` и правила с `is_enabled = false`; правило включает администратор после проверки среза (решение PO 13). Ключ идемпотентности: `<event_type>:<fact_id>:user:<user_id>` / `<event_type>:<fact_id>:dest:<destination_id>` (ADR-0049 §2.9).

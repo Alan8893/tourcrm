@@ -48,7 +48,12 @@ def test_group_routing_is_allowed_only_for_the_four_approved_keys() -> None:
 
 
 def test_membership_approved_is_blocked_and_only_implemented_slices_are_implemented() -> None:
-    implemented = {"event.cancelled", "event.rescheduled"}  # Issue #336 PR-1
+    implemented = {
+        "event.cancelled",  # Issue #336 PR-1
+        "event.rescheduled",
+        "registration.created",  # Issue #336 PR-2
+        "registration.cancelled",
+    }
     assert {key for key, e in CATALOG.items() if e.status == STATUS_BLOCKED} == {
         "membership.approved"
     }

@@ -293,9 +293,10 @@ def test_empty_rule_list_is_valid(client: TestClient, admin: uuid.UUID) -> None:
 
 @requires_postgres
 def test_seeded_business_rules_are_listed_disabled(client: TestClient, admin: uuid.UUID) -> None:
-    """Issue #336 PR-1 / PO decision 13: the event cancellation and
-    reschedule rules exist, Telegram only, and are disabled until an
-    administrator enables them."""
+    """Issue #336 PR-1/PR-2, PO decision 13: the event cancellation,
+    reschedule and registration rules exist, Telegram only, and are
+    disabled until an administrator enables them. Registration rules have
+    no group/topic route rule."""
     items = client.get(f"{BASE}/rules").json()["items"]
     assert sorted((i["event_type"], i["recipient_scope"], i["channel"], i["is_enabled"])
                   for i in items) == [
@@ -303,6 +304,8 @@ def test_seeded_business_rules_are_listed_disabled(client: TestClient, admin: uu
         ("event.cancelled", "telegram_destination", "telegram", False),
         ("event.rescheduled", "registered_participants", "telegram", False),
         ("event.rescheduled", "telegram_destination", "telegram", False),
+        ("registration.cancelled", "registrant", "telegram", False),
+        ("registration.created", "registrant", "telegram", False),
     ]
 
 

@@ -1,5 +1,6 @@
 """Event business notifications: `event.cancelled` and `event.rescheduled`
-(Issue #336 PR-1; catalog §3/§3.3, ADR-0049).
+(Issue #336 PR-1), `registration.created` and `registration.cancelled`
+(Issue #336 PR-2); catalog §3/§3.3, ADR-0049.
 
 Called by app.events.crud **inside** the Event mutation's own transaction,
 before it commits (ADR-0049 §2.6): the Event change, its linked
@@ -37,6 +38,26 @@ Facts (ADR-0049 §2.9):
 
 Dates are rendered in the Event's own time zone; a reschedule shows the
 old schedule in the old time zone and the new one in the new time zone.
+
+Registrations (PR-2, PO decisions of 2026-10-11), planned by
+app.events.participation inside the self-service registration/withdrawal
+transaction, before its commit:
+
+- recipient: only the User whose own registration changed — never an
+  instructor, guardian or other participant — and only when that User is
+  `active` and passes the existing `event.read` object policy for the
+  Event (RecipientAccess);
+- `registration.created`: every actual transition to `registered` (a new
+  registration or `cancelled -> registered`); automatic lesson
+  registration (ADR-0047) never reaches this module;
+- `registration.cancelled`: an actual `registered -> cancelled`
+  withdrawal, only while the Event is `published` or `in_progress`; the
+  message carries no date/time;
+- fact id: the `event_participation.status_changed` AuditLog row of the
+  transition, written in the same transaction — a no-op repeat writes no
+  audit row and so creates no fact, and every real transition back and
+  forth is a new fact;
+- never published to group/topic routes.
 """
 
 import uuid
@@ -52,12 +73,19 @@ from app.db.events import Event, EventParticipation
 from app.db.identity import User
 from app.events.authorization import build_event_resource_context
 from app.notifications.business import plan_catalog_notification
-from app.notifications.catalog import EVENT_CANCELLED, EVENT_RESCHEDULED
+from app.notifications.catalog import (
+    EVENT_CANCELLED,
+    EVENT_RESCHEDULED,
+    REGISTRATION_CANCELLED,
+    REGISTRATION_CREATED,
+)
 from app.notifications.ports import PermissionRecipientAccess
 
 _REGISTERED_STATUS = "registered"
 _ACTIVE_USER_STATUS = "active"
 _PUBLISHED_STATUS = "published"
+# PO decision (PR-2): a withdrawal is notified only while the Event runs.
+_REGISTRATION_CANCELLED_EVENT_STATUSES = frozenset({"published", "in_progress"})
 _EVENT_READ_PERMISSION = "event.read"
 _SUBJECT_TYPE = "event"
 
@@ -200,6 +228,67 @@ def plan_event_rescheduled_if_changed(
     return fact_id
 
 
+def _active_user_ids(session: Session, user_ids: list[uuid.UUID]) -> list[uuid.UUID]:
+    return list(
+        session.execute(
+            sa.select(User.id)
+            .where(User.id.in_(user_ids), User.status == _ACTIVE_USER_STATUS)
+            .order_by(User.id)
+        ).scalars()
+    )
+
+
+def plan_registration_created(
+    session: Session, *, event: Event, user_id: uuid.UUID, fact_id: uuid.UUID
+) -> None:
+    """Plan `registration.created` for the User whose own registration for
+    `event` just became `registered` in the caller's open transaction.
+    `fact_id` is that transition's AuditLog id."""
+    session.flush()
+    plan_catalog_notification(
+        session,
+        event_type=REGISTRATION_CREATED,
+        fact_id=str(fact_id),
+        subject_type=_SUBJECT_TYPE,
+        subject_id=event.id,
+        club_id=event.club_id,
+        recipient_user_ids=_active_user_ids(session, [user_id]),
+        recipient_access=_event_read_access(event),
+        render_context={
+            "event_title": event.title,
+            "event_datetime": format_event_schedule(schedule_of(event)),
+            "event_id": str(event.id),
+        },
+        publish_to_routes=False,
+    )
+
+
+def plan_registration_cancelled(
+    session: Session, *, event: Event, user_id: uuid.UUID, fact_id: uuid.UUID
+) -> bool:
+    """Plan `registration.cancelled` for the User whose own registration for
+    `event` was just withdrawn in the caller's open transaction — only while
+    the Event is `published` or `in_progress`. `fact_id` is the
+    withdrawal's AuditLog id. Returns whether it was planned."""
+    if event.status not in _REGISTRATION_CANCELLED_EVENT_STATUSES:
+        return False
+    session.flush()
+    plan_catalog_notification(
+        session,
+        event_type=REGISTRATION_CANCELLED,
+        fact_id=str(fact_id),
+        subject_type=_SUBJECT_TYPE,
+        subject_id=event.id,
+        club_id=event.club_id,
+        recipient_user_ids=_active_user_ids(session, [user_id]),
+        recipient_access=_event_read_access(event),
+        # PO decision (PR-2): no date/time in the withdrawal message.
+        render_context={"event_title": event.title, "event_id": str(event.id)},
+        publish_to_routes=False,
+    )
+    return True
+
+
 __all__ = [
     "EventSchedule",
     "schedule_of",
@@ -207,4 +296,6 @@ __all__ = [
     "registered_user_ids",
     "plan_event_cancelled",
     "plan_event_rescheduled_if_changed",
+    "plan_registration_created",
+    "plan_registration_cancelled",
 ]
