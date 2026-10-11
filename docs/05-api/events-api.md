@@ -358,7 +358,11 @@ Eligibility (ADR-0037 §3/§5), в этом порядке:
 
 Операция идемпотентна: повторный вызов при уже `registered` не создаёт вторую запись (unique `(event_id, person_id)` остаётся единственным persistence invariant, без изменений); вызов при существующей `cancelled` записи восстанавливает её в `registered` вместо создания дубликата.
 
-Не создаёт: `Attendance`, `GroupMembership`, `ClubMembership`, `GuardianRelationship`, платёж, доставку уведомления, `User`, `UserRoleAssignment`. Не требует и не проверяет никакой отдельный Event permission — self-registration является self-service операцией (ADR-0037 §12), а не операцией, проходящей через общий `Authorizer`/scope engine.
+Не создаёт: `Attendance`, `GroupMembership`, `ClubMembership`, `GuardianRelationship`, платёж, `User`, `UserRoleAssignment`.
+
+Уведомление (Issue #336 PR-2, ADR-0049): фактический переход в `registered` (новая регистрация или `cancelled → registered`) в той же транзакции, до commit, планирует `registration.created` для самого зарегистрировавшегося пользователя — Notification, Delivery и outbox job фиксируются вместе с записью и её аудитом; отправка — outbox worker после commit. Идентификатор факта — запись аудита `event_participation.status_changed` этого перехода; идемпотентный повтор ничего не планирует. Получатель — только активный пользователь с `event.read` для мероприятия; личные настройки, привязка Telegram и правила применяются движком; групповые маршруты не используются. Ошибка планирования откатывает регистрацию целиком (`500`). Ответ эндпоинта не меняется.
+
+Не требует и не проверяет никакой отдельный Event permission — self-registration является self-service операцией (ADR-0037 §12), а не операцией, проходящей через общий `Authorizer`/scope engine.
 
 Response: `EventParticipationOut` (`id`, `event_id`, `person_id`, `registration_status`, `created_at`, `updated_at`).
 
@@ -373,6 +377,10 @@ Guardian registration ребёнка не входит в этот MVP-срез 
 Строка `EventParticipation` не удаляется физически — сохраняется как историческая запись с `registration_status = cancelled` (существующий паттерн проекта).
 
 Идемпотентна: отсутствие записи вообще и повторная отмена уже `cancelled` записи — оба silent no-op, `204 No Content`, без ошибки.
+
+Мероприятие читается с той же разделяемой блокировкой строки, что и при регистрации, — отмена регистрации сериализуется с одновременной отменой/переносом мероприятия.
+
+Уведомление (Issue #336 PR-2, ADR-0049): фактический переход `registered → cancelled` в той же транзакции, до commit, планирует `registration.cancelled` для самого пользователя — только если мероприятие в статусе `published` или `in_progress`; в остальных статусах регистрация отменяется без уведомления. Сообщение не содержит даты и времени. Идентификатор факта, получатель, политика и откат при ошибке планирования — как у `POST`. Отмена регистрации, созданной автоматически для занятия (ADR-0047), этим эндпоинтом уведомляется на тех же условиях.
 
 ## 21. Participant status
 
@@ -567,7 +575,7 @@ There is no Club-configurable conflict severity policy in MVP.
 - registration approval/rejection;
 - attendance-related notification по настройке клуба.
 
-Доставка уведомления не является частью транзакции event mutation.
+Доставка уведомления не является частью транзакции event mutation: в транзакции изменения только планируются Notification, Delivery и outbox job (ADR-0049 §2.6), отправка выполняется outbox worker после commit. Реализованы: отмена и перенос мероприятия (PR-1), самостоятельная регистрация и её отмена (PR-2); статус остальных — `docs/04-modules/notification-event-catalog.md` §10.
 
 ## 30. Authorization
 

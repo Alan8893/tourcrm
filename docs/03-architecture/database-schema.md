@@ -855,7 +855,7 @@ Rule precedence is restrict-only (ADR-0045 §2.4): the installation-wide rule (`
 
 Rules participate in effective policy resolution. They do not grant resource permissions.
 
-Seeded rules (Issue #336): migration `a65b609f4d34` creates the installation-wide Telegram rules of `event.cancelled` and `event.rescheduled` — one with `recipient_scope = registered_participants` and one with `recipient_scope = telegram_destination` per event type — all with `is_enabled = false`, plus their templates `event_cancelled.telegram` / `event_rescheduled.telegram` (`is_active = true`). An administrator enables a rule; no Email rule is seeded.
+Seeded rules (Issue #336): migration `a65b609f4d34` creates the installation-wide Telegram rules of `event.cancelled` and `event.rescheduled` — one with `recipient_scope = registered_participants` and one with `recipient_scope = telegram_destination` per event type — all with `is_enabled = false`, plus their templates `event_cancelled.telegram` / `event_rescheduled.telegram` (`is_active = true`). An administrator enables a rule; no Email rule is seeded. Migration `700a5f703346` (Issue #336 PR-2) adds the personal Telegram rules of `registration.created` and `registration.cancelled` (`recipient_scope = registrant`, `is_enabled = false`, no `telegram_destination` rule) and their templates `registration_created.telegram` / `registration_cancelled.telegram` (`is_active = true`). Both seed migrations insert with fixed primary keys and `ON CONFLICT DO NOTHING`; their downgrades delete only the rows they created.
 
 ### `notifications`
 

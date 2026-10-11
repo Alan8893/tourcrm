@@ -45,10 +45,20 @@ constraint is the persistence invariant, unchanged). Withdrawal only
 ever touches the authenticated participant's own row and never fails
 when there is nothing to cancel (idempotent no-op).
 
+Notifications (Issue #336 PR-2, ADR-0049 §2.6): an actual transition
+plans `registration.created` / `registration.cancelled` for the
+registrant through app.events.notifications inside this same transaction,
+before the commit, keyed by the transition's AuditLog id; a withdrawal is
+notified only while the Event is `published` or `in_progress`. The
+Notification, its Delivery and outbox job commit with the participation
+row and its audit row, or everything rolls back. Nothing is sent from
+here: the outbox worker sends after the commit. Idempotent no-ops plan
+nothing.
+
 Never creates: Attendance, GroupMembership, ClubMembership,
-GuardianRelationship, Payment, Notification delivery, User, or
-UserRoleAssignment. Never accepts or infers Attendance state, capacity,
-waitlist position, or payment/financial obligation — all explicitly
+GuardianRelationship, Payment, User, or UserRoleAssignment. Never
+accepts or infers Attendance state, capacity, waitlist position, or
+payment/financial obligation — all explicitly
 deferred by ADR-0037 §8/§9/§10.
 """
 
@@ -63,6 +73,7 @@ from app.authorization.club_ownership import user_has_active_club_membership
 from app.db.events import Event, EventParticipation
 from app.db.groups import GroupMembership
 from app.db.identity import ClubMembership, User
+from app.events import notifications as event_notifications
 from app.events.queries import get_event_targeting
 
 _PUBLISHED_STATUS = "published"
@@ -175,6 +186,10 @@ def register_for_event(
     fails — eligibility is always re-checked, even on an idempotent
     repeat call, so a since-cancelled/completed Event cannot be
     (re-)registered for just because a `registered` row already exists.
+
+    An actual transition to `registered` plans `registration.created` for
+    the caller in the same transaction (Issue #336 PR-2); a failure rolls
+    the registration and its audit row back too.
     """
     event = session.execute(
         sa.select(Event).where(Event.id == event_id).with_for_update(read=True)
@@ -217,7 +232,7 @@ def register_for_event(
             row = existing
             row.registration_status = REGISTERED_STATUS
         session.flush()
-        record_audit_event(
+        audit = record_audit_event(
             session,
             action="event_participation.status_changed",
             actor_type="user",
@@ -232,6 +247,9 @@ def register_for_event(
                     "registration_status": {"from": previous_status, "to": REGISTERED_STATUS}
                 }
             },
+        )
+        event_notifications.plan_registration_created(
+            session, event=event, user_id=user_id, fact_id=audit.id
         )
         session.commit()
     except Exception:
@@ -253,7 +271,23 @@ def withdraw_from_event(
     without a write when it is already `cancelled`. Only ever touches
     the caller's own row: `person_id` is resolved from `user_id`, never
     accepted as input.
+
+    The Event is read first with the same shared row lock registration
+    takes, so a withdrawal is serialized with a concurrent Event
+    cancellation/reschedule. An actual `registered -> cancelled` plans
+    `registration.cancelled` for the caller in the same transaction while
+    the Event is `published` or `in_progress` (Issue #336 PR-2); in any
+    other Event status the withdrawal still happens, without a
+    notification. A failure rolls the withdrawal and its audit row back
+    too.
     """
+    event = session.execute(
+        sa.select(Event).where(Event.id == event_id).with_for_update(read=True)
+    ).scalar_one_or_none()
+    if event is None:
+        # No Event means no participation row either (FK): nothing to cancel.
+        return None
+
     person_id = person_id_for_user(session, user_id)
 
     existing = session.execute(
@@ -270,7 +304,7 @@ def withdraw_from_event(
     try:
         existing.registration_status = CANCELLED_STATUS
         session.flush()
-        record_audit_event(
+        audit = record_audit_event(
             session,
             action="event_participation.status_changed",
             actor_type="user",
@@ -284,6 +318,9 @@ def withdraw_from_event(
                     "registration_status": {"from": previous_status, "to": CANCELLED_STATUS}
                 }
             },
+        )
+        event_notifications.plan_registration_cancelled(
+            session, event=event, user_id=user_id, fact_id=audit.id
         )
         session.commit()
     except Exception:

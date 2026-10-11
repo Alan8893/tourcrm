@@ -297,7 +297,7 @@ The following remain outside this MVP decision:
 - waitlists;
 - registration deadlines;
 - automatic invitations;
-- notifications;
+- notifications — *amended 2026-10-11 (Issue #336 PR-2):* self-service registration and withdrawal now plan the `registration.created` / `registration.cancelled` notifications inside their own transaction per ADR-0049; automatic lesson registration (ADR-0047) is not notified. Eligibility, idempotency and the API contract of this ADR are unchanged;
 - payment processing and financial obligations;
 - approval/moderation workflow for registrations.
 

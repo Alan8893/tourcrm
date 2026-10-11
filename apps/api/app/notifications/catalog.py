@@ -148,6 +148,7 @@ CATALOG: dict[str, CatalogEntry] = {
         ),
         _entry(
             REGISTRATION_CREATED,
+            status=STATUS_IMPLEMENTED,  # Issue #336 PR-2
             template_code="registration_created.telegram",
             recipient_scope=SCOPE_REGISTRANT,
             variables=TemplateVariables(
@@ -157,6 +158,7 @@ CATALOG: dict[str, CatalogEntry] = {
         ),
         _entry(
             REGISTRATION_CANCELLED,
+            status=STATUS_IMPLEMENTED,  # Issue #336 PR-2
             template_code="registration_cancelled.telegram",
             recipient_scope=SCOPE_REGISTRANT,
             variables=TemplateVariables(
