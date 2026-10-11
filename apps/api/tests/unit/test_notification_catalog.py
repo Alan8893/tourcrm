@@ -9,6 +9,7 @@ import pytest
 from app.notifications.catalog import (
     CATALOG,
     STATUS_BLOCKED,
+    STATUS_IMPLEMENTED,
     STATUS_PENDING,
     mandatory_event_types,
     personal_preference_event_types,
@@ -46,12 +47,16 @@ def test_group_routing_is_allowed_only_for_the_four_approved_keys() -> None:
     }
 
 
-def test_membership_approved_is_blocked_and_everything_else_awaits_its_slice() -> None:
+def test_membership_approved_is_blocked_and_only_implemented_slices_are_implemented() -> None:
+    implemented = {"event.cancelled", "event.rescheduled"}  # Issue #336 PR-1
     assert {key for key, e in CATALOG.items() if e.status == STATUS_BLOCKED} == {
         "membership.approved"
     }
+    assert {key for key, e in CATALOG.items() if e.status == STATUS_IMPLEMENTED} == implemented
     assert all(
-        e.status == STATUS_PENDING for key, e in CATALOG.items() if key != "membership.approved"
+        e.status == STATUS_PENDING
+        for key, e in CATALOG.items()
+        if key not in implemented | {"membership.approved"}
     )
 
 

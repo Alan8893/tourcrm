@@ -123,6 +123,7 @@ CATALOG: dict[str, CatalogEntry] = {
         ),
         _entry(
             EVENT_CANCELLED,
+            status=STATUS_IMPLEMENTED,  # Issue #336 PR-1
             template_code="event_cancelled.telegram",
             recipient_scope=SCOPE_REGISTERED_PARTICIPANTS,
             mandatory=True,
@@ -135,6 +136,7 @@ CATALOG: dict[str, CatalogEntry] = {
         ),
         _entry(
             EVENT_RESCHEDULED,
+            status=STATUS_IMPLEMENTED,  # Issue #336 PR-1
             template_code="event_rescheduled.telegram",
             recipient_scope=SCOPE_REGISTERED_PARTICIPANTS,
             mandatory=True,

@@ -90,8 +90,16 @@ def test_pending_and_blocked_keys_are_refused_before_any_write(
         _call(event_type, _UntouchableSession())
 
 
-@pytest.mark.parametrize("event_type", sorted(CATALOG))
-def test_every_key_is_refused_in_pr0_because_no_slice_is_implemented(
+# Issue #336 PR-1 implemented the event cancellation/reschedule slice.
+IMPLEMENTED_KEYS = {"event.cancelled", "event.rescheduled"}
+
+
+def test_only_the_implemented_slices_are_implemented() -> None:
+    assert {k for k, e in CATALOG.items() if e.status == STATUS_IMPLEMENTED} == IMPLEMENTED_KEYS
+
+
+@pytest.mark.parametrize("event_type", sorted(set(CATALOG) - IMPLEMENTED_KEYS))
+def test_every_key_without_an_implemented_slice_is_refused(
     monkeypatch: pytest.MonkeyPatch, event_type: str
 ) -> None:
     _forbid_engine(monkeypatch)
@@ -105,7 +113,7 @@ def test_refusal_wins_over_every_later_check(monkeypatch: pytest.MonkeyPatch) ->
     context — the status gate runs first."""
     _forbid_engine(monkeypatch)
     with pytest.raises(CatalogNotificationError, match="is pending"):
-        _call("event.cancelled", _UntouchableSession(), render_context={},
+        _call("event.created", _UntouchableSession(), render_context={},
               publish_to_routes=True)
 
 

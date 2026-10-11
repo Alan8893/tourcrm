@@ -578,7 +578,15 @@ def test_rule_is_unique_per_club_event_channel_and_scope() -> None:
             ]
         )
         session.commit()
-        assert session.execute(select(func.count()).select_from(NotificationRule)).scalar() == 4
+        # Only this test's rules: migrations also seed business rules (#336).
+        assert (
+            session.execute(
+                select(func.count())
+                .select_from(NotificationRule)
+                .where(NotificationRule.event_type == "test.event")
+            ).scalar()
+            == 4
+        )
 
         session.add(_rule(club.id, is_enabled=False))
         _assert_rejected(session, "uq_notification_rules_club_event_channel_scope")

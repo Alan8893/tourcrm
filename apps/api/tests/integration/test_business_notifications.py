@@ -15,11 +15,13 @@ contract-error path (the caller rolls the business change back), and
 rendering + escaping + links on the real worker path, including a
 permanent render failure and a retry.
 
-No catalog key is wired to a domain service in PR-0 and every key is
-`pending` (or `blocked`), which the boundary refuses. The tests therefore
-mark the three keys they exercise `implemented` for the duration of each
-test only (`_implemented_test_keys`), seed their own rules/templates and
-use a stand-in business row written in the same transaction. The status
+These tests exercise the boundary itself, independently of the domain
+services (the Event integration of PR-1 is tested in
+test_event_notifications.py). Keys without an implemented slice are
+`pending` (or `blocked`) and refused, so the tests mark the three keys
+they exercise `implemented` for the duration of each test only
+(`_implemented_test_keys`), replace any seeded rules/templates with their
+own and use a stand-in business row written in the same transaction. The status
 gate itself is tested against the real catalog at the end of this module.
 """
 
@@ -133,9 +135,16 @@ def _seed(
     template_active: bool = True,
     email_rule: bool = False,
 ) -> None:
-    """Rule(s) and template as a slice seeds them; `None` = no rule."""
+    """Rule(s) and template exactly as given; `None` = no rule. Rows a
+    migration already seeded for the event type (PR-1 seeds
+    event.cancelled/event.rescheduled) are replaced, so each test controls
+    the full configuration."""
     code, body = TEMPLATES[event_type]
     with session_scope() as session:
+        session.execute(
+            sa.delete(NotificationRule).where(NotificationRule.event_type == event_type)
+        )
+        session.execute(sa.delete(NotificationTemplate).where(NotificationTemplate.code == code))
         session.add(
             NotificationTemplate(
                 code=code, channel="telegram", locale="ru", body_template=body,
@@ -762,14 +771,14 @@ def test_global_off_after_planning_pauses_delivery() -> None:
 # --- Catalog status gate against the real catalog ---------------------------------------------
 
 
-@pytest.mark.parametrize("event_type", ["event.cancelled", "membership.approved"])
+@pytest.mark.parametrize("event_type", ["event.created", "membership.approved"])
 @requires_postgres
 def test_pending_and_blocked_keys_write_nothing_and_roll_the_business_back(
     event_type: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With every rule, template, preference and route in place, a key that
-    is not `implemented` (event.cancelled is `pending` in PR-0,
-    membership.approved is `blocked`) is still refused: no Notification,
+    is not `implemented` (event.created is `pending`, membership.approved
+    is `blocked`) is still refused: no Notification,
     Delivery or outbox job is written and the caller rolls back."""
     for key in _TEST_KEYS:
         monkeypatch.setitem(CATALOG, key, _REAL_CATALOG[key])
@@ -778,7 +787,7 @@ def test_pending_and_blocked_keys_write_nothing_and_roll_the_business_back(
     _seed(MANDATORY, group_rule=True)
     with session_scope() as session:
         user = _user(session)
-        _route(session, event_types=[MANDATORY, "membership.approved"])
+        _route(session, event_types=[MANDATORY, "event.created", "membership.approved"])
         session.commit()
     with session_scope() as session:
         club_id = _business_row(session)
