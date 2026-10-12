@@ -7,7 +7,7 @@ import { StatusBadge } from "../components/ui/StatusBadge";
 import { useNotify } from "../components/ui/notificationContext";
 import buttonStyles from "../components/ui/Button.module.css";
 import {
-  useCreateTelegramLinkChallenge,
+  createTelegramLinkChallenge,
   useInvalidatePersonalTelegram,
   useTelegramLinkStatus,
   useUnlinkTelegram,
@@ -35,20 +35,28 @@ export function SettingsTelegramLink() {
   const [challenge, setChallenge] = useState<TelegramLinkChallenge | null>(null);
   const [expired, setExpired] = useState(false);
   const [confirmUnlink, setConfirmUnlink] = useState(false);
-  const status = useTelegramLinkStatus({ pollWhilePending: challenge !== null && !expired });
-  const issue = useCreateTelegramLinkChallenge();
+  const status = useTelegramLinkStatus({ pollWhilePending: challenge !== null });
+  // The challenge request is not a TanStack mutation: its response (the
+  // deep link with the one-time token) must not enter the shared cache.
+  const [issuing, setIssuing] = useState(false);
+  const [issueError, setIssueError] = useState<unknown>(null);
   const unlink = useUnlinkTelegram();
   const invalidate = useInvalidatePersonalTelegram();
 
-  // The backend's expiry is authoritative; hide the link once it passes.
+  // The backend's expiry is authoritative: once it passes, drop the link
+  // (and its token) entirely, not just hide it.
   useEffect(() => {
     if (!challenge) return;
+    const expire = () => {
+      setChallenge(null);
+      setExpired(true);
+    };
     const remaining = new Date(challenge.expires_at).getTime() - Date.now();
     if (remaining <= 0) {
-      setExpired(true);
+      expire();
       return;
     }
-    const timer = window.setTimeout(() => setExpired(true), remaining);
+    const timer = window.setTimeout(expire, remaining);
     return () => window.clearTimeout(timer);
   }, [challenge]);
 
@@ -67,14 +75,20 @@ export function SettingsTelegramLink() {
     }
   }, [status.data?.linked, notify, invalidate]);
 
-  function requestLink() {
-    issue.mutate(undefined, {
-      onSuccess: (issued) => {
-        setExpired(false);
-        setChallenge(issued);
-      },
-      onError: () => setChallenge(null),
-    });
+  async function requestLink() {
+    if (issuing) return;
+    setIssuing(true);
+    setIssueError(null);
+    try {
+      const issued = await createTelegramLinkChallenge();
+      setExpired(false);
+      setChallenge(issued);
+    } catch (error) {
+      setChallenge(null);
+      setIssueError(error);
+    } finally {
+      setIssuing(false);
+    }
   }
 
   async function checkLink() {
@@ -145,13 +159,12 @@ export function SettingsTelegramLink() {
     );
   }
 
-  const active = challenge !== null && !expired;
   return (
     <div className={styles.form}>
       <div className={styles.statusRow}>
         <StatusBadge status="status.ended" label="Telegram не привязан" />
       </div>
-      {active ? (
+      {challenge ? (
         <>
           <ol className={styles.steps}>
             <li>Нажмите «Открыть Telegram» — откроется чат с ботом TourCRM.</li>
@@ -191,14 +204,14 @@ export function SettingsTelegramLink() {
               Срок действия ссылки истёк. Получите новую ссылку.
             </p>
           ) : null}
-          {issue.isError ? (
+          {issueError ? (
             <p className={styles.error} role="alert">
-              {linkChallengeErrorMessage(issue.error)}
+              {linkChallengeErrorMessage(issueError)}
             </p>
           ) : null}
           <div className={styles.actions}>
-            <Button variant="primary" onClick={requestLink} disabled={issue.isPending}>
-              {expired || issue.isError ? "Получить новую ссылку" : "Привязать Telegram"}
+            <Button variant="primary" onClick={() => void requestLink()} disabled={issuing}>
+              {expired || issueError ? "Получить новую ссылку" : "Привязать Telegram"}
             </Button>
           </div>
         </>

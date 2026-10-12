@@ -4,13 +4,15 @@ import userEvent from "@testing-library/user-event";
 
 import { SettingsNotificationPreferences } from "./SettingsNotificationPreferences";
 import { SettingsTelegramLink } from "./SettingsTelegramLink";
-import { renderWithProviders } from "../test/renderWithProviders";
+import { createTestQueryClient, renderWithProviders } from "../test/renderWithProviders";
 
 const LINK = "/api/v1/me/telegram-link";
 const CHALLENGES = "/api/v1/me/telegram-link/challenges";
 const PREFERENCES = "/api/v1/me/notification-preferences";
 const TOKEN = "Zq3-one_time_token_value_never_rendered_as_text_x";
 const DEEP_LINK = `https://t.me/tourcrm_bot?start=${TOKEN}`;
+const SECOND_TOKEN = "Second_one_time_token_value_for_the_renewed_link_y";
+const SECOND_DEEP_LINK = `https://t.me/tourcrm_bot?start=${SECOND_TOKEN}`;
 
 type Reply = { status: number; body?: unknown };
 type Request = { method: string; url: string; body: unknown; csrf: string | null };
@@ -113,6 +115,22 @@ function writes(calls: Request[]) {
   return calls.filter((call) => call.method !== "GET");
 }
 
+/** Everything TanStack Query holds for this client: every query's key and
+ * state, and every mutation's full state (data, variables, context,
+ * error). */
+function cachedState(client: ReturnType<typeof createTestQueryClient>): string {
+  return JSON.stringify({
+    queries: client
+      .getQueryCache()
+      .getAll()
+      .map((query) => ({ key: query.queryKey, state: query.state })),
+    mutations: client
+      .getMutationCache()
+      .getAll()
+      .map((mutation) => ({ key: mutation.options.mutationKey, state: mutation.state })),
+  });
+}
+
 function renderSection() {
   return renderWithProviders(
     <>
@@ -164,6 +182,82 @@ describe("Personal Telegram link (Issue #343)", () => {
     ]);
   });
 
+  it("keeps the one-time token out of the QueryCache and MutationCache", async () => {
+    let issued = 0;
+    fakeBackend({
+      override: (method, url) => {
+        if (!(url.endsWith(CHALLENGES) && method === "POST")) return undefined;
+        issued += 1;
+        return issued === 1
+          ? {
+              status: 201,
+              body: { deep_link: DEEP_LINK, expires_at: new Date(Date.now() + 300).toISOString() },
+            }
+          : {
+              status: 201,
+              body: {
+                deep_link: SECOND_DEEP_LINK,
+                expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+              },
+            };
+      },
+    });
+    const client = createTestQueryClient();
+    renderWithProviders(<SettingsTelegramLink />, { client });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Привязать Telegram" }));
+    expect(await screen.findByRole("link", { name: "Открыть Telegram" })).toHaveAttribute(
+      "href",
+      DEEP_LINK,
+    );
+    // The link is on screen, yet no cache entry holds the token: the
+    // status query is cached, the challenge response is not.
+    expect(client.getQueryCache().getAll().length).toBeGreaterThan(0);
+    expect(cachedState(client)).not.toContain(TOKEN);
+    expect(cachedState(client)).not.toContain("deep_link");
+
+    await user.click(screen.getByRole("button", { name: "Проверить привязку" }));
+    await screen.findByText(/Привязка ещё не завершена/);
+    expect(cachedState(client)).not.toContain(TOKEN);
+
+    // Expiry, then a renewed link: still nothing cached.
+    await screen.findByText(/Срок действия ссылки истёк/);
+    await user.click(screen.getByRole("button", { name: "Получить новую ссылку" }));
+    expect(await screen.findByRole("link", { name: "Открыть Telegram" })).toHaveAttribute(
+      "href",
+      SECOND_DEEP_LINK,
+    );
+    const state = cachedState(client);
+    expect(state).not.toContain(TOKEN);
+    expect(state).not.toContain(SECOND_TOKEN);
+    expect(state).not.toContain("deep_link");
+  });
+
+  it("blocks a second request while a link is being issued", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { calls } = fakeBackend({
+      override: async (method, url) => {
+        if (url.endsWith(CHALLENGES) && method === "POST") await gate;
+        return undefined;
+      },
+    });
+    renderWithProviders(<SettingsTelegramLink />);
+    const user = userEvent.setup();
+
+    const request = await screen.findByRole("button", { name: "Привязать Telegram" });
+    await user.click(request);
+    await waitFor(() => expect(request).toBeDisabled());
+    await user.click(request);
+    release();
+
+    expect(await screen.findByRole("link", { name: "Открыть Telegram" })).toBeInTheDocument();
+    expect(writes(calls)).toHaveLength(1);
+  });
+
   it("hides an expired link and offers a new one", async () => {
     fakeBackend({
       override: (method, url) =>
@@ -183,6 +277,12 @@ describe("Personal Telegram link (Issue #343)", () => {
     expect(await screen.findByText(/Срок действия ссылки истёк/)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Открыть Telegram" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Получить новую ссылку" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Получить новую ссылку" }));
+    expect(await screen.findByRole("link", { name: "Открыть Telegram" })).toHaveAttribute(
+      "href",
+      DEEP_LINK,
+    );
   });
 
   it("reports a pending link, then switches to linked once the bot completed it", async () => {

@@ -12,8 +12,8 @@ import { apiFetch, ApiError } from "./client";
  *
  * No type here carries a Telegram numeric id, and no request sends one.
  * The one-time token exists only inside `deep_link` of the challenge
- * response; it is kept in component state only (never in the query cache)
- * and is never logged.
+ * response; it is kept in component state only (never in the QueryCache or
+ * MutationCache, see `createTelegramLinkChallenge`) and is never logged.
  */
 
 export type TelegramLinkStatus = {
@@ -80,14 +80,13 @@ export function useInvalidatePersonalTelegram() {
   }, [queryClient]);
 }
 
-export function useCreateTelegramLinkChallenge() {
-  return useMutation<TelegramLinkChallenge, RequestError, void>({
-    mutationFn: () =>
-      apiFetch<TelegramLinkChallenge>(`${LINK_PATH}/challenges`, { method: "POST" }),
-    // The response carries the one-time token: do not keep it in the
-    // MutationCache after the request settles.
-    gcTime: 0,
-  });
+/** Issue a one-time linking challenge. Deliberately a plain request, not a
+ * `useMutation`: an observed mutation keeps its result (`state.data`) in
+ * the shared MutationCache for as long as the component is mounted, and
+ * `gcTime` only applies once no observer is left. The caller keeps the
+ * response in component state for exactly as long as the link is valid. */
+export function createTelegramLinkChallenge(): Promise<TelegramLinkChallenge> {
+  return apiFetch<TelegramLinkChallenge>(`${LINK_PATH}/challenges`, { method: "POST" });
 }
 
 export function useUnlinkTelegram() {
