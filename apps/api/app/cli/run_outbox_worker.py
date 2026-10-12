@@ -24,6 +24,12 @@ configured is retried as `channel_adapter_unavailable` and ends as a
 terminal failure once its attempts are exhausted. The worker only sends
 Telegram messages; it never polls for Telegram updates (that is
 app.cli.run_telegram_poller).
+
+Password-reset code emails (Issue #342) need AUTH_DELIVERY_ENCRYPTION_KEYS
+to decrypt the code in memory right before sending
+(app.authentication.password_reset_delivery); without it such a Delivery
+is retried as `delivery_encryption_unavailable` and then fails. The same
+component discards the encrypted copy when the Delivery finishes.
 """
 
 import logging
@@ -33,6 +39,10 @@ import threading
 from types import FrameType
 from typing import Optional
 
+from app.authentication.password_reset_delivery import (
+    PASSWORD_RESET_EVENT_TYPE,
+    PasswordResetCodeDelivery,
+)
 from app.core.config import get_public_base_url
 from app.db.session import get_session_factory
 from app.notification_settings.policy import GlobalAdminPolicy
@@ -60,9 +70,12 @@ def build_worker(
     telegram_client_factory: BotApiClientFactory = build_bot_api_client,
 ) -> OutboxWorker:
     session_factory = get_session_factory()
+    password_reset_codes = PasswordResetCodeDelivery()
     adapters: dict[str, ChannelAdapter] = {
         CHANNEL_EMAIL: ConfiguredEmailAdapter(
-            session_factory=session_factory, transport_factory=smtp_transport_factory
+            session_factory=session_factory,
+            transport_factory=smtp_transport_factory,
+            secret_resolvers={PASSWORD_RESET_EVENT_TYPE: password_reset_codes},
         ),
         CHANNEL_TELEGRAM: ConfiguredTelegramAdapter(
             session_factory=session_factory,
@@ -72,7 +85,10 @@ def build_worker(
         ),
     }
     handler = NotificationDeliveryHandler(
-        adapters, admin_policy=GlobalAdminPolicy(), pause_recheck=config.pause_recheck
+        adapters,
+        admin_policy=GlobalAdminPolicy(),
+        pause_recheck=config.pause_recheck,
+        secret_cleanup=password_reset_codes,
     )
     return OutboxWorker(
         session_factory=session_factory,

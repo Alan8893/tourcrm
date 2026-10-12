@@ -97,6 +97,8 @@ class PasswordResetRequestRequest(BaseModel):
 class PasswordResetConfirmRequest(BaseModel):
     token: str = Field(min_length=1)
     new_password: str = Field(min_length=1, max_length=256)
+    # auth-api.md §14 (Issue #342): checked by the backend, not only the UI.
+    new_password_confirm: str = Field(min_length=1, max_length=256)
 
 
 class ChangePasswordRequest(BaseModel):

@@ -512,6 +512,12 @@ Redis or broker):
 DATABASE_URL=... python -m app.cli.run_outbox_worker
 ```
 
+Password-reset code emails (Issue #342) additionally need
+`AUTH_DELIVERY_ENCRYPTION_KEYS` — the same value as the API's — to decrypt
+the queued code in memory right before sending
+(`app.authentication.password_reset_delivery`; see
+`docs/08-infrastructure/infrastructure-and-devops.md` §9.1a).
+
 - **Claim** (`app.outbox.claiming`): one short transaction selects eligible
   jobs — `pending` and due, or `processing` with an expired lease — in
   `(next_attempt_at, id)` order with `FOR UPDATE SKIP LOCKED`, and leases

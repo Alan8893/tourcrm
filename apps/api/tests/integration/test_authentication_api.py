@@ -431,7 +431,11 @@ def test_password_reset_request_is_identical_for_existing_and_unknown_identifier
 def test_password_reset_confirm_rejects_an_invalid_token(client: TestClient) -> None:
     response = client.post(
         "/api/v1/auth/password-reset/confirm",
-        json={"token": "not-a-real-token", "new_password": "newpassword123"},
+        json={
+            "token": "not-a-real-token",
+            "new_password": "newpassword123",
+            "new_password_confirm": "newpassword123",
+        },
     )
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_or_expired_token"

@@ -56,6 +56,9 @@ services:
       # Settings encryption key ring (Issue #333, ADR-0048): SMTP/Telegram
       # secrets entered in Settings → Notifications are stored encrypted.
       SETTINGS_ENCRYPTION_KEYS: ${SETTINGS_ENCRYPTION_KEYS:-}
+      # Password-reset code delivery key ring (Issue #342): a SEPARATE key;
+      # the outbox worker needs the same value.
+      AUTH_DELIVERY_ENCRYPTION_KEYS: ${AUTH_DELIVERY_ENCRYPTION_KEYS:-}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:

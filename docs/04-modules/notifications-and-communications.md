@@ -165,6 +165,15 @@ Delivery
 - retry;
 - delivery status.
 
+#### Служебные письма безопасности (Issue #342)
+
+Код восстановления пароля (`event_type = auth.password_reset_requested`, шаблон `auth_password_reset_code.email`) — служебное письмо безопасности. Оно проходит обычный путь Notification → Delivery → outbox job `notification.delivery` → worker → Email Adapter, но:
+
+- создаётся напрямую (`app.notifications.security_email`), без правил уведомлений, пользовательских предпочтений, audience и reachability Notification Engine; глобальный переключатель Email остаётся абсолютным (OFF — ничего не создаётся, уже поставленная доставка приостанавливается);
+- адресат — `login_identifier` учётной записи, даже без `email_verified_at`;
+- `render_context` пуст; одноразовый код получает только Email Adapter в момент отправки через `DeliverySecretResolver` и подставляет в единственный плейсхолдер `{{code}}` тела письма (в теме код запрещён); код не попадает в Notification, outbox payload, ошибки доставки и логи;
+- обработчик доставки вызывает `DeliverySecretCleanup` в каждой транзакции фиксации результата, чтобы зашифрованная копия кода удалялась атомарно с завершением доставки (подробнее — `docs/03-architecture/authentication-persistence.md` §5).
+
 ### Telegram
 
 Должен использовать абстракцию провайдера и внутренний идентификатор destination.

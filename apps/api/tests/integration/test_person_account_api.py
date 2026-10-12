@@ -325,7 +325,11 @@ def test_expired_challenge_cannot_be_confirmed(client: TestClient) -> None:
     app.dependency_overrides.clear()
     confirm_response = client.post(
         "/api/v1/auth/password-reset/confirm",
-        json={"token": raw_credential, "new_password": "brandnewpassword1"},
+        json={
+            "token": raw_credential,
+            "new_password": "brandnewpassword1",
+            "new_password_confirm": "brandnewpassword1",
+        },
     )
     assert confirm_response.status_code == 400, confirm_response.text
     assert confirm_response.json()["error"]["code"] == "invalid_or_expired_token"
@@ -348,13 +352,21 @@ def test_challenge_is_single_use(client: TestClient) -> None:
     app.dependency_overrides.clear()
     first = client.post(
         "/api/v1/auth/password-reset/confirm",
-        json={"token": raw_credential, "new_password": "brandnewpassword1"},
+        json={
+            "token": raw_credential,
+            "new_password": "brandnewpassword1",
+            "new_password_confirm": "brandnewpassword1",
+        },
     )
     assert first.status_code == 200, first.text
 
     second = client.post(
         "/api/v1/auth/password-reset/confirm",
-        json={"token": raw_credential, "new_password": "anothernewpassword2"},
+        json={
+            "token": raw_credential,
+            "new_password": "anothernewpassword2",
+            "new_password_confirm": "anothernewpassword2",
+        },
     )
     assert second.status_code == 400, second.text
     assert second.json()["error"]["code"] == "invalid_or_expired_token"
@@ -375,7 +387,11 @@ def test_successful_setup_changes_password_and_consumes_challenge(client: TestCl
     app.dependency_overrides.clear()
     confirm_response = client.post(
         "/api/v1/auth/password-reset/confirm",
-        json={"token": raw_credential, "new_password": "brandnewpassword1"},
+        json={
+            "token": raw_credential,
+            "new_password": "brandnewpassword1",
+            "new_password_confirm": "brandnewpassword1",
+        },
     )
     assert confirm_response.status_code == 200, confirm_response.text
 
@@ -428,7 +444,11 @@ def test_admin_reset_confirmation_invalidates_existing_sessions(client: TestClie
     app.dependency_overrides.clear()
     confirm_response = client.post(
         "/api/v1/auth/password-reset/confirm",
-        json={"token": raw_credential, "new_password": "brandnewpassword2"},
+        json={
+            "token": raw_credential,
+            "new_password": "brandnewpassword2",
+            "new_password_confirm": "brandnewpassword2",
+        },
     )
     assert confirm_response.status_code == 200, confirm_response.text
 
@@ -526,7 +546,11 @@ def test_old_reset_challenge_cannot_be_reused_after_a_second_reset(client: TestC
     app.dependency_overrides.clear()
     confirm_with_old = client.post(
         "/api/v1/auth/password-reset/confirm",
-        json={"token": old_credential, "new_password": "brandnewpassword3"},
+        json={
+            "token": old_credential,
+            "new_password": "brandnewpassword3",
+            "new_password_confirm": "brandnewpassword3",
+        },
     )
     assert confirm_with_old.status_code == 400, confirm_with_old.text
     assert confirm_with_old.json()["error"]["code"] == "invalid_or_expired_token"
@@ -571,7 +595,11 @@ def test_audit_records_are_created_without_secrets(client: TestClient) -> None:
     app.dependency_overrides.clear()
     client.post(
         "/api/v1/auth/password-reset/confirm",
-        json={"token": raw_credential, "new_password": "brandnewpassword4"},
+        json={
+            "token": raw_credential,
+            "new_password": "brandnewpassword4",
+            "new_password_confirm": "brandnewpassword4",
+        },
     )
     with session_scope() as session:
         completed_rows = session.execute(

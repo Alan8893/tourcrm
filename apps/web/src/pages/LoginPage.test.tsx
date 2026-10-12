@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Route, Routes } from "react-router-dom";
+import { Route, Routes, useLocation } from "react-router-dom";
 
 import { LoginPage } from "./LoginPage";
+import { PasswordResetRequestPage } from "./PasswordResetRequestPage";
 import { renderWithProviders, stubFetch } from "../test/renderWithProviders";
 
 /** `LoginPage` calls `navigate()` on success/already-authenticated — a
@@ -238,5 +239,51 @@ describe("LoginPage", () => {
 
     await user.click(screen.getByRole("button", { name: "Скрыть пароль" }));
     expect(passwordInput.type).toBe("password");
+  });
+});
+
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location">{location.pathname + location.search + location.hash}</div>;
+}
+
+describe("LoginPage — one-time code entry point (Issue #342)", () => {
+  it("opens the code + new password step directly, without putting anything in the URL", async () => {
+    stubFetch([{ match: "/auth/me", response: { error: { code: "unauthorized" } }, status: 401 }]);
+    const user = userEvent.setup();
+    renderWithProviders(
+      <>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/password-reset" element={<PasswordResetRequestPage />} />
+        </Routes>
+        <LocationProbe />
+      </>,
+      { route: "/login" },
+    );
+
+    await user.click(await screen.findByRole("link", { name: "У меня есть одноразовый код" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "Ввести код и задать пароль" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Одноразовый код")).toBeInTheDocument();
+    expect(screen.getByTestId("location")).toHaveTextContent(/^\/password-reset$/);
+  });
+
+  it("keeps the existing 'Забыли пароль?' path to the request step", async () => {
+    stubFetch([{ match: "/auth/me", response: { error: { code: "unauthorized" } }, status: 401 }]);
+    const user = userEvent.setup();
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/password-reset" element={<PasswordResetRequestPage />} />
+      </Routes>,
+      { route: "/login" },
+    );
+
+    await user.click(await screen.findByRole("link", { name: "Забыли пароль?" }));
+
+    expect(await screen.findByRole("heading", { name: "Восстановление пароля" })).toBeInTheDocument();
   });
 });

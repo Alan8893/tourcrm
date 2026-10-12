@@ -98,6 +98,8 @@ export function usePasswordResetRequest() {
 export type PasswordResetConfirmPayload = {
   token: string;
   new_password: string;
+  /** Checked by the backend too (auth-api.md §14, Issue #342). */
+  new_password_confirm: string;
 };
 
 /** `POST /api/v1/auth/password-reset/confirm` — the ONE canonical

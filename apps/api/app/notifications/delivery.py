@@ -29,6 +29,15 @@ Per attempt:
    terminal failure -> `failed` with no `next_retry_at`. The last safe
    error code/message is kept (ADR-0045 §2.9).
 
+Delivery secrets (Issue #342): a Delivery whose content needs a one-time
+secret (a password-reset code) never carries it in its Notification or
+job. The adapter obtains it at send time through its own resolver; the
+handler's optional `secret_cleanup` hook runs inside every recording
+transaction — success, retry, terminal failure, pause and abandon — so the
+stored encrypted copy is discarded atomically with the job result once the
+Delivery is finished (or the secret has otherwise stopped being valid),
+and kept for a retry otherwise.
+
 Only these existing Delivery statuses are used
 (docs/04-modules/notifications-and-communications.md §4); no new status
 is introduced.
@@ -110,6 +119,16 @@ class ChannelResult:
         return cls("permanent_failure", error_code=code, error_message=message)
 
 
+class DeliverySecretCleanup(Protocol):
+    """Discards the stored secret copy a Delivery may depend on. Called in
+    the worker's recording transaction; `finished` is True when the
+    Delivery will not be attempted again (delivered or terminally failed).
+    Must only write its own secret storage and never raise for a Delivery
+    that has no secret."""
+
+    def release(self, session: Session, delivery_id: uuid.UUID, *, finished: bool) -> None: ...
+
+
 class ChannelAdapter(Protocol):
     """One channel's provider integration (Email, Telegram — separate
     Issues). Called with no database transaction held; must return within
@@ -164,7 +183,9 @@ def _start_attempt(
     )
 
 
-def _recorder(delivery_id: uuid.UUID, result: ChannelResult) -> RecordFn:
+def _recorder(
+    delivery_id: uuid.UUID, result: ChannelResult, cleanup: Optional[DeliverySecretCleanup]
+) -> RecordFn:
     def record(session: Session, disposition: Disposition) -> None:
         if disposition.status == OUTBOX_COMPLETED:
             values: dict[str, object] = {
@@ -192,11 +213,17 @@ def _recorder(delivery_id: uuid.UUID, result: ChannelResult) -> RecordFn:
             .values(**values)
             .execution_options(synchronize_session=False)
         )
+        if cleanup is not None:
+            cleanup.release(
+                session, delivery_id, finished=disposition.status != OUTBOX_PENDING
+            )
 
     return record
 
 
-def _pause_recorder(delivery_id: uuid.UUID) -> RecordFn:
+def _pause_recorder(
+    delivery_id: uuid.UUID, cleanup: Optional[DeliverySecretCleanup]
+) -> RecordFn:
     """A paused Delivery keeps its status, attempts and last error. Only a
     Delivery already waiting for a retry (`failed` with `next_retry_at`)
     has that time moved to the job's new eligibility, so the two agree."""
@@ -212,6 +239,10 @@ def _pause_recorder(delivery_id: uuid.UUID) -> RecordFn:
             .values(next_retry_at=disposition.next_attempt_at)
             .execution_options(synchronize_session=False)
         )
+        if cleanup is not None:
+            # Not finished: a paused Delivery resumes later; only a secret
+            # that is no longer valid (e.g. expired while paused) goes.
+            cleanup.release(session, delivery_id, finished=False)
 
     return record
 
@@ -228,12 +259,16 @@ class NotificationDeliveryHandler:
         *,
         admin_policy: Optional[AdminPolicy] = None,
         pause_recheck: timedelta = timedelta(seconds=60),
+        secret_cleanup: Optional[DeliverySecretCleanup] = None,
     ) -> None:
         """`admin_policy`, when given, pauses Deliveries of a channel the
-        Global Admin Policy disables (re-checked every `pause_recheck`)."""
+        Global Admin Policy disables (re-checked every `pause_recheck`).
+        `secret_cleanup`, when given, runs in every recording transaction
+        (module docstring)."""
         self._adapters = dict(adapters)
         self._admin_policy = admin_policy
         self._pause_recheck = pause_recheck
+        self._secret_cleanup = secret_cleanup
 
     def __call__(self, lease: JobLease) -> HandlerResult:
         try:
@@ -253,7 +288,9 @@ class NotificationDeliveryHandler:
             return HandlerResult.success()
         if started == "paused":
             return HandlerResult.deferred(
-                CHANNEL_DISABLED_BY_POLICY, self._pause_recheck, _pause_recorder(delivery_id)
+                CHANNEL_DISABLED_BY_POLICY,
+                self._pause_recheck,
+                _pause_recorder(delivery_id, self._secret_cleanup),
             )
         assert isinstance(started, DeliveryRequest)
 
@@ -267,7 +304,7 @@ class NotificationDeliveryHandler:
                 # Only the exception type is kept: its text may carry secrets.
                 result = ChannelResult.retryable(ADAPTER_ERROR_CODE, type(exc).__name__)
 
-        record = _recorder(delivery_id, result)
+        record = _recorder(delivery_id, result, self._secret_cleanup)
         if result.kind == "delivered":
             return HandlerResult.success(record)
         if result.kind == "permanent_failure":
@@ -281,6 +318,7 @@ class NotificationDeliveryHandler:
     def abandon(self, lease: JobLease) -> HandlerResult:
         """The job's lease expired with no attempts left (its worker kept
         dying): close the not yet terminal Delivery as a terminal failure."""
+        cleanup = self._secret_cleanup
 
         def record(session: Session, disposition: Disposition) -> None:
             try:
@@ -301,6 +339,8 @@ class NotificationDeliveryHandler:
                 )
                 .execution_options(synchronize_session=False)
             )
+            if cleanup is not None:
+                cleanup.release(session, delivery_id, finished=True)
 
         return HandlerResult.permanent(LEASE_EXPIRED_ERROR_CODE, record=record)
 
@@ -314,5 +354,6 @@ __all__ = [
     "DeliveryRequest",
     "ChannelResult",
     "ChannelAdapter",
+    "DeliverySecretCleanup",
     "NotificationDeliveryHandler",
 ]

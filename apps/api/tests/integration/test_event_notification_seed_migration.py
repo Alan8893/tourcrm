@@ -51,10 +51,15 @@ def _alembic(*args: str, database_url: str) -> None:
     assert result.returncode == 0, result.stderr
 
 
-# Rows seeded by later migrations (PR-2 registration slice) are created and
-# removed by those migrations whenever these tests move across them; they
-# are not this migration's concern and are left out of every comparison.
-_LATER_TEMPLATE_CODES = ("registration_created.telegram", "registration_cancelled.telegram")
+# Rows seeded by later migrations (PR-2 registration slice, Issue #342
+# password-reset code email) are created and removed by those migrations
+# whenever these tests move across them; they are not this migration's
+# concern and are left out of every comparison.
+_LATER_TEMPLATE_CODES = (
+    "registration_created.telegram",
+    "registration_cancelled.telegram",
+    "auth_password_reset_code.email",
+)
 _LATER_RULE_EVENT_TYPES = ("registration.created", "registration.cancelled")
 
 

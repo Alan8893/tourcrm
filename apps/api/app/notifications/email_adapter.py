@@ -24,6 +24,24 @@ Per call:
    classified by app.notifications.smtp and reported only as a stable code
    plus the numeric SMTP reply code.
 
+Security emails (Issue #342, PO decisions of 2026-10-12): a Notification
+whose `event_type` has a registered `DeliverySecretResolver` (the
+password-reset code) differs in exactly two ways:
+
+- destination: the User's `login_identifier` even when
+  `email_verified_at IS NULL` — the account's own login address is where
+  its recovery code goes; it is still never `Person.email`;
+- content: the template must contain the placeholder `{{code}}` exactly
+  once in its body (and nowhere in its subject); the resolver returns the
+  one-time secret, decrypted in this process's memory only, and it is
+  substituted there. Nothing else is rendered. The resolver decides
+  whether the secret may still be sent (a consumed, revoked or expired
+  challenge is a permanent failure) — the adapter never reads auth tables.
+
+The secret exists only in the `EmailContent` handed to the transport (its
+body is excluded from `repr`) and is never logged, persisted or put into a
+ChannelResult.
+
 At-least-once (ADR-0046 §5.5): a timeout after the message data was sent
 may mean the server accepted it; it is still reported as retryable, so the
 same Delivery can be sent again. The returned `provider_message_id` is the
@@ -31,12 +49,13 @@ message's own Message-ID.
 """
 
 import smtplib
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from email.errors import HeaderParseError
 from email.headerregistry import Address
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
-from typing import Optional
+from typing import Optional, Protocol
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -53,12 +72,24 @@ DESTINATION_UNVERIFIED = "destination_unverified"
 DESTINATION_INVALID = "destination_invalid"
 TEMPLATE_UNAVAILABLE = "template_unavailable"
 
+# The only placeholder a security email template may (and must) contain.
+SECRET_PLACEHOLDER = "{{code}}"
+
+
+class DeliverySecretResolver(Protocol):
+    """Returns the one-time secret a security email of `notification`
+    must carry, or a ChannelResult failure (safe code only) when it can no
+    longer be sent. Runs inside the adapter's short read-only session."""
+
+    def resolve(self, session: Session, notification: Notification) -> "str | ChannelResult": ...
+
 
 @dataclass(frozen=True)
 class EmailContent:
     recipient: str
     subject: Optional[str]
-    body: str
+    # May carry a one-time secret (security emails): never in a repr.
+    body: str = field(repr=False)
 
 
 def parse_email_address(value: Optional[str]) -> Optional[Address]:
@@ -78,29 +109,48 @@ def parse_email_address(value: Optional[str]) -> Optional[Address]:
     return address
 
 
-def _load_content(session: Session, request: DeliveryRequest) -> EmailContent | str:
-    """Returns the content to send, or a permanent error code."""
+def _load_content(
+    session: Session,
+    request: DeliveryRequest,
+    secret_resolvers: Mapping[str, DeliverySecretResolver],
+) -> EmailContent | ChannelResult:
+    """Returns the content to send, or the failure to report."""
+    notification = session.get(Notification, request.notification_id)
+    resolver = (
+        secret_resolvers.get(notification.event_type) if notification is not None else None
+    )
+
     user = session.get(User, request.destination_id)
     if user is None:
-        return DESTINATION_NOT_FOUND
-    if user.email_verified_at is None:
-        return DESTINATION_UNVERIFIED
+        return ChannelResult.permanent(DESTINATION_NOT_FOUND)
+    if user.email_verified_at is None and resolver is None:
+        return ChannelResult.permanent(DESTINATION_UNVERIFIED)
     address = parse_email_address(user.login_identifier)
     if address is None:
-        return DESTINATION_INVALID
+        return ChannelResult.permanent(DESTINATION_INVALID)
 
-    notification = session.get(Notification, request.notification_id)
     template = (
         session.get(NotificationTemplate, notification.template_id)
         if notification is not None and notification.template_id is not None
         else None
     )
     if template is None or template.channel != CHANNEL_EMAIL:
-        return TEMPLATE_UNAVAILABLE
+        return ChannelResult.permanent(TEMPLATE_UNAVAILABLE)
+    body = template.body_template
+    if resolver is not None:
+        assert notification is not None
+        if body.count(SECRET_PLACEHOLDER) != 1 or SECRET_PLACEHOLDER in (
+            template.subject_template or ""
+        ):
+            return ChannelResult.permanent(TEMPLATE_UNAVAILABLE)
+        secret = resolver.resolve(session, notification)
+        if isinstance(secret, ChannelResult):
+            return secret
+        body = body.replace(SECRET_PLACEHOLDER, secret)
     return EmailContent(
         recipient=address.addr_spec,
         subject=template.subject_template,
-        body=template.body_template,
+        body=body,
     )
 
 
@@ -127,20 +177,24 @@ class EmailChannelAdapter:
         settings: SmtpSettings,
         transport: SmtpTransport,
         session_factory: sessionmaker,
+        secret_resolvers: Optional[Mapping[str, DeliverySecretResolver]] = None,
     ) -> None:
+        """`secret_resolvers` maps a security email's `event_type` to the
+        resolver of its one-time secret (module docstring)."""
         self._settings = settings
         self._transport = transport
         self._session_factory = session_factory
+        self._secret_resolvers = dict(secret_resolvers or {})
 
     def deliver(self, request: DeliveryRequest) -> ChannelResult:
         if request.channel != CHANNEL_EMAIL or request.destination_type != DESTINATION_USER:
             return ChannelResult.permanent(DESTINATION_UNSUPPORTED)
 
         with self._session_factory() as session:
-            loaded = _load_content(session, request)
+            loaded = _load_content(session, request, self._secret_resolvers)
             session.rollback()
-        if isinstance(loaded, str):
-            return ChannelResult.permanent(loaded)
+        if isinstance(loaded, ChannelResult):
+            return loaded
         return self.send(loaded)
 
     def send(self, content: EmailContent) -> ChannelResult:
@@ -169,6 +223,8 @@ __all__ = [
     "DESTINATION_UNVERIFIED",
     "DESTINATION_INVALID",
     "TEMPLATE_UNAVAILABLE",
+    "SECRET_PLACEHOLDER",
+    "DeliverySecretResolver",
     "EmailContent",
     "parse_email_address",
     "build_message",

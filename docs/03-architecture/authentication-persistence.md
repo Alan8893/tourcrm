@@ -115,7 +115,8 @@ Fields:
 - `expires_at` — required;
 - `consumed_at` — nullable;
 - `revoked_at` — nullable;
-- `created_at` — required.
+- `created_at` — required;
+- `delivery_secret_ciphertext` — nullable; encrypted copy of the raw secret kept only while its email delivery is pending (Issue #342, see below). CHECK `ck_password_reset_challenges_delivery_secret_only_while_open`: NULL whenever `consumed_at` or `revoked_at` is set.
 
 Rules:
 
@@ -128,6 +129,16 @@ Rules:
 - the same challenge mechanism supports both administrator-issued first-access setup and self-service password recovery; these are not separate credential models;
 - a challenge is consumed atomically only after the new password passes policy validation and is committed;
 - the raw challenge secret must remain available to the approved delivery path only as long as necessary, without persisting it in plaintext in notification render context, outbox payloads, logs, audit records or exception details. If asynchronous delivery cannot meet this constraint using existing infrastructure, implementation must stop and propose the smallest safe handoff design before adding a new persistence model.
+
+Secure delivery handoff (Issue #342, approved by PO/CTO 2026-10-12):
+
+- verification uses only `token_hash`; `delivery_secret_ciphertext` is never used to check a code;
+- the copy is AES-256-GCM (the reviewed key-ring implementation of ADR-0048, `app.notification_settings.crypto`) under a SEPARATE deployment key ring `AUTH_DELIVERY_ENCRYPTION_KEYS` — never `SETTINGS_ENCRYPTION_KEYS`, never stored in the database — with associated data bound to the challenge id (`tourcrm.auth_delivery_secret.v1:password_reset_challenge:<id>`), so a copy moved to another row or decrypted with the settings key fails authentication;
+- the Notification carries only `subject_type = password_reset_challenge` / `subject_id` and an empty `render_context`; the outbox payload carries only the Delivery id;
+- the outbox worker decrypts the copy in memory immediately before the SMTP call, after re-checking in the same read that the challenge is not consumed, revoked or expired and belongs to the recipient; otherwise nothing is sent (`challenge_not_deliverable`);
+- a retry (including an ambiguous SMTP outcome such as a timeout after the server may have accepted the message, or a worker crash mid-send) sends the SAME code; the worker never issues a new challenge;
+- the copy is cleared: in the worker's recording transaction once the delivery is delivered, terminally failed or abandoned; in the same UPDATE that consumes or revokes (supersedes) the challenge; and for expired challenges by every delivery recording transaction and every recovery request;
+- consumption is a single conditional `UPDATE … WHERE token_hash = … AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > now()`; of two concurrent confirmations exactly one succeeds. Password-policy and confirmation-mismatch errors happen before it and do not consume the challenge.
 
 Recommended indexes:
 

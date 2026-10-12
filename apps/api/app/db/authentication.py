@@ -138,8 +138,20 @@ class PasswordResetChallenge(Base):
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
     )
+    # Issue #342: the AES-256-GCM encrypted copy of the raw secret, kept
+    # only while a queued email delivery still needs it
+    # (app.authentication.password_reset_delivery). Never the plaintext;
+    # NULL once the delivery finished, failed for good, or the challenge
+    # was consumed, revoked or expired. `token_hash` stays the only
+    # verification mechanism — this column is never used to check a code.
+    delivery_secret_ciphertext: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True)
 
     __table_args__ = (
+        # A consumed or revoked challenge never keeps a deliverable secret.
+        sa.CheckConstraint(
+            "delivery_secret_ciphertext IS NULL OR (consumed_at IS NULL AND revoked_at IS NULL)",
+            name="ck_password_reset_challenges_delivery_secret_only_while_open",
+        ),
         sa.Index("ix_password_reset_challenges_user_id_expires_at", "user_id", "expires_at"),
         sa.Index(
             "ix_password_reset_challenges_user_id_consumed_revoked",
