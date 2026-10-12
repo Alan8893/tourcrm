@@ -470,12 +470,13 @@ docker compose logs -f scheduler
 
 ### Running it in development
 
-The development `docker-compose.yml` has a `scheduler` service behind the
-opt-in `scheduler` profile, so a plain `docker compose up` still starts the
-application without it:
+The development `docker-compose.yml` starts a `scheduler` service by
+default together with the rest of the stack; no other service depends on
+it, so the application still runs without it
+(`docker compose up -d db backend frontend`):
 
 ```bash
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose --profile scheduler up --build
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up -d --build
 ```
 
 It waits for `backend` to be healthy (i.e. migrations applied) and uses
@@ -511,6 +512,16 @@ Redis or broker):
 ```bash
 DATABASE_URL=... python -m app.cli.run_outbox_worker
 ```
+
+In the development `docker-compose.yml` this is the `outbox-worker`
+service, started by default after `backend` is healthy
+(`docker compose logs -f outbox-worker`). At start it logs each key ring's
+state (`outbox worker key_ring=<VAR> state=available|missing|invalid`,
+never a key). Invalid worker configuration (`OUTBOX_WORKER_*`,
+`APP_PUBLIC_BASE_URL`, missing `DATABASE_URL`) is one error line and exit
+status 2, without a traceback. A database error while claiming does not end
+the process: it logs `error_code=database_error` and retries with backoff
+bounded by `OUTBOX_WORKER_RETRY_MAX_SECONDS`.
 
 Password-reset code emails (Issue #342) additionally need
 `AUTH_DELIVERY_ENCRYPTION_KEYS` — the same value as the API's — to decrypt

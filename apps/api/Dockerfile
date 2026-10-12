@@ -77,4 +77,8 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=5 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live', timeout=2)" || exit 1
 
 # alembic upgrade head is additive/idempotent (Issue #5) — never destructive.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
+# Only this API command migrates; the scheduler, telegram-poller and
+# outbox-worker services override CMD and wait for this one to be healthy.
+# `exec` makes uvicorn PID 1 so `docker compose stop` (SIGTERM) shuts it down
+# cleanly instead of being SIGKILLed after the grace period.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]

@@ -230,6 +230,12 @@ SMTP и Telegram настраиваются администратором в **
 
 Без ключа в API запрос восстановления не выпускает код (публичный ответ не меняется, в лог пишется `outcome=encryption_unavailable`); без ключа в worker доставка повторяется как retryable `delivery_encryption_unavailable` и затем завершается отказом. Ротация: новый ключ ставится первым, старый остаётся вторым до истечения срока действия ранее выпущенных кодов (1 час), после чего его можно удалить — перешифрование не требуется. Потеря ключа делает неотправленными только коды, ожидающие доставки; пользователь может запросить новый.
 
+### 9.1b Фоновые процессы в development Compose
+
+`docker compose up -d` (корневой `docker-compose.yml`, только для разработки) запускает все процессы TourCRM из одного dev-образа API: `backend` (единственный применяет `alembic upgrade head`), `scheduler` (supercronic, ADR-0044), `telegram-poller` (ADR-0047), `outbox-worker` (ADR-0046), а также `db` и `frontend`. Профилей нет. Фоновые сервисы стартуют после `backend: service_healthy`, не имеют HTTP-healthcheck, перезапускаются не более 5 раз (`on-failure:5`) и имеют grace period остановки 60/40/40 с. Ключи `SETTINGS_ENCRYPTION_KEYS` и `AUTH_DELIVERY_ENCRYPTION_KEYS` задаются в Compose один раз (YAML anchors) и передаются только процессам, которым нужны: API и worker — оба, poller — ключ настроек, scheduler — ни одного. Инструкции запуска, логов и диагностики — корневой `README.md`.
+
+**Ограничение.** Каноническая production-топология (хосты, production-образ, оркестрация, restart policy, сбор логов, мониторинг, доставка секретов) не определена — см. §24 «Decisions requiring ADR» и ADR-0044 §7. Development Compose не является production-конфигурацией; production-развёртывание должно отдельно обеспечить те же процессы: одну реплику poller на бота, один scheduler, worker(ы), миграции до старта фоновых процессов и одинаковый `AUTH_DELIVERY_ENCRYPTION_KEYS` у API и worker.
+
 ### 9.2 Telegram (ADR-0047, ADR-0048)
 
 Telegram использует **long polling** (`getUpdates`): публичный HTTPS endpoint и webhook не нужны, но процессам worker и poller нужен исходящий HTTPS-доступ к `api.telegram.org`. Bot username и bot token задаются в **Settings → Notifications → Telegram**; изменения применяются без перезапуска (worker — на каждую доставку, API — на каждую deep link, poller — между циклами `getUpdates`).
@@ -244,7 +250,7 @@ Telegram использует **long polling** (`getUpdates`): публичны�
 
 **Ссылки в уведомлениях (ADR-0049 §2.7).** `APP_PUBLIC_BASE_URL` (процесс worker) — публичный адрес frontend TourCRM, например `https://crm.example.org`; не секрет. Worker читает его при старте: если переменная не задана, ссылки в сообщениях не выводятся; некорректное значение (не абсолютный http(s), учётные данные, query или fragment) — worker не стартует. Ссылки строятся только на фиксированные страницы (`/events?event=<id>`, `/news/<id>`, `/achievements`) и проходят обычную авторизацию.
 
-**Развёртывание poller.** Отдельный сервис из того же образа, явно включаемый в конфигурации развёртывания (в dev Compose — профиль `telegram`: `docker compose --profile telegram up`). Требования:
+**Развёртывание poller.** Отдельный сервис из того же образа, явно включаемый в конфигурации развёртывания (в dev Compose — сервис `telegram-poller`, запускается по умолчанию и без настроенного бота простаивает в состоянии `not_configured`). Требования:
 
 - **одна реплика на установку** — никогда не масштабировать, не запускать второй экземпляр «для надёжности», не запускать параллельно на staging с тем же токеном;
 - restart policy с задержкой (например `on-failure`/`unless-stopped`), без HTTP healthcheck (у poller нет порта);
