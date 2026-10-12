@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal, Optional, Protocol, TypeVar, cast
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.outbox.claiming import (
@@ -291,10 +292,32 @@ class OutboxWorker:
 
     def run(self, stop: threading.Event) -> None:
         """Poll until `stop` is set. Sleeps `poll_interval` only when a
-        cycle claimed nothing; `stop` interrupts the sleep."""
+        cycle claimed nothing; `stop` interrupts the sleep.
+
+        A database error while claiming (PostgreSQL restarting or briefly
+        unreachable) does not end the process: it is logged with a stable
+        code only — never the exception text, which can carry connection
+        details — and the next claim waits with exponential backoff bounded
+        by `retry_max`. Nothing was leased, so nothing is lost."""
         logger.info("outbox worker started worker_id=%s", self.config.worker_id)
+        failures = 0
         while not stop.is_set():
-            if not self.run_once(stop):
+            try:
+                reports = self.run_once(stop)
+                failures = 0
+            except SQLAlchemyError:
+                failures += 1
+                # Exponent capped so a long outage cannot overflow timedelta.
+                wait = min(
+                    self.config.poll_interval * 2 ** min(failures - 1, 16), self.config.retry_max
+                )
+                logger.warning(
+                    "outbox worker database error error_code=database_error retry_in_s=%.1f",
+                    wait.total_seconds(),
+                )
+                stop.wait(wait.total_seconds())
+                continue
+            if not reports:
                 stop.wait(self.config.poll_interval.total_seconds())
         logger.info("outbox worker stopped worker_id=%s", self.config.worker_id)
 
