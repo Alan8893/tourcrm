@@ -124,7 +124,10 @@ Rules:
 - token cannot be consumed after `consumed_at` or `revoked_at` is set;
 - successful password reset marks the challenge consumed and invalidates previously active authenticated sessions according to `auth-api.md`;
 - raw reset token is never persisted or logged;
-- reset-request responses must not disclose whether an account exists.
+- reset-request responses must not disclose whether an account exists;
+- the same challenge mechanism supports both administrator-issued first-access setup and self-service password recovery; these are not separate credential models;
+- a challenge is consumed atomically only after the new password passes policy validation and is committed;
+- the raw challenge secret must remain available to the approved delivery path only as long as necessary, without persisting it in plaintext in notification render context, outbox payloads, logs, audit records or exception details. If asynchronous delivery cannot meet this constraint using existing infrastructure, implementation must stop and propose the smallest safe handoff design before adding a new persistence model.
 
 Recommended indexes:
 
