@@ -721,8 +721,10 @@ def test_worker_process_starts_and_stops_gracefully_on_sigterm(database_url: str
     )
     try:
         assert process.stderr is not None
-        started = process.stderr.readline()
-        assert "outbox worker started" in started, started
+        # Startup diagnostics (key ring states, Issue #342) precede it.
+        startup = [process.stderr.readline() for _ in range(3)]
+        assert "outbox worker started" in startup[-1], startup
+        assert all("key_ring=" in line for line in startup[:-1]), startup
         process.send_signal(signal.SIGTERM)
         _, stderr = process.communicate(timeout=30)
     finally:

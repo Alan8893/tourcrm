@@ -524,13 +524,19 @@ def test_confirm_password_reset_changes_the_password_and_is_single_use() -> None
         assert raw_token is not None
 
         auth_service.confirm_password_reset(
-            session, raw_token=raw_token, new_password="newpassword123"
+            session,
+            raw_token=raw_token,
+            new_password="newpassword123",
+            new_password_confirmation="newpassword123",
         )
         assert user.password_hash != old_hash
 
         with pytest.raises(auth_service.InvalidOrExpiredTokenError):
             auth_service.confirm_password_reset(
-                session, raw_token=raw_token, new_password="anothernewpass1"
+                session,
+                raw_token=raw_token,
+                new_password="anothernewpass1",
+                new_password_confirmation="anothernewpass1",
             )
 
 
@@ -543,7 +549,10 @@ def test_confirm_password_reset_invalidates_existing_sessions() -> None:
         )
         raw_reset_token = auth_service.request_password_reset(session, "alice@example.com")
         auth_service.confirm_password_reset(
-            session, raw_token=raw_reset_token, new_password="newpassword123"
+            session,
+            raw_token=raw_reset_token,
+            new_password="newpassword123",
+            new_password_confirmation="newpassword123",
         )
         assert auth_service.resolve_session(session, raw_session_token) is None
 
@@ -555,12 +564,17 @@ def test_confirm_password_reset_rejects_a_weak_new_password_without_burning_the_
         raw_token = auth_service.request_password_reset(session, "alice@example.com")
 
         with pytest.raises(WeakPasswordError):
-            auth_service.confirm_password_reset(session, raw_token=raw_token, new_password="a")
+            auth_service.confirm_password_reset(
+                session, raw_token=raw_token, new_password="a", new_password_confirmation="a"
+            )
 
         # Token must still be valid — the weak-password rejection happened
         # before consumption.
         auth_service.confirm_password_reset(
-            session, raw_token=raw_token, new_password="perfectlyvalidpassword"
+            session,
+            raw_token=raw_token,
+            new_password="perfectlyvalidpassword",
+            new_password_confirmation="perfectlyvalidpassword",
         )
 
 

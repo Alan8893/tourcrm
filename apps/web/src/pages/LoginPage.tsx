@@ -140,6 +140,15 @@ export function LoginPage() {
           <Link to="/password-reset" className={styles.recoveryLink}>
             Забыли пароль?
           </Link>
+          {/* Issue #342: first access with an administrator's code and
+              recovery with a code from email share one setup screen. */}
+          <Link
+            to="/password-reset"
+            state={{ mode: "confirm" }}
+            className={styles.recoveryLink}
+          >
+            У меня есть одноразовый код
+          </Link>
         </form>
       </Card>
     </div>

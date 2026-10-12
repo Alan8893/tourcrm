@@ -48,6 +48,18 @@ describe("PasswordResetRequestPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("offers to enter the emailed code right after the request", async () => {
+    stubFetch([{ match: "/auth/password-reset/request", response: { status: "ok" } }]);
+    const user = userEvent.setup();
+    renderWithProviders(<PasswordResetRequestPage />);
+
+    await user.type(screen.getByLabelText("Email или логин"), "someone@example.com");
+    await user.click(screen.getByRole("button", { name: "Отправить" }));
+    await user.click(await screen.findByRole("button", { name: "Ввести код из письма" }));
+
+    expect(screen.getByRole("heading", { name: "Ввести код и задать пароль" })).toBeInTheDocument();
+  });
+
   it("links back to the login page", () => {
     renderWithProviders(<PasswordResetRequestPage />);
     expect(screen.getByRole("link", { name: "Вернуться ко входу" })).toBeInTheDocument();
@@ -85,7 +97,11 @@ describe("PasswordResetRequestPage — confirm/setup step (TH-0113)", () => {
     );
     expect(call).toBeDefined();
     const body = JSON.parse(String((call?.[1] as RequestInit).body));
-    expect(body).toEqual({ token: "one-time-code-123", new_password: "brandnewpassword1" });
+    expect(body).toEqual({
+      token: "one-time-code-123",
+      new_password: "brandnewpassword1",
+      new_password_confirm: "brandnewpassword1",
+    });
   });
 
   it("shows a client-side error when the passwords do not match, without submitting", async () => {
@@ -105,6 +121,26 @@ describe("PasswordResetRequestPage — confirm/setup step (TH-0113)", () => {
     expect(
       fetchMock.mock.calls.some(([input]) => String(input).includes("/auth/password-reset/confirm")),
     ).toBe(false);
+  });
+
+  it("trims whitespace copied around the code", async () => {
+    const fetchMock = stubFetch([
+      { match: "/auth/password-reset/confirm", response: { status: "ok" } },
+    ]);
+    const user = userEvent.setup();
+    renderWithProviders(<PasswordResetRequestPage />);
+
+    await user.click(screen.getByRole("button", { name: "У меня уже есть одноразовый код" }));
+    await user.type(screen.getByLabelText("Одноразовый код"), "  pasted-code  ");
+    await user.type(screen.getByLabelText("Новый пароль"), "brandnewpassword1");
+    await user.type(screen.getByLabelText("Повторите пароль"), "brandnewpassword1");
+    await user.click(screen.getByRole("button", { name: "Установить пароль" }));
+
+    await screen.findByText("Ваш новый пароль сохранён. Теперь вы можете войти с его помощью.");
+    const call = fetchMock.mock.calls.find(([input]) =>
+      String(input).includes("/auth/password-reset/confirm"),
+    );
+    expect(JSON.parse(String((call?.[1] as RequestInit).body)).token).toBe("pasted-code");
   });
 
   it("shows the backend error for an invalid or expired code", async () => {
@@ -131,7 +167,11 @@ describe("PasswordResetRequestPage — confirm/setup step (TH-0113)", () => {
     await user.type(screen.getByLabelText("Повторите пароль"), "brandnewpassword1");
     await user.click(screen.getByRole("button", { name: "Установить пароль" }));
 
-    expect(await screen.findByText("Код недействителен или истёк")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "Код недействителен, уже использован или истёк. Запросите новый код или обратитесь к администратору.",
+      ),
+    ).toBeInTheDocument();
     expect(
       screen.queryByText("Ваш новый пароль сохранён. Теперь вы можете войти с его помощью."),
     ).not.toBeInTheDocument();

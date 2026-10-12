@@ -387,6 +387,12 @@ Webhook endpoints должны:
 - Секреты не попадают в логи, audit details, ошибки API, outbox payload, delivery error text и telemetry; audit фиксирует только actor, действие, какой секрет и результат.
 - Тестовая отправка (`notification.manage`) ограничена 5 попытками за 10 минут на администратора (PostgreSQL), не создаёт Notification/Delivery/outbox job, Telegram — только на собственный привязанный аккаунт администратора или существующий включённый `telegram_destination`.
 
+### 21.1a Код восстановления пароля по email (Issue #342)
+
+- Сырой код проверяется только по SHA-256 хешу. Для асинхронной отправки хранится его зашифрованная копия (`password_reset_challenges.delivery_secret_ciphertext`, AES-256-GCM) под отдельным deployment-ключом `AUTH_DELIVERY_ENCRYPTION_KEYS`; associated data связывает копию с challenge. Ключ настроек `SETTINGS_ENCRYPTION_KEYS` для этого не используется.
+- Код не попадает в Notification `render_context`, outbox payload, audit, логи, тексты ошибок и delivery error; расшифровывается только в памяти worker'а непосредственно перед SMTP-отправкой. Копия удаляется после доставки, терминального отказа, погашения, отзыва или истечения challenge.
+- Публичный ответ запроса восстановления не зависит от существования учётной записи и от исхода постановки письма в очередь.
+
 ### 21.2 Telegram (ADR-0047, Issue #329)
 
 - Bot token — UI-managed секрет (§21.1); не хранится в открытом виде (включая feature settings, checkpoint, outbox payload), не возвращается API, не попадает в логи, исключения и repr: он является частью URL каждого Bot API запроса, поэтому `app.telegram.bot_api` превращает любой сбой транспорта в стабильный код без исходного исключения. По той же причине endpoint Bot API — allowlist: только `https://api.telegram.org` (порт 443) либо loopback HTTP для локального fake-сервера.

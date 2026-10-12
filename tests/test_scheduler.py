@@ -143,14 +143,20 @@ def _compose_config(*profiles: str) -> dict:
 
 @pytest.fixture(scope="module")
 def scheduler_compose_config() -> dict:
-    return _compose_config("scheduler")
+    return _compose_config()
 
 
 @requires_docker_compose
-def test_application_starts_without_the_scheduler() -> None:
-    # Development-only and opt-in: a plain `docker compose up` must not
-    # need (or start) the scheduler.
-    assert "scheduler" not in _compose_config()["services"]
+def test_scheduler_starts_by_default_but_the_application_never_needs_it(
+    scheduler_compose_config: dict,
+) -> None:
+    # A plain `docker compose up` starts it (no profile to forget), yet no
+    # service depends on it: the application runs without it (ADR-0044 §7).
+    services = scheduler_compose_config["services"]
+    assert "scheduler" in services
+    assert "profiles" not in services["scheduler"]
+    for name, service in services.items():
+        assert "scheduler" not in service.get("depends_on", {}), name
 
 
 @requires_docker_compose
@@ -158,7 +164,6 @@ def test_scheduler_service_runs_supercronic_with_the_repository_crontab(
     scheduler_compose_config: dict,
 ) -> None:
     scheduler = scheduler_compose_config["services"]["scheduler"]
-    assert scheduler["profiles"] == ["scheduler"]
     # Exec form, no entrypoint/init wrapper: supercronic is PID 1.
     assert scheduler["command"] == SCHEDULER_COMMAND
     assert scheduler.get("entrypoint") is None

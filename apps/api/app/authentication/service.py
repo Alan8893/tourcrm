@@ -26,6 +26,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit.service import record_audit_event
+from app.authentication.password_reset_delivery import (
+    PASSWORD_RESET_EVENT_TYPE,
+    PASSWORD_RESET_SUBJECT_TYPE,
+    PASSWORD_RESET_TEMPLATE_CODE,
+    discard_expired_delivery_secrets,
+    encrypt_challenge_secret,
+    load_delivery_key_ring,
+)
 from app.authentication.passwords import (
     hash_password,
     validate_password_policy,
@@ -39,6 +47,10 @@ from app.db.authentication import (
     PasswordResetChallenge,
 )
 from app.db.identity import Person, User, normalize_login_identifier
+from app.notification_settings.crypto import KeyRingUnavailable
+from app.notifications.email_adapter import parse_email_address
+from app.notifications.ports import AdminPolicy
+from app.notifications.security_email import queue_security_email, security_email_available
 
 # No specific duration is mandated by any canonical document (auth-and-
 # authorization.md §7 only requires credentials to have "a bounded
@@ -89,6 +101,22 @@ class InvalidOrExpiredTokenError(AuthenticationError):
 
 class IncorrectCurrentPasswordError(AuthenticationError):
     pass
+
+
+class PasswordConfirmationMismatchError(AuthenticationError):
+    """auth-api.md §14: the new password and its confirmation differ."""
+
+
+# Outcome of request_password_reset_email — server-side diagnostics only;
+# the API answers every outcome with the same generic response.
+PasswordResetEmailOutcome = Literal[
+    "queued",
+    "unknown_identifier",
+    "destination_invalid",
+    "channel_disabled",
+    "template_unavailable",
+    "encryption_unavailable",
+]
 
 
 @dataclass(frozen=True)
@@ -423,37 +451,16 @@ def list_sessions_page(
 # --- Password reset / change --------------------------------------------
 
 
-def request_password_reset(
+def _issue_password_reset_challenge(
     session: Session,
-    identifier: str,
+    user: User,
     *,
-    actor_type: Literal["user", "system"] = "system",
-    actor_user_id: Optional[uuid.UUID] = None,
-    request_id: Optional[str] = None,
-) -> str | None:
-    """auth-api.md §13: the caller MUST return an identical generic
-    response whether or not this returns a token.
-
-    `actor_type`/`actor_user_id` default to the self-service caller's own
-    shape (`"system"`, no actor — no authenticated principal exists yet
-    at this point of the flow). ADR-0038's administrator-initiated first-
-    access/reset operations (app.authentication.account_provisioning)
-    call this same function with `actor_type="user"` and the acting
-    admin's own id instead — the challenge-issuance mechanism itself is
-    identical either way (ADR-0038 §7: "reuse the existing password-reset/
-    security model rather than introduce a parallel password mechanism").
-    Records `password_reset_challenge.created` (ADR-0038 §8) in the same
-    transaction as the challenge row; never for an unknown identifier
-    (nothing was actually created, and auditing a lookup miss would leak
-    exactly the account-existence signal auth-api.md §13 forbids).
-    """
-    normalized = normalize_login_identifier(identifier)
-    user = session.execute(
-        select(User).where(User.normalized_login_identifier == normalized)
-    ).scalar_one_or_none()
-    if user is None:
-        return None
-
+    actor_type: Literal["user", "system"],
+    actor_user_id: Optional[uuid.UUID],
+    request_id: Optional[str],
+) -> tuple[PasswordResetChallenge, str]:
+    """Supersede the User's open challenges and add a new one with its
+    `password_reset_challenge.created` audit event. No commit."""
     session.execute(
         update(PasswordResetChallenge)
         .where(
@@ -461,7 +468,8 @@ def request_password_reset(
             PasswordResetChallenge.consumed_at.is_(None),
             PasswordResetChallenge.revoked_at.is_(None),
         )
-        .values(revoked_at=_utcnow())
+        # A superseded challenge's queued delivery must not send it anymore.
+        .values(revoked_at=_utcnow(), delivery_secret_ciphertext=None)
     )
     raw_token = generate_token()
     challenge = PasswordResetChallenge(
@@ -481,12 +489,128 @@ def request_password_reset(
         outcome="success",
         request_id=request_id,
     )
+    return challenge, raw_token
+
+
+def _find_user(session: Session, identifier: str) -> User | None:
+    normalized = normalize_login_identifier(identifier)
+    return session.execute(
+        select(User).where(User.normalized_login_identifier == normalized)
+    ).scalar_one_or_none()
+
+
+def request_password_reset(
+    session: Session,
+    identifier: str,
+    *,
+    actor_type: Literal["user", "system"] = "system",
+    actor_user_id: Optional[uuid.UUID] = None,
+    request_id: Optional[str] = None,
+) -> str | None:
+    """Issue a challenge and return its raw secret to the caller for
+    administrator display (ADR-0038 §3: first access / admin reset, via
+    app.authentication.account_provisioning, with `actor_type="user"` and
+    the acting admin's id). Nothing is sent anywhere; self-service
+    recovery uses request_password_reset_email instead — the challenge
+    mechanism is identical either way (ADR-0038 §7: "reuse the existing
+    password-reset/security model rather than introduce a parallel password
+    mechanism").
+
+    Records `password_reset_challenge.created` (ADR-0038 §8) in the same
+    transaction as the challenge row; never for an unknown identifier
+    (nothing was actually created, and auditing a lookup miss would leak
+    exactly the account-existence signal auth-api.md §13 forbids).
+    """
+    user = _find_user(session, identifier)
+    if user is None:
+        return None
+    _challenge, raw_token = _issue_password_reset_challenge(
+        session,
+        user,
+        actor_type=actor_type,
+        actor_user_id=actor_user_id,
+        request_id=request_id,
+    )
     session.commit()
     return raw_token
 
 
+def request_password_reset_email(
+    session: Session,
+    identifier: str,
+    *,
+    admin_policy: AdminPolicy,
+    request_id: Optional[str] = None,
+) -> PasswordResetEmailOutcome:
+    """auth-api.md §13 self-service recovery (Issue #342): issue a
+    challenge and queue its code for email delivery through the
+    Notification Center, in ONE transaction — the challenge, its encrypted
+    delivery copy (app.authentication.password_reset_delivery), the
+    Notification, its Delivery and the outbox job commit together or not
+    at all.
+
+    The caller MUST answer every outcome with the same generic response;
+    the outcome is for safe server-side diagnostics only. When the code
+    cannot be delivered (no usable email address, Global email OFF, no
+    template, no delivery key) no challenge is issued, so a previously
+    issued code (e.g. an administrator's first-access code) stays valid.
+    Delivery goes to the account's `login_identifier` even when it is not
+    verified, and ignores notification rules and preferences (PO decisions
+    of 2026-10-12); the Global email switch stays absolute.
+    """
+    discard_expired_delivery_secrets(session)
+    user = _find_user(session, identifier)
+    outcome: PasswordResetEmailOutcome
+    if user is None:
+        outcome = "unknown_identifier"
+    elif parse_email_address(user.login_identifier) is None:
+        outcome = "destination_invalid"
+    else:
+        available = security_email_available(
+            session, template_code=PASSWORD_RESET_TEMPLATE_CODE, admin_policy=admin_policy
+        ).outcome
+        outcome = "queued" if available == "queued" else available
+    if outcome != "queued":
+        session.commit()
+        return outcome
+    assert user is not None
+    try:
+        key_ring = load_delivery_key_ring()
+    except KeyRingUnavailable:
+        session.commit()
+        return "encryption_unavailable"
+
+    challenge, raw_token = _issue_password_reset_challenge(
+        session, user, actor_type="system", actor_user_id=None, request_id=request_id
+    )
+    challenge.delivery_secret_ciphertext = encrypt_challenge_secret(
+        key_ring, challenge.id, raw_token
+    )
+    del raw_token
+    queued = queue_security_email(
+        session,
+        event_type=PASSWORD_RESET_EVENT_TYPE,
+        subject_type=PASSWORD_RESET_SUBJECT_TYPE,
+        subject_id=challenge.id,
+        recipient_user_id=user.id,
+        template_code=PASSWORD_RESET_TEMPLATE_CODE,
+        admin_policy=admin_policy,
+    )
+    if queued.outcome != "queued":
+        # Policy/template changed since the check above: issue nothing.
+        session.rollback()
+        return queued.outcome
+    session.commit()
+    return "queued"
+
+
 def confirm_password_reset(
-    session: Session, *, raw_token: str, new_password: str, request_id: Optional[str] = None
+    session: Session,
+    *,
+    raw_token: str,
+    new_password: str,
+    new_password_confirmation: str,
+    request_id: Optional[str] = None,
 ) -> None:
     """Records `password_reset_challenge.completed` (ADR-0038 §8) in the
     same transaction as the password change, with `actor_type="user"` —
@@ -497,27 +621,47 @@ def confirm_password_reset(
     int, never a session id/token/hash) rather than a separate audit
     action — mirrors `event_participation.status_changed`'s "one action,
     details carry the rest" shape.
+
+    Order (Issue #342): an invalid/expired/consumed/revoked code fails
+    first (InvalidOrExpiredTokenError); then a confirmation mismatch
+    (PasswordConfirmationMismatchError) or a weak password
+    (WeakPasswordError) fails WITHOUT consuming — the same code can be
+    retried. Consumption itself is one conditional UPDATE: of two
+    concurrent confirmations of the same code exactly one matches the row
+    (the other waits on its row lock, re-evaluates the condition and
+    matches nothing), so a code can never be used twice. The same UPDATE
+    clears any pending delivery copy of the secret.
     """
-    challenge = session.execute(
-        select(PasswordResetChallenge).where(
-            PasswordResetChallenge.token_hash == hash_token(raw_token)
-        )
-    ).scalar_one_or_none()
+    token_hash = hash_token(raw_token)
     now = _utcnow()
-    if (
-        challenge is None
-        or challenge.consumed_at is not None
-        or challenge.revoked_at is not None
-        or challenge.expires_at <= now
-    ):
+    open_challenge = (
+        PasswordResetChallenge.token_hash == token_hash,
+        PasswordResetChallenge.consumed_at.is_(None),
+        PasswordResetChallenge.revoked_at.is_(None),
+        PasswordResetChallenge.expires_at > now,
+    )
+    if session.execute(select(PasswordResetChallenge.id).where(*open_challenge)).first() is None:
         raise InvalidOrExpiredTokenError()
 
-    # Validate BEFORE consuming: a weak new_password must not burn the
-    # single-use token — the caller can retry with the same token.
+    # Validate BEFORE consuming: a mismatched or weak new_password must not
+    # burn the single-use token — the caller can retry with the same token.
+    if new_password != new_password_confirmation:
+        raise PasswordConfirmationMismatchError()
     validate_password_policy(new_password)
 
-    challenge.consumed_at = now
-    user = session.get(User, challenge.user_id)
+    consumed = session.execute(
+        update(PasswordResetChallenge)
+        .where(*open_challenge)
+        .values(consumed_at=now, delivery_secret_ciphertext=None)
+        .returning(PasswordResetChallenge.id, PasswordResetChallenge.user_id)
+        .execution_options(synchronize_session=False)
+    ).first()
+    if consumed is None:
+        # Consumed/revoked concurrently since the check above.
+        session.rollback()
+        raise InvalidOrExpiredTokenError()
+    challenge_id, user_id = consumed
+    user = session.get(User, user_id)
     assert user is not None
     user.password_hash = hash_password(new_password)
     # authentication-persistence.md §5 / auth-api.md §14: invalidate
@@ -533,7 +677,7 @@ def confirm_password_reset(
         actor_type="user",
         actor_user_id=user.id,
         resource_type="password_reset_challenge",
-        resource_id=challenge.id,
+        resource_id=challenge_id,
         outcome="success",
         request_id=request_id,
         details={"sessions_revoked": result.rowcount},

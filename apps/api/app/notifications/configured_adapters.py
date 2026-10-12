@@ -23,7 +23,7 @@ an adapter is only called for an enabled channel. A channel switched OFF
 while a send is already in progress does not cancel that send.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Optional
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -36,7 +36,7 @@ from app.notifications.delivery import (
     ChannelResult,
     DeliveryRequest,
 )
-from app.notifications.email_adapter import EmailChannelAdapter
+from app.notifications.email_adapter import DeliverySecretResolver, EmailChannelAdapter
 from app.notifications.smtp import SmtplibTransport, SmtpTransport
 from app.notifications.telegram_adapter import TelegramChannelAdapter
 from app.telegram.bot_api import BotApiClient, build_bot_api_client
@@ -55,9 +55,11 @@ class ConfiguredEmailAdapter:
         *,
         session_factory: sessionmaker,
         transport_factory: SmtpTransportFactory = SmtplibTransport,
+        secret_resolvers: Optional[Mapping[str, DeliverySecretResolver]] = None,
     ) -> None:
         self._session_factory = session_factory
         self._transport_factory = transport_factory
+        self._secret_resolvers = dict(secret_resolvers or {})
 
     def __repr__(self) -> str:
         return "ConfiguredEmailAdapter()"
@@ -73,6 +75,7 @@ class ConfiguredEmailAdapter:
             settings=runtime.settings,
             transport=self._transport_factory(runtime.settings),
             session_factory=self._session_factory,
+            secret_resolvers=self._secret_resolvers,
         )
         return adapter.deliver(request)
 

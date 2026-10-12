@@ -50,11 +50,11 @@ class KeyRingUnavailable(Exception):
     """The key ring is not configured (`missing`) or is malformed
     (`invalid`). `str()` is a safe operational message."""
 
-    def __init__(self, reason: KeyRingFailure) -> None:
+    def __init__(self, reason: KeyRingFailure, env_name: str = KEY_RING_ENV) -> None:
         message = (
-            f"{KEY_RING_ENV} is not set"
+            f"{env_name} is not set"
             if reason == "missing"
-            else f"{KEY_RING_ENV} is invalid (expected <key_id>:<base64 32-byte key>[,...])"
+            else f"{env_name} is invalid (expected <key_id>:<base64 32-byte key>[,...])"
         )
         super().__init__(message)
         self.reason = reason
@@ -128,10 +128,16 @@ class KeyRing:
         return cls(tuple(keys))
 
     @classmethod
-    def from_env(cls) -> "KeyRing":
-        """Read and validate `SETTINGS_ENCRYPTION_KEYS` now (no caching, so
-        tests and processes always see the current deployment value)."""
-        return cls.parse(os.getenv(KEY_RING_ENV))
+    def from_env(cls, env_name: str = KEY_RING_ENV) -> "KeyRing":
+        """Read and validate `env_name` (default `SETTINGS_ENCRYPTION_KEYS`)
+        now (no caching, so tests and processes always see the current
+        deployment value). Another purpose (e.g. Issue #342's
+        AUTH_DELIVERY_ENCRYPTION_KEYS) passes its own variable, so the two
+        key rings never share key material."""
+        try:
+            return cls.parse(os.getenv(env_name))
+        except KeyRingUnavailable as exc:
+            raise KeyRingUnavailable(exc.reason, env_name) from None
 
 
 def _b64(data: bytes) -> str:
@@ -144,16 +150,20 @@ def _unb64(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def _aad(secret_name: str) -> bytes:
-    return _AAD_PREFIX + secret_name.encode("utf-8")
+def _aad(secret_name: str, aad_prefix: bytes) -> bytes:
+    return aad_prefix + secret_name.encode("utf-8")
 
 
-def encrypt_secret(key_ring: KeyRing, secret_name: str, plaintext: str) -> str:
-    """Encrypt `plaintext` with the primary key; returns the stored token."""
+def encrypt_secret(
+    key_ring: KeyRing, secret_name: str, plaintext: str, *, aad_prefix: bytes = _AAD_PREFIX
+) -> str:
+    """Encrypt `plaintext` with the primary key; returns the stored token.
+    `aad_prefix` separates purposes: a token of one purpose never
+    authenticates as another's (default: the settings-secret purpose)."""
     key = key_ring.primary
     nonce = secrets.token_bytes(NONCE_BYTES)
     ciphertext = AESGCM(key.material).encrypt(
-        nonce, plaintext.encode("utf-8"), _aad(secret_name)
+        nonce, plaintext.encode("utf-8"), _aad(secret_name, aad_prefix)
     )
     return ".".join((TOKEN_VERSION, key.key_id, _b64(nonce), _b64(ciphertext)))
 
@@ -166,7 +176,9 @@ def token_key_id(token: str) -> Optional[str]:
     return parts[1]
 
 
-def decrypt_secret(key_ring: KeyRing, secret_name: str, token: str) -> str:
+def decrypt_secret(
+    key_ring: KeyRing, secret_name: str, token: str, *, aad_prefix: bytes = _AAD_PREFIX
+) -> str:
     """Decrypt a stored token. Raises SecretDecryptionError (fail closed)."""
     parts = token.split(".")
     if len(parts) != 4:
@@ -186,7 +198,9 @@ def decrypt_secret(key_ring: KeyRing, secret_name: str, token: str) -> str:
     if failed or len(nonce) != NONCE_BYTES or len(ciphertext) < 16:
         raise SecretDecryptionError("secret_format_invalid")
     try:
-        plaintext = AESGCM(key.material).decrypt(nonce, ciphertext, _aad(secret_name))
+        plaintext = AESGCM(key.material).decrypt(
+            nonce, ciphertext, _aad(secret_name, aad_prefix)
+        )
     except InvalidTag:
         failed = True
     if failed:

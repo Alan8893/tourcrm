@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import type { FormEvent } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
@@ -24,7 +24,13 @@ type Mode = "request" | "confirm";
  * framing without inventing a distinction the backend does not make).
  */
 export function PasswordResetRequestPage() {
-  const [mode, setMode] = useState<Mode>("request");
+  // The login page's "У меня есть одноразовый код" link opens the confirm
+  // step directly via router state — never via the URL, and never with
+  // the code itself.
+  const location = useLocation();
+  const initialMode: Mode =
+    (location.state as { mode?: Mode } | null)?.mode === "confirm" ? "confirm" : "request";
+  const [mode, setMode] = useState<Mode>(initialMode);
 
   return (
     <div className={styles.page}>
@@ -67,6 +73,9 @@ function RequestStep({ onSwitchToConfirm }: { onSwitchToConfirm: () => void }) {
             Если такая учётная запись существует, на связанный с ней email отправлены инструкции
             по восстановлению пароля.
           </p>
+          <Button type="button" variant="primary" onClick={onSwitchToConfirm}>
+            Ввести код из письма
+          </Button>
           <Link to="/login" className={styles.recoveryLink}>
             Вернуться ко входу
           </Link>
@@ -100,6 +109,12 @@ function RequestStep({ onSwitchToConfirm }: { onSwitchToConfirm: () => void }) {
   );
 }
 
+const CONFIRM_ERROR_MESSAGES: Record<string, string> = {
+  invalid_or_expired_token:
+    "Код недействителен, уже использован или истёк. Запросите новый код или обратитесь к администратору.",
+  password_confirmation_mismatch: "Пароли не совпадают.",
+};
+
 /** Step 2 of the one canonical flow: the user has a one-time code — from
  * a self-service reset email/link (once such delivery exists) or from an
  * administrator (ADR-0038 §3's MVP fallback) — and enters it here
@@ -125,7 +140,8 @@ function ConfirmStep({ onSwitchToRequest }: { onSwitchToRequest: () => void }) {
       return;
     }
     confirm.mutate(
-      { token, new_password: newPassword },
+      // Surrounding whitespace from a copied email line is not part of the code.
+      { token: token.trim(), new_password: newPassword, new_password_confirm: confirmPassword },
       { onSuccess: () => setSucceeded(true) },
     );
   }
@@ -148,7 +164,7 @@ function ConfirmStep({ onSwitchToRequest }: { onSwitchToRequest: () => void }) {
   const errorMessage = mismatchError
     ? "Пароли не совпадают."
     : confirm.error instanceof ApiError
-      ? confirm.error.message
+      ? (CONFIRM_ERROR_MESSAGES[confirm.error.code] ?? confirm.error.message)
       : null;
 
   return (

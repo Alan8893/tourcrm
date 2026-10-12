@@ -5,7 +5,20 @@
 # for the production baseline, which is a separate, later concern.
 #
 # Usage: cp .env.example .env, then:
-#   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up --build
+#   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up -d --build
+#
+# One command starts EVERY service: db, backend (API; the only service that
+# runs `alembic upgrade head`), frontend, and the three background processes
+# scheduler, telegram-poller and outbox-worker. No profiles: nothing required
+# is silently skipped. The background services never block the application —
+# nothing depends on them — so `docker compose up -d db backend frontend`
+# still runs the app alone (ADR-0044 §7: the scheduler is not a prerequisite).
+#
+# Background services wait for `backend` to be healthy (migrations applied),
+# have no HTTP healthcheck (they serve no port), restart at most 5 times on a
+# crash ("on-failure:5": a configuration error stops with clear logs instead
+# of restarting forever) and get a stop grace period covering their work in
+# progress. Logs: `docker compose logs -f <service>`.
 #
 # HOST_UID/HOST_GID make the backend/frontend containers run as the SAME
 # uid/gid that owns your checkout on the host, so the non-root container
@@ -15,6 +28,17 @@
 # happens to be owned by root (e.g. it was cloned as root), fix that on the
 # host first — `sudo chown -R $(id -u):$(id -g) apps/` — rather than
 # passing HOST_UID=0: these containers intentionally never run as root.
+
+# Shared values, defined ONCE so every service gets the same database and
+# the API and the outbox worker always get the same key rings. Secrets only
+# travel as environment variables — never as command-line arguments.
+x-database-url: &database-url postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+# Settings key ring (Issue #333, ADR-0048): SMTP password / Telegram bot
+# token entered in Settings → Notifications are stored encrypted with it.
+x-settings-encryption-keys: &settings-encryption-keys ${SETTINGS_ENCRYPTION_KEYS:-}
+# Password-reset code delivery key ring (Issue #342): a SEPARATE key; the API
+# encrypts the queued code with it, the outbox worker decrypts it to send.
+x-auth-delivery-encryption-keys: &auth-delivery-encryption-keys ${AUTH_DELIVERY_ENCRYPTION_KEYS:-}
 
 services:
   db:
@@ -47,15 +71,14 @@ services:
     environment:
       # Constructed here (not duplicated in .env) using the Compose service
       # name `db` as host — never `localhost`.
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DATABASE_URL: *database-url
       # Development Compose serves the frontend over plain HTTP, so Secure
       # cookies would never be sent by the browser. Production/HTTPS
       # deployments must explicitly set COOKIE_SECURE=true in their own
       # deployment configuration.
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      # Settings encryption key ring (Issue #333, ADR-0048): SMTP/Telegram
-      # secrets entered in Settings → Notifications are stored encrypted.
-      SETTINGS_ENCRYPTION_KEYS: ${SETTINGS_ENCRYPTION_KEYS:-}
+      SETTINGS_ENCRYPTION_KEYS: *settings-encryption-keys
+      AUTH_DELIVERY_ENCRYPTION_KEYS: *auth-delivery-encryption-keys
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
@@ -69,15 +92,13 @@ services:
       - tourcrm-dev
 
   # Scheduler for periodic system jobs (Issue #289, ADR-0044) — DEVELOPMENT
-  # ONLY, like everything in this file. Opt-in via the `scheduler` profile,
-  # so a plain `docker compose up` still starts the application without it:
-  #   docker compose --profile scheduler up
+  # ONLY, like everything in this file. Started by default; nothing depends
+  # on it, so the application never requires it.
   # Same Dockerfile/build context/user/DATABASE_URL and the same bind-mounted
   # source as `backend`, so it runs the same code; supercronic is the
   # container's main process (PID 1) and invokes the official CLIs from the
   # repository crontab. One replica, no HTTP, no published port.
   scheduler:
-    profiles: ["scheduler"]
     build:
       context: ./apps/api
       args:
@@ -86,7 +107,8 @@ services:
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     command: ["supercronic", "-json", "/app/scheduler/crontab"]
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      # The crontab's jobs need the database only — no key ring.
+      DATABASE_URL: *database-url
     volumes:
       - ./apps/api:/app
     depends_on:
@@ -99,6 +121,7 @@ services:
     # none. Its liveness is "supercronic is running" (ADR-0044 §6.5).
     healthcheck:
       disable: true
+    restart: "on-failure:5"
     # supercronic waits for a running job on SIGTERM; one run is bounded at
     # 55s by the crontab's timeout, so give it that long before SIGKILL.
     stop_grace_period: 60s
@@ -106,16 +129,15 @@ services:
       - tourcrm-dev
 
   # Telegram long-polling receiver (Issue #329, ADR-0047) — DEVELOPMENT ONLY.
-  # Opt-in via the `telegram` profile; the bot token/username are configured
-  # in Settings → Notifications (ADR-0048) and picked up without a restart:
-  #   docker compose --profile telegram up
+  # Started by default: until a bot token is configured in Settings →
+  # Notifications (ADR-0048) it idles (`telegram poller state=not_configured`)
+  # and polls nothing; a token is picked up without a restart.
   # Exactly ONE replica: never scale this service and never run a second
   # poller (another machine, staging) with the same token — a second one
   # exits with status 3 (see docs/08-infrastructure/infrastructure-and-
   # devops.md §9.2). No HTTP, no published port. Needs outbound HTTPS to
   # api.telegram.org only.
   telegram-poller:
-    profiles: ["telegram"]
     build:
       context: ./apps/api
       args:
@@ -124,8 +146,8 @@ services:
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     command: ["python", "-m", "app.cli.run_telegram_poller"]
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      SETTINGS_ENCRYPTION_KEYS: ${SETTINGS_ENCRYPTION_KEYS:-}
+      DATABASE_URL: *database-url
+      SETTINGS_ENCRYPTION_KEYS: *settings-encryption-keys
     volumes:
       - ./apps/api:/app
     depends_on:
@@ -136,10 +158,53 @@ services:
       disable: true
     deploy:
       replicas: 1
-    # Restart with Compose's own delay after a crash; exit 2/3 (configuration
-    # or conflict) also restarts, so fix the cause shown in the logs.
-    restart: on-failure
+    # Database/network failures are retried inside the process. Exit 2/3
+    # (invalid TELEGRAM_POLL_* configuration / another poller or webhook for
+    # the bot) are restarted at most 5 times, then the container stays
+    # stopped with the cause in its logs.
+    restart: "on-failure:5"
     # SIGTERM waits for the in-flight long poll (20s) + request timeout (10s).
+    stop_grace_period: 40s
+    networks:
+      - tourcrm-dev
+
+  # Outbox worker (Issue #325, ADR-0046) — DEVELOPMENT ONLY. Delivers every
+  # queued notification (Email/Telegram, incl. Issue #342 password-reset
+  # codes) through app.cli.run_outbox_worker. SMTP/Telegram come from
+  # Settings → Notifications; the key rings are the SAME values as the API's
+  # (shared anchors above). Missing key rings are reported at start
+  # (`outbox worker key_ring=... state=missing`). Leases + SKIP LOCKED make
+  # extra replicas safe, but one is enough for development.
+  outbox-worker:
+    build:
+      context: ./apps/api
+      args:
+        UID: ${HOST_UID:-1000}
+        GID: ${HOST_GID:-1000}
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    command: ["python", "-m", "app.cli.run_outbox_worker"]
+    environment:
+      DATABASE_URL: *database-url
+      SETTINGS_ENCRYPTION_KEYS: *settings-encryption-keys
+      AUTH_DELIVERY_ENCRYPTION_KEYS: *auth-delivery-encryption-keys
+      # Optional public frontend address for links in messages (ADR-0049
+      # §2.7); empty = no links, an invalid value stops the worker (exit 2).
+      APP_PUBLIC_BASE_URL: ${APP_PUBLIC_BASE_URL:-}
+    volumes:
+      - ./apps/api:/app
+    depends_on:
+      # The backend applies migrations before it turns healthy.
+      backend:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    deploy:
+      replicas: 1
+    # A briefly unreachable database is retried inside the process; exit 2
+    # (invalid OUTBOX_WORKER_*/APP_PUBLIC_BASE_URL) restarts at most 5 times.
+    restart: "on-failure:5"
+    # SIGTERM: finishes the job in progress (one SMTP/Telegram call, bounded
+    # by the provider timeout) and hands back unstarted claims.
     stop_grace_period: 40s
     networks:
       - tourcrm-dev

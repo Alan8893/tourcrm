@@ -61,8 +61,11 @@ checks описаны в `apps/api/README.md` и `apps/web/README.md`.
 ## Development environment (Docker Compose, Issue #8)
 
 **Это development-only окружение** — без reverse proxy, TLS, production
-secrets/backup. Production deployment — отдельная, более поздняя задача
-(см. `docs/08-infrastructure/infrastructure-and-devops.md`).
+secrets/backup; образы — development (dev-зависимости, `--reload`, bind
+mount исходников). Канонической production-топологии пока нет — это
+отдельная, более поздняя задача (см.
+`docs/08-infrastructure/infrastructure-and-devops.md`); этот Compose не
+является production-конфигурацией.
 
 ### Prerequisites
 
@@ -74,19 +77,52 @@ secrets/backup. Production deployment — отдельная, более поз�
 ```bash
 git clone <repo-url> && cd tourcrm
 cp .env.example .env        # локальная конфигурация; .env никогда не коммитится
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up --build
+# в .env задайте два РАЗНЫХ ключа (см. «Переменные окружения» ниже)
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up -d --build
 ```
 
-Одна эта команда поднимает `frontend`, `backend` и `db` (PostgreSQL) и
-применяет миграции Alembic (Issue #5) — они идемпотентны, это не
-destructive-операция.
+Одна эта команда поднимает **все** сервисы, профилей нет — ничего нужного
+не пропускается:
 
-Scheduler периодических system jobs (supercronic, Event lifecycle
-reconciliation каждую минуту — Issue #289, ADR-0044) по умолчанию **не**
-запускается: он подключается opt-in профилем
-`HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose --profile scheduler up --build`
-(логи — `docker compose logs -f scheduler`). Подробности — в
-`apps/api/README.md`, раздел «Scheduler for periodic system jobs».
+| Сервис | Процесс | Назначение |
+|---|---|---|
+| `db` | PostgreSQL 16 | данные; healthcheck `pg_isready` |
+| `backend` | API (`alembic upgrade head`, затем uvicorn) | **единственный**, кто применяет миграции (идемпотентно); healthy после старта API |
+| `frontend` | Vite dev server | веб-приложение, проксирует `/api` на `backend` |
+| `scheduler` | `supercronic -json /app/scheduler/crontab` | периодические system jobs (Event lifecycle reconciliation каждую минуту — Issue #289, ADR-0044) |
+| `telegram-poller` | `python -m app.cli.run_telegram_poller` | приём обновлений Telegram (ADR-0047); без настроенного бота простаивает |
+| `outbox-worker` | `python -m app.cli.run_outbox_worker` | доставка уведомлений из outbox: Email/Telegram, в том числе коды восстановления пароля (Issue #342) |
+
+Порядок старта: `db` (healthy) → `backend` (миграции применены, healthy) →
+`scheduler`, `telegram-poller`, `outbox-worker`. От фоновых сервисов не
+зависит ни один другой, поэтому приложение можно поднять и без них:
+`docker compose up -d db backend frontend` (например, при отладке UI).
+Фоновые сервисы не имеют HTTP-порта и healthcheck; при падении
+перезапускаются не более 5 раз (`restart: on-failure:5`), после чего
+остаются остановленными с причиной в логах — без бесконечного цикла.
+
+#### Переменные окружения (`.env`)
+
+| Переменная | Кому | Зачем |
+|---|---|---|
+| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | все | БД; `DATABASE_URL` собирается в Compose (хост `db`) |
+| `SETTINGS_ENCRYPTION_KEYS` | backend, outbox-worker, telegram-poller | шифрование SMTP-пароля и токена бота из Settings → Notifications |
+| `AUTH_DELIVERY_ENCRYPTION_KEYS` | backend, outbox-worker | шифрование кода восстановления пароля на время доставки; **отдельный** ключ, не ключ настроек |
+| `APP_PUBLIC_BASE_URL` (необязательно) | outbox-worker | адрес frontend для ссылок в сообщениях; некорректное значение — worker не стартует |
+
+Ключ генерируется так (для каждого ключа — свой вызов):
+`python -c "import base64,secrets;print(base64.b64encode(secrets.token_bytes(32)).decode())"`,
+в `.env` — `SETTINGS_ENCRYPTION_KEYS=dev1:<ключ>` и
+`AUTH_DELIVERY_ENCRYPTION_KEYS=devmail1:<другой ключ>`. Каждое значение
+задаётся в Compose один раз, поэтому API и outbox-worker всегда получают
+одинаковый ключ. Секреты передаются только через окружение — не через
+аргументы команд — и не пишутся в логи.
+
+SMTP и Telegram настраиваются **не** через `.env`, а в UI: Settings →
+Notifications (адрес SMTP-сервера, отправитель, пароль; токен и username
+бота; глобальные переключатели Email/Telegram). Для реальной отправки
+email нужен доступный SMTP-сервер и включённый глобальный Email; для
+Telegram — бот от @BotFather и исходящий HTTPS к `api.telegram.org`.
 
 **Зачем `HOST_UID`/`HOST_GID`**: `backend`/`frontend` работают от
 непривилегированного пользователя (не root), и его uid/gid внутри
@@ -121,15 +157,57 @@ curl http://localhost:8000/health/ready  # {"status": "ok"} / 503 {"status": "un
 ### Логи
 
 ```bash
-docker compose logs -f            # все сервисы
-docker compose logs -f backend    # один сервис
+docker compose logs -f                   # все сервисы
+docker compose logs -f backend           # API (миграции, запросы)
+docker compose logs -f outbox-worker     # доставка уведомлений
+docker compose logs -f scheduler         # периодические jobs (JSON supercronic)
+docker compose logs -f telegram-poller   # Telegram
 ```
 
-### Остановить (данные сохраняются)
+### Фоновые процессы: проверка и диагностика
+
+**Outbox и email.** При старте worker пишет состояние ключей:
+`outbox worker key_ring=AUTH_DELIVERY_ENCRYPTION_KEYS state=available`
+(`missing`/`invalid` — ключ не задан/неверен: коды восстановления не
+отправляются). Каждая задача — одна строка
+`outbox job job_type=notification.delivery … result=completed|pending|dead error_code=…`.
+Проверка восстановления пароля: включите Email и настройте SMTP в Settings →
+Notifications, запросите восстановление на странице входа — в логе worker
+появится `result=completed`, письмо уйдёт на логин учётной записи. Частые
+коды: `channel_adapter_unavailable` (SMTP не настроен),
+`delivery_encryption_unavailable` (у worker нет `AUTH_DELIVERY_ENCRYPTION_KEYS`),
+`challenge_not_deliverable` (код уже использован, отозван или истёк),
+`smtp_*` (ответ SMTP-сервера). Если у API нет ключа, в логе backend —
+`auth.password_reset.request outcome=encryption_unavailable`, код не
+выпускается. Глобальный Email OFF: доставка ставится на паузу
+(`result=deferred`). Кратковременная недоступность БД не роняет worker
+(`error_code=database_error retry_in_s=…`).
+
+**Scheduler.** Каждую минуту — строки `starting` / `job succeeded` с выводом
+`Event lifecycle reconciliation: …`; `job failed` — смотрите вывод job в той
+же строке. Нужен только `DATABASE_URL`.
+
+**Telegram Poller.** Состояния `telegram poller state=…`: `not_configured`
+(бот не задан — нормально для локальной разработки), `secret_unavailable`
+(нет/неверный `SETTINGS_ENCRYPTION_KEYS`), `token_rejected`,
+`username_mismatch`, `polling`. Запускайте **ровно один** poller на бота:
+второй (или webhook) завершается с кодом 3. Токен в логи не попадает.
+
+**Состояние контейнеров:** `docker compose ps`; остановленный фоновый
+сервис после 5 неудачных рестартов виден как `exited (2)`/`(3)` — причина в
+`docker compose logs <service>`, после исправления —
+`docker compose up -d <service>`.
+
+### Остановить и запустить снова (данные сохраняются)
 
 ```bash
-docker compose down
+docker compose stop        # остановить, контейнеры сохраняются
+docker compose up -d       # запустить снова (или `docker compose start`)
+docker compose down        # остановить и удалить контейнеры
 ```
+
+По SIGTERM worker завершает текущую доставку, poller — текущий long poll,
+scheduler — текущий job (grace period 40/40/60 с), API завершается сразу.
 
 Named volume `postgres_data` не удаляется — данные PostgreSQL переживают
 `down`/`up`.
@@ -138,7 +216,7 @@ Named volume `postgres_data` не удаляется — данные PostgreSQL
 
 ```bash
 docker compose down -v
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up --build
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up -d --build
 ```
 
 `-v` удаляет volumes, включая `postgres_data`. Используйте только когда

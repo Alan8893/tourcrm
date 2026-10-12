@@ -51,6 +51,7 @@ from app.core.config import get_settings
 from app.db.authorization import Role, UserRoleAssignment
 from app.db.identity import Person, User
 from app.db.session import get_db
+from app.notification_settings.policy import GlobalAdminPolicy
 
 logger = logging.getLogger("tourcrm.api")
 
@@ -371,10 +372,26 @@ def request_password_reset(
     limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> GenericResultResponse:
     _apply_rate_limit(limiter, f"password-reset-request:{payload.identifier.strip().lower()}")
-    # auth-api.md §13: identical response regardless of account existence.
-    auth_service.request_password_reset(
-        db, payload.identifier, request_id=get_request_id(request)
-    )
+    # auth-api.md §13: identical response regardless of account existence
+    # AND of any delivery problem. Diagnostics log only the outcome code —
+    # never the identifier, the code or an exception text.
+    try:
+        outcome = auth_service.request_password_reset_email(
+            db,
+            payload.identifier,
+            admin_policy=GlobalAdminPolicy(),
+            request_id=get_request_id(request),
+        )
+    except Exception as exc:  # noqa: BLE001 - must not change the public response
+        db.rollback()
+        logger.error(
+            "auth.password_reset.request outcome=error error_type=%s", type(exc).__name__
+        )
+        return GenericResultResponse()
+    if outcome in ("queued", "unknown_identifier"):
+        logger.info("auth.password_reset.request outcome=%s", outcome)
+    else:
+        logger.warning("auth.password_reset.request outcome=%s", outcome)
     return GenericResultResponse()
 
 
@@ -394,11 +411,18 @@ def confirm_password_reset(
             db,
             raw_token=payload.token,
             new_password=payload.new_password,
+            new_password_confirmation=payload.new_password_confirm,
             request_id=get_request_id(request),
         )
     except auth_service.InvalidOrExpiredTokenError as exc:
         raise APIError(
             status.HTTP_400_BAD_REQUEST, "invalid_or_expired_token", "Invalid or expired token"
+        ) from exc
+    except auth_service.PasswordConfirmationMismatchError as exc:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "password_confirmation_mismatch",
+            "New password and its confirmation do not match",
         ) from exc
     except WeakPasswordError as exc:
         raise APIError(status.HTTP_422_UNPROCESSABLE_ENTITY, "weak_password", str(exc)) from exc
