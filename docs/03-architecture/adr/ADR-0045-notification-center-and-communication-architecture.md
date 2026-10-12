@@ -277,6 +277,7 @@ The exact physical table name and external-identity association are implementati
 - Secret read-back is prohibited; update/clear are explicit audited actions and audit records contain no secret values.
 - Raw verification/reset/linking tokens are never persisted or logged.
 - Notification payloads and delivery errors must not contain passwords, tokens or other credentials.
+- A business/authentication flow that needs to deliver a one-time secret asynchronously must not place that secret in plaintext in Notification render context or Outbox payload. The implementation must use an existing approved secure handoff if available; otherwise it must propose the smallest safe design for review before introducing new persistence or key-management mechanisms.
 - Administrative configuration changes follow the existing settings/audit policy.
 
 ## 5. Business-event integration boundary
